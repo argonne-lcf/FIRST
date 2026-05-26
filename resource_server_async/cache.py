@@ -10,6 +10,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any
 
 import redis
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.cache import cache
 
@@ -58,6 +59,7 @@ def get_redis_client() -> redis.Redis | None:
     return None
 
 
+@sync_to_async
 def should_throttle(*args: Any, ttl: int = 30) -> bool:
     """
     Returns True if called with the same *args less than `ttl` seconds ago.
