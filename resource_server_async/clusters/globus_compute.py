@@ -1,7 +1,6 @@
 import logging
 from typing import Any
 
-from asgiref.sync import sync_to_async
 from django.utils.text import slugify
 from pydantic import BaseModel
 
@@ -111,9 +110,7 @@ class GlobusComputeCluster(BaseCluster):
                     endpoint_slug = slugify(
                         " ".join([running_cluster, running_framework, running_model])
                     )
-                    endpoint = await sync_to_async(Endpoint.objects.get)(
-                        endpoint_slug=endpoint_slug
-                    )
+                    endpoint = await Endpoint.objects.aget(endpoint_slug=endpoint_slug)
                     endpoint_config = globus_utils.unwrap_json(endpoint.config)
                     endpoint_uuid = endpoint_config["endpoint_uuid"]
 
