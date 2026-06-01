@@ -106,7 +106,6 @@ exclude = [
     'utils/tests/test.*\.py$',
     'resource_server_async/tests/.*.py$',
     '^compute-functions/.*$',
-    '^cron-jobs/.*$',
 ]
 python_version = "3.12"
 mypy_path = ".venv"
