@@ -827,22 +827,25 @@ def update_full_marker() -> None:
         log.warning("Failed to update full report marker: %s", exc)
 
 
-def post_to_slack(message: str) -> None:
+async def post_to_slack(message: str) -> None:
     webhook_url = os.getenv("WEBHOOK_URL")
     if not webhook_url:
         log.warning("WEBHOOK_URL not set; skipping Slack notification")
         return
 
     try:
-        response = requests.post(webhook_url, json={"text": message}, timeout=10)
-        if response.status_code >= 400:
-            log.error(
-                "Failed to post to Slack: HTTP %s %s",
-                response.status_code,
-                response.text,
-            )
-    except requests.RequestException as exc:
-        log.error("Error posting to Slack: %s", exc)
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(webhook_url, json={"text": message})
+    except Exception as e:
+        log.error("Error posting to Slack: %s", e)
+        return
+
+    if response.status_code >= 400:
+        log.error(
+            "Failed to post to Slack: HTTP %s %s",
+            response.status_code,
+            response.text,
+        )
 
 
 def main(argv: Optional[List[str]] = None) -> None:
