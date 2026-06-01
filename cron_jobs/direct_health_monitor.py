@@ -168,40 +168,37 @@ def normalize_model_name(name: str) -> str:
 async def gather_endpoints() -> Dict[str, EndpointInfo]:
     """Load Sophia endpoints that should be monitored (non-mock)."""
 
-    def _load() -> Dict[str, EndpointInfo]:  # synchronous helper
-        result: Dict[str, EndpointInfo] = {}
-        for endpoint in Endpoint.objects.filter(cluster="sophia"):
-            # Extract config parameters
-            endpoint_config = ast.literal_eval(endpoint.config)
-            endpoint_uuid = endpoint_config.get("endpoint_uuid", None)
-            function_uuid = endpoint_config.get("function_uuid", None)
-            api_port = endpoint_config.get("api_port", None)
+    result: Dict[str, EndpointInfo] = {}
+    async for endpoint in Endpoint.objects.filter(cluster="sophia"):
+        # Extract config parameters
+        endpoint_config = ast.literal_eval(endpoint.config)
+        endpoint_uuid = endpoint_config.get("endpoint_uuid", None)
+        function_uuid = endpoint_config.get("function_uuid", None)
+        api_port = endpoint_config.get("api_port", None)
 
-            # Skip if not in production
-            if (
-                "removed" in endpoint.model
-                or "aaaaaaaa" in endpoint_uuid
-                or "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-                in endpoint.allowed_globus_groups
-            ):
+        # Skip if not in production
+        if (
+            "removed" in endpoint.model
+            or "aaaaaaaa" in endpoint_uuid
+            or "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in endpoint.allowed_globus_groups
+        ):
+            continue
+
+        # Add endpoint if in production
+        else:
+            info = EndpointInfo(
+                model=endpoint.model,
+                endpoint_uuid=endpoint_uuid,
+                function_uuid=function_uuid,
+                api_port=api_port,
+                endpoint_slug=endpoint.endpoint_slug,
+                allowed_globus_groups=endpoint.allowed_globus_groups,
+            )
+            if info.has_mock_group:
                 continue
+            result[normalize_model_name(info.model)] = info
 
-            # Add endpoint if in production
-            else:
-                info = EndpointInfo(
-                    model=endpoint.model,
-                    endpoint_uuid=endpoint_uuid,
-                    function_uuid=function_uuid,
-                    api_port=api_port,
-                    endpoint_slug=endpoint.endpoint_slug,
-                    allowed_globus_groups=endpoint.allowed_globus_groups,
-                )
-                if info.has_mock_group:
-                    continue
-                result[normalize_model_name(info.model)] = info
-        return result
-
-    return await sync_to_async(_load)()
+    return result
 
 
 async def fetch_qstat_running_models() -> Tuple[Dict[str, Dict], Optional[str]]:
