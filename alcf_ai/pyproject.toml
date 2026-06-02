@@ -1,6 +1,6 @@
 [project]
 name = "alcf-ai"
-version = "0.4.0"
+version = "0.5.0"
 description = "ALCF Inference Gateway SDK"
 authors = [{ name = "Misha Salim", email = "msalim@anl.gov" }]
 requires-python = ">=3.12"
