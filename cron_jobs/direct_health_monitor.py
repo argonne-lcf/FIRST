@@ -152,8 +152,8 @@ class HealthRecord:
     cluster: str
     status: HealthStatus
     detail: str
-    response_time: Optional[float] = None
-    elapsed: Optional[float] = None
+    response_time: float | None = None
+    elapsed: float | None = None
 
 
 @dataclass
@@ -161,6 +161,7 @@ class EndpointStatus:
     url: httpx.URL
     status: HealthStatus
     detail: str
+    elapsed: float | None = None
 
     def to_health_record(
         self, cluster: str, component: str | None = None
@@ -170,6 +171,7 @@ class EndpointStatus:
             cluster=cluster,
             status=self.status,
             detail=self.detail,
+            elapsed=self.elapsed,
         )
 
 
@@ -707,6 +709,7 @@ async def check_gateway_health() -> HealthRecord:
                 url=request.url,
                 status=HealthStatus.HEALTHY,
                 detail="Application sucessfully responded",
+                elapsed=response.elapsed.total_seconds(),
             )
         else:
             response = EndpointStatus(
