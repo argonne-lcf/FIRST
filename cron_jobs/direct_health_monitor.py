@@ -40,9 +40,6 @@ import httpx
 from asgiref.sync import sync_to_async
 from dotenv import load_dotenv
 
-from cron_jobs import check_application_health
-from resource_server_async.models import Endpoint
-
 # ---------------------------------------------------------------------------
 # Django setup
 # ---------------------------------------------------------------------------
@@ -63,7 +60,6 @@ django.setup()
 # Imports that require Django to be configured
 # ---------------------------------------------------------------------------
 
-from cron_jobs.check_application_health import ApplicationHealthChecker  # noqa: E402
 from resource_server_async import globus_utils
 from resource_server_async.clusters import (
     BaseCluster,  # noqa: E402
@@ -196,7 +192,8 @@ async def check_endpoint(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            return await client.send(request)
+            response = await client.send(request)
+            return response.raise_for_status()
     except httpx.ConnectError as e:
         return EndpointStatus(
             url=request.url, status=HealthStatus.OFFLINE, detail=str(e)
@@ -698,42 +695,29 @@ async def check_gateway_health() -> HealthRecord:
     """Check resource_server /health"""
 
     request = httpx.Request("GET", f"{APPLICATION_URL}/resource_server/health")
-
-    match await check_endpoint(
+    response = await check_endpoint(
         request,
         timeout=GATEWAY_HEALTH_TIMEOUT,
-    ):
-        case httpx.Response() as r:
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("status") == "ok":
-                    return EndpointStatus(
-                        url=request.url,
-                        status=HealthStatus.HEALTHY,
-                        detail="Application sucessfully responded",
-                    ).to_health_record(
-                        component="Application /health endpoint", cluster="vm"
-                    )
-                else:
-                    return EndpointStatus(
-                        url=request.url,
-                        status=HealthStatus.FAILED,
-                        detail=f"Unexpected response: {data}",
-                    ).to_health_record(
-                        component="Application /health endpoint", cluster="vm"
-                    )
-            else:
-                return EndpointStatus(
-                    url=request.url,
-                    status=HealthStatus.FAILED,
-                    detail=f"Returned status code: {r.status_code}",
-                ).to_health_record(
-                    component="Application /health endpoint", cluster="vm"
-                )
-        case EndpointStatus() as e:
-            return e.to_health_record(
-                component="Application /health endpoint", cluster="vm"
+    )
+
+    if isinstance(response, httpx.Response):
+        data = response.json()
+        if data.get("status") == "ok":
+            response = EndpointStatus(
+                url=request.url,
+                status=HealthStatus.HEALTHY,
+                detail="Application sucessfully responded",
             )
+        else:
+            response = EndpointStatus(
+                url=request.url,
+                status=HealthStatus.FAILED,
+                detail=f"Unexpected response: {data}",
+            )
+
+    return response.to_health_record(
+        component="Application /health endpoint", cluster="vm"
+    )
 
 
 async def check_redis_health() -> HealthRecord:
