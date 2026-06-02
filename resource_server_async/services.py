@@ -1,7 +1,7 @@
 import json
 import logging
 import uuid
-from typing import Any, List
+from typing import Any
 
 from django.conf import settings
 from django.http import StreamingHttpResponse
@@ -63,11 +63,11 @@ logger = logging.getLogger(__name__)
 
 async def get_all_endpoints(
     user: UserPydantic, cluster: BaseCluster
-) -> List[BaseEndpoint]:
+) -> list[BaseEndpoint]:
     """Generate and return all endpoint adaptors for a given cluster."""
 
     # For all endpoints in the database for this cluster ...
-    endpoint_adaptors: List[BaseEndpoint] = []
+    endpoint_adaptors: list[BaseEndpoint] = []
     async for db_endpoint in Endpoint.objects.filter(cluster=cluster.cluster_name):
         endpoint = await BaseEndpoint.load_adapter(
             db_endpoint.cluster, db_endpoint.framework, db_endpoint.model
