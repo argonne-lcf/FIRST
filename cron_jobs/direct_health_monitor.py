@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from enum import StrEnum, auto
 import json
 import logging
 import os
@@ -31,12 +32,16 @@ import time
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from django.core.cache import cache
+from django.db import connection
 import httpx
-import requests
 from asgiref.sync import sync_to_async
 from dotenv import load_dotenv
+
+from cron_jobs import check_application_health
+from resource_server_async.models import Endpoint
 
 # ---------------------------------------------------------------------------
 # Django setup
@@ -115,9 +120,12 @@ LAST_FULL_MARKER = os.path.join(SCRIPT_DIR, "direct_health_monitor_last_full.txt
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+APPLICATION_URL = os.getenv("STREAMING_SERVER_HOST", "localhost:8000")
+
 SLOW_THRESHOLD_SECONDS = float(os.getenv("HEALTH_MONITOR_SLOW_THRESHOLD", 5.0))
 QSTAT_TIMEOUT_SECONDS = int(os.getenv("HEALTH_MONITOR_QSTAT_TIMEOUT", 60))
-GLOBUS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_HEALTH_TIMEOUT", 30))
+GATEWAY_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GATEWAY_TIMEOUT", 5))
+GLOBUS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GLOBUS_TIMEOUT", 30))
 METIS_HEALTH_TIMEOUT = float(os.getenv("HEALTH_MONITOR_METIS_TIMEOUT", 15.0))
 
 FULL_REPORT_FREQUENCY_HOURS = int(os.getenv("HEALTH_MONITOR_FULL_REPORT_HOURS", 24))
@@ -144,17 +152,61 @@ class EndpointInfo:
 class HealthRecord:
     """Result of a single health check."""
 
-    model: str
+    component: str
     cluster: str
-    status: str  # healthy | slow | failed | offline | idle
+    status: HealthStatus
     detail: str
     response_time: Optional[float] = None
     elapsed: Optional[float] = None
 
 
+@dataclass
+class EndpointStatus:
+    url: httpx.URL
+    status: HealthStatus
+    detail: str
+
+    def to_health_record(
+        self, cluster: str, component: str | None = None
+    ) -> HealthRecord:
+        return HealthRecord(
+            component=component or self.url.path,
+            cluster=cluster,
+            status=self.status,
+            detail=self.detail,
+        )
+
+
+@dataclass
+class HealthStatus(StrEnum):
+    HEALTHY = auto()
+    SLOW = auto()
+    FAILED = auto()
+    OFFLINE = auto()
+    IDLE = auto()
+
+
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+async def check_endpoint(
+    request: httpx.Request, timeout: int
+) -> httpx.Response | EndpointStatus:
+    """Check if an endpoint responds (and return the response)"""
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await client.send(request)
+    except httpx.ConnectError as e:
+        return EndpointStatus(
+            url=request.url, status=HealthStatus.OFFLINE, detail=str(e)
+        )
+    except httpx.RequestError as e:
+        return EndpointStatus(
+            url=request.url, status=HealthStatus.FAILED, detail=str(e)
+        )
+
+
 def format_duration(value: Optional[float]) -> str:
     if value is None:
         return "?"
@@ -642,67 +694,155 @@ async def check_metis_models() -> List[HealthRecord]:
     return records
 
 
-async def check_vm_health() -> List[HealthRecord]:
-    """Run VM/application health checks (Redis, Postgres, App /health, Globus)."""
+async def check_gateway_health() -> HealthRecord:
+    """Check resource_server /health"""
 
-    def _run_checks() -> dict:
-        checker = ApplicationHealthChecker()
-        checker.application_url = os.getenv(
-            "STREAMING_SERVER_HOST", "http://localhost:8000"
-        )
+    request = httpx.Request("GET", f"{APPLICATION_URL}/resource_server/health")
 
-        # Override the checker health endpoint to the main service URL
-        def _health_override() -> dict:
-            try:
-                url = f"https://{checker.application_url}/resource_server/health"
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("status") == "ok":
-                        return {
-                            "component": "Application /health Endpoint",
-                            "status": "healthy",
-                            "message": f"Application responding successfully at {url}",
-                        }
-                    return {
-                        "component": "Application /health Endpoint",
-                        "status": "failed",
-                        "error": f"Unexpected response from {url}: {data}",
-                    }
-                return {
-                    "component": "Application /health Endpoint",
-                    "status": "failed",
-                    "error": f"Health endpoint returned status code {response.status_code}",
-                }
-            except Exception as exc:
-                return {
-                    "component": "Application /health Endpoint",
-                    "status": "failed",
-                    "error": f"Health endpoint check failed: {exc}",
-                }
-
-        checker.check_application_health_endpoint = _health_override
-        return checker.check_all_components()
-
-    results = await sync_to_async(_run_checks, thread_sensitive=True)()
-    records: List[HealthRecord] = []
-
-    for component in results.get("components", []):
-        name = component.get("component", "unknown")
-        status = component.get("status", "unhealthy")
-        detail = component.get("message") or component.get("error", "")
-
-        record_status = "healthy" if status == "healthy" else "failed"
-        records.append(
-            HealthRecord(
-                model=name,
-                cluster="vm",
-                status=record_status,
-                detail=detail,
+    match await check_endpoint(
+        request,
+        timeout=GATEWAY_HEALTH_TIMEOUT,
+    ):
+        case httpx.Response() as r:
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("status") == "ok":
+                    return EndpointStatus(
+                        url=request.url,
+                        status=HealthStatus.HEALTHY,
+                        detail="Application sucessfully responded",
+                    ).to_health_record(
+                        component="Application /health endpoint", cluster="vm"
+                    )
+                else:
+                    return EndpointStatus(
+                        url=request.url,
+                        status=HealthStatus.FAILED,
+                        detail=f"Unexpected response: {data}",
+                    ).to_health_record(
+                        component="Application /health endpoint", cluster="vm"
+                    )
+            else:
+                return EndpointStatus(
+                    url=request.url,
+                    status=HealthStatus.FAILED,
+                    detail=f"Returned status code: {r.status_code}",
+                ).to_health_record(
+                    component="Application /health endpoint", cluster="vm"
+                )
+        case EndpointStatus() as e:
+            return e.to_health_record(
+                component="Application /health endpoint", cluster="vm"
             )
+
+
+async def check_redis_health() -> HealthRecord:
+    """Check Redis connectivity"""
+
+    test_key = "health_check_test"
+    test_value = f"test_{datetime.now().timestamp()}"
+
+    try:
+        # Try to set and get a test value
+        await cache.aset(test_key, test_value, 60)
+        retrieved_value = await cache.aget(test_key)
+        await cache.adelete(test_key)
+    except Exception as e:
+        return HealthRecord(
+            component="Redis",
+            cluster="vm",
+            status=HealthStatus.FAILED,
+            detail=f"Failure while testing: {str(e)}.",
         )
 
-    return records
+    if retrieved_value == test_value:
+        return HealthRecord(
+            component="Redis",
+            cluster="vm",
+            status=HealthStatus.HEALTHY,
+            detail="Get/set test succeeded",
+        )
+    else:
+        return HealthRecord(
+            component="Redis",
+            cluster="vm",
+            status=HealthStatus.FAILED,
+            detail="Get/set test failed: values do not match",
+        )
+
+
+async def check_postgres_health() -> HealthRecord:
+    """Check PostgreSQL connectivity"""
+
+    # Try a simple database query
+    @sync_to_async
+    def query() -> Any:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            return cursor.fetchone()
+
+    try:
+        result = await query()
+        if result and result[0] == 1:
+            # Also check if we can query a table
+            endpoint_count = await Endpoint.objects.acount()
+            return HealthRecord(
+                component="PostgreSQL",
+                cluster="vm",
+                status=HealthStatus.HEALTHY,
+                detail=f"Connection successful (found {endpoint_count} endpoints)",
+            )
+        else:
+            return HealthRecord(
+                component="PostgreSQL",
+                cluster="vm",
+                status=HealthStatus.FAILED,
+                detail="Query returned unexpected result",
+            )
+    except Exception as e:
+        return HealthRecord(
+            component="PostgreSQL",
+            cluster="vm",
+            status=HealthStatus.FAILED,
+            detail=f"Connection failed: {str(e)}",
+        )
+
+
+def check_globus_compute() -> HealthRecord:
+    """Check Globus Compute connectivity"""
+
+    @sync_to_async
+    def check() -> bool:
+        # Try to create a Globus Compute client
+        gcc = globus_utils.get_compute_client_from_globus_app()
+
+        # Try to get executor
+        gce = globus_utils.get_compute_executor(client=gcc)
+
+        return gcc and gce
+
+    try:
+        if await check():
+            return HealthRecord(
+                component="Globus Compute",
+                cluster="vm",
+                status=HealthStatus.HEALTHY,
+                detail="Client and Executor initialized successfully",
+            )
+        else:
+            return HealthRecord(
+                component="Globus Compute",
+                cluster="vm",
+                status=HealthStatus.FAILED,
+                detail="Failed to initialize Client or Executor",
+            )
+    except Exception as e:
+        return HealthRecord(
+            component="Globus Compute",
+            cluster="vm",
+            status=HealthStatus.FAILED,
+            detail=f"Initialization failed: {str(e)}",
+        )
 
 
 def group_records(records: Iterable[HealthRecord]) -> Dict[str, List[HealthRecord]]:
@@ -766,7 +906,10 @@ async def run_monitor() -> List[HealthRecord]:
     results = await asyncio.gather(
         check_sophia_models(),
         check_metis_models(),
-        check_vm_health(),
+        check_gateway_health(),
+        check_redis_health(),
+        check_postgres_health(),
+        check_globus_compute(),
         return_exceptions=True,
     )
 
