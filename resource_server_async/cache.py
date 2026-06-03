@@ -58,18 +58,6 @@ def get_redis_client() -> redis.Redis | None:
     return None
 
 
-def should_throttle(*args: Any, ttl: int = 30) -> bool:
-    """
-    Returns True if called with the same *args less than `ttl` seconds ago.
-
-    Uses underlying cache to store key of concatenated *args.
-    """
-    key = "".join(map(str, args))
-
-    was_added = cache.add(key, "", ttl)
-    return not was_added
-
-
 def is_cached(key: str) -> bool:
     """Returns whether key exists in the cache."""
     return cache.has_key(key)

@@ -1,0 +1,5 @@
+kind: AccessGroup
+name: public4
+spec:
+  allowed_groups: ["oops"]
+  allowed_domains: ["@anl.gov", "@alcf.anl.gov"]

@@ -14,17 +14,12 @@ classifiers = [
 dependencies = [
     "asgiref>=3.10",
     "cachetools<6",
-    "django-cors-headers",
-    "django-filter",
-    "django-ninja",
-    "django-redis",
-    "django",
     "globus-compute-sdk>=3.16.1,<4",
     "globus-sdk>=3.65.0,<4",
+    "fastapi",
     "gunicorn",
     "h11",
     "httpx",
-    "psycopg-pool>=3.2.7,<4",
     "psycopg>=3.2.12,<4",
     "pydantic>=2.12",
     "pydantic-settings",
@@ -34,6 +29,7 @@ dependencies = [
     "python-json-logger>=2.0",
     "uvicorn[standard]>=0.30.6",
     "pyzstd",
+    "SQLAlchemy[asyncio]",
 ]
 
 [dependency-groups]
@@ -44,7 +40,6 @@ dev = [
     "ruff",
     "alcf-ai",
     "pre-commit>=4.5.1",
-    "django-stubs[compatible-mypy]",
     "types-PyYAML",
     "types-cachetools",
 ]
@@ -71,6 +66,7 @@ module-name = [
     "dashboard_async",
     "utils",
     "alcf_ai",
+    "first",
 ]
 module-root = ""
 namespace = true
@@ -90,11 +86,11 @@ extend-exclude = [
 select = ["F", "I"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["alcf_ai", "resource_server_async", "dashboard_async", "utils"]
+known-first-party = ["alcf_ai", "resource_server_async", "dashboard_async", "utils", "first"]
 
 
 [tool.mypy]
-files = ["alcf_ai", "inference_gateway", "resource_server_async"]
+files = ["alcf_ai", "first"]
 exclude = [
     '^\..*',
     '__pycache__',
@@ -111,7 +107,6 @@ python_version = "3.12"
 mypy_path = ".venv"
 plugins = [
     "pydantic.mypy",
-    "mypy_django_plugin.main",
 ]
 strict = true
 warn_unused_configs = true        # warn on unused [[tool.mypy.overrides]]
@@ -121,10 +116,6 @@ no_implicit_optional = true       # explicit Optional[X], not bare = None
 pretty = true
 show_error_codes = true
 show_column_numbers = true
-
-[tool.django-stubs]
-django_settings_module = "inference_gateway._settings_typechecker"
-strict_settings = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

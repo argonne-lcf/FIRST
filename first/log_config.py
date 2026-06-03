@@ -1,20 +1,12 @@
+import atexit
 import logging
+import logging.config
 from datetime import date, datetime, timezone
 from typing import Any
 
 from pythonjsonlogger.json import JsonFormatter
 
-from resource_server_async.logging import get_request_context
-
-_STRUCTURED_PREFIX = "resource_server_async.structured."
-
-_STREAM_MAP = {
-    "uvicorn.access": "uvicorn.access",
-    "uvicorn.error": "uvicorn.error",
-    "uvicorn": "uvicorn.error",
-    "gunicorn.error": "gunicorn.error",
-    "gunicorn.access": "gunicorn.access",
-}
+from first.apiserver.context import get_request_context
 
 
 class GatewayJsonFormatter(JsonFormatter):
@@ -33,11 +25,6 @@ class GatewayJsonFormatter(JsonFormatter):
         log_record["logger"] = record.name
         log_record["pid"] = record.process
         log_record["lineno"] = record.lineno
-
-        if record.name.startswith(_STRUCTURED_PREFIX):
-            log_record["stream"] = record.name[len(_STRUCTURED_PREFIX) :]
-        else:
-            log_record["stream"] = _STREAM_MAP.get(record.name, "app")
 
         try:
             context = get_request_context()
@@ -74,18 +61,12 @@ LOGGING: dict[str, Any] = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "json": {
-            "()": "inference_gateway.log_config.GatewayJsonFormatter",
-        },
+        "json": {"()": "first.log_config.GatewayJsonFormatter"},
         "plain": {"format": "\n%(message)s\n"},
     },
     "filters": {
-        "uvicorn_access_fields": {
-            "()": "inference_gateway.log_config.UvicornAccessFilter",
-        },
-        "traceback_only": {
-            "()": "inference_gateway.log_config.TracebackOnly",
-        },
+        "uvicorn_access_fields": {"()": "first.log_config.UvicornAccessFilter"},
+        "traceback_only": {"()": "first.log_config.TracebackOnly"},
     },
     "handlers": {
         "stdout": {
@@ -99,42 +80,42 @@ LOGGING: dict[str, Any] = {
             "formatter": "plain",
             "filters": ["traceback_only"],
         },
+        "queue": {
+            "class": "logging.handlers.QueueHandler",
+            "handlers": ["stdout", "stderr_crash"],
+            "respect_handler_level": True,
+        },
     },
     "loggers": {
-        "uvicorn.error": {
-            "handlers": ["stdout", "stderr_crash"],
-            "level": "INFO",
-            "propagate": False,
-        },
+        "uvicorn.error": {"handlers": ["queue"], "level": "INFO", "propagate": False},
         "uvicorn.access": {
-            "handlers": ["stdout"],
+            "handlers": ["queue"],
             "level": "INFO",
             "propagate": False,
             "filters": ["uvicorn_access_fields"],
         },
         "gunicorn.error": {
-            "handlers": ["stdout", "stderr_crash"],
+            "handlers": ["queue"],
             "level": "INFO",
             "propagate": False,
         },
         "gunicorn.access": {
-            "handlers": ["stdout"],
+            "handlers": ["queue"],
             "level": "INFO",
             "propagate": False,
         },
-        "resource_server_async": {
-            "handlers": ["stdout", "stderr_crash"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "inference_gateway": {
-            "handlers": ["stdout", "stderr_crash"],
+        "first": {
+            "handlers": ["queue"],
             "level": "INFO",
             "propagate": False,
         },
     },
-    "root": {
-        "level": "WARNING",
-        "handlers": ["stdout", "stderr_crash"],
-    },
+    "root": {"level": "WARNING", "handlers": ["queue"]},
 }
+
+
+def config_logging() -> None:
+    logging.config.dictConfig(LOGGING)
+    listener = logging.getHandlerByName("queue").listener  # type: ignore[union-attr]
+    listener.start()
+    atexit.register(listener.stop)

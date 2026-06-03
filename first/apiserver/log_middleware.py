@@ -1,82 +1,57 @@
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from inspect import iscoroutinefunction
 from logging import getLogger
 
 from asgiref.sync import async_to_sync, markcoroutinefunction, sync_to_async
-from django.http import HttpRequest, HttpResponse, StreamingHttpResponse
+from fastapi.requests import Request
+from fastapi.responses import Response, StreamingResponse
 
-from resource_server_async.schemas.structured_logs import (
-    AccessLogPydantic,
-    RequestLogPydantic,
-    UserPydantic,
+from first.cache import should_throttle
+from first.schema.structured_logs import (
+    AccessLog,
 )
 
-from .cache import should_throttle
+from .context import RequestContext, _request_context
 
 logger = getLogger(__name__)
 
 
-@dataclass
-class RequestContext:
-    access_log: AccessLogPydantic
-    user: UserPydantic | None = None
-    request_log: RequestLogPydantic | None = None
-
-
-_request_context: ContextVar[RequestContext] = ContextVar("_request_context")
-
-
-def get_request_context() -> RequestContext:
-    """
-    Return the RequestContext value set for the current http request.
-
-    Raises LookupError if called outside of a request span wrapped by the
-    AccessLogMiddleware.
-    """
-    return _request_context.get()
-
-
-def initialize_access_log(request: HttpRequest) -> AccessLogPydantic:
-    """Return initial state of an AccessLogPydantic entry"""
-
-    # Extract the origin IP address
-    origin_ip = request.META.get("HTTP_X_FORWARDED_FOR")
-    if origin_ip is None:
-        origin_ip = request.META.get("REMOTE_ADDR")
+def initialize_access_log(request: Request) -> AccessLog:
+    """Return initial state of an AccessLog entry"""
+    origin_ip = request.headers.get("X-Forwarded-For")
+    if not origin_ip and request.client is not None:
+        origin_ip = request.client.host
 
     # Remove duplicate if any
     if origin_ip:
         ip_list = [ip.strip() for ip in origin_ip.split(",")]
         origin_ip = ", ".join(set(ip_list))
 
-    return AccessLogPydantic(
+    return AccessLog(
         id=str(uuid.uuid4()),
         timestamp_request=datetime.now(timezone.utc),
-        api_route=request.path_info,
+        api_route=request.url.path,
         origin_ip=origin_ip,
     )
 
 
 @sync_to_async(thread_sensitive=False)
-def write_logs(
-    context: RequestContext, response: HttpResponse | StreamingHttpResponse
-) -> None:
+def write_logs(context: RequestContext, response: Response) -> None:
     context.access_log.emit(context.user, response)
 
     if context.request_log:
-        body = (
-            "streaming_response_in_progress"
-            if isinstance(response, StreamingHttpResponse)
-            else response.content.decode(errors="ignore")
-        )
+        if isinstance(response, StreamingResponse):
+            body = "streaming_response_in_progress"
+        elif isinstance(response.body, bytes):
+            body = response.body.decode(errors="ignore")
+        else:
+            body = "unavailable"
         context.request_log.emit(body, response.status_code)
 
-        if not isinstance(response, StreamingHttpResponse):
+        if not isinstance(response, StreamingResponse):
             async_to_sync(context.request_log.emit_metrics)()
 
 
@@ -86,9 +61,7 @@ class AccessLogMiddleware:
 
     def __init__(
         self,
-        get_response: Callable[
-            [HttpRequest], Awaitable[HttpResponse | StreamingHttpResponse]
-        ],
+        get_response: Callable[[Request], Awaitable[Response]],
     ):
         self.get_response = get_response
         self._background_tasks: set[asyncio.Task[None]] = set()
@@ -103,9 +76,7 @@ class AccessLogMiddleware:
         if exc := task.exception():
             logger.error("Background log write failed", exc_info=exc)
 
-    async def __call__(
-        self, request: HttpRequest
-    ) -> HttpResponse | StreamingHttpResponse:
+    async def __call__(self, request: Request) -> Response:
 
         token = _request_context.set(RequestContext(initialize_access_log(request)))
 
@@ -115,7 +86,7 @@ class AccessLogMiddleware:
         finally:
             _request_context.reset(token)
 
-        if should_skip_logging(ctx_data, request, response):
+        if await should_skip_logging(ctx_data, request, response):
             return response
 
         # Fire-and-forget logging pattern:
@@ -125,30 +96,30 @@ class AccessLogMiddleware:
         return response
 
 
-def should_skip_logging(
+async def should_skip_logging(
     ctx: RequestContext,
-    request: HttpRequest,
-    response: HttpResponse | StreamingHttpResponse,
+    request: Request,
+    response: Response,
 ) -> bool:
     # Don't log internal streaming requests:
-    if "api/streaming" in request.path:
+    if "api/streaming" in request.url.path:
         return True
 
     status_code = response.status_code
     fingerprint = (
         "<streaming>"
-        if isinstance(response, StreamingHttpResponse)
-        else str(response.content[:128])
+        if isinstance(response, StreamingResponse)
+        else str(response.body[:128])
     )
 
     user = ctx.user.username if ctx.user else ctx.access_log.origin_ip
 
     # Debounce if it's the same user/error repeatedly:
-    if status_code >= 400 and should_throttle(user, fingerprint, status_code):
+    if status_code >= 400 and await should_throttle(user, fingerprint, status_code):
         return True
 
     # Internal errors de-dup'd at user/status level:
-    if status_code >= 500 and should_throttle(user, status_code):
+    if status_code >= 500 and await should_throttle(user, status_code):
         return True
 
     return False
