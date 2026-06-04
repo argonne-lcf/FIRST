@@ -117,6 +117,7 @@ LAST_FULL_MARKER = os.path.join(SCRIPT_DIR, "direct_health_monitor_last_full.txt
 # Constants
 # ---------------------------------------------------------------------------
 APPLICATION_URL = os.getenv("STREAMING_SERVER_HOST", "localhost:8000")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 SLOW_THRESHOLD_SECONDS = float(os.getenv("HEALTH_MONITOR_SLOW_THRESHOLD", 5.0))
 QSTAT_TIMEOUT_SECONDS = int(os.getenv("HEALTH_MONITOR_QSTAT_TIMEOUT", 60))
@@ -886,24 +887,21 @@ def update_full_marker() -> None:
 
 
 async def post_to_slack(message: str) -> None:
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if not webhook_url:
+    if not WEBHOOK_URL:
         log.warning("WEBHOOK_URL not set; skipping Slack notification")
         return
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(webhook_url, json={"text": message})
-    except Exception as e:
-        log.error("Error posting to Slack: %s", e)
-        return
-
-    if response.status_code >= 400:
+            _ = await client.post(WEBHOOK_URL, json={"text": message})
+    except httpx.HTTPStatusError as e:
         log.error(
             "Failed to post to Slack: HTTP %s %s",
-            response.status_code,
-            response.text,
+            e.response.status_code,
+            e.response.text,
         )
+    except Exception as e:
+        log.error("Error posting to Slack: %s", e)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
