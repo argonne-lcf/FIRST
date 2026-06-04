@@ -734,34 +734,19 @@ async def check_postgres_health() -> HealthRecord:
         )
 
 
-def check_globus_compute() -> HealthRecord:
+async def check_globus_compute() -> HealthRecord:
     """Check Globus Compute connectivity"""
 
     @sync_to_async
-    def check() -> bool:
+    def check() -> None:
         # Try to create a Globus Compute client
         gcc = globus_utils.get_compute_client_from_globus_app()
 
         # Try to get executor
-        gce = globus_utils.get_compute_executor(client=gcc)
-
-        return gcc and gce
+        _ = globus_utils.get_compute_executor(client=gcc)
 
     try:
-        if await check():
-            return HealthRecord(
-                component="Globus Compute",
-                cluster="vm",
-                status=HealthStatus.HEALTHY,
-                detail="Client and Executor initialized successfully",
-            )
-        else:
-            return HealthRecord(
-                component="Globus Compute",
-                cluster="vm",
-                status=HealthStatus.FAILED,
-                detail="Failed to initialize Client or Executor",
-            )
+        await check()
     except Exception as e:
         return HealthRecord(
             component="Globus Compute",
@@ -769,6 +754,13 @@ def check_globus_compute() -> HealthRecord:
             status=HealthStatus.FAILED,
             detail=f"Initialization failed: {str(e)}",
         )
+
+    return HealthRecord(
+        component="Globus Compute",
+        cluster="vm",
+        status=HealthStatus.HEALTHY,
+        detail="Client and Executor initialized successfully",
+    )
 
 
 def group_records(records: Iterable[HealthRecord]) -> Dict[str, List[HealthRecord]]:
