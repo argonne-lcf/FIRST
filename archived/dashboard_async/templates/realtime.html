@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dashboard</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="https://cdn.datatables.net/2.2.1/css/dataTables.dataTables.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; margin: 0; padding: 20px; background-color: #0b0f17; color: #e6edf3; overflow-x: hidden; }
+    .tabs { display: flex; gap: 12px; margin-bottom: 16px; border-bottom: 1px solid #233042; }
+    .tab { padding: 10px 16px; cursor: pointer; border: 1px solid transparent; border-radius: 8px 8px 0 0; }
+    .tab.active { background: #111826; border-color: #233042; }
+    .section { display: none; }
+    .section.active { display: block; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+    .card { background: #111826; border: 1px solid #233042; border-radius: 12px; padding: 16px; }
+    .chart-fixed { height: 320px !important; max-height: 320px !important; }
+    .chart-fixed-sm { height: 260px !important; max-height: 260px !important; }
+    .title { margin: 0 0 8px 0; font-size: 20px; }
+    .muted { color: #9fb1c3; font-size: 12px; }
+    .kpi { font-size: 28px; font-weight: 600; margin-top: 4px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .table-wrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #233042; text-align: left; }
+    th { color: #9fb1c3; font-weight: 600; }
+    button { background-color: #2563eb; color: white; border: none; padding: 10px 14px; border-radius: 8px; cursor: pointer; }
+    button:hover { background-color: #1d4ed8; }
+    select { background: #0b0f17; color: #e6edf3; border: 1px solid #233042; border-radius: 8px; padding: 8px; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .user-menu { display: flex; gap: 12px; align-items: center; }
+    .user-name { color: #9fb1c3; font-size: 14px; }
+    .logout-btn { background-color: #6b7280; padding: 8px 12px; font-size: 14px; }
+    .logout-btn:hover { background-color: #4b5563; }
+    .cell-scroll { max-width: 480px; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    th.sortable { position: relative; padding-right: 18px; }
+    th.sortable .sort-icon { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); color: #9fb1c3; font-size: 12px; }
+    th.sortable.sorted-asc .sort-icon { color: #e6edf3; }
+    th.sortable.sorted-desc .sort-icon { color: #e6edf3; }
+    .col-prompt { width: 480px; }
+    .col-result { width: 480px; }
+
+    /* Date/Time picker styling for dark theme */
+    input[type="datetime-local"], input[type="date"] {
+      background: #1f2937 !important;
+      color: #e6edf3 !important;
+      border: 1px solid #3b82f6 !important;
+      padding: 8px;
+      border-radius: 8px;
+      color-scheme: dark;
+    }
+    input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+    input[type="date"]::-webkit-calendar-picker-indicator {
+      filter: invert(1);
+      cursor: pointer;
+    }
+    input[type="datetime-local"]:focus,
+    input[type="date"]:focus {
+      outline: none;
+      border-color: #60a5fa !important;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    /* Error display section */
+    #errorDisplay {
+      display: none;
+      background-color: #7f1d1d;
+      border: 1px solid #dc2626;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      color: #fee2e2;
+      position: relative;
+    }
+    #errorDisplay.show {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    #errorDisplay.error { background-color: #7f1d1d; border-color: #dc2626; color: #fee2e2; }
+    #errorDisplay.warning { background-color: #78350f; border-color: #f59e0b; color: #fef3c7; }
+    #errorDisplay.info { background-color: #1e3a8a; border-color: #3b82f6; color: #dbeafe; }
+    #errorDisplay .error-content { flex: 1; }
+    #errorDisplay .error-title { font-weight: 600; margin-bottom: 4px; font-size: 14px; }
+    #errorDisplay .error-message { font-size: 13px; line-height: 1.5; }
+    #errorDisplay .error-close {
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font-size: 20px;
+      padding: 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.8;
+      flex-shrink: 0;
+    }
+    #errorDisplay .error-close:hover { opacity: 1; }
+  </style>
+</head>
+
+<body>
+  <!-- Error Display Section -->
+  <div id="errorDisplay" class="error">
+    <div class="error-content">
+      <div class="error-title">Error</div>
+      <div class="error-message" id="errorMessage"></div>
+    </div>
+    <button class="error-close" onclick="hideError()" title="Dismiss">&times;</button>
+  </div>
+
+  <div class="header">
+    <h1>Inference Dashboard</h1>
+    <div class="user-menu">
+      <span class="user-name" title="{{ user.username }} ({{ user.idp_name }})">{{ user.name }}</span>
+      <a href="{% url 'dashboard_logout' %}"><button class="logout-btn">Logout</button></a>
+    </div>
+  </div>
+
+    <div class="tabs">
+    <div class="tab active" data-tab="overview">Overview</div>
+    <div class="tab" data-tab="model">Model</div>
+    <div class="tab" data-tab="users">Users</div>
+    <div class="tab" data-tab="health">Health</div>
+    <div class="tab" data-tab="logs">Logs</div>
+  </div>
+
+  <div id="overview" class="section active">
+    <div style="margin-bottom:16px; display:flex; gap:12px; align-items:center;">
+      <label for="clusterFilter" style="color:#9fb1c3; font-size:14px; font-weight:600;">Cluster:</label>
+      <select id="clusterFilter" style="padding:8px 12px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3; min-width:120px;">
+        <option value="all" selected>All</option>
+        <option value="sophia">Sophia</option>
+        <option value="metis">Metis</option>
+      </select>
+    </div>
+    <div class="grid">
+      <div class="card"><div class="title">Total Tokens</div><div id="kpiTokens" class="kpi">—</div><div class="muted">Cumulative</div></div>
+      <div class="card"><div class="title">Total Requests</div><div id="kpiRequests" class="kpi">—</div><div class="muted">Processed overall</div></div>
+      <div class="card"><div class="title">Success Rate</div><div id="kpiSuccess" class="kpi">—</div><div class="muted">Successful inference requests (minus auth checks)</div></div>
+      <div class="card"><div class="title">Unique Users</div><div id="kpiUsers" class="kpi">—</div><div class="muted">Authorized users</div></div>
+    <!--   <div class="card"><div class="title">Avg RPS (last min)</div><div id="kpiRps" class="kpi">—</div><div class="muted">Requests per second</div></div> -->
+    </div>
+
+    <div class="row" style="margin-top:16px;">
+      <div class="card" style="flex:1; min-width:300px;">
+        <div class="title">Request Outcomes</div>
+        <canvas id="donut" class="chart-fixed"></canvas>
+      </div>
+      <div class="card" style="flex:1; min-width:300px;">
+        <div class="title">Users per Model</div>
+        <canvas id="usersPerModel" class="chart-fixed"></canvas>
+      </div>
+      <div class="card" style="flex:1; min-width:300px;">
+        <div class="title">Requests per User</div>
+        <canvas id="requestsPerUser" class="chart-fixed"></canvas>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:16px;">
+      <div class="card" style="flex:1; min-width:300px;">
+        <div class="title">Overall Requests</div>
+        <div style="margin-bottom:8px;">
+          <select id="seriesWindow">
+            <option value="1h">Last hour</option>
+            <option value="1d" selected>Last 1 day</option>
+            <option value="1w">Last 1 week</option>
+            <option value="1m">Last 1 month</option>
+            <option value="1y">Last 1 year</option>
+            <option value="3y">Last 3 years</option>
+          </select>
+        </div>
+        <canvas id="overallSeries" class="chart-fixed"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="logs" class="section">
+    <!-- Log Query Builder -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="title">Log Query Builder</div>
+      <div class="muted" style="margin-bottom:12px;">Build custom queries with flexible filters. Results are formatted as JSON.</div>
+
+      <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:12px; margin-bottom:12px;">
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">Rows</label>
+          <input id="qbRows" type="number" value="10" min="1" max="10000" style="width:100%; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+        </div>
+
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">Status Code</label>
+          <div style="display:flex; gap:4px;">
+            <select id="qbStatusOp" style="width:80px; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;">
+              <option value="">--</option>
+              <option value="=">=</option>
+              <option value="!=">!=</option>
+              <option value=">">&gt;</option>
+              <option value="<">&lt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<=">&lt;=</option>
+            </select>
+            <input id="qbStatusVal" type="number" placeholder="e.g. 200" style="flex:1; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+          </div>
+        </div>
+
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">User Name (ILIKE)</label>
+          <input id="qbName" type="text" placeholder="e.g. %aditya%" style="width:100%; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+        </div>
+
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">Prompt (ILIKE)</label>
+          <input id="qbPrompt" type="text" placeholder="e.g. %search term%" style="width:100%; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+        </div>
+
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">API Route (ILIKE)</label>
+          <input id="qbApi" type="text" placeholder="e.g. %/chat/completions%" style="width:100%; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+        </div>
+
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">Cluster</label>
+          <select id="qbCluster" style="width:100%; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;">
+            <option value="">All</option>
+            <option value="sophia">Sophia</option>
+            <option value="metis">Metis</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">From (Timestamp)</label>
+          <input id="qbFrom" type="datetime-local" style="width:100%; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+        </div>
+
+        <div>
+          <label style="display:block; margin-bottom:4px; color:#9fb1c3; font-size:12px;">To (Timestamp)</label>
+          <input id="qbTo" type="datetime-local" style="width:100%; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:12px;">
+        <button id="qbExecute">Execute Query</button>
+        <button id="qbClear" style="background-color:#6b7280;">Clear Filters</button>
+        <button id="qbDownload" style="background-color:#059669;">Download JSON</button>
+        <span id="qbLoading" class="muted" style="display:none;">Loading…</span>
+        <span id="qbCount" class="muted"></span>
+      </div>
+
+      <div id="qbResults" style="display:none; background:#0b0f17; border:1px solid #233042; border-radius:8px; padding:12px; height:400px; overflow:auto; font-family:'Courier New',monospace; font-size:12px; white-space:pre-wrap; word-break:break-word;"></div>
+    </div>
+
+    <!-- Standard Recent Requests Table -->
+    <div class="card">
+      <div class="title">Recent Requests</div>
+      <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center;">
+        <button id="refreshLogs" title="Reload newest logs and reset pagination">Refresh</button>
+        <button id="loadMore" title="Load more logs (next page)">Load more</button>
+        <span id="logsLoading" class="muted" style="display:none;">Loading…</span>
+        <span id="logsCount" class="muted">Showing 0 records</span>
+        <span class="muted" title="Use Refresh to reload from newest. Use Load more to fetch additional pages. Use Filter to search within loaded rows.">ℹ️</span>
+        <label for="logFilter" style="margin-left:auto;">Filter:</label>
+        <input id="logFilter" type="text" placeholder="Search in any column" style="flex:1; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+      </div>
+      <div class="table-wrap">
+        <table id="logsTable">
+          <thead>
+            <tr>
+              <th class="sortable">Time <span class="sort-icon">↕</span></th>
+              <th class="sortable">User <span class="sort-icon">↕</span></th>
+              <th class="sortable">Cluster <span class="sort-icon">↕</span></th>
+              <th class="sortable">Model <span class="sort-icon">↕</span></th>
+              <th class="sortable">Status <span class="sort-icon">↕</span></th>
+              <th class="sortable">Latency (s) <span class="sort-icon">↕</span></th>
+              <th class="sortable col-prompt">Prompt <span class="sort-icon">↕</span></th>
+              <th class="sortable col-result">Result <span class="sort-icon">↕</span></th>
+              <th class="sortable">Error <span class="sort-icon">↕</span></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <div id="users" class="section">
+    <div class="card">
+      <div class="title">Users</div>
+      <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center;">
+        <button id="refreshUsers" title="Reload users summary">Refresh</button>
+        <span id="usersLoading" class="muted" style="display:none;">Loading…</span>
+        <span id="usersCount" class="muted">Showing 0 users</span>
+        <label for="usersFilter" style="margin-left:auto;">Filter:</label>
+        <input id="usersFilter" type="text" placeholder="Search users" style="flex:1; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;"/>
+      </div>
+      <div class="table-wrap">
+        <table id="usersTable">
+          <thead>
+            <tr>
+              <th class="sortable">Name <span class="sort-icon">↕</span></th>
+              <th class="sortable">Username <span class="sort-icon">↕</span></th>
+              <th class="sortable">Last Access <span class="sort-icon">↕</span></th>
+              <th class="sortable">Successful <span class="sort-icon">↕</span></th>
+              <th class="sortable">Failed <span class="sort-icon">↕</span></th>
+              <th class="sortable">Success % <span class="sort-icon">↕</span></th>
+              <th class="sortable">Last Failure <span class="sort-icon">↕</span></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="batch-logs" class="section">
+    <div class="card">
+      <div class="title">Batch Logs</div>
+      <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center;">
+        <button id="refreshBatch">Refresh</button>
+        <button id="loadMoreBatch">Load more</button>
+      </div>
+      <div class="table-wrap">
+        <table id="batchLogsTable">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>User</th>
+              <th>Model</th>
+              <th>Status</th>
+              <th>Latency (s)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <div id="model" class="section">
+    <div class="card">
+      <div class="title">Model Analytics</div>
+      <div class="row" style="gap:8px; align-items:center; margin-bottom:8px;">
+        <label for="modelSelect">Model:</label>
+        <input id="modelSelect" list="modelOptions" placeholder="Type or select model" style="flex:1; padding:8px; border-radius:8px; border:1px solid #233042; background:#0b0f17; color:#e6edf3;" />
+        <datalist id="modelOptions"></datalist>
+        <select id="modelWindow">
+          <option value="1h">Last hour</option>
+          <option value="1d" selected>Last 1 day</option>
+          <option value="1w">Last 1 week</option>
+          <option value="1m">Last 1 month</option>
+          <option value="1y">Last 1 year</option>
+          <option value="3y">Last 3 years</option>
+        </select>
+        <button id="modelRefresh">Refresh</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <div class="card" style="flex:1; min-width:300px;">
+          <div class="title">Requests</div>
+          <canvas id="modelSeries" class="chart-fixed"></canvas>
+        </div>
+      </div>
+      <div class="row" style="margin-top:16px;">
+        <div class="card" style="flex:1; min-width:300px;">
+          <div class="title">Throughput (tokens/s) - Box</div>
+          <canvas id="modelTpBox" class="chart-fixed-sm"></canvas>
+        </div>
+        <div class="card" style="flex:1; min-width:300px;">
+          <div class="title">Latency (s) - Box</div>
+          <canvas id="modelLtBox" class="chart-fixed-sm"></canvas>
+        </div>
+        <div class="card" style="flex:1; min-width:300px;">
+          <div class="title">Batch Throughput (tokens/s)</div>
+          <canvas id="batchTp" class="chart-fixed-sm"></canvas>
+        </div>
+        <div class="card" style="flex:1; min-width:300px;">
+          <div class="title">Batch Latency (s)</div>
+          <canvas id="batchLt" class="chart-fixed-sm"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="health" class="section">
+    <div class="card">
+      <div class="title">Endpoint Health</div>
+      <div class="row" style="gap:8px; align-items:center; margin-bottom:8px;">
+        <label for="healthCluster">Cluster:</label>
+        <select id="healthCluster">
+          <option value="sophia" selected>sophia</option>
+          <option value="metis">metis</option>
+        </select>
+        <button id="healthRefresh">Refresh</button>
+        <span class="muted" id="healthUpdated"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="healthTable">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Status</th>
+              <th>Nodes</th>
+              <th>Host</th>
+              <th>Start</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script>
+    const rtMetricsUrl = '/dashboard/analytics/metrics';
+    const rtLogsUrl = '/dashboard/analytics/logs';
+    const rtUsersPerModelUrl = '/dashboard/analytics/users-per-model';
+    const rtSeriesUrl = '/dashboard/analytics/series';
+    const healthUrl = '/dashboard/analytics/health';
+    const usersTableUrl = '/dashboard/analytics/users-table';
+    const rtBatchLogsUrl = '/dashboard/analytics/batch-logs';
+
+    let donutChart = null;
+    let usersPerModelChart = null;
+    let requestsPerUserChart = null;
+    let overallSeriesChart = null;
+    let modelSeriesChart = null;
+    let modelTpBox = null;
+    let modelLtBox = null;
+    let batchTpChart = null;
+    let batchLtChart = null;
+    // let healthTimer = null;
+    let page = 0;
+    let pageBatch = 0;
+    const pageSize = 500;
+    let usersData = [];
+    let currentCluster = 'all';
+
+    function fmt(num) { return Number(num || 0).toLocaleString(); }
+    function setText(id, val) { document.getElementById(id).textContent = val; }
+
+    // Error display functions
+    function showError(message, type = 'error') {
+      const errorDisplay = document.getElementById('errorDisplay');
+      const errorMessage = document.getElementById('errorMessage');
+      if (!errorDisplay || !errorMessage) return;
+
+      errorMessage.textContent = message;
+      errorDisplay.className = type;
+      errorDisplay.classList.add('show');
+
+      // Auto-dismiss after 30 seconds for non-critical errors
+      if (type !== 'error' || !message.toLowerCase().includes('authentication') && !message.toLowerCase().includes('token')) {
+        setTimeout(() => {
+          if (errorDisplay.classList.contains('show')) {
+            hideError();
+          }
+        }, 30000);
+      }
+    }
+
+    function hideError() {
+      const errorDisplay = document.getElementById('errorDisplay');
+      if (errorDisplay) {
+        errorDisplay.classList.remove('show');
+      }
+    }
+
+    // Track if we've shown an auth error to avoid duplicates
+    let authErrorShown = false;
+
+    // Enhanced fetch wrapper to catch and display errors
+    async function safeFetch(url, options = {}) {
+      try {
+        const response = await fetch(url, options);
+
+        // Handle authentication errors - only show if it's actually an auth issue
+        if (response.status === 401 || response.status === 403) {
+          // Only show auth error once and only if we haven't already shown one
+          if (!authErrorShown) {
+            const contentType = response.headers.get('content-type') || '';
+
+            // For JSON responses, check if it's actually an auth error
+            if (contentType.includes('application/json')) {
+              try {
+                const errorText = await response.text();
+                const errorJson = JSON.parse(errorText);
+                const errorMsg = errorJson.detail || errorJson.message || errorJson.error || '';
+
+                // Only treat as auth error if message indicates authentication/authorization issue
+                const lowerMsg = errorMsg.toLowerCase();
+                if (lowerMsg.includes('authentication') || lowerMsg.includes('authorization') ||
+                    lowerMsg.includes('unauthorized') || lowerMsg.includes('forbidden') ||
+                    lowerMsg.includes('session') || lowerMsg.includes('token') ||
+                    lowerMsg.includes('expired') || lowerMsg.includes('invalid')) {
+                  authErrorShown = true;
+                  showError(errorMsg || 'Your session has expired. Please log in again.', 'error');
+                  // Redirect to login after a short delay
+                  setTimeout(() => {
+                    window.location.href = '/dashboard/login?next=' + encodeURIComponent(window.location.pathname);
+                  }, 2000);
+                  throw new Error(errorMsg || 'Authentication failed');
+                }
+                // If 401/403 but message doesn't indicate auth, don't show auth error
+                // (might be a data issue, just throw generic error)
+                throw new Error(errorMsg || `Request failed with status ${response.status}`);
+              } catch (e) {
+                // If parse fails or not JSON, only show auth error if message suggests it
+                if (!e.message || e.message.toLowerCase().includes('authentication') ||
+                    e.message.toLowerCase().includes('expired') || e.message.toLowerCase().includes('session')) {
+                  authErrorShown = true;
+                  showError('Your session has expired. Please log in again.', 'error');
+                  setTimeout(() => {
+                    window.location.href = '/dashboard/login?next=' + encodeURIComponent(window.location.pathname);
+                  }, 2000);
+                }
+                throw e;
+              }
+            } else {
+              // Non-JSON 401/403 - treat as auth error but only show once
+              authErrorShown = true;
+              showError('Your session has expired. Please log in again.', 'error');
+              setTimeout(() => {
+                window.location.href = '/dashboard/login?next=' + encodeURIComponent(window.location.pathname);
+              }, 2000);
+              throw new Error('Authentication failed');
+            }
+          }
+        }
+
+        // Handle other errors
+        if (!response.ok && response.status >= 400) {
+          const errorText = await response.text();
+          let errorMsg = `Request failed with status ${response.status}`;
+          try {
+            const errorJson = JSON.parse(errorText);
+            if (errorJson.error) errorMsg = errorJson.error;
+            else if (errorJson.detail) errorMsg = errorJson.detail;
+          } catch (e) {
+            if (errorText) errorMsg = errorText.substring(0, 200);
+          }
+          // Only show non-auth errors if status is not 401/403 (already handled above)
+          if (response.status !== 401 && response.status !== 403) {
+            showError(errorMsg, 'error');
+          }
+          throw new Error(errorMsg);
+        }
+
+        return response;
+      } catch (error) {
+        // Network errors or other fetch failures
+        if (error.name === 'TypeError' && error.message.includes('fetch')) {
+          showError('Network error: Unable to connect to the server. Please check your connection.', 'error');
+        } else if (!error.message.includes('expired') && !error.message.includes('session') && !error.message.includes('Authentication failed')) {
+          showError(`Error: ${error.message}`, 'error');
+        }
+        throw error;
+      }
+    }
+
+    function getClusterParam(hasQuery=false) {
+      const cluster = document.getElementById('clusterFilter').value || 'all';
+      currentCluster = cluster;
+      if (cluster === 'all') return '';
+      return hasQuery ? `&cluster=${encodeURIComponent(cluster)}` : `?cluster=${encodeURIComponent(cluster)}`;
+    }
+
+    async function loadMetrics() {
+      const clusterParam = getClusterParam();
+      try {
+        const res = await safeFetch(`${rtMetricsUrl}${clusterParam}`);
+        const data = await res.json();
+        if (data.error) return;
+      const t = data.totals || {};
+      setText('kpiTokens', fmt(t.total_tokens));
+      setText('kpiRequests', fmt(t.total_requests));
+      setText('kpiSuccess', `${(t.success_rate * 100).toFixed(1)}%`);
+      setText('kpiUsers', fmt(t.unique_users));
+    //   setText('kpiRps', (t.avg_rps_last_min || 0).toFixed(3));
+
+      const donutCtx = document.getElementById('donut');
+      const success = t.successful || 0;
+      const fail = t.failed || 0;
+      const authFail = t.auth_failures || 0;
+      if (donutChart) donutChart.destroy();
+      donutChart = new Chart(donutCtx, {
+        type: 'doughnut',
+        data: {
+          labels: ['Successful', 'Failed Inference', 'Failed Auth'],
+          datasets: [{
+            data: [success, fail, authFail],
+            backgroundColor: ['#22c55e', '#ef4444', '#f59e0b']
+          }]
+        },
+        options: { cutout: '60%' }
+      });
+
+      // Users per model
+      const upmClusterParam = getClusterParam();
+      const upmRes = await safeFetch(`${rtUsersPerModelUrl}${upmClusterParam}`);
+      const upm = await upmRes.json();
+      const usersCtx = document.getElementById('usersPerModel');
+      if (usersPerModelChart) usersPerModelChart.destroy();
+      usersPerModelChart = new Chart(usersCtx, {
+        type: 'bar',
+        data: {
+          labels: upm.map(r => r.model),
+          datasets: [{ label: 'Users', data: upm.map(r => r.user_count), backgroundColor: '#3b82f6' }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'logarithmic', beginAtZero: true, grace: '10%' } } }
+      });
+
+      // Requests per user
+      const rpuClusterParam = getClusterParam();
+      const rpuRes = await safeFetch(`/dashboard/analytics/requests-per-user${rpuClusterParam}`);
+      const rpu = await rpuRes.json();
+      const rpuCtx = document.getElementById('requestsPerUser');
+      if (requestsPerUserChart) requestsPerUserChart.destroy();
+      requestsPerUserChart = new Chart(rpuCtx, {
+        type: 'bar',
+        data: {
+          labels: rpu.map(r => r.name || r.username || 'unknown'),
+          datasets: [{ label: 'Requests', data: rpu.map(r => r.total), backgroundColor: '#10b981' }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'logarithmic', beginAtZero: true } } }
+      });
+      // Ensure overall series follows metrics refresh cadence too
+      await loadOverallSeries();
+      } catch (error) {
+        // Error already displayed by safeFetch
+      }
+    }
+    async function loadOverallSeries() {
+      const w = document.getElementById('seriesWindow').value;
+      const clusterParam = getClusterParam(true);
+      try {
+        const res = await safeFetch(`${rtSeriesUrl}?window=${encodeURIComponent(w)}${clusterParam}`);
+        const data = await res.json();
+        const ctx = document.getElementById('overallSeries');
+        if (overallSeriesChart) { overallSeriesChart.destroy(); overallSeriesChart = null; }
+        overallSeriesChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: data.map(p => new Date(p.t).toLocaleString()),
+            datasets: [
+              { label: 'Successful', data: data.map(p => p.ok), borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.2)', fill: true },
+              { label: 'Failed', data: data.map(p => p.fail), borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.2)', fill: true }
+            ]
+          },
+          options: { responsive: true, maintainAspectRatio: false, animation: false, scales: { y: { type: 'logarithmic', beginAtZero: true } } }
+        });
+      } catch (error) {
+        // Error already displayed by safeFetch
+      }
+    }
+
+    async function loadModelLists() {
+      // Reuse per-model from metrics for datalist options
+      const res = await safeFetch(rtMetricsUrl);
+      const data = await res.json();
+      const models = (data.per_model || []).map(m => m.model).filter(Boolean);
+      const dl = document.getElementById('modelOptions');
+      dl.innerHTML = '';
+      models.forEach(m => { const o = document.createElement('option'); o.value = m; dl.appendChild(o); });
+    }
+
+    async function loadModelSeriesAndBoxes() {
+      const model = document.getElementById('modelSelect').value.trim();
+      const w = document.getElementById('modelWindow').value;
+      if (!model) return;
+      // series
+      const sres = await safeFetch(`/dashboard/analytics/model/series?model=${encodeURIComponent(model)}&window=${encodeURIComponent(w)}`);
+      const sdata = await sres.json();
+      const sctx = document.getElementById('modelSeries');
+      if (modelSeriesChart) modelSeriesChart.destroy();
+      modelSeriesChart = new Chart(sctx, {
+        type: 'line',
+        data: {
+          labels: sdata.map(p => new Date(p.t).toLocaleString()),
+          datasets: [
+            { label: 'Successful', data: sdata.map(p => p.ok), borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.2)', fill: true },
+            { label: 'Failed', data: sdata.map(p => p.fail), borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.2)', fill: true }
+          ]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'logarithmic', beginAtZero: true } } }
+      });
+
+      // box data
+      const bres = await safeFetch(`/dashboard/analytics/model/box?model=${encodeURIComponent(model)}&window=${encodeURIComponent(w)}`);
+      const bdata = await bres.json();
+      const tp = bdata.throughput || { mean: 0, p50: 0, p99: 0 };
+      const lt = bdata.latency || { mean: 0, p50: 0, p99: 0 };
+      const tpCtx = document.getElementById('modelTpBox');
+      const ltCtx = document.getElementById('modelLtBox');
+      if (modelTpBox) modelTpBox.destroy();
+      if (modelLtBox) modelLtBox.destroy();
+      function toSummaryDataset(obj, color) {
+        return {
+          labels: ['mean','p50','p99'],
+          datasets: [{ label: '', data: [obj.mean, obj.p50, obj.p99], backgroundColor: color }]
+        };
+      }
+      modelTpBox = new Chart(tpCtx, { type: 'bar', data: toSummaryDataset(tp, '#06b6d4'), options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'logarithmic', beginAtZero: true } } } });
+      modelLtBox = new Chart(ltCtx, { type: 'bar', data: toSummaryDataset(lt, '#a78bfa'), options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'logarithmic', beginAtZero: true } } } });
+
+      // batch summaries for this model
+      const bsumRes = await safeFetch(`/dashboard/analytics/batch/model-summary?model=${encodeURIComponent(model)}`);
+      const bsum = await bsumRes.json();
+      const btp = bsum.throughput || { mean:0,p50:0,p99:0 };
+      const blt = bsum.latency || { mean:0,p50:0,p99:0 };
+      const btpCtx = document.getElementById('batchTp');
+      const bltCtx = document.getElementById('batchLt');
+      if (batchTpChart) batchTpChart.destroy();
+      if (batchLtChart) batchLtChart.destroy();
+      batchTpChart = new Chart(btpCtx, { type: 'bar', data: toSummaryDataset(btp, '#14b8a6'), options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'logarithmic', beginAtZero: true } } } });
+      batchLtChart = new Chart(bltCtx, { type: 'bar', data: toSummaryDataset(blt, '#f59e0b'), options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'logarithmic', beginAtZero: true } } } });
+    }
+
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function appendLogs(rows) {
+      const tbody = document.querySelector('#logsTable tbody');
+      for (const r of rows) {
+        const tr = document.createElement('tr');
+        const promptSafe = escapeHtml(r.prompt_snippet || '');
+        const resultSafe = escapeHtml(r.result_snippet || '');
+        const apiSafe = escapeHtml(r.api_route || '');
+        tr.innerHTML = `
+          <td>${r.timestamp_request ? new Date(r.timestamp_request).toLocaleString() : ''}</td>
+          <td>${r.user_name || r.user_username || '—'}</td>
+          <td>${r.cluster || '—'}</td>
+          <td>${r.model || ''}</td>
+          <td title="${apiSafe}">${r.status_code ?? '—'}</td>
+          <td>${(r.latency_seconds ?? 0).toFixed(3)}</td>
+          <td class="cell-scroll"><div>${promptSafe}</div></td>
+          <td class="cell-scroll"><div>${resultSafe}</div></td>
+          <td class="cell-scroll" title="${escapeHtml(r.error_snippet || '')}"><div>${escapeHtml(r.error_snippet || '')}</div></td>
+        `;
+        tbody.appendChild(tr);
+      }
+      const countEl = document.getElementById('logsCount');
+      if (countEl) countEl.textContent = `Showing ${fmt(tbody.children.length)} records`;
+    }
+
+    async function loadLogs(reset=false) {
+      const loadingEl = document.getElementById('logsLoading');
+      if (loadingEl) loadingEl.style.display = '';
+      try {
+        if (reset) {
+          page = 0;
+          const tbody = document.querySelector('#logsTable tbody');
+          tbody.innerHTML='';
+          const countEl = document.getElementById('logsCount');
+          if (countEl) countEl.textContent = 'Showing 0 records';
+        }
+        const clusterParam = getClusterParam(true);
+        const res = await safeFetch(`${rtLogsUrl}?page=${page}&per_page=${pageSize}${clusterParam}`);
+        const data = await res.json();
+        if (Array.isArray(data)) appendLogs(data);
+      } finally {
+        if (loadingEl) loadingEl.style.display = 'none';
+      }
+    }
+
+    function appendBatchLogs(rows) {
+      const tbody = document.querySelector('#batchLogsTable tbody');
+      for (const r of rows) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.time ? new Date(r.time).toLocaleString() : ''}</td>
+          <td>${r.name || r.username || '—'}</td>
+          <td>${r.model || ''}</td>
+          <td>${r.status || ''}</td>
+          <td>${(r.latency ?? 0).toFixed(3)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function loadBatchLogs(reset=false) {
+      if (reset) { pageBatch = 0; document.querySelector('#batchLogsTable tbody').innerHTML=''; }
+      const res = await safeFetch(`${rtBatchLogsUrl}?page=${pageBatch}&per_page=${pageSize}`);
+      const data = await res.json();
+      if (Array.isArray(data)) appendBatchLogs(data);
+    }
+
+    function appendUsers(rows) {
+      const tbody = document.querySelector('#usersTable tbody');
+      tbody.innerHTML = '';
+      for (const u of rows) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${u.name || ''}</td>
+          <td>${u.username || ''}</td>
+          <td>${u.last_access ? new Date(u.last_access).toLocaleString() : ''}</td>
+          <td>${fmt(u.successful)}</td>
+          <td>${fmt(u.failed)}</td>
+          <td>${(u.success_rate * 100).toFixed(1)}%</td>
+          <td>${u.last_failure ? new Date(u.last_failure).toLocaleString() : ''}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+      const countEl = document.getElementById('usersCount');
+      if (countEl) countEl.textContent = `Showing ${fmt(rows.length)} users`;
+    }
+
+    async function loadUsers() {
+      const loadingEl = document.getElementById('usersLoading');
+      if (loadingEl) loadingEl.style.display = '';
+      try {
+      const clusterParam = getClusterParam();
+      const res = await safeFetch(`${usersTableUrl}${clusterParam}`);
+      const data = await res.json();
+        if (Array.isArray(data)) {
+          usersData = data;
+          appendUsers(usersData);
+        }
+      } finally {
+        if (loadingEl) loadingEl.style.display = 'none';
+      }
+    }
+
+    // Tabs
+    document.querySelectorAll('.tab').forEach(el => {
+      el.addEventListener('click', async () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+        el.classList.add('active');
+        document.getElementById(el.dataset.tab).classList.add('active');
+        if (el.dataset.tab === 'overview') { await loadMetrics(); await loadOverallSeries(); }
+        if (el.dataset.tab === 'health') { await refreshHealth(); }
+        if (el.dataset.tab === 'users') { await loadUsers(); }
+      });
+    });
+
+    // Controls
+    document.getElementById('seriesWindow').addEventListener('change', async () => { await loadOverallSeries(); });
+    document.getElementById('modelRefresh').addEventListener('click', async () => { await loadModelSeriesAndBoxes(); });
+    document.getElementById('modelWindow').addEventListener('change', loadModelSeriesAndBoxes);
+    document.getElementById('healthRefresh').addEventListener('click', async () => { await refreshHealth(); });
+    document.getElementById('refreshUsers').addEventListener('click', async () => { await loadUsers(); });
+
+    // Cluster filter change handler - refresh all overview metrics, users, and logs
+    document.getElementById('clusterFilter').addEventListener('change', async () => {
+      await loadMetrics();
+      await loadOverallSeries();
+      // Refresh users if on users tab, logs if on logs tab
+      const activeTab = document.querySelector('.tab.active')?.dataset.tab;
+      if (activeTab === 'users') {
+        await loadUsers();
+      } else if (activeTab === 'logs') {
+        await loadLogs(true); // Reset pagination when cluster changes
+      }
+    });
+
+    // Users filter
+    document.getElementById('usersFilter').addEventListener('input', function() {
+      const term = this.value.toLowerCase();
+      const rows = document.querySelectorAll('#usersTable tbody tr');
+      rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(term) ? '' : 'none';
+      });
+    });
+
+    // Users sorting
+    document.querySelectorAll('#usersTable thead th').forEach((th, idx) => {
+      th.style.cursor = 'pointer';
+      let asc = true;
+      th.addEventListener('click', () => {
+        document.querySelectorAll('#usersTable thead th').forEach(h => h.classList.remove('sorted-asc','sorted-desc'));
+        const rows = Array.from(document.querySelectorAll('#usersTable tbody tr'));
+        rows.sort((a, b) => {
+          const ta = a.children[idx].textContent.trim();
+          const tb = b.children[idx].textContent.trim();
+          // Date parsing for Last Access (2) and Last Failure (6)
+          if (idx === 2 || idx === 6) {
+            const da = ta ? new Date(ta).getTime() : 0;
+            const db = tb ? new Date(tb).getTime() : 0;
+            return asc ? (da - db) : (db - da);
+          }
+          const na = parseFloat(ta.replace('%',''));
+          const nb = parseFloat(tb.replace('%',''));
+          if (!isNaN(na) && !isNaN(nb)) return asc ? na - nb : nb - na;
+          return asc ? ta.localeCompare(tb) : tb.localeCompare(ta);
+        });
+        const tbody = document.querySelector('#usersTable tbody');
+        tbody.innerHTML = '';
+        rows.forEach(r => tbody.appendChild(r));
+        th.classList.add(asc ? 'sorted-asc' : 'sorted-desc');
+        asc = !asc;
+      });
+    });
+    document.getElementById('loadMore').addEventListener('click', async () => { page += 1; await loadLogs(false); });
+    document.getElementById('refreshLogs').addEventListener('click', async () => { await loadLogs(true); });
+    document.getElementById('loadMoreBatch').addEventListener('click', async () => { pageBatch += 1; await loadBatchLogs(false); });
+    document.getElementById('refreshBatch').addEventListener('click', async () => { await loadBatchLogs(true); });
+
+    // Filtering & sorting: simple client-side
+    document.getElementById('logFilter').addEventListener('input', function() {
+      const term = this.value.toLowerCase();
+      const rows = document.querySelectorAll('#logsTable tbody tr');
+      rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(term) ? '' : 'none';
+      });
+    });
+
+    // Lightweight column sorting
+    document.querySelectorAll('#logsTable thead th').forEach((th, idx) => {
+      th.style.cursor = 'pointer';
+      let asc = true;
+      th.addEventListener('click', () => {
+        document.querySelectorAll('#logsTable thead th').forEach(h => h.classList.remove('sorted-asc','sorted-desc'));
+        const rows = Array.from(document.querySelectorAll('#logsTable tbody tr'));
+        rows.sort((a, b) => {
+          const ta = a.children[idx].textContent.trim();
+          const tb = b.children[idx].textContent.trim();
+          // Try date parsing for Time column (idx 0)
+          if (idx === 0) {
+            const da = new Date(ta).getTime();
+            const db = new Date(tb).getTime();
+            return asc ? (da - db) : (db - da);
+          }
+          const na = parseFloat(ta);
+          const nb = parseFloat(tb);
+          if (!isNaN(na) && !isNaN(nb)) return asc ? na - nb : nb - na;
+          return asc ? ta.localeCompare(tb) : tb.localeCompare(ta);
+        });
+        const tbody = document.querySelector('#logsTable tbody');
+        tbody.innerHTML = '';
+        rows.forEach(r => tbody.appendChild(r));
+        th.classList.add(asc ? 'sorted-asc' : 'sorted-desc');
+        asc = !asc;
+      });
+    });
+
+    // Query Builder
+    let qbResultData = null;
+
+    async function executeQueryBuilder() {
+      const loadingEl = document.getElementById('qbLoading');
+      const resultsEl = document.getElementById('qbResults');
+      const countEl = document.getElementById('qbCount');
+
+      loadingEl.style.display = '';
+      countEl.textContent = '';
+
+      try {
+        // Build query params
+        const params = new URLSearchParams();
+
+        const rows = document.getElementById('qbRows').value;
+        if (rows) params.append('rows', rows);
+
+        const statusOp = document.getElementById('qbStatusOp').value;
+        const statusVal = document.getElementById('qbStatusVal').value;
+        if (statusOp && statusVal) {
+          params.append('status_op', statusOp);
+          params.append('status_val', statusVal);
+        }
+
+        const name = document.getElementById('qbName').value;
+        if (name) params.append('name', name);
+
+        const prompt = document.getElementById('qbPrompt').value;
+        if (prompt) params.append('prompt', prompt);
+
+        const api = document.getElementById('qbApi').value;
+        if (api) params.append('api', api);
+
+        const cluster = document.getElementById('qbCluster').value;
+        if (cluster) params.append('cluster', cluster);
+
+        const fromTs = document.getElementById('qbFrom').value;
+        if (fromTs) params.append('from_ts', new Date(fromTs).toISOString());
+
+        const toTs = document.getElementById('qbTo').value;
+        if (toTs) params.append('to_ts', new Date(toTs).toISOString());
+
+        // Execute query
+        const res = await safeFetch(`/dashboard/analytics/query-logs?${params.toString()}`);
+        const data = await res.json();
+
+        if (data.error) {
+          resultsEl.textContent = `Error: ${data.error}`;
+          resultsEl.style.display = 'block';
+          resultsEl.style.color = '#ef4444';
+          qbResultData = null;
+        } else {
+          qbResultData = data.results;
+          resultsEl.textContent = JSON.stringify(data.results, null, 2);
+          resultsEl.style.display = 'block';
+          resultsEl.style.color = '#e6edf3';
+          countEl.textContent = `${data.count} result${data.count !== 1 ? 's' : ''}`;
+        }
+      } catch (error) {
+        resultsEl.textContent = `Error: ${error.message}`;
+        resultsEl.style.display = 'block';
+        resultsEl.style.color = '#ef4444';
+        qbResultData = null;
+      } finally {
+        loadingEl.style.display = 'none';
+      }
+    }
+
+    function clearQueryBuilder() {
+      document.getElementById('qbRows').value = '10';
+      document.getElementById('qbStatusOp').value = '';
+      document.getElementById('qbStatusVal').value = '';
+      document.getElementById('qbName').value = '';
+      document.getElementById('qbPrompt').value = '';
+      document.getElementById('qbApi').value = '';
+      document.getElementById('qbCluster').value = '';
+      document.getElementById('qbFrom').value = '';
+      document.getElementById('qbTo').value = '';
+      document.getElementById('qbResults').style.display = 'none';
+      document.getElementById('qbCount').textContent = '';
+      qbResultData = null;
+    }
+
+    function downloadQueryResults() {
+      if (!qbResultData) {
+        alert('No query results to download. Please execute a query first.');
+        return;
+      }
+
+      const jsonStr = JSON.stringify(qbResultData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `log-query-${new Date().toISOString()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // Query Builder event listeners
+    document.getElementById('qbExecute').addEventListener('click', executeQueryBuilder);
+    document.getElementById('qbClear').addEventListener('click', clearQueryBuilder);
+    document.getElementById('qbDownload').addEventListener('click', downloadQueryResults);
+
+    // Check for Django messages on page load
+    // Filter out auth-related messages to avoid false warnings when user is authenticated
+    {% if messages %}
+      {% for message in messages %}
+        {
+          const msgText = '{{ message|escapejs }}';
+          const msgLower = msgText.toLowerCase();
+          // Only show message if it's not auth-related (to avoid false positives)
+          if (msgLower.indexOf('authentication') === -1 &&
+              msgLower.indexOf('session') === -1 &&
+              msgLower.indexOf('expired') === -1 &&
+              msgLower.indexOf('unauthorized') === -1) {
+            showError(msgText, '{% if message.tags == "error" %}error{% elif message.tags == "warning" %}warning{% else %}info{% endif %}');
+          }
+        }
+      {% endfor %}
+    {% endif %}
+
+    // Initial
+    (async function init(){
+      await loadMetrics();
+      await loadOverallSeries();
+      await loadModelLists();
+      await loadLogs(true);
+      await loadBatchLogs(true);
+      //setInterval(loadMetrics, 10000);
+      await refreshHealth();
+    //   if (healthTimer) clearInterval(healthTimer);
+    //   healthTimer = setInterval(refreshHealth, 120000); // 60 minutes
+    })();
+
+    async function refreshHealth() {
+      const cluster = document.getElementById('healthCluster').value;
+      try {
+        const res = await safeFetch(`${healthUrl}?cluster=${encodeURIComponent(cluster)}`);
+        const data = await res.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        const table = document.querySelector('#healthTable tbody');
+        table.innerHTML = '';
+        function addRow(model, status, nodes, host, start) {
+          const color = status === 'running' ? '#22c55e' : (status === 'queued' ? '#f59e0b' : '#ef4444');
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${model}</td><td style="color:${color}">${status}</td><td>${nodes||''}</td><td>${host||''}</td><td>${start||''}</td>`;
+          table.appendChild(tr);
+        }
+        items.forEach(it => addRow(it.model, it.status, it.nodes_reserved, it.host_name, it.start_info));
+        document.getElementById('healthUpdated').textContent = `Updated ${new Date().toLocaleString()}`;
+      } catch (e) {
+        console.error('Health refresh error', e);
+      }
+    }
+  </script>
+</body>
+</html>
+

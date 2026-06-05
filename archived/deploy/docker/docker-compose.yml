@@ -1,0 +1,64 @@
+services:
+  nginx:
+    image: nginx:latest
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - inference-gateway
+    networks:
+      - gateway
+
+  inference-gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file:
+      - .env
+      - .env.first
+      - .env.secret
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - gateway
+
+  controller-manager:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file:
+      - .env
+      - .env.first
+      - .env.secret
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - gateway
+    entrypoint: uv run python -u
+
+  postgres:
+    image: postgres:18
+    container_name: postgres
+    env_file:
+      - .env
+      - .env.first
+      - .env.secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - gateway
+
+  redis:
+    image: redis:7
+    networks:
+      - gateway
+
+volumes:
+  postgres_data:
+
+networks:
+  gateway:
+    driver: bridge

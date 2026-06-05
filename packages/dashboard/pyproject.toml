@@ -1,0 +1,15 @@
+[project]
+name = "first-dashboard"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+dependencies = [
+    "first-common",
+]
+
+[tool.uv.sources]
+first-common = { workspace = true }
+
+[build-system]
+requires = ["uv_build<0.12"]
+build-backend = "uv_build"

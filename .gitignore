@@ -1,6 +1,7 @@
 __pycache__/
 .DS_Store
 .env
+.env.secret
 update_batch_status_error.log
 update_batch_status_output.log
 create_pg_backup_log.log
@@ -13,7 +14,7 @@ email.out
 .vscode/
 .editorconfig
 
-#  Django 
+#  Django
 info.log
 db.sqlite3
 media/

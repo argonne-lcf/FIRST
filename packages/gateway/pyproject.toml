@@ -1,0 +1,37 @@
+[project]
+name = "first-gateway"
+version = "0.2.0"
+description = ""
+authors = [{ name = "Benoit Cote", email = "bcote@anl.gov" }, { name = "Misha Salim", email = "msalim@anl.gov"}, {name = "Ethan Wong", email="ewong@anl.gov"}]
+requires-python = ">=3.12"
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+
+# Directly imported dependencies for production:
+dependencies = [
+    "first-common",
+    "globus-compute-sdk",
+    "globus-sdk",
+    "fastapi",
+    "gunicorn",
+    "httpx",
+    "psycopg",
+    "pydantic",
+    "pydantic-settings",
+    "redis",
+    "python-json-logger",
+    "uvicorn[standard]",
+    "pyzstd",
+    "SQLAlchemy[asyncio]",
+]
+
+
+[tool.uv.sources]
+first-common = { workspace = true }
+
+[build-system]
+requires = ["uv_build<0.12"]
+build-backend = "uv_build"

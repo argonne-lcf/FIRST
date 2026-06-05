@@ -1,0 +1,111 @@
+kind: AccessGroup
+name: public
+spec:
+  allowed_groups: []
+  allowed_domains: []
+
+---
+
+kind: Cluster
+name: sophia
+spec:
+  status_method: first.platforms.health.get_alcf_cluster_status
+  status_kwargs:
+    status_url: "https://api.alcf.anl.gov/api/v1/status/resources/9674c7e1-aecc-4dbb-bf01-c9197e027cd6"
+    timeout: 10
+  maintenance_notice: "Sophia is under maintenance and will return at ..."
+  pilot_system:
+    scheduler_interface: first.platforms.scheduler.GlobusComputePBSWrapper
+    scheduler_config:
+      endpoint_uuid: abcdef1234
+    pilot_env_path: /eagle/inference-service/venvs/pilot/
+    pilot_config_path: /eagle/inference-service/pilot-config-v1/
+    job_walltime: 2592000
+    queue: infer-svc
+    account: inference_svc
+    scheduler_flags: "home:eagle"
+
+---
+
+kind: Cluster
+name: metis
+spec:
+  status_method: first.platforms.health.get_metis_cluster_status
+  status_kwargs:
+    status_url:  "https://metis.alcf.anl.gov/status"
+    timeout:  4.0
+
+---
+
+kind: Model
+name: openai/gpt-oss-120b
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - chat/completions
+    - completions
+    - responses
+    - messages
+
+---
+
+kind: PilotDeployment
+name: sophia/vllm/gpt-oss-120b/v1
+spec:
+  model_name: openai/gpt-oss-120b
+  cluster_name: sophia
+  router_params:
+    weight: 1
+    max_parallel_requests: 100
+  min_replicas: 1
+  max_replicas: 3
+  scaling_strategy:
+    strategy: LoadThresholdStrategy
+    scale_up_interval: 120
+    min_scale_down_age: 7200
+    thresholds:
+      - [ 0.0, 1]
+      - [10.0, 2]
+      - [20.0, 3]
+  health_check_method: "first.pilot.health.check_health_endpoint"
+  health_check_kwargs:
+    timeout: 10
+    health_path: "/health"
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval: 30
+  launch_spec:
+    served_model_name: openai/gpt-oss-120b
+    num_nodes: 1
+    num_gpus: 8
+    venv_path: /eagle/inference-service/venvs/vllm-0.19.3/
+    weights_path: /eagle/inference-service/weights/gpt-oss-120b-full/
+    weights_cache_path: /raid/scratch/weights-cache/gpt-oss-120b-full/
+    env:
+      FOO: "bar"
+      TEST_123: "45678"
+    serve_script_template: |
+      echo "preparing..."
+      mkdir -p /raid/scratch/stuff
+      vllm serve {{weights_path}} --flag1 hardcoded --flag2 {{templated_value}}
+    log_dir: /eagle/inference-service/logs/
+    max_startup_time: 900
+
+---
+
+kind: StaticDeployment
+name: metis/api/v1/gpt-oss-120b
+spec:
+  model_name: openai/gpt-oss-120b
+  cluster_name: sophia
+  upstream_model_name: oai-gpt-oss-120b
+  api_url: https://metis.alcf.anl.gov/api/v1/
+  api_key: env_var://METIS_API_KEY
+  router_params:
+    weight: 1
+    max_parallel_requests: 20
+    rpm: 5000
+  prometheus_metrics_path: null
+  health_check_method: "first.pilot.health.check_health_endpoint"
+  health_check_kwargs:
+    timeout: 10
+    health_path: "/health"
