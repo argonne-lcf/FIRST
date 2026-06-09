@@ -1,0 +1,42 @@
+# Use display name to list the AI models served
+display_name: {{ display_name }}
+
+amqp_port: 443
+engine:
+  type: GlobusComputeEngine
+  max_retries_on_system_failure: {{ max_retries_on_system_failure | default(2)}}
+  max_workers_per_node: {{ max_workers_per_node | default(100) }}
+  job_status_kwargs:
+    max_idletime: {{ max_idletime | default(7200) }}
+  address:
+    type: address_by_interface
+    ifname: {{ ifname | default("bond0.2210") }}
+  provider:
+    type: PBSProProvider
+    launcher:
+      type: SimpleLauncher
+    account: {{ account | default("inference_service") }}
+    select_options: {{ select_options | default("ngpus=8") }}
+    scheduler_options: '#PBS -l filesystems=home:eagle'
+    queue: {{ queue | default("infer-svc") }}
+    init_blocks: {{ init_blocks | default(0) }}
+    max_blocks: {{ max_blocks | default(1) }}
+    min_blocks: {{ min_blocks | default(0) }}
+    nodes_per_block: {{ nodes_per_block | default(1) }}
+    walltime: {{ walltime | default("24:00:00") }}
+    worker_init: {{ worker_init | default() }}
+
+# Function id hardcoded here
+#allowed_functions:
+#  - .....
+
+# Endpoints will be restarted when a user submits new tasks to the
+# web-services, so eagerly shut down if endpoint is idle.  At 30s/hb (default
+# value), 10 heartbeats is 300s.
+idle_heartbeats_soft: {{ idle_heartbeats_soft | default(10) }}
+
+# If endpoint is *apparently* idle (e.g., outstanding tasks, but no movement)
+# for this many heartbeats, then shutdown anyway.  At 30s/hb (default value),
+# 5,760 heartbeats == "48 hours".  (Note that this value will be ignored if
+# idle_heartbeats_soft is 0 or not set.)
+idle_heartbeats_hard: 0

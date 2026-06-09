@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "display_name": { "type": "string" },
+    "max_retries_on_system_failure": { "type": "integer" },
+    "max_workers_per_node": { "type": "integer" },
+    "max_idletime": { "type": "integer" },
+    "ifname": { "type": "string" },
+    "account": { "type": "string" },
+    "select_options": { "type": "string" },
+    "queue": { "type": "string" },
+    "init_blocks": { "type": "integer" },
+    "max_blocks": { "type": "integer" },
+    "min_blocks": { "type": "integer" },
+    "nodes_per_block": { "type": "integer" },
+    "walltime": { "type": "string" },
+    "worker_init": { "type": "string" },
+    "idle_heartbeats_soft": { "type": "integer" } 
+  },
+  "additionalProperties": false
+}
