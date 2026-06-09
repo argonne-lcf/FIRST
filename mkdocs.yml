@@ -1,10 +1,10 @@
 site_name: FIRST Documentation
 site_description: Federated Inference Resource Scheduling Toolkit - Documentation for deploying and using LLM inference as a service
 site_author: Argonne National Laboratory
-site_url: https://auroragpt-anl.github.io/inference-gateway/
+site_url: https://argonne-lcf.github.io/FIRST/
 
-repo_name: auroraGPT-ANL/inference-gateway
-repo_url: https://github.com/auroraGPT-ANL/inference-gateway
+repo_name: argonne-lcf/FIRST
+repo_url: https://github.com/argonne-lcf/FIRST
 edit_uri: edit/main/docs/
 
 theme:
@@ -99,7 +99,7 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/auroraGPT-ANL/inference-gateway
+      link: https://github.com/argonne-lcf/FIRST
     - icon: fontawesome/solid/book
       link: https://doi.org/10.1145/3731599.3767346
 

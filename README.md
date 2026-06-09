@@ -1,5 +1,5 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-![Build](https://github.com/auroraGPT-ANL/inference-gateway/workflows/Django/badge.svg)
+![Build](https://github.com/argonne-lcf/FIRST/workflows/Django/badge.svg)
 
 # FIRST
 
@@ -17,16 +17,16 @@ The Inference Gateway consists of several components:
 
 ## Documentation
 
-📚 **Complete documentation is available at: [https://auroragpt-anl.github.io/inference-gateway/](https://auroragpt-anl.github.io/inference-gateway/)**
+📚 **Complete documentation is available at: [https://argonne-lcf.github.io/FIRST/](https://argonne-lcf.github.io/FIRST/)**
 
 ### Quick Links
 
-- **[Administrator Guide](https://auroragpt-anl.github.io/inference-gateway/admin-guide/)** - Setup and deployment instructions
-  - [Docker Deployment](https://auroragpt-anl.github.io/inference-gateway/admin-guide/gateway-setup/docker/)
-  - [Bare Metal Setup](https://auroragpt-anl.github.io/inference-gateway/admin-guide/gateway-setup/bare-metal/)
-  - [Inference Backend Setup](https://auroragpt-anl.github.io/inference-gateway/admin-guide/inference-setup/)
+- **[Administrator Guide](https://argonne-lcf.github.io/FIRST/admin-guide/)** - Setup and deployment instructions
+  - [Docker Deployment](https://argonne-lcf.github.io/FIRST/admin-guide/gateway-setup/docker/)
+  - [Bare Metal Setup](https://argonne-lcf.github.io/FIRST/admin-guide/gateway-setup/bare-metal/)
+  - [Inference Backend Setup](https://argonne-lcf.github.io/FIRST/admin-guide/inference-setup/)
   
-- **[User Guide](https://auroragpt-anl.github.io/inference-gateway/user-guide/)** - How to use the inference API
+- **[User Guide](https://argonne-lcf.github.io/FIRST/user-guide/)** - How to use the inference API
 
 - **[Example Deployment](https://github.com/argonne-lcf/inference-endpoints)** - ALCF production deployment
 

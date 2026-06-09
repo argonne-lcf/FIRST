@@ -324,7 +324,7 @@ squeue -j <job-id>  # Slurm
 
 For ALCF-specific issues, contact ALCF Support.
 
-For FIRST Gateway issues, open an issue on [GitHub](https://github.com/auroraGPT-ANL/inference-gateway/issues).
+For FIRST Gateway issues, open an issue on [GitHub](https://github.com/argonne-lcf/FIRST/issues).
 
 For Globus Compute issues, see [Globus Compute Documentation](https://globus-compute.readthedocs.io/).
 

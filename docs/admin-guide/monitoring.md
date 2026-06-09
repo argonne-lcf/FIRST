@@ -313,7 +313,7 @@ When issues occur, work through this checklist:
 If you're still stuck:
 
 1. **Check documentation**: Review the relevant setup guides
-2. **Search issues**: Look for similar issues on [GitHub](https://github.com/auroraGPT-ANL/inference-gateway/issues)
+2. **Search issues**: Look for similar issues on [GitHub](https://github.com/argonne-lcf/FIRST/issues)
 3. **Enable debug logging**: Set `DEBUG=True` temporarily
 4. **Collect information**:
    - Version information

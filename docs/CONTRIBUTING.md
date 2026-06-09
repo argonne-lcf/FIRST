@@ -148,7 +148,7 @@ Documentation automatically deploys to GitHub Pages when you push to `main`:
    git push origin main
    ```
 3. GitHub Actions builds and deploys automatically
-4. View at: https://auroragpt-anl.github.io/inference-gateway/
+4. View at: https://argonne-lcf.github.io/FIRST/
 
 ### Manual Deployment
 

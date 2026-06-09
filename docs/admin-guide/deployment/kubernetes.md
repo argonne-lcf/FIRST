@@ -38,9 +38,9 @@ For now, please use one of these deployment methods:
 
 To be notified when Kubernetes support is available:
 
-- :star: Star the [GitHub repository](https://github.com/auroraGPT-ANL/inference-gateway)
+- :star: Star the [GitHub repository](https://github.com/argonne-lcf/FIRST)
 - Watch the repository for releases
-- Check the [releases page](https://github.com/auroraGPT-ANL/inference-gateway/releases)
+- Check the [releases page](https://github.com/argonne-lcf/FIRST/releases)
 
 ## Contribute
 

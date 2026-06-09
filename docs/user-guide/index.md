@@ -341,7 +341,7 @@ The Gateway returns standard HTTP status codes:
 ## Support
 
 For issues, questions, or feature requests:
-- Check the [GitHub repository](https://github.com/auroraGPT-ANL/inference-gateway)
+- Check the [GitHub repository](https://github.com/argonne-lcf/FIRST)
 - Contact your Gateway administrator
 - Review the [Administrator Setup Guide](../admin-guide/index.md) for deployment issues
 

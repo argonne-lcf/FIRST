@@ -10,7 +10,7 @@ Restrict access to:
  - specific identity providers (`AUTHORIZED_IDP_DOMAINS` and Globus High-Assurance policy)
  - specific groups (`GLOBUS_GROUPS` and `AUTHORIZED_GROUPS_PER_IDP`)
 
-See [example environment file](https://github.com/auroraGPT-ANL/inference-gateway/blob/main/env.example) and [Globus Setup](../gateway-setup/globus-setup.md) for more details.
+See [example environment file](https://github.com/argonne-lcf/FIRST/blob/main/env.example) and [Globus Setup](../gateway-setup/globus-setup.md) for more details.
 
 ### Secrets Management
 

@@ -35,5 +35,5 @@ For more information about FIRST and related work:
 
 - [Research Paper](https://doi.org/10.1145/3731599.3767346)
 - [ALCF Inference Endpoints](https://github.com/argonne-lcf/inference-endpoints)
-- [GitHub Repository](https://github.com/auroraGPT-ANL/inference-gateway)
+- [GitHub Repository](https://github.com/argonne-lcf/FIRST)
 

@@ -48,13 +48,13 @@ For a production example, see the [ALCF Inference Endpoints](https://github.com/
 
 ## Getting Help
 
-- **GitHub**: [Report issues or contribute](https://github.com/auroraGPT-ANL/inference-gateway)
+- **GitHub**: [Report issues or contribute](https://github.com/argonne-lcf/FIRST)
 - **Citation**: [Research Paper](reference/citation.md)
 - **API Reference**: [Complete API documentation](reference/api.md)
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the [LICENSE](https://github.com/auroraGPT-ANL/inference-gateway/blob/main/LICENSE) file for details.
+This project is licensed under the Apache License 2.0. See the [LICENSE](https://github.com/argonne-lcf/FIRST/blob/main/LICENSE) file for details.
 
 ---
 

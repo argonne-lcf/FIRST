@@ -12,13 +12,13 @@ This guide shows you how to deploy the FIRST Inference Gateway using Docker and 
 ## Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/auroraGPT-ANL/inference-gateway.git
+git clone https://github.com/argonne-lcf/FIRST.git
 cd inference-gateway
 ```
 
 ## Step 2: Configure Environment
 
-Create a `.env` file from the [example environment file](https://github.com/auroraGPT-ANL/inference-gateway/blob/main/env.example) and customize the `.env` file following the instructions found in the example file:
+Create a `.env` file from the [example environment file](https://github.com/argonne-lcf/FIRST/blob/main/env.example) and customize the `.env` file following the instructions found in the example file:
 ```bash
 cp env.example .env
 ```

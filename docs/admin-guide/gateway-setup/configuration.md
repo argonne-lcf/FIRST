@@ -4,7 +4,7 @@ This page documents all environment variables and configuration options for the 
 
 ## Environment Variables
 
-All configuration is done through environment variables, typically stored in a `.env` file. See [example environment file](https://github.com/auroraGPT-ANL/inference-gateway/blob/main/env.example) to get started and see definition examples of all variables.
+All configuration is done through environment variables, typically stored in a `.env` file. See [example environment file](https://github.com/argonne-lcf/FIRST/blob/main/env.example) to get started and see definition examples of all variables.
 
 ### Core Django Settings
 

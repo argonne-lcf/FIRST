@@ -43,7 +43,7 @@ uv --version
 ## Step 3: Clone and Setup Project
 
 ```bash
-git clone https://github.com/auroraGPT-ANL/inference-gateway.git
+git clone https://github.com/argonne-lcf/FIRST.git
 cd inference-gateway
 
 # Install dependencies
@@ -122,7 +122,7 @@ redis-cli ping
 
 ## Step 6: Configure Environment
 
-Create a `.env` file from the [example environment file](https://github.com/auroraGPT-ANL/inference-gateway/blob/main/env.example) and customize the `.env` file following the instructions found in the example file:
+Create a `.env` file from the [example environment file](https://github.com/argonne-lcf/FIRST/blob/main/env.example) and customize the `.env` file following the instructions found in the example file:
 ```bash
 cp env.example .env
 ```
