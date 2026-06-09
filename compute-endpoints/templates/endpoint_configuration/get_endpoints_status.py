@@ -1,4 +1,5 @@
 import os
+
 import yaml
 from dotenv import load_dotenv
 from globus_compute_sdk import Client
@@ -18,7 +19,6 @@ response = gcc._compute_web_client.v3.get(
 
 # For each user endpoint ...
 for endpoint in response.data.get("user_endpoints", []):
-
     # Extract model(s) served
     models = "model names not defined"
     if "config" in endpoint and endpoint["config"] is not None:
