@@ -26,6 +26,7 @@ dependencies = [
     "httpx",
     "psycopg-pool>=3.2.7,<4",
     "psycopg>=3.2.12,<4",
+    "pyjwt>=2.12.0",
     "pydantic>=2.12",
     "pydantic-settings",
     "python-dotenv<2",
