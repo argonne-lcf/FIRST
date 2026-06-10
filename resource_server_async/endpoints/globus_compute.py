@@ -6,10 +6,12 @@ import uuid
 from typing import Any, AsyncGenerator, Optional, cast, override
 
 from django.http import StreamingHttpResponse
+from django.utils import timezone
 from globus_compute_sdk import Client, Executor
 from globus_compute_sdk.errors import TaskPending as GlobusTaskPending
 from pydantic import BaseModel
 
+from inference_gateway.settings import GLOBUS_BATCH_TIMEOUT_IN_DAYS
 from resource_server_async import globus_utils
 from resource_server_async.cache import (
     cache_item,
@@ -555,6 +557,13 @@ class GlobusComputeEndpoint(BaseEndpoint):
 
         if not batch.task_ids:
             raise BatchNotFound("Cannot get batch status with missing task_ids")
+        
+        days_passed = (timezone.now() - batch.in_progress_at).days
+        if days_passed >= GLOBUS_BATCH_TIMEOUT_IN_DAYS:
+            return BatchStatusResult(
+                    status=BatchStatus.failed,
+                    result=f"Timeout after {GLOBUS_BATCH_TIMEOUT_IN_DAYS} days."
+                )
 
         task_statuses = globus_utils.get_batch_status(batch.task_ids)
 
