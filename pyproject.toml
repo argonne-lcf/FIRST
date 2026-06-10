@@ -29,7 +29,7 @@ dependencies = [
     "pyjwt>=2.12.0",
     "pydantic>=2.12",
     "pydantic-settings",
-    "python-dotenv<2",
+    "python-dotenv>=1.2.2,<2",
     "redis<7",
     "requests<3",
     "python-json-logger>=2.0",
