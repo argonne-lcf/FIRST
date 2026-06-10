@@ -558,12 +558,13 @@ class GlobusComputeEndpoint(BaseEndpoint):
         if not batch.task_ids:
             raise BatchNotFound("Cannot get batch status with missing task_ids")
 
-        days_passed = (timezone.now() - batch.in_progress_at).days
-        if days_passed >= GLOBUS_BATCH_TIMEOUT_IN_DAYS:
-            return BatchStatusResult(
-                status=BatchStatus.failed,
-                result=f"Timeout after {GLOBUS_BATCH_TIMEOUT_IN_DAYS} days.",
-            )
+        if batch.in_progress_at:
+            days_passed = (timezone.now() - batch.in_progress_at).days
+            if days_passed >= GLOBUS_BATCH_TIMEOUT_IN_DAYS:
+                return BatchStatusResult(
+                    status=BatchStatus.failed,
+                    result=f"Timeout after {GLOBUS_BATCH_TIMEOUT_IN_DAYS} days.",
+                )
 
         task_statuses = globus_utils.get_batch_status(batch.task_ids)
 
