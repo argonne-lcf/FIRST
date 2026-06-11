@@ -58,14 +58,18 @@ Create an empty folder with the same name as the one you want to backup. For exa
 
 Go to [https://app.globus.org/file-manager](https://app.globus.org/file-manager) and select the two-panel option, with the source collection on the left and the destination Guest collection on the right.
 
-On the source collection on the Globus webapp, select the **folder** that you want to transfer. It needs to be a folder and not specific files otherwise the Timed Transfer will not catch new files. For example, if you want to backup `/var/log/inference-service/`, make sure you navigate to `var/log` and check the box for `inference-service/`
+On the source collection on the Globus webapp, select the **folder** that you want to transfer. It needs to be a folder and not specific files, otherwise the Timed Transfer will not catch new files. For example, if you want to backup `/var/log/inference-service/`, make sure you navigate to `var/log` and check the box for `inference-service/`. For `/home/webportal/inference-gateway/pg_backup`, navigate to `/home/webportal/inference-gateway/` and check the box for `pg_backup`
 
-On the destination Guest collection, navigate to the base of the collection so that you see the targetted folder (e.g. the empty `inference-service/` folder). Do not click on the folder, the fact that the folder exists will tell Globus to transfer the full content of `/var/log/inference-service/` into the existing `inference-service/` folder.
+On the destination Guest collection, simply navigate to the base of the collection without selecting any folder. This will guarantee that the `inference-service/` and `pg_backup/` folders are transfered and synced properly.
 
 Initiate a transfer, and choose the folloing options:
-* label this transfer: inference-logs-backup
+* label this transfer
+    * inference-logs-backup (if logs)
+    * inference-database-backup (if database)
 * apply sync level L2 (only transfer files that are new or modified)
 * preserve source file modifications times
 * encrypt tranfers
 * fail on quota error
 * Timer --> select start time and frequency
+
+Monitor your Timers at [https://app.globus.org/timers](https://app.globus.org/timers)
