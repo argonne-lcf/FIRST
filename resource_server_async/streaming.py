@@ -10,10 +10,14 @@ from typing import Any
 
 from cachetools import TTLCache
 from django.conf import settings
-from django.core.cache import cache
 from django.http import HttpRequest
 
-from .cache import get_redis_client
+from .cache import (
+    cache_item,
+    get_item_from_cache,
+    get_redis_client,
+    remove_item_from_cache,
+)
 from .logging import RequestContext
 from .schemas.structured_logs import UsageTokens
 
@@ -78,7 +82,7 @@ def _cache_set(task_id: str, key_type: str, value: str, ttl: int = 3600) -> None
     """Generic cache set - uses Django cache (which is Redis in production)"""
     try:
         key = _get_cache_key(key_type, task_id)
-        cache.set(key, value, ttl)
+        cache_item(key, value, ttl=ttl)
     except Exception as e:
         logger.error(f"Error setting streaming {key_type} for task {task_id}: {e}")
 
@@ -87,7 +91,7 @@ def _cache_get(task_id: str, key_type: str) -> Any:
     """Generic cache get - uses Django cache (which is Redis in production)"""
     try:
         key = _get_cache_key(key_type, task_id)
-        return cache.get(key)
+        return get_item_from_cache(key)
     except Exception as e:
         logger.error(f"Error getting streaming {key_type} for task {task_id}: {e}")
         return None
@@ -104,9 +108,9 @@ def store_streaming_data(task_id: str, chunk_data: str, ttl: int = 600) -> None:
         else:
             # Fallback: store as regular list in cache (less efficient)
             key = _get_cache_key("data", task_id)
-            existing = cache.get(key, [])
+            existing = get_item_from_cache(key) or []
             existing.append(chunk_data)
-            cache.set(key, existing, ttl)
+            cache_item(key, existing, ttl=ttl)
     except Exception as e:
         logger.error(f"Error storing streaming data for task {task_id}: {e}")
 
@@ -125,7 +129,7 @@ def get_streaming_data(task_id: str) -> list[str]:
         else:
             # Fallback: retrieve from cache as regular list
             key = _get_cache_key("data", task_id)
-            return cache.get(key, [])  # type: ignore[no-any-return]
+            return get_item_from_cache(key) or []
     except Exception as e:
         logger.error(f"Error getting streaming data for task {task_id}: {e}")
         return []
@@ -727,7 +731,7 @@ def cleanup_streaming_data(task_id: str) -> None:
         else:
             # Fallback to Django cache delete
             for key_type in key_types:
-                cache.delete(_get_cache_key(key_type, task_id))
+                remove_item_from_cache(_get_cache_key(key_type, task_id))
 
         logger.debug(f"Cleaned up streaming data for task {task_id}")
     except Exception as e:
