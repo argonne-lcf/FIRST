@@ -3,7 +3,6 @@ import uuid
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse
 from ninja import NinjaAPI
 from ninja.errors import HttpError
@@ -11,6 +10,7 @@ from ninja.security import HttpBearer
 from ninja.throttling import AnonRateThrottle, AuthRateThrottle, BaseThrottle
 
 from resource_server_async.auth import validate_access_token
+from resource_server_async.cache import should_throttle
 from resource_server_async.schemas.structured_logs import UserPydantic
 
 from .errors import BaseError, TaskPending
@@ -73,7 +73,7 @@ class GlobalAuth(HttpBearer):
     ) -> UserPydantic:
         # Introspect and validate the access token
         # Raises Unauthorized (HTTP 401) if authentication fails:
-        atv_response = validate_access_token(request)
+        atv_response = await validate_access_token(request)
 
         ctx = get_request_context()
 
@@ -90,7 +90,7 @@ class GlobalAuth(HttpBearer):
             is_superuser=False,
         )
 
-        if cache.add(f"authed_user:{ctx.user.id}", "", timeout=120):
+        if not await should_throttle(f"authed_user:{ctx.user.id}", ttl=120):
             ctx.user.emit()
 
         # Makes the user accessible through the request.auth attribute:

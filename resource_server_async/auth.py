@@ -9,9 +9,12 @@ import globus_sdk
 
 # Cache tools to limits how many calls are made to Globus servers
 from django.conf import settings
-from django.core.cache import cache
 from django.http import HttpRequest
 
+from resource_server_async.cache import (
+    cache_item_async,
+    get_item_from_cache_async,
+)
 from resource_server_async.errors import Unauthorized
 from resource_server_async.models import AuthService
 from resource_server_async.schemas.auth import (
@@ -49,7 +52,7 @@ def get_globus_client() -> globus_sdk.ConfidentialAppAuthClient:
     )
 
 
-def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
+async def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
     """
     Introspect a token with policies, collect group memberships, and return the response.
     Uses Redis cache for multi-worker support with fallback to in-memory cache.
@@ -61,7 +64,9 @@ def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
     token_hash = hashlib.sha256(bearer_token.encode()).hexdigest()
     cache_key = f"token_introspect:{token_hash}"
 
-    cached_result: TokenIntrospectionResult | None = cache.get(cache_key)
+    cached_result: TokenIntrospectionResult | None = await get_item_from_cache_async(
+        cache_key
+    )
     if cached_result is not None:
         return cached_result
 
@@ -71,7 +76,9 @@ def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
     except Unauthorized as e:
         # Introspection error!  60 seconds cooldown period before retrying
         # introspection
-        cache.set(cache_key, TokenIntrospectionResult(None, [], error=str(e)), 60)
+        await cache_item_async(
+            cache_key, TokenIntrospectionResult(None, [], error=str(e)), ttl=60
+        )
         raise
 
     # If the introspection was successful ...
@@ -87,7 +94,7 @@ def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
     ttl = min(600, seconds_until_expiration)
 
     # Cache the result (successful or error)
-    cache.set(cache_key, result, ttl)
+    await cache_item_async(cache_key, result, ttl=ttl)
     return result
 
 
@@ -375,7 +382,7 @@ def extract_service_account_client(
 
 
 # Validate access token sent by user
-def validate_access_token(request: HttpRequest) -> ATVResponse:
+async def validate_access_token(request: HttpRequest) -> ATVResponse:
     """
     Returns ATVResponse if and only if the user is authenticated.  Raises
     Unauthorized otherwise.
@@ -401,7 +408,7 @@ def validate_access_token(request: HttpRequest) -> ATVResponse:
         raise Unauthorized(f"Something went wrong while reading headers. {e}")
 
     # Introspect the access token
-    introspection = introspect_token(bearer_token)
+    introspection = await introspect_token(bearer_token)
 
     if introspection.token_data is None:
         raise Unauthorized(f"Token introspection: {introspection.error}")

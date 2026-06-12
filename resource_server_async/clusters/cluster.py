@@ -5,10 +5,10 @@ from abc import ABC, abstractmethod
 from typing import List, Self, Type
 
 from cachetools import TTLCache
-from django.core.cache import cache
 from django.forms.models import model_to_dict
 
 from inference_gateway.settings import MAINTENANCE_ERROR_NOTICES
+from resource_server_async.cache import get_item_from_cache_async
 
 from ..auth import check_permission as auth_utils_check_permission
 from ..errors import ClusterNotFound, Unauthorized
@@ -49,12 +49,14 @@ class BaseCluster(ABC):
         self.__allowed_domains = allowed_domains
 
     # Check maintenance
-    def check_maintenance(self) -> CheckMaintenanceResult:
+    async def check_maintenance(self) -> CheckMaintenanceResult:
         """Verify is the cluster is currently under maintenance."""
 
         # Check Redis cache for cluster status from ALCF facility API
         cache_key = f"cluster_status:{self.cluster_name}"
-        cluster_status: ClusterStatus | None = cache.get(cache_key)
+        cluster_status: ClusterStatus | None = await get_item_from_cache_async(
+            cache_key
+        )
 
         if not isinstance(cluster_status, dict):
             cluster_status = {"status": "unknown", "message": ""}

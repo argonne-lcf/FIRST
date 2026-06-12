@@ -267,7 +267,7 @@ async def submit_openai_inference_request(
     cluster = await BaseCluster.load_adapter(cluster_name)
 
     # Error if the cluster is under maintenance
-    cluster.check_maintenance().raise_if_down()
+    (await cluster.check_maintenance()).raise_if_down()
 
     # Verify that the framework is available by the cluster
     if framework not in cluster.frameworks:
@@ -353,7 +353,7 @@ async def submit_batch(
     cluster = await BaseCluster.load_adapter(cluster_name)
 
     # Error if the cluster is under maintenance
-    cluster.check_maintenance().raise_if_down()
+    (await cluster.check_maintenance()).raise_if_down()
 
     # Verify that the framework is enabled by the cluster
     if framework not in cluster.frameworks:

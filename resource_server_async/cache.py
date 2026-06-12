@@ -10,6 +10,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Any
 
 import redis
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.cache import cache
 
@@ -58,6 +59,7 @@ def get_redis_client() -> redis.Redis | None:
     return None
 
 
+@sync_to_async
 def should_throttle(*args: Any, ttl: int = 30) -> bool:
     """
     Returns True if called with the same *args less than `ttl` seconds ago.
@@ -84,10 +86,16 @@ def get_item_from_cache(cache_key: str) -> Any:
     return None
 
 
+get_item_from_cache_async = sync_to_async(get_item_from_cache)
+
+
 def cache_item(cache_key: str, data: Any, ttl: int = 3600) -> None:
     """Cache item data (60 minutes TTL by default)."""
     cache.set(cache_key, data, ttl)
     logger.debug(f"Cached {cache_key}.")
+
+
+cache_item_async = sync_to_async(cache_item)
 
 
 def remove_item_from_cache(cache_key: str) -> None:

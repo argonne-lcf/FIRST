@@ -29,7 +29,7 @@ async def sam3_infer(
     cluster = await BaseCluster.load_adapter("sophia")
 
     # Error if the cluster is under maintenance
-    cluster.check_maintenance().raise_if_down()
+    (await cluster.check_maintenance()).raise_if_down()
 
     # Endpoint slug (sophia-sam3service-sam3 hardcoded for now)
     endpoint = await BaseEndpoint.load_adapter(
@@ -61,7 +61,7 @@ async def sam3_get_task_result(
     cluster = await BaseCluster.load_adapter("sophia")
 
     # Error if the cluster is under maintenance
-    cluster.check_maintenance().raise_if_down()
+    (await cluster.check_maintenance()).raise_if_down()
 
     endpoint = await BaseEndpoint.load_adapter(
         cluster.cluster_name, "sam3service", "sam3"

@@ -94,7 +94,7 @@ def get_mock_headers(access_token="", bearer=True):
 
 
 # Get mock token introspection
-def introspect_token(access_token):
+async def introspect_token(access_token):
     # Emulate an error in the introspection call
     if (ACTIVE not in access_token) or (EXPIRED in access_token):
         return TokenIntrospectionResult(None, [], error="mock error message")

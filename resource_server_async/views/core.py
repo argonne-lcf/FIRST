@@ -55,7 +55,9 @@ async def status_check(request: HttpRequest) -> dict[str, bool]:
 
     # Build status
     return {
-        cluster.cluster_name: not cluster.check_maintenance().is_under_maintenance
+        cluster.cluster_name: not (
+            await cluster.check_maintenance()
+        ).is_under_maintenance
         for cluster in authorized_clusters
     }
 
@@ -87,7 +89,7 @@ async def get_jobs(request: AuthedRequest, cluster_name: str) -> JobsByStatus:
     cluster.check_permission(request.auth)
 
     # If the cluster is under maintenance, report all jobs stopped:
-    if cluster.check_maintenance().is_under_maintenance:
+    if (await cluster.check_maintenance()).is_under_maintenance:
         all_endpoints = await get_list_endpoints_data(request.auth)
         cluster_info = all_endpoints.clusters.get(cluster.cluster_name)
         frameworks = cluster_info.frameworks if cluster_info else {}

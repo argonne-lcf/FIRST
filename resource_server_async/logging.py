@@ -115,7 +115,7 @@ class AccessLogMiddleware:
         finally:
             _request_context.reset(token)
 
-        if should_skip_logging(ctx_data, request, response):
+        if await should_skip_logging(ctx_data, request, response):
             return response
 
         # Fire-and-forget logging pattern:
@@ -125,7 +125,7 @@ class AccessLogMiddleware:
         return response
 
 
-def should_skip_logging(
+async def should_skip_logging(
     ctx: RequestContext,
     request: HttpRequest,
     response: HttpResponse | StreamingHttpResponse,
@@ -144,11 +144,11 @@ def should_skip_logging(
     user = ctx.user.username if ctx.user else ctx.access_log.origin_ip
 
     # Debounce if it's the same user/error repeatedly:
-    if status_code >= 400 and should_throttle(user, fingerprint, status_code):
+    if status_code >= 400 and await should_throttle(user, fingerprint, status_code):
         return True
 
     # Internal errors de-dup'd at user/status level:
-    if status_code >= 500 and should_throttle(user, status_code):
+    if status_code >= 500 and await should_throttle(user, status_code):
         return True
 
     return False

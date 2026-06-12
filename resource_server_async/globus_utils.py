@@ -13,7 +13,11 @@ from globus_compute_sdk.sdk.asynchronous.compute_future import ComputeFuture
 from globus_compute_sdk.sdk.executor import log as EXECUTOR_LOG
 from globus_sdk import TransferClient
 
-from resource_server_async.cache import cache_item, get_item_from_cache
+from resource_server_async.cache import (
+    cache_item,
+    cache_item_async,
+    get_item_from_cache,
+)
 from resource_server_async.errors import EndpointError, RequestTimeout
 from resource_server_async.schemas.endpoints import SubmitTaskResult
 
@@ -224,7 +228,7 @@ async def submit_and_get_result(
     if endpoint_slug:
         cache_key = f"endpoint_triggered:{endpoint_slug}"
         ttl = 600  # 10 minutes
-        cache_item(cache_key, True, ttl)
+        await cache_item_async(cache_key, True, ttl=ttl)
 
     # Wait for the Globus Compute result using asyncio and coroutine
     try:

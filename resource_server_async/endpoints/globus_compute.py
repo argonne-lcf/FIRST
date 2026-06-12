@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from inference_gateway.settings import GLOBUS_BATCH_TIMEOUT_IN_DAYS
 from resource_server_async import globus_utils
 from resource_server_async.cache import (
-    cache_item,
+    cache_item_async,
     is_cached,
     remove_endpoint_from_cache,
 )
@@ -305,7 +305,7 @@ class GlobusComputeEndpoint(BaseEndpoint):
 
         # Cache the endpoint slug to tell the application that a user already submitted a request to this endpoint
         cache_key = f"endpoint_triggered:{self.endpoint_slug}"
-        cache_item(cache_key, True, ttl=600)
+        await cache_item_async(cache_key, True, ttl=600)
 
         try:
             context = get_request_context()

@@ -2,9 +2,9 @@
 import logging
 from typing import Any, List, override
 
-from django.core.cache import cache
 from httpx import HTTPError, TimeoutException
 
+from resource_server_async.cache import cache_item_async, get_item_from_cache_async
 from resource_server_async.clusters.direct_api import DirectAPICluster
 
 from ..errors import GetJobsError
@@ -50,7 +50,7 @@ class MetisCluster(DirectAPICluster):
         # Redis cache key
         cache_key = "metis_status_response"
 
-        cached_result: JobsByStatus | None = cache.get(cache_key)
+        cached_result: JobsByStatus | None = await get_item_from_cache_async(cache_key)
         if cached_result is not None:
             return cached_result
 
@@ -104,7 +104,7 @@ class MetisCluster(DirectAPICluster):
 
         # Cache the result for 60 seconds
         try:
-            cache.set(cache_key, formatted, 60)
+            await cache_item_async(cache_key, formatted, ttl=60)
         except Exception as e:
             log.warning(f"Failed to cache metis_status_response: {e}")
 
