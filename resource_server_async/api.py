@@ -73,7 +73,7 @@ class GlobalAuth(HttpBearer):
     ) -> UserPydantic:
         # Introspect and validate the access token
         # Raises Unauthorized (HTTP 401) if authentication fails:
-        atv_response = validate_access_token(request)
+        atv_response = await validate_access_token(request)
 
         ctx = get_request_context()
 
