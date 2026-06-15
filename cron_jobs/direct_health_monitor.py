@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from enum import StrEnum, auto
 import json
 import logging
 import os
@@ -32,13 +31,16 @@ import time
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum, auto
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from django.core.cache import cache
-from django.db import connection
 import httpx
 from asgiref.sync import sync_to_async
+from django.core.cache import cache
+from django.db import connection
 from dotenv import load_dotenv
+
+from resource_server_async.schemas.structured_logs import UserPydantic
 
 # ---------------------------------------------------------------------------
 # Django setup
@@ -68,8 +70,8 @@ from resource_server_async.clusters import (
 from resource_server_async.endpoints import MetisEndpoint
 from resource_server_async.errors import BaseError
 from resource_server_async.models import (
+    AuthService,
     Endpoint,  # noqa: E402
-    User,
 )
 
 # ---------------------------------------------------------------------------
@@ -198,7 +200,7 @@ async def check_endpoint(
     """Check if an endpoint responds (and return the response)"""
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.send(request)
             return response.raise_for_status()
     except httpx.HTTPStatusError as e:
@@ -218,10 +220,8 @@ async def check_endpoint(
         )
 
 
-def format_duration(value: Optional[float]) -> str:
-    if value is None:
-        return "?"
-    return f"{value:.2f}s"
+def format_duration(value: float | None) -> str:
+    return f"{value:.2f}s" if value is not None else "?"
 
 
 def normalize_model_name(name: str) -> str:
@@ -264,45 +264,42 @@ async def gather_endpoints() -> Dict[str, EndpointInfo]:
     return result
 
 
-async def fetch_qstat_running_models() -> Tuple[Dict[str, Dict], Optional[str]]:
+async def fetch_qstat_running_models(
+    cluster: str,
+) -> dict[str, dict[str, Any]] | HealthRecord:
     """Return mapping of running model name -> qstat entry."""
 
     # Create mock User object to run get_jobs()
-    mock_auth_data = {
-        "id": "ALCF-monitor-tool-id",
-        "name": "ALCF-monitor-tool-name",
-        "username": "ALCF-monitor-tool-username",
-        "idp_id": "ALCF-monitor-tool-idp-id",
-        "idp_name": "ALCF-monitor-tool-idp-name",
-    }
-    mock_auth = User(**mock_auth_data)
+    mock_auth = UserPydantic(
+        id="ALCF-monitor-tool-id",
+        name="ALCF-monitor-tool-name",
+        username="ALCF-monitor-tool-username",
+        idp_id="ALCF-monitor-tool-idp-id",
+        idp_name="ALCF-monitor-tool-idp-name",
+        user_group_uuids=[],
+        auth_service=AuthService.GLOBUS.value,
+    )
 
     # Get the jobs response from the cluster adapter
-    jobs_response = None
-    error_message = None
-    error_code = None
     try:
-        cluster = await BaseCluster.load_adapter("sophia")
-        jobs_response = await cluster.get_jobs(mock_auth)
-    except BaseError as exc:
-        error_message = str(exc)
-        error_code = exc.status_code
-    except Exception as exc:
-        error_message = str(exc)
-        error_code = 500
-
-    if error_message:
-        log.error(
-            "Failed to fetch qstat details (code %s): %s",
-            error_code,
-            error_message,
+        adapter = await BaseCluster.load_adapter(cluster)
+        jobs_response = await adapter.get_jobs(mock_auth)
+    except BaseError as e:
+        return HealthRecord(
+            component="qstat",
+            cluster=cluster,
+            status=HealthStatus.FAILED,
+            detail=f"Failed to fetch details (code {e.status_code}): {str(e)}",
         )
-        return {}, error_message
-    else:
-        assert jobs_response is not None
+    except Exception as e:
+        return HealthRecord(
+            component="qstat",
+            cluster=cluster,
+            status=HealthStatus.FAILED,
+            detail=f"Failed to fetch details: {str(e)}",
+        )
 
     result = {}
-
     for entry in jobs_response.running:
         models_field = entry.Models
         model_status = entry.model_dump().get("Model Status", "")
@@ -312,7 +309,7 @@ async def fetch_qstat_running_models() -> Tuple[Dict[str, Dict], Optional[str]]:
             model = normalize_model_name(model_name)
             if model:
                 result[model] = {**entry.model_dump(), "Model Status": model_status}
-    return result, None
+    return result
 
 
 def parse_health_payload(result) -> Tuple[Optional[float], Optional[str]]:
@@ -347,8 +344,22 @@ async def check_sophia_models() -> List[HealthRecord]:
         log.warning("No Sophia endpoints found for monitoring.")
         return records
 
-    gcc = globus_utils.get_compute_client_from_globus_app()
-    gce = globus_utils.get_compute_executor(client=gcc)
+    try:
+        gcc = globus_utils.get_compute_client_from_globus_app()
+        gce = globus_utils.get_compute_executor(client=gcc)
+    except Exception as e:
+        return [
+            HealthRecord(
+                component="Globus Compute",
+                cluster="sophia",
+                status=HealthStatus.FAILED,
+                detail=f"Initialization failed: {str(e)}",
+            )
+        ]
+
+    running_models = await fetch_qstat_running_models("sophia")
+    if isinstance(running_models, HealthRecord):
+        return [running_models]  # error while trying to qstat
 
     endpoint_status_cache: Dict[str, Tuple[Optional[dict], Optional[str]]] = {}
 
@@ -366,18 +377,6 @@ async def check_sophia_models() -> List[HealthRecord]:
         endpoint_status_cache[info.endpoint_slug] = (status, err)
         return status, err
 
-    running_models, qstat_error = await fetch_qstat_running_models()
-
-    if qstat_error:
-        records.append(
-            HealthRecord(
-                model="Sophia qstat",
-                cluster="sophia",
-                status="failed",
-                detail=qstat_error,
-            )
-        )
-
     for model_name, info in endpoints.items():
         status_payload, status_error = get_endpoint_status_cached(info)
         running_entry = running_models.get(model_name)
@@ -385,9 +384,9 @@ async def check_sophia_models() -> List[HealthRecord]:
         if status_error:
             records.append(
                 HealthRecord(
-                    model=model_name,
+                    component=model_name,
                     cluster="sophia",
-                    status="failed",
+                    status=HealthStatus.FAILED,
                     detail=f"Endpoint status error: {status_error}",
                 )
             )
@@ -416,9 +415,9 @@ async def check_sophia_models() -> List[HealthRecord]:
         if endpoint_state != "online":
             records.append(
                 HealthRecord(
-                    model=model_name,
+                    component=model_name,
                     cluster="sophia",
-                    status="offline",
+                    status=HealthStatus.OFFLINE,
                     detail=f"Endpoint state={endpoint_state}",
                 )
             )
@@ -427,9 +426,9 @@ async def check_sophia_models() -> List[HealthRecord]:
         if running_entry is None:
             records.append(
                 HealthRecord(
-                    model=model_name,
+                    component=model_name,
                     cluster="sophia",
-                    status="idle",
+                    status=HealthStatus.IDLE,
                     detail="Endpoint online but no running job",
                 )
             )
@@ -438,9 +437,9 @@ async def check_sophia_models() -> List[HealthRecord]:
         if managers <= 0:
             records.append(
                 HealthRecord(
-                    model=model_name,
+                    component=model_name,
                     cluster="sophia",
-                    status="failed",
+                    status=HealthStatus.FAILED,
                     detail="Endpoint online but no active managers",
                 )
             )
@@ -492,9 +491,9 @@ async def check_sophia_models() -> List[HealthRecord]:
                 detail += f" | Last health: {last_status}"
             records.append(
                 HealthRecord(
-                    model=model_name,
+                    component=model_name,
                     cluster="sophia",
-                    status="failed",
+                    status=HealthStatus.FAILED,
                     detail=detail,
                     elapsed=elapsed,
                 )
@@ -504,11 +503,11 @@ async def check_sophia_models() -> List[HealthRecord]:
         response_time, status_text = parse_health_payload(result)
         detail = status_text or "ok"
 
-        record_status = "healthy"
+        record_status = HealthStatus.HEALTHY
         if response_time is not None and response_time > SLOW_THRESHOLD_SECONDS:
-            record_status = "slow"
+            record_status = HealthStatus.SLOW
         if elapsed > GLOBUS_HEALTH_TIMEOUT:
-            record_status = "failed"
+            record_status = HealthStatus.FAILED
 
         addon = []
         addon.append(f"resp={format_duration(response_time)}")
@@ -518,7 +517,7 @@ async def check_sophia_models() -> List[HealthRecord]:
 
         records.append(
             HealthRecord(
-                model=model_name,
+                component=model_name,
                 cluster="sophia",
                 status=record_status,
                 detail=detail,
@@ -532,9 +531,9 @@ async def check_sophia_models() -> List[HealthRecord]:
         if model_name not in endpoints:
             records.append(
                 HealthRecord(
-                    model=model_name,
+                    component=model_name,
                     cluster="sophia",
-                    status="failed",
+                    status=HealthStatus.FAILED,
                     detail="Running job has no matching endpoint configuration",
                 )
             )
@@ -636,7 +635,9 @@ async def check_metis_models() -> list[HealthRecord]:
 async def check_gateway_health() -> HealthRecord:
     """Check resource_server /health"""
 
-    request = httpx.Request("GET", f"{APPLICATION_URL}/resource_server/health")
+    log.info("Checking Application /health endpoint...")
+
+    request = httpx.Request("GET", f"http://{APPLICATION_URL}/resource_server/health")
     response = await check_endpoint(
         request,
         timeout=GATEWAY_HEALTH_TIMEOUT,
