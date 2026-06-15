@@ -52,42 +52,35 @@ async def write_logs(context: RequestContext, response: Response) -> None:
             await context.request_log.emit_metrics()
 
 
-class AccessLogMiddleware:
-    sync_capable = False
-    async_capable = True
+_background_tasks: set[asyncio.Task[None]] = set()
 
-    def __init__(
-        self,
-        get_response: Callable[[Request], Awaitable[Response]],
-    ):
-        self.get_response = get_response
-        self._background_tasks: set[asyncio.Task[None]] = set()
 
-    def _on_done(self, task: asyncio.Task[None]) -> None:
-        self._background_tasks.discard(task)
-        if task.cancelled():
-            return
-        if exc := task.exception():
-            logger.error("Background log write failed", exc_info=exc)
+def _on_done(task: asyncio.Task[None]) -> None:
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    if exc := task.exception():
+        logger.error("Background log write failed", exc_info=exc)
 
-    async def __call__(self, request: Request) -> Response:
 
-        token = _request_context.set(RequestContext(initialize_access_log(request)))
+async def log_request(request: Request, call_next) -> Response:
 
-        try:
-            response = await self.get_response(request)
-            ctx_data = _request_context.get()
-        finally:
-            _request_context.reset(token)
+    token = _request_context.set(RequestContext(initialize_access_log(request)))
 
-        if await should_skip_logging(ctx_data, request, response):
-            return response
+    try:
+        response = await call_next(request)
+        ctx_data = _request_context.get()
+    finally:
+        _request_context.reset(token)
 
-        # Fire-and-forget logging pattern:
-        task = asyncio.create_task(write_logs(ctx_data, response))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._on_done)
+    if await should_skip_logging(ctx_data, request, response):
         return response
+
+    # Fire-and-forget logging pattern:
+    task = asyncio.create_task(write_logs(ctx_data, response))
+    _background_tasks.add(task)
+    task.add_done_callback(_on_done)
+    return response
 
 
 async def should_skip_logging(

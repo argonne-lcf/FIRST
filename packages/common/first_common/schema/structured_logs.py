@@ -45,6 +45,7 @@ class UserAuthLog(BaseModel):
     name: str
     username: str
     user_group_uuids: list[str]
+    authorized_group_uuids: str | None
     idp_id: str
     idp_name: str
     auth_service: str

@@ -1,0 +1,98 @@
+services:
+  nginx:
+    image: nginx:latest
+    container_name: inference-gateway-nginx
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - inference-gateway
+    networks:
+      - gateway
+    restart: unless-stopped
+
+  inference-gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: inference-gateway-api
+    env_file:
+      - .env
+      - .env.first
+      - .env.secret
+    environment:
+      - PGHOST=postgres
+      - PGPORT=5432
+      - REDIS_URL=redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - gateway
+    restart: unless-stopped
+
+  controller-manager:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: inference-gateway-controller
+    env_file:
+      - .env
+      - .env.first
+      - .env.secret
+    environment:
+      - PGHOST=postgres
+      - PGPORT=5432
+      - REDIS_URL=redis://redis:6379/1
+    command: ["python", "-m", "first_gateway.controllers.manager"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - gateway
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18
+    container_name: inference-gateway-postgres
+    env_file:
+      - .env
+      - .env.first
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-postgres}
+      - POSTGRES_USER=${POSTGRES_USER:-dataportaldev}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dataportaldevpwd123}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - gateway
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dataportaldev}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: inference-gateway-redis
+    networks:
+      - gateway
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  postgres_data:
+
+networks:
+  gateway:
+    driver: bridge

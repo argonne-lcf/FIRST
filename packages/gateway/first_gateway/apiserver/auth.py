@@ -25,16 +25,6 @@ BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(jwt_scheme)]
 
 
 @dataclass
-class ATVResponse:
-    """
-    Authenticated, validated Globus access token.
-    """
-
-    user: UserAuthLog
-    idp_group_overlap_str: str | None = None
-
-
-@dataclass
 class TokenIntrospectionResult:
     token_data: GlobusActiveIntrospectResponse | None
     user_groups: list[str]
@@ -383,9 +373,9 @@ def extract_service_account_client(
 
 
 # Validate access token sent by user
-async def validate_access_token(token: BearerCredentials) -> ATVResponse:
+async def validate_access_token(token: BearerCredentials) -> UserAuthLog:
     """
-    Returns ATVResponse if and only if the user is authenticated.  Raises
+    Returns UserAuthLog if and only if the user is authenticated.  Raises
     Unauthorized otherwise.
     """
     cfg = Settings.load().globus
@@ -437,6 +427,7 @@ async def validate_access_token(token: BearerCredentials) -> ATVResponse:
     )
     if not successful:
         raise Unauthorized(str(error_message))
+    user.authorized_group_uuids = idp_group_overlap_str
 
     # Make sure the authenticated user is at least in one of the allowed Globus Groups
     if len(cfg.user_groups) > 0:
@@ -457,10 +448,7 @@ async def validate_access_token(token: BearerCredentials) -> ATVResponse:
 
     # Return valid token response
     log.debug(f"{user.name} requesting {introspection.token_data['scope']}")
-    return ATVResponse(
-        user=user,
-        idp_group_overlap_str=idp_group_overlap_str,
-    )
+    return user
 
 
 # Check permission
@@ -488,3 +476,8 @@ def check_permission(
     # Look at domain (policy) permissions
     if allowed_domains and user_domain not in allowed_domains:
         raise Unauthorized("Permission denied due to IdP domain restrictions.")
+
+
+def check_admin(auth: Annotated[UserAuthLog, Depends(validate_access_token)]) -> None:
+    if Settings.load().globus.admin_group not in auth.user_group_uuids:
+        raise Unauthorized("Permission denied: user is not in admin group.")

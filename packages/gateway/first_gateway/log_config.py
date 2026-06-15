@@ -61,12 +61,12 @@ LOGGING: dict[str, Any] = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "json": {"()": "first.log_config.GatewayJsonFormatter"},
+        "json": {"()": "first_gateway.log_config.GatewayJsonFormatter"},
         "plain": {"format": "\n%(message)s\n"},
     },
     "filters": {
-        "uvicorn_access_fields": {"()": "first.log_config.UvicornAccessFilter"},
-        "traceback_only": {"()": "first.log_config.TracebackOnly"},
+        "uvicorn_access_fields": {"()": "first_gateway.log_config.UvicornAccessFilter"},
+        "traceback_only": {"()": "first_gateway.log_config.TracebackOnly"},
     },
     "handlers": {
         "stdout": {
