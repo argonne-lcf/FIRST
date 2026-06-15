@@ -29,10 +29,11 @@ import os
 import sys
 import time
 from argparse import ArgumentParser
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum, auto
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 import httpx
 from asgiref.sync import sync_to_async
@@ -49,9 +50,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_ROOT)
 
-load_dotenv(override=True)
+_ = load_dotenv(override=True)
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "inference_gateway.settings")
+_ = os.environ.setdefault("DJANGO_SETTINGS_MODULE", "inference_gateway.settings")
 
 import django  # noqa: E402  (import after setting DJANGO_SETTINGS_MODULE)
 
@@ -81,7 +82,7 @@ LOG_LEVEL = os.getenv("HEALTH_MONITOR_LOG_LEVEL", "INFO").upper()
 LOG_FILE_DEFAULT = os.path.join(SCRIPT_DIR, "direct_health_monitor_run.log")
 
 
-def configure_logging(log_file: Optional[str] = None) -> logging.Logger:
+def configure_logging(log_file: str | None = None) -> logging.Logger:
     """Configure console + file logging for the monitor."""
 
     root = logging.getLogger()
@@ -139,7 +140,7 @@ class EndpointInfo:
     function_uuid: str
     api_port: int
     endpoint_slug: str
-    allowed_globus_groups: Optional[str]
+    allowed_globus_groups: str | None
 
     @property
     def has_mock_group(self) -> bool:
@@ -228,10 +229,10 @@ def normalize_model_name(name: str) -> str:
     return name.strip()
 
 
-async def gather_endpoints() -> Dict[str, EndpointInfo]:
+async def gather_endpoints() -> dict[str, EndpointInfo]:
     """Load Sophia endpoints that should be monitored (non-mock)."""
 
-    result: Dict[str, EndpointInfo] = {}
+    result: dict[str, EndpointInfo] = {}
     async for endpoint in Endpoint.objects.filter(cluster="sophia"):
         # Extract config parameters
         endpoint_config = ast.literal_eval(endpoint.config)
@@ -312,7 +313,7 @@ async def fetch_qstat_running_models(
     return result
 
 
-def parse_health_payload(result) -> Tuple[Optional[float], Optional[str]]:
+def parse_health_payload(result: Any) -> tuple[float | None, str | None]:
     """Return response_time (float) and optional status string."""
 
     payload = result
@@ -334,10 +335,10 @@ def parse_health_payload(result) -> Tuple[Optional[float], Optional[str]]:
     return None, None
 
 
-async def check_sophia_models() -> List[HealthRecord]:
+async def check_sophia_models() -> list[HealthRecord]:
     """Run health checks against running Sophia models."""
 
-    records: List[HealthRecord] = []
+    records: list[HealthRecord] = []
     endpoints = await gather_endpoints()
 
     if not endpoints:
@@ -361,11 +362,11 @@ async def check_sophia_models() -> List[HealthRecord]:
     if isinstance(running_models, HealthRecord):
         return [running_models]  # error while trying to qstat
 
-    endpoint_status_cache: Dict[str, Tuple[Optional[dict], Optional[str]]] = {}
+    endpoint_status_cache: dict[str, tuple[dict[Any, Any] | None, str | None]] = {}
 
     def get_endpoint_status_cached(
         info: EndpointInfo,
-    ) -> Tuple[Optional[dict], Optional[str]]:
+    ) -> tuple[dict[Any, Any] | None, str | None]:
         cached = endpoint_status_cache.get(info.endpoint_slug)
         if cached is not None:
             return cached
@@ -676,7 +677,7 @@ async def check_redis_health() -> HealthRecord:
         # Try to set and get a test value
         await cache.aset(test_key, test_value, 60)
         retrieved_value = await cache.aget(test_key)
-        await cache.adelete(test_key)
+        _ = await cache.adelete(test_key)
     except Exception as e:
         return HealthRecord(
             component="Redis",
@@ -771,17 +772,17 @@ async def check_globus_compute() -> HealthRecord:
     )
 
 
-def group_records(records: Iterable[HealthRecord]) -> Dict[str, List[HealthRecord]]:
-    grouped: Dict[str, List[HealthRecord]] = {}
+def group_records(records: Iterable[HealthRecord]) -> dict[str, list[HealthRecord]]:
+    grouped: dict[str, list[HealthRecord]] = {}
     for record in records:
         grouped.setdefault(record.status, []).append(record)
     return grouped
 
 
 def format_records(
-    records: List[HealthRecord], *, full: bool = False
-) -> Tuple[str, bool]:
-    lines: List[str] = []
+    records: list[HealthRecord], *, full: bool = False
+) -> tuple[str, bool]:
+    lines: list[str] = []
     grouped = group_records(records)
 
     order = (
@@ -814,8 +815,8 @@ def format_records(
 
 
 def format_summary(
-    records: List[HealthRecord], *, full: bool = False
-) -> Tuple[str, bool]:
+    records: list[HealthRecord], *, full: bool = False
+) -> tuple[str, bool]:
     total = len(records)
     grouped = group_records(records)
     summary_parts = [f"Total checked: {total}"]
@@ -828,7 +829,7 @@ def format_summary(
     return f"Health Monitor @ {timestamp}\n{summary}\n\n{details}", has_entries
 
 
-async def run_monitor() -> List[HealthRecord]:
+async def run_monitor() -> list[HealthRecord]:
     results = await asyncio.gather(
         check_sophia_models(),
         check_metis_models(),
@@ -840,7 +841,7 @@ async def run_monitor() -> List[HealthRecord]:
     )
 
     cluster_labels = ["sophia", "metis", "vm"]
-    records: List[HealthRecord] = []
+    records: list[HealthRecord] = []
     for cluster_name, result in zip(cluster_labels, results):
         if isinstance(result, Exception):
             log.error("Health check for %s failed", cluster_name, exc_info=result)
@@ -888,7 +889,7 @@ def should_send_full_report(force: bool = False) -> bool:
 def update_full_marker() -> None:
     try:
         with open(LAST_FULL_MARKER, "w", encoding="utf-8") as fh:
-            fh.write(datetime.now(timezone.utc).isoformat())
+            _ = fh.write(datetime.now(timezone.utc).isoformat())
     except Exception as exc:
         log.warning("Failed to update full report marker: %s", exc)
 
@@ -911,13 +912,13 @@ async def post_to_slack(message: str) -> None:
         log.error("Error posting to Slack: %s", e)
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = ArgumentParser(description="Internal health monitor")
-    parser.add_argument(
+    _ = parser.add_argument(
         "--full", action="store_true", help="send full report without truncation"
     )
-    parser.add_argument("--log-file", help="override log file destination")
-    parser.add_argument(
+    _ = parser.add_argument("--log-file", help="override log file destination")
+    _ = parser.add_argument(
         "--summary",
         action="store_true",
         help="print summary without sending Slack notification",
@@ -925,7 +926,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     if args.log_file:
-        configure_logging(args.log_file)
+        _ = configure_logging(args.log_file)
 
     records = asyncio.run(run_monitor())
     full_report = should_send_full_report(force=args.full)
@@ -933,7 +934,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(message)
 
     if not args.summary and (full_report or has_entries):
-        post_to_slack(message)
+        _ = post_to_slack(message)
 
     if full_report:
         update_full_marker()
