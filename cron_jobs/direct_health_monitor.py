@@ -667,6 +667,8 @@ async def check_gateway_health() -> HealthRecord:
 async def check_redis_health() -> HealthRecord:
     """Check Redis connectivity"""
 
+    log.info("Checking Redis...")
+
     test_key = "health_check_test"
     test_value = f"test_{datetime.now().timestamp()}"
 
@@ -701,6 +703,8 @@ async def check_redis_health() -> HealthRecord:
 
 async def check_postgres_health() -> HealthRecord:
     """Check PostgreSQL connectivity"""
+
+    log.info("Checking PostgreSQL...")
 
     # Try a simple database query
     @sync_to_async
@@ -738,6 +742,8 @@ async def check_postgres_health() -> HealthRecord:
 
 async def check_globus_compute() -> HealthRecord:
     """Check Globus Compute connectivity"""
+
+    log.info("Checking Globus Compute...")
 
     @sync_to_async
     def check() -> None:
