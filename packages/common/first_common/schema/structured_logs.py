@@ -18,7 +18,6 @@ from pydantic import (
 )
 
 from first_common.schema.auth import UserAuthEvent
-from first_gateway import Settings
 
 MAX_LEN = 1800
 
@@ -90,7 +89,9 @@ class RequestLog(BaseModel):
     task_uuid: str | None = None
     stream: Literal["request_log"] = "request_log"
 
-    def emit(self, response_body: str, status_code: int | None) -> None:
+    def emit(
+        self, response_body: str, status_code: int | None, prompt_dir: Path
+    ) -> None:
         """
         Log an LLM prompt request and results.
 
@@ -110,7 +111,6 @@ class RequestLog(BaseModel):
 
         if len(self.prompt) > MAX_LEN or len(self.result) > MAX_LEN:
             full = {"prompt": self.prompt, "result": self.result}
-            prompt_dir = Path(Settings.load().prompt_storage_dir)
             prompt_file = Path(prompt_dir) / f"{self.id}.json"
             try:
                 prompt_file.write_text(json.dumps(full, indent=2))

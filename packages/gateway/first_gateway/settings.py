@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, ClassVar, Self, TypedDict
+from typing import AsyncGenerator, TypedDict
 
+from globus_sdk import ConfidentialAppAuthClient
 from httpx import AsyncClient
 from pydantic import (
     SecretStr,
@@ -27,6 +28,7 @@ class ClientState(TypedDict):
     redis: AsyncRedis
     db_engine: AsyncEngine
     db_sessionmaker: async_sessionmaker[AsyncSession]
+    auth_client: ConfidentialAppAuthClient
 
 
 class GlobusAuthSettings(BaseSettings):
@@ -65,8 +67,6 @@ class GlobusAuthSettings(BaseSettings):
 
 
 class Settings(BaseSettings):
-    _cached: ClassVar[Self | None] = None
-
     model_config = SettingsConfigDict(
         # .env.prod will override .env:
         env_file=(".env", ".env.first", ".env.secret", ".env.prod"),
@@ -77,21 +77,18 @@ class Settings(BaseSettings):
     )
 
     prompt_storage_dir: Path = Path("prompt-records")
+    log_level: str = "INFO"
 
     db_url: SecretStr
     redis_url: str
 
     globus: GlobusAuthSettings
 
-    @classmethod
-    def load(cls) -> Self:
-        if cls._cached is None:
-            cls._cached = cls()
-            cls._cached.prompt_storage_dir.mkdir(exist_ok=True, parents=True)
-        return cls._cached
-
     @asynccontextmanager
     async def build_clients(self) -> AsyncGenerator[ClientState, None]:
+        """
+        Initializes shared client resources
+        """
         engine = create_async_engine(
             self.db_url.get_secret_value(),
             pool_size=5,
@@ -109,13 +106,10 @@ class Settings(BaseSettings):
                     db_sessionmaker=sessionmaker,
                     redis=redis,
                     httpx_client=httpx_client,
+                    auth_client=ConfidentialAppAuthClient(
+                        self.globus.app_id, self.globus.app_secret.get_secret_value()
+                    ),
                 )
         finally:
             await redis.aclose()
             await engine.dispose()
-
-
-if __name__ == "__main__":
-    from rich import print
-
-    print("Loaded settings:", Settings.load())

@@ -119,7 +119,9 @@ LOGGING: dict[str, Any] = {
 }
 
 
-def config_logging() -> None:
+def config_logging(log_level: str) -> None:
+    for logger in LOGGING["loggers"].values():
+        logger["level"] = log_level
     logging.config.dictConfig(LOGGING)
     listener = logging.getHandlerByName("queue").listener  # type: ignore[union-attr]
     listener.start()

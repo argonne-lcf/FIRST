@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from logging import getLogger
+from pathlib import Path
 from typing import Any
 
 from fastapi.requests import Request
@@ -37,7 +38,9 @@ def initialize_access_log(request: Request[ClientState]) -> AccessLog:
     )
 
 
-async def write_logs(context: RequestContext, response: Response) -> None:
+async def write_logs(
+    context: RequestContext, response: Response, prompt_storage_dir: Path
+) -> None:
     context.access_log.emit(context.user, response)
 
     if context.request_log:
@@ -47,7 +50,9 @@ async def write_logs(context: RequestContext, response: Response) -> None:
             body = response.body.decode(errors="ignore")
         else:
             body = "unavailable"
-        context.request_log.emit(body, response.status_code)
+        context.request_log.emit(
+            body, response.status_code, prompt_dir=prompt_storage_dir
+        )
 
         if not isinstance(response, StreamingResponse):
             await context.request_log.emit_metrics()
@@ -78,7 +83,9 @@ async def log_request(request: Request[ClientState], call_next: Any) -> Response
         return response
 
     # Fire-and-forget logging pattern:
-    task = asyncio.create_task(write_logs(ctx_data, response))
+    task = asyncio.create_task(
+        write_logs(ctx_data, response, request.state["settings"].prompt_storage_dir)
+    )
     _background_tasks.add(task)
     task.add_done_callback(_on_done)
     return response

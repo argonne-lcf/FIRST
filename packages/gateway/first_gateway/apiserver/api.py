@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from first_common.errors import FirstError, TaskPending
 from first_gateway.settings import ClientState, Settings
 
+from ..log_config import config_logging
 from .log_middleware import log_request
 from .routes import routers
 
@@ -16,8 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[ClientState, None]:
-    settings = Settings.load()
+async def lifespan(_app: FastAPI) -> AsyncGenerator[ClientState, None]:
+    """
+    Initializes ClientState and makes it available on all request.state.
+    """
+    settings = Settings()
+    config_logging(settings.log_level)
     async with settings.build_clients() as client_state:
         yield client_state
 
@@ -31,7 +36,7 @@ app.include_router(routers.admin)
 
 
 @app.exception_handler(FirstError)
-def handle_app_error(request: Request, exc: FirstError) -> JSONResponse:
+def handle_app_error(_request: Request, exc: FirstError) -> JSONResponse:
     return JSONResponse(
         {"error": {"code": exc.code, "message": str(exc), "info": exc.info}},
         status_code=exc.status_code,
@@ -39,7 +44,7 @@ def handle_app_error(request: Request, exc: FirstError) -> JSONResponse:
 
 
 @app.exception_handler(TaskPending)
-def handle_pending(request: Request, exc: TaskPending) -> JSONResponse:
+def handle_pending(_request: Request, exc: TaskPending) -> JSONResponse:
     return JSONResponse(
         {"status": exc.code, "task_id": exc.task_id},
         status_code=exc.status_code,

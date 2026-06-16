@@ -25,11 +25,12 @@ docs = [
 line-length = 88
 target-version = "py312"
 extend-exclude = [
-    "resource_server_async/migrations/*"
+    "resource_server_async/migrations/*",
+    "archived/*",
 ]
 
 [tool.ruff.lint]
-select = ["F", "I"]
+select = ["F", "I", "ARG"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["alcf_ai", "first_common", "first_dashboard", "first_gateway", "first_pilot"]

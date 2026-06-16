@@ -31,6 +31,9 @@ async def heartbeat_monitor(workers: list[Worker], shutdown: asyncio.Event) -> N
 
 
 async def main() -> None:
+    settings = Settings()
+    config_logging(settings.log_level)
+
     logger.info("Initializing controller manager")
 
     loop = asyncio.get_running_loop()
@@ -38,7 +41,6 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, shutdown.set)
 
-    settings = Settings.load()
     async with settings.build_clients() as client_state:
         workers = build_workers(client_state)
 
@@ -68,6 +70,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    config_logging()
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     asyncio.run(main())
