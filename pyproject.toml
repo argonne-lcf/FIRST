@@ -10,6 +10,7 @@ dev = [
     "types-PyYAML",
     "types-cachetools",
     "pytest",
+    "pytest-asyncio",
 ]
 
 docs = [
@@ -20,6 +21,10 @@ docs = [
     "mkdocs>=1.5.0",
     "pymdown-extensions>=10.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 88
