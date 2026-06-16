@@ -774,7 +774,7 @@ async def check_globus_compute() -> HealthRecord:
 def group_records(records: Iterable[HealthRecord]) -> dict[str, list[HealthRecord]]:
     grouped: dict[str, list[HealthRecord]] = {}
     for record in records:
-        grouped.setdefault(record.status, []).append(record)
+        grouped.setdefault(record.status.value, []).append(record)
     return grouped
 
 
@@ -785,10 +785,17 @@ def format_records(
     grouped = group_records(records)
 
     order = (
-        ["failed", "offline", "slow", "idle", "healthy"]
+        [
+            HealthStatus.FAILED,
+            HealthStatus.OFFLINE,
+            HealthStatus.SLOW,
+            HealthStatus.IDLE,
+            HealthStatus.HEALTHY,
+        ]
         if full
-        else ["failed", "offline", "slow"]
+        else [HealthStatus.FAILED, HealthStatus.OFFLINE, HealthStatus.SLOW]
     )
+
     icons = {
         "failed": "❌",
         "offline": "⛔",
@@ -799,14 +806,16 @@ def format_records(
 
     has_entries = False
     for status in order:
-        entries = grouped.get(status, [])
+        entries = grouped.get(status.value, [])
         if not entries:
             continue
         has_entries = True
-        header = f"{icons.get(status, '')} {status.upper()} ({len(entries)})"
+        header = (
+            f"{icons.get(status.value, '')} {status.value.upper()} ({len(entries)})"
+        )
         lines.append(header)
-        for record in sorted(entries, key=lambda r: (r.cluster, r.model)):
-            lines.append(f"• [{record.cluster}] {record.model}: {record.detail}")
+        for record in sorted(entries, key=lambda r: (r.cluster, r.component)):
+            lines.append(f"• [{record.cluster}] {record.component}: {record.detail}")
 
     if not lines:
         return "No records", has_entries
