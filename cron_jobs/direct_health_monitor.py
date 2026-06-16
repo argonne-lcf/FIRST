@@ -228,11 +228,11 @@ def normalize_model_name(name: str) -> str:
     return name.strip()
 
 
-async def gather_endpoints() -> dict[str, EndpointInfo]:
+async def gather_endpoints(cluster: str) -> dict[str, EndpointInfo]:
     """Load Sophia endpoints that should be monitored (non-mock)."""
 
     result: dict[str, EndpointInfo] = {}
-    async for endpoint in Endpoint.objects.filter(cluster="sophia"):
+    async for endpoint in Endpoint.objects.filter(cluster=cluster):
         # Extract config parameters
         endpoint_config = ast.literal_eval(endpoint.config)
         endpoint_uuid = endpoint_config.get("endpoint_uuid", None)
@@ -338,7 +338,7 @@ async def check_sophia_models() -> list[HealthRecord]:
     """Run health checks against running Sophia models."""
 
     records: list[HealthRecord] = []
-    endpoints = await gather_endpoints()
+    endpoints = await gather_endpoints("sophia")
 
     if not endpoints:
         log.warning("No Sophia endpoints found for monitoring.")
