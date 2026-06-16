@@ -68,8 +68,12 @@ class GlobusAuthSettings(BaseSettings):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        # .env.prod will override .env:
-        env_file=(".env", ".env.first", ".env.secret", ".env.prod"),
+        # Auto-detect and layer variables for local development (outside of containers)
+        env_file=(
+            ".env.default",  # common
+            ".env.local",  # development host
+            ".env.secret",  # .gitignored secrets
+        ),
         env_prefix="first_",
         env_nested_delimiter="__",
         case_sensitive=False,

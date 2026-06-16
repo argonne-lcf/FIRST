@@ -20,3 +20,21 @@ lint-fix: sync
 
 install-dev: sync
 	pre-commit install
+
+dev-db-up:
+	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose up -d postgres redis
+
+dev-db-down:
+	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose down postgres redis
+
+dev-up:
+	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose up -d
+
+dev-down:
+	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose down
+
+prod-up:
+	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml docker compose up -d
+
+prod-down:
+	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml docker compose down

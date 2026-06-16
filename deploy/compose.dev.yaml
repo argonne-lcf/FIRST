@@ -1,0 +1,5 @@
+services:
+  postgres:
+    volumes:
+      - type: tmpfs
+        target: /var/lib/postgresql

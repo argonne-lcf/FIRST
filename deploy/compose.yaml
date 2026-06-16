@@ -1,7 +1,6 @@
 services:
   nginx:
     image: nginx:latest
-    container_name: inference-gateway-nginx
     ports:
       - "8000:80"
     volumes:
@@ -16,15 +15,15 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    container_name: inference-gateway-api
-    env_file:
-      - .env
-      - .env.first
-      - .env.secret
-    environment:
-      - PGHOST=postgres
-      - PGPORT=5432
-      - REDIS_URL=redis://redis:6379/1
+    env_file: &env-files
+      - path: ../.env.default # common
+        required: true
+      - path: ../.env.compose # specific to compose stack
+        required: true
+      - path: ../.env.secret  # .gitignored secrets
+        required: true
+      - path: ../.env.prod    # optional prod overrides
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,16 +37,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    container_name: inference-gateway-controller
-    env_file:
-      - .env
-      - .env.first
-      - .env.secret
-    environment:
-      - PGHOST=postgres
-      - PGPORT=5432
-      - REDIS_URL=redis://redis:6379/1
-    command: ["python", "-m", "first_gateway.controllers.manager"]
+    env_file: *env-files
+    command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,28 +50,20 @@ services:
 
   postgres:
     image: postgres:18
-    container_name: inference-gateway-postgres
-    env_file:
-      - .env
-      - .env.first
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-postgres}
-      - POSTGRES_USER=${POSTGRES_USER:-dataportaldev}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dataportaldevpwd123}
-    volumes:
-      - postgres_data:/var/lib/postgresql
+    env_file: *env-files
     networks:
       - gateway
+    ports:
+      - "5432:5432"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dataportaldev}" ]
+      test: ["CMD-SHELL", "pg_isready -U first_gateway" ]
       interval: 5s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7
-    container_name: inference-gateway-redis
     networks:
       - gateway
     restart: unless-stopped
@@ -89,9 +72,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
-
-volumes:
-  postgres_data:
+    ports:
+      - "6379:6379"
 
 networks:
   gateway:

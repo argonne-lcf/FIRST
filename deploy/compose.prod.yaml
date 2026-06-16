@@ -1,0 +1,7 @@
+services:
+  postgres:
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql
+
+volumes:
+  postgres_data_prod:
