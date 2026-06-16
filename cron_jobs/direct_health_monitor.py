@@ -41,8 +41,6 @@ from django.core.cache import cache
 from django.db import connection
 from dotenv import load_dotenv
 
-from resource_server_async.schemas.structured_logs import UserPydantic
-
 # ---------------------------------------------------------------------------
 # Django setup
 # ---------------------------------------------------------------------------
@@ -74,6 +72,7 @@ from resource_server_async.models import (
     AuthService,
     Endpoint,  # noqa: E402
 )
+from resource_server_async.schemas.structured_logs import UserPydantic
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -847,9 +846,9 @@ async def run_monitor() -> list[HealthRecord]:
             log.error("Health check for %s failed", cluster_name, exc_info=result)
             records.append(
                 HealthRecord(
-                    model=f"{cluster_name} monitor",
+                    component=f"{cluster_name} monitor",
                     cluster=cluster_name,
-                    status="failed",
+                    status=HealthStatus.FAILED,
                     detail=str(result),
                 )
             )
@@ -859,9 +858,9 @@ async def run_monitor() -> list[HealthRecord]:
             log.error("Unexpected result for %s monitor: %r", cluster_name, result)
             records.append(
                 HealthRecord(
-                    model=f"{cluster_name} monitor",
+                    component=f"{cluster_name} monitor",
                     cluster=cluster_name,
-                    status="failed",
+                    status=HealthStatus.FAILED,
                     detail="Unexpected result type",
                 )
             )
@@ -912,7 +911,7 @@ async def post_to_slack(message: str) -> None:
         log.error("Error posting to Slack: %s", e)
 
 
-def main(argv: list[str] | None = None) -> None:
+async def main() -> None:
     parser = ArgumentParser(description="Internal health monitor")
     _ = parser.add_argument(
         "--full", action="store_true", help="send full report without truncation"
@@ -923,22 +922,22 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="print summary without sending Slack notification",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
 
     if args.log_file:
         _ = configure_logging(args.log_file)
 
-    records = asyncio.run(run_monitor())
+    records = await run_monitor()
     full_report = should_send_full_report(force=args.full)
     message, has_entries = format_summary(records, full=full_report)
     print(message)
 
     if not args.summary and (full_report or has_entries):
-        _ = post_to_slack(message)
+        await post_to_slack(message)
 
     if full_report:
         update_full_marker()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
