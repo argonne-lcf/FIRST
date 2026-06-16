@@ -1,23 +1,24 @@
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from logging import getLogger
+from typing import Any
 
 from fastapi.requests import Request
 from fastapi.responses import Response, StreamingResponse
+from redis.asyncio import Redis
 
 from first_common.schema.structured_logs import (
     AccessLog,
 )
-from first_gateway.cache import should_throttle
 
+from ..settings import ClientState
 from .context import RequestContext, _request_context
 
 logger = getLogger(__name__)
 
 
-def initialize_access_log(request: Request) -> AccessLog:
+def initialize_access_log(request: Request[ClientState]) -> AccessLog:
     """Return initial state of an AccessLog entry"""
     origin_ip = request.headers.get("X-Forwarded-For")
     if not origin_ip and request.client is not None:
@@ -63,17 +64,17 @@ def _on_done(task: asyncio.Task[None]) -> None:
         logger.error("Background log write failed", exc_info=exc)
 
 
-async def log_request(request: Request, call_next) -> Response:
+async def log_request(request: Request[ClientState], call_next: Any) -> Response:
 
     token = _request_context.set(RequestContext(initialize_access_log(request)))
 
     try:
-        response = await call_next(request)
+        response: Response = await call_next(request)
         ctx_data = _request_context.get()
     finally:
         _request_context.reset(token)
 
-    if await should_skip_logging(ctx_data, request, response):
+    if await should_skip_logging(ctx_data, request, response, request.state["redis"]):
         return response
 
     # Fire-and-forget logging pattern:
@@ -85,8 +86,9 @@ async def log_request(request: Request, call_next) -> Response:
 
 async def should_skip_logging(
     ctx: RequestContext,
-    request: Request,
+    request: Request[ClientState],
     response: Response,
+    redis: Redis,
 ) -> bool:
     # Don't log internal streaming requests:
     if "api/streaming" in request.url.path:
@@ -101,12 +103,14 @@ async def should_skip_logging(
 
     user = ctx.user.username if ctx.user else ctx.access_log.origin_ip
 
-    # Debounce if it's the same user/error repeatedly:
-    if status_code >= 400 and await should_throttle(user, fingerprint, status_code):
-        return True
+    if status_code < 400:
+        return False
+    elif status_code >= 500:
+        is_new_err = await redis.set(f"{user}{status_code}", "", nx=True, ex=30)
+    else:
+        is_new_err = await redis.set(
+            f"{user}{fingerprint}{status_code}", "", nx=True, ex=30
+        )
 
-    # Internal errors de-dup'd at user/status level:
-    if status_code >= 500 and await should_throttle(user, status_code):
-        return True
-
-    return False
+    # De-duplicate logs when it's the same user/error repeatedly:
+    return not is_new_err

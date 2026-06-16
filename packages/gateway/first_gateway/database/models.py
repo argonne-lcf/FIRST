@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Self
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -17,8 +18,6 @@ from first_common.schema.types import (
     ReplicaPhase,
     ResourceName,
 )
-
-from .connection import AsyncSession
 
 if TYPE_CHECKING:
     from first_common.schema import resource_specs as spec

@@ -1,19 +1,20 @@
 import json
 
-from httpx import HTTPError
+from httpx import AsyncClient, HTTPError
 
 from first_common.errors import ClusterStatusCheckError
 from first_common.schema.types import ClusterStatus
-from first_gateway.http_client import aclient
 
 
-async def get_alcf_cluster_status(status_url: str, timeout: int) -> ClusterStatus:
+async def get_alcf_cluster_status(
+    client: AsyncClient, status_url: str, timeout: int
+) -> ClusterStatus:
     """
     ALCF IRI API Cluster Status Check
     """
 
     try:
-        resp = await aclient.get(status_url, timeout=timeout)
+        resp = await client.get(status_url, timeout=timeout)
         resp.raise_for_status()
     except HTTPError as e:
         raise ClusterStatusCheckError(f"{e.request.url} - {e}")
@@ -35,9 +36,11 @@ async def get_alcf_cluster_status(status_url: str, timeout: int) -> ClusterStatu
     }.get(current_status, ClusterStatus.unknown)
 
 
-async def get_metis_cluster_status(status_url: str, timeout: int) -> ClusterStatus:
+async def get_metis_cluster_status(
+    client: AsyncClient, status_url: str, timeout: int
+) -> ClusterStatus:
     try:
-        resp = await aclient.get(status_url, timeout=timeout)
+        resp = await client.get(status_url, timeout=timeout)
         resp.raise_for_status()
     except HTTPError as e:
         raise ClusterStatusCheckError(f"{e.request.url} - {e}")

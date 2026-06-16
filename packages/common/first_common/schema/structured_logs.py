@@ -17,6 +17,7 @@ from pydantic import (
     field_validator,
 )
 
+from first_common.schema.auth import UserAuthEvent
 from first_gateway import Settings
 
 MAX_LEN = 1800
@@ -40,30 +41,6 @@ class UsageTokens:
     total_tokens: int | None = None
 
 
-class UserAuthLog(BaseModel):
-    id: str
-    name: str
-    username: str
-    user_group_uuids: list[str]
-    authorized_group_uuids: str | None
-    idp_id: str
-    idp_name: str
-    auth_service: str
-    stream: Literal["user"] = "user"
-
-    def emit(self) -> None:
-        """
-        Emit user info to log
-        """
-        logger.info(
-            "authenticated",
-            extra={
-                **self.model_dump(mode="json", exclude={"name"}),
-                "user.name": self.name,
-            },
-        )
-
-
 class AccessLog(BaseModel):
     id: str
     timestamp_request: datetime
@@ -75,7 +52,7 @@ class AccessLog(BaseModel):
     authorized_groups: str | None = None
     stream: Literal["access_log"] = "access_log"
 
-    def emit(self, user: UserAuthLog | None, response: Response) -> None:
+    def emit(self, user: UserAuthEvent | None, response: Response) -> None:
         """
         Emit access log after view returns response.
         """

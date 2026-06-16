@@ -1,16 +1,28 @@
 import logging
 import uuid
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from first_common.errors import FirstError, TaskPending
+from first_gateway.settings import ClientState, Settings
 
 from .log_middleware import log_request
 from .routes import routers
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="ALCF Inference Service")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[ClientState, None]:
+    settings = Settings.load()
+    async with settings.build_clients() as client_state:
+        yield client_state
+
+
+app = FastAPI(title="ALCF Inference Service", lifespan=lifespan)
 
 app.middleware("http")(log_request)
 app.include_router(routers.anon)

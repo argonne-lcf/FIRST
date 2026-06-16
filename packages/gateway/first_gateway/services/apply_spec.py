@@ -2,6 +2,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 from yaml import safe_load_all
 
 import first_common.schema.resource_specs as specs
@@ -14,7 +15,6 @@ from first_common.schema.resource_specs import (
     ResourcePatch,
 )
 from first_gateway.database import models
-from first_gateway.database.connection import AsyncSession, get_async_sessionmaker
 
 
 def format_validation_error(
@@ -207,24 +207,3 @@ async def apply(
         cls = models.resource_registry[patch_resource.kind]
         obj = await cls.get_by_name(sess, patch_resource.name)
         obj.apply_patch(patch_resource.patch)
-
-
-async def main() -> None:
-    import sys
-
-    from rich import print
-
-    sessionmaker = get_async_sessionmaker()
-    loaded_resources = load_resources_from_yaml(sys.argv[1])
-
-    async with sessionmaker.begin() as sess:
-        plan = await create_plan(loaded_resources, sess)
-        await apply(loaded_resources, plan, sess)
-        print("Completed apply.")
-        print(plan)
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(main())

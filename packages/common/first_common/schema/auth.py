@@ -2,8 +2,13 @@
 Reference: https://docs.globus.org/api/auth/reference/#token-introspect
 """
 
+import logging
 from enum import Enum
 from typing import Any, Literal, NotRequired, TypedDict
+
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService(str, Enum):
@@ -98,3 +103,27 @@ class GlobusActiveIntrospectResponse(TypedDict):
 GlobusIntrospectResponse = (
     GlobusActiveIntrospectResponse | GlobusInactiveIntrospectResponse
 )
+
+
+class UserAuthEvent(BaseModel):
+    id: str
+    name: str
+    username: str
+    user_group_uuids: list[str]
+    authorized_group_uuids: str | None
+    idp_id: str
+    idp_name: str
+    auth_service: str
+    stream: Literal["user"] = "user"
+
+    def emit(self) -> None:
+        """
+        Emit user info to log
+        """
+        logger.info(
+            "authenticated",
+            extra={
+                **self.model_dump(mode="json", exclude={"name"}),
+                "user.name": self.name,
+            },
+        )

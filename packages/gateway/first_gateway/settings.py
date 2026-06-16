@@ -1,11 +1,32 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import AsyncGenerator, ClassVar, Self, TypedDict
 
+from httpx import AsyncClient
 from pydantic import (
     SecretStr,
     computed_field,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from redis.asyncio import Redis as AsyncRedis
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+
+class ClientState(TypedDict):
+    """
+    Centralized, shared instances of connection-pooling client resources.
+    """
+
+    settings: "Settings"
+    httpx_client: AsyncClient
+    redis: AsyncRedis
+    db_engine: AsyncEngine
+    db_sessionmaker: async_sessionmaker[AsyncSession]
 
 
 class GlobusAuthSettings(BaseSettings):
@@ -68,6 +89,30 @@ class Settings(BaseSettings):
             cls._cached = cls()
             cls._cached.prompt_storage_dir.mkdir(exist_ok=True, parents=True)
         return cls._cached
+
+    @asynccontextmanager
+    async def build_clients(self) -> AsyncGenerator[ClientState, None]:
+        engine = create_async_engine(
+            self.db_url.get_secret_value(),
+            pool_size=5,
+            max_overflow=10,
+        )
+        sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+
+        redis = AsyncRedis.from_url(self.redis_url)
+        await redis.ping()
+        try:
+            async with AsyncClient() as httpx_client:
+                yield ClientState(
+                    settings=self,
+                    db_engine=engine,
+                    db_sessionmaker=sessionmaker,
+                    redis=redis,
+                    httpx_client=httpx_client,
+                )
+        finally:
+            await redis.aclose()
+            await engine.dispose()
 
 
 if __name__ == "__main__":

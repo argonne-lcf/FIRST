@@ -1,7 +1,10 @@
 from fastapi import APIRouter, Depends
 
-from first_gateway.apiserver.auth import check_admin, validate_access_token
+from first_gateway.apiserver.routes.admin import router as admin_router
+
+from ..dependencies import get_admin_user, get_auth_user
 
 anon = APIRouter()
-auth = APIRouter(dependencies=[Depends(validate_access_token)])
-admin = APIRouter(dependencies=[Depends(check_admin)])
+auth = APIRouter(dependencies=[Depends(get_auth_user)])
+admin = APIRouter(dependencies=[Depends(get_admin_user)])
+admin.include_router(admin_router)

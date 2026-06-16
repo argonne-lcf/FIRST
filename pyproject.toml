@@ -37,11 +37,11 @@ known-first-party = ["alcf_ai", "first_common", "first_dashboard", "first_gatewa
 [tool.mypy]
 python_version = "3.12"
 mypy_path = [
-    "packages/client/src",
-    "packages/common/src",
-    "packages/dashboard/src",
-    "packages/gateway/src",
-    "packages/pilot/src",
+    "packages/client",
+    "packages/common",
+    "packages/dashboard",
+    "packages/gateway",
+    "packages/pilot",
 ]
 packages = [
     "alcf_ai",

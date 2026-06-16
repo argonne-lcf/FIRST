@@ -2,30 +2,26 @@ import asyncio
 import hashlib
 import logging
 import time
-from dataclasses import dataclass
-from typing import Annotated, List
+from typing import List
 
 import globus_sdk
-from fastapi import Depends
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from redis.asyncio import Redis as AsyncRedis
 
 from first_common.errors import Unauthorized
 from first_common.schema.auth import (
     AuthService,
     GlobusActiveIntrospectResponse,
     GlobusIntrospectResponse,
+    UserAuthEvent,
 )
-from first_common.schema.structured_logs import UserAuthLog
-from first_gateway import Settings, cache
+from first_gateway import Settings
 
 log = logging.getLogger(__name__)
 
-jwt_scheme = HTTPBearer()
-BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(jwt_scheme)]
 
-
-@dataclass
-class TokenIntrospectionResult:
+class TokenIntrospectionResult(BaseModel):
     token_data: GlobusActiveIntrospectResponse | None
     user_groups: list[str]
     error: str = ""
@@ -39,7 +35,9 @@ def get_globus_client() -> globus_sdk.ConfidentialAppAuthClient:
     )
 
 
-async def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
+async def introspect_token(
+    bearer_token: str, cache: AsyncRedis
+) -> TokenIntrospectionResult:
     """
     Introspect a token with policies, collect group memberships, and return the response.
     Uses Redis cache for multi-worker support with fallback to in-memory cache.
@@ -51,17 +49,19 @@ async def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
     token_hash = hashlib.sha256(bearer_token.encode()).hexdigest()
     cache_key = f"token_introspect:{token_hash}"
 
-    cached_result: TokenIntrospectionResult | None = await cache.get(cache_key)
+    cached_result = await cache.get(cache_key)
     if cached_result is not None:
-        return cached_result
+        return TokenIntrospectionResult.model_validate_json(cached_result)
 
     # If not in cache, perform introspection
     try:
         result = await _perform_token_introspection(bearer_token)
     except Unauthorized as e:
-        # Introspection error!  60 seconds cooldown period before retrying
-        # introspection
-        await cache.set(cache_key, TokenIntrospectionResult(None, [], error=str(e)), 60)
+        # Introspection error!  60 seconds cooldown period before retrying:
+        error_result = TokenIntrospectionResult(
+            token_data=None, user_groups=[], error=str(e)
+        )
+        await cache.set(cache_key, error_result.model_dump_json(), ex=60)
         raise
 
     # If the introspection was successful ...
@@ -77,7 +77,7 @@ async def introspect_token(bearer_token: str) -> TokenIntrospectionResult:
     ttl = min(600, seconds_until_expiration)
 
     # Cache the result (successful or error)
-    await cache.set(cache_key, result, ttl)
+    await cache.set(cache_key, result.model_dump_json(), ex=ttl)
     return result
 
 
@@ -151,7 +151,7 @@ async def _perform_token_introspection(bearer_token: str) -> TokenIntrospectionR
         raise Unauthorized(f"Error: Could not recover user group memberships. {e}")
 
     # Return the introspection data along with the group (with empty error message)
-    return TokenIntrospectionResult(token_data, user_groups)
+    return TokenIntrospectionResult(token_data=token_data, user_groups=user_groups)
 
 
 # Check Globus Policies
@@ -209,7 +209,7 @@ def check_globus_groups(user_groups: list[str]) -> tuple[bool, str]:
 # Check Session Info
 def check_session_info(
     introspection: GlobusActiveIntrospectResponse, user_groups: list[str]
-) -> tuple[bool, UserAuthLog | None, str]:
+) -> tuple[bool, UserAuthEvent | None, str]:
     """
     Look into the session_info field of the token introspection
     and check whether the authentication was made through one
@@ -241,7 +241,7 @@ def check_session_info(
             if session_domain in cfg.authorized_idp_domains:
                 # Create the User object from the Globus introspection
                 try:
-                    user = UserAuthLog(
+                    user = UserAuthEvent(
                         id=identity["sub"],  # type: ignore
                         name=identity["name"]
                         if isinstance(identity["name"], str)
@@ -288,7 +288,7 @@ def check_session_info(
 
 # Check Session Info
 def check_groups_per_idp(
-    user: UserAuthLog, user_groups: List[str]
+    user: UserAuthEvent, user_groups: List[str]
 ) -> tuple[bool, str, str | None]:
     """
     Make sure the user is part of an authorized Globus Group (if any)
@@ -333,7 +333,7 @@ def check_groups_per_idp(
 # Extract service account client
 def extract_service_account_client(
     introspection: GlobusActiveIntrospectResponse, client_groups: list[str]
-) -> UserAuthLog | None:
+) -> UserAuthEvent | None:
     """Extract and return the user object if identity is an authorized Globus client."""
 
     cfg = Settings.load().globus
@@ -357,7 +357,7 @@ def extract_service_account_client(
     # If this is an authorized Globus service account client ...
     if username in cfg.authorized_service_usernames:
         # Create and return the User object
-        return UserAuthLog(
+        return UserAuthEvent(
             id=client_id,
             name=name,
             username=username,
@@ -365,6 +365,7 @@ def extract_service_account_client(
             idp_id=domain,
             idp_name=iss,
             auth_service=AuthService.GLOBUS.value,
+            authorized_group_uuids=None,
         )
 
     # Return nothing if this is not an authorized Globus client
@@ -373,9 +374,11 @@ def extract_service_account_client(
 
 
 # Validate access token sent by user
-async def validate_access_token(token: BearerCredentials) -> UserAuthLog:
+async def validate_access_token(
+    token: HTTPAuthorizationCredentials, cache: AsyncRedis
+) -> UserAuthEvent:
     """
-    Returns UserAuthLog if and only if the user is authenticated.  Raises
+    Returns UserAuthEvent if and only if the user is authenticated.  Raises
     Unauthorized otherwise.
     """
     cfg = Settings.load().globus
@@ -385,7 +388,7 @@ async def validate_access_token(token: BearerCredentials) -> UserAuthLog:
         raise Unauthorized("Authorization type should be Bearer.")
 
     # Introspect the access token
-    introspection = await introspect_token(token.credentials)
+    introspection = await introspect_token(token.credentials, cache)
 
     if introspection.token_data is None:
         raise Unauthorized(f"Token introspection: {introspection.error}")
@@ -453,7 +456,7 @@ async def validate_access_token(token: BearerCredentials) -> UserAuthLog:
 
 # Check permission
 def check_permission(
-    auth: UserAuthLog,
+    auth: UserAuthEvent,
     allowed_globus_groups: list[str] | None,
     allowed_domains: list[str] | None,
 ) -> None:
@@ -476,8 +479,3 @@ def check_permission(
     # Look at domain (policy) permissions
     if allowed_domains and user_domain not in allowed_domains:
         raise Unauthorized("Permission denied due to IdP domain restrictions.")
-
-
-def check_admin(auth: Annotated[UserAuthLog, Depends(validate_access_token)]) -> None:
-    if Settings.load().globus.admin_group not in auth.user_group_uuids:
-        raise Unauthorized("Permission denied: user is not in admin group.")
