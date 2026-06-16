@@ -841,10 +841,12 @@ async def run_monitor() -> list[HealthRecord]:
     results = await asyncio.gather(
         check_sophia_models(),
         check_metis_models(),
-        check_gateway_health(),
-        check_redis_health(),
-        check_postgres_health(),
-        check_globus_compute(),
+        asyncio.gather(
+            check_gateway_health(),
+            check_redis_health(),
+            check_postgres_health(),
+            check_globus_compute(),
+        ),
         return_exceptions=True,
     )
 
