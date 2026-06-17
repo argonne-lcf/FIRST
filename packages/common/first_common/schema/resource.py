@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from first_common.schema import resource_specs as spec
 
@@ -19,7 +19,7 @@ from .types import (
 class ResourceBase(BaseModel):
     kind: str
     name: str = Field(min_length=2, max_length=128)
-    uid: str
+    uid: int
     created_at: datetime
 
 
@@ -78,8 +78,9 @@ class PilotJob(ResourceBase):
 
 
 class ClusterSummary(ResourceBase, spec.Cluster):
+    model_config = ConfigDict(from_attributes=True)
     status: ClusterStatus
-    last_status_check: datetime
+    last_status_check: datetime | None
 
 
 class ClusterDetail(ClusterSummary):

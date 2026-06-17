@@ -11,6 +11,7 @@ dev = [
     "types-cachetools",
     "pytest",
     "pytest-asyncio",
+    "asgi-lifespan",
 ]
 
 docs = [
@@ -37,6 +38,10 @@ extend-exclude = [
 [tool.ruff.lint]
 select = ["F", "I", "ARG"]
 
+[tool.ruff.lint.per-file-ignores]
+# Pytest fixtures take unused args for dependency/side-effects:
+"tests/**" = ["ARG001", "ARG002"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["alcf_ai", "first_common", "first_dashboard", "first_gateway", "first_pilot"]
 
@@ -48,6 +53,7 @@ mypy_path = [
     "packages/dashboard",
     "packages/gateway",
     "packages/pilot",
+    "tests",
 ]
 packages = [
     "alcf_ai",
@@ -55,6 +61,7 @@ packages = [
     "first_dashboard",
     "first_gateway",
     "first_pilot",
+    "tests",
 ]
 plugins = [ "pydantic.mypy" ]
 strict = true

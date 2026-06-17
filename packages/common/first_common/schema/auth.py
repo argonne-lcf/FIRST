@@ -45,11 +45,13 @@ class GlobusIdentitySetDetail(TypedDict, total=False):
     """
 
     id: str  # Identity UUID
+    sub: str
     username: str  # e.g. "user@example.com"
     name: str | None
     email: str | None
     organization: str | None
     identity_provider: str  # IdP UUID
+    identity_provider_display_name: str
     identity_type: Literal["login", "link"]
     status: Literal["used", "unused", "private", "closed"]
 
@@ -110,7 +112,7 @@ class UserAuthEvent(BaseModel):
     name: str
     username: str
     user_group_uuids: list[str]
-    authorized_group_uuids: str | None
+    authorized_group_uuids: str | None = None
     idp_id: str
     idp_name: str
     auth_service: str

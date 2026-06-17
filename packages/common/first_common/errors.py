@@ -36,7 +36,9 @@ class FirstError(Exception):
         super().__init__(*args)
 
 
-class InvalidSpecError(FirstError): ...
+class InvalidSpecError(FirstError):
+    status_code = HTTPStatus.BAD_REQUEST
+    code: str = "resource_spec_invalid"
 
 
 class ClusterStatusCheckError(FirstError): ...
@@ -45,7 +47,9 @@ class ClusterStatusCheckError(FirstError): ...
 class HealthCheckError(FirstError): ...
 
 
-class SpecApplyError(FirstError): ...
+class SpecApplyError(FirstError):
+    status_code = HTTPStatus.BAD_REQUEST
+    code: str = "failed_to_apply_resource_spec"
 
 
 class Unauthorized(FirstError):

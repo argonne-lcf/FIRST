@@ -102,12 +102,6 @@ async def should_skip_logging(
         return True
 
     status_code = response.status_code
-    fingerprint = (
-        "<streaming>"
-        if isinstance(response, StreamingResponse)
-        else str(response.body[:128])
-    )
-
     user = ctx.user.username if ctx.user else ctx.access_log.origin_ip
 
     if status_code < 400:
@@ -115,6 +109,12 @@ async def should_skip_logging(
     elif status_code >= 500:
         is_new_err = await redis.set(f"{user}{status_code}", "", nx=True, ex=30)
     else:
+        body = getattr(response, "body", b"")
+        fingerprint = (
+            "<streaming>"
+            if isinstance(response, StreamingResponse)
+            else (str(body[:128]))
+        )
         is_new_err = await redis.set(
             f"{user}{fingerprint}{status_code}", "", nx=True, ex=30
         )

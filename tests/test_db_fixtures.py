@@ -1,10 +1,9 @@
-"""Smoke tests for the template-database test fixtures (see conftest.py)."""
+"""Smoke tests for the template-database test fixtures"""
 
 import os
 
-import pytest
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_gateway.database.models import AccessGroup
 
@@ -23,8 +22,7 @@ async def test_schema_and_tables_exist(db_session: AsyncSession) -> None:
     assert await AccessGroup.list(db_session) == []
 
 
-@pytest.mark.usefixtures("db")
-async def test_settings_env_is_patched() -> None:
+async def test_settings_env_is_patched(db: async_sessionmaker[AsyncSession]) -> None:
     """FIRST_DB_URL is redirected at this test's throwaway database."""
     assert "/test_" in os.environ["FIRST_DB_URL"]
 

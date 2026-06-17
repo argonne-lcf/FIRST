@@ -34,7 +34,6 @@ resource_registry: dict[str, type["ResourceBase"]] = {}
 
 class Base(DeclarativeBase):
     metadata = sa.MetaData(schema="first")
-
     uid: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True)
 
 
@@ -51,6 +50,10 @@ class ResourceBase(Base):
     def __init_subclass__(cls, **kw: Any) -> None:
         super().__init_subclass__(**kw)
         resource_registry[cls.__name__] = cls
+
+    @property
+    def kind(self) -> str:
+        return self.__class__.__name__
 
     @classmethod
     async def list(cls, sess: AsyncSession) -> list[Self]:

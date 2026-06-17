@@ -8,7 +8,7 @@ import globus_sdk
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
-from first_common.errors import Unauthorized
+from first_common.errors import AccessDenied, Unauthorized
 from first_common.schema.auth import (
     AuthService,
     GlobusActiveIntrospectResponse,
@@ -35,9 +35,7 @@ class GlobusAuthService:
     async def introspect_token(self, bearer_token: str) -> TokenIntrospectionResult:
         """
         Introspect a token with policies, collect group memberships, and return the response.
-        Uses Redis cache for multi-worker support with fallback to in-memory cache.
-
-        Returns serializable data instead of Globus SDK objects.
+        Uses Redis cache for multi-worker support.
         """
         # Create cache key from token hash (don't store raw tokens in cache keys)
         # Store the entire hash to avoid collisions where different users would have the same last hash digits
@@ -228,14 +226,14 @@ class GlobusAuthService:
                     # Create the User object from the Globus introspection
                     try:
                         user = UserAuthEvent(
-                            id=identity["sub"],  # type: ignore
+                            id=identity["sub"],
                             name=identity["name"]
                             if isinstance(identity["name"], str)
                             else "",
                             username=identity["username"],
                             user_group_uuids=user_groups,
                             idp_id=identity["identity_provider"],
-                            idp_name=identity["identity_provider_display_name"],  # type: ignore
+                            idp_name=identity["identity_provider_display_name"],
                             auth_service=AuthService.GLOBUS.value,
                         )
                     except Exception as e:
@@ -437,6 +435,8 @@ class GlobusAuthService:
 
         # Return valid token response
         log.debug(f"{user.name} requesting {introspection.token_data['scope']}")
+        if await self.cache.set(f"authed_user:{user.id}", "", nx=True, ex=120):
+            user.emit()
         return user
 
 
@@ -454,14 +454,14 @@ def check_permission(
     # Look at Globus Group permissions
     if allowed_globus_groups:
         if len(set(auth.user_group_uuids) & set(allowed_globus_groups)) == 0:
-            raise Unauthorized("Permission denied due to Globus Group restrictions.")
+            raise AccessDenied("Permission denied due to Globus Group restrictions.")
 
     # Extract user's domain from the IdP used during authentication
     try:
         user_domain = auth.username.split("@")[1]
     except Exception:
-        raise Unauthorized(f"Could not extract domain from user {auth.username!r}")
+        raise AccessDenied(f"Could not extract domain from user {auth.username!r}")
 
     # Look at domain (policy) permissions
     if allowed_domains and user_domain not in allowed_domains:
-        raise Unauthorized("Permission denied due to IdP domain restrictions.")
+        raise AccessDenied("Permission denied due to IdP domain restrictions.")

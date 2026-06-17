@@ -1,10 +1,26 @@
 from fastapi import APIRouter, Depends
 
-from first_gateway.apiserver.routes.admin import router as admin_router
+from first_common.schema.auth import UserAuthEvent
 
-from ..dependencies import get_admin_user, get_auth_user
+from ..dependencies import AuthUser, get_admin_user, get_auth_user
+from . import resources
 
 anon = APIRouter()
 auth = APIRouter(dependencies=[Depends(get_auth_user)])
 admin = APIRouter(dependencies=[Depends(get_admin_user)])
-admin.include_router(admin_router)
+
+
+@anon.get("/health")
+async def health() -> dict[str, str]:
+    """Liveness probe, open to everyone."""
+    return {"status": "ok"}
+
+
+@auth.get("/whoami", response_model=UserAuthEvent)
+async def whoami(user: AuthUser) -> UserAuthEvent:
+    """Return the authenticated caller's identity."""
+    return user
+
+
+admin.include_router(resources.admin_router)
+auth.include_router(resources.user_router)
