@@ -36,6 +36,11 @@ class FirstError(Exception):
         super().__init__(*args)
 
 
+class NotFound(FirstError):
+    status_code = HTTPStatus.NOT_FOUND
+    code: str = "not_found"
+
+
 class InvalidSpecError(FirstError):
     status_code = HTTPStatus.BAD_REQUEST
     code: str = "resource_spec_invalid"

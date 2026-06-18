@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm import DeclarativeBase, Mapped, defer, mapped_column, relationship
 
-from first_common.errors import SpecApplyError
+from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.types import (
     ClusterStatus,
@@ -104,8 +104,10 @@ class ConfigVersion(Base):
 
     @classmethod
     async def get_detail(cls, sess: AsyncSession, uid: int) -> Self:
-        res = await sess.execute(sa.select(cls).where(cls.uid == uid))
-        return res.scalar_one()
+        res = await sess.scalar(sa.select(cls).where(cls.uid == uid))
+        if res is None:
+            raise NotFound(f"No ConfigVersion with {uid=} found.")
+        return res
 
     @classmethod
     async def record_new_version(
