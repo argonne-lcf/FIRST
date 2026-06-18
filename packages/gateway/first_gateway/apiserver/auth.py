@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from typing import List
+from typing import List, Protocol
 
 import globus_sdk
 from fastapi.security import HTTPAuthorizationCredentials
@@ -18,6 +18,11 @@ from first_common.schema.auth import (
 from first_gateway.settings import ClientState
 
 log = logging.getLogger(__name__)
+
+
+class _AccessGroupLike(Protocol):
+    allowed_groups: list[str]
+    allowed_domains: list[str]
 
 
 class TokenIntrospectionResult(BaseModel):
@@ -440,28 +445,35 @@ class GlobusAuthService:
         return user
 
 
-# Check permission
-def check_permission(
-    auth: UserAuthEvent,
-    allowed_globus_groups: list[str] | None,
-    allowed_domains: list[str] | None,
-) -> None:
+def user_can_access_group(user: UserAuthEvent, access_group: _AccessGroupLike) -> bool:
     """
-    Verify is the user is permitted to access or view a resource based on group and policy restrictions.
-    Raises Unauthorized if the user is not permitted.
+    Returns True if user is permitted to access a resource based on group and
+    domain restrictions.
     """
+    if access_group.allowed_groups:
+        if not any(set(user.user_group_uuids) & set(access_group.allowed_groups)):
+            return False
 
-    # Look at Globus Group permissions
-    if allowed_globus_groups:
-        if len(set(auth.user_group_uuids) & set(allowed_globus_groups)) == 0:
-            raise AccessDenied("Permission denied due to Globus Group restrictions.")
+    if access_group.allowed_domains:
+        try:
+            user_domain = user.username.split("@")[1]
+        except IndexError:
+            return False
 
-    # Extract user's domain from the IdP used during authentication
-    try:
-        user_domain = auth.username.split("@")[1]
-    except Exception:
-        raise AccessDenied(f"Could not extract domain from user {auth.username!r}")
+        if user_domain not in access_group.allowed_domains:
+            return False
 
-    # Look at domain (policy) permissions
-    if allowed_domains and user_domain not in allowed_domains:
-        raise AccessDenied("Permission denied due to IdP domain restrictions.")
+    return True
+
+
+def enforce_permission(user: UserAuthEvent, access_group: _AccessGroupLike) -> None:
+    """
+    Verify that the user is permitted to access a resource based on group and
+    domain restrictions.
+
+    Raises AccessDenied.
+    """
+    if not user_can_access_group(user, access_group):
+        raise AccessDenied(
+            "Permission denied due to Globus Group or IdP domain restrictions."
+        )

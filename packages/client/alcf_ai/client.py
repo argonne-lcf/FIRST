@@ -5,7 +5,14 @@ from httpx import Auth, Client, Request, Response, Timeout
 
 from .api import AdminAPI, Sam3API, StagingAPI
 from .auth import get_inference_authorizer
-from .resources import ClustersResource, EndpointsResource
+from .resources import (
+    AccessGroupsResource,
+    ClustersResource,
+    EndpointsResource,
+    ModelsResource,
+    PilotDeploymentsResource,
+    StaticDeploymentsResource,
+)
 
 DEFAULT_BASE_URL = os.environ.get(
     "inference_base_url", "https://inference-api.alcf.anl.gov/resource_server/"
@@ -41,6 +48,10 @@ class InferenceClient(Client):
         self.staging = StagingAPI(self)
         self.clusters = ClustersResource(self)
         self.endpoints = EndpointsResource(self)
+        self.access_groups = AccessGroupsResource(self)
+        self.models = ModelsResource(self)
+        self.pilot_deployments = PilotDeploymentsResource(self)
+        self.static_deployments = StaticDeploymentsResource(self)
 
     def __repr__(self) -> str:
         return f"InferenceClient({self.base_url})"

@@ -16,7 +16,7 @@ from first_common.schema.resources import (
     ResourceManifest,
 )
 
-from .fixtures.auth import ADMIN_TOKEN, auth_header
+from .fixtures.auth import ADMIN_TOKEN, USER_TOKEN, auth_header
 
 RESOURCES_DIR = Path(__file__).parent / "resource_specs"
 
@@ -241,3 +241,122 @@ async def test_concurrent_update_diverged_plan(
     assert resp.status_code == 409
     body = resp.json()
     assert body["error"]["code"] == "failed_to_apply_resource_spec"
+
+
+async def test_list_access_groups_admin_and_user(
+    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    """Admin sees the baseline AccessGroup; ordinary user fails its group +
+    domain restrictions and sees nothing."""
+    admin_resp = await client.get(
+        "/resources/access-groups", headers=auth_header(ADMIN_TOKEN)
+    )
+    user_resp = await client.get(
+        "/resources/access-groups", headers=auth_header(USER_TOKEN)
+    )
+    assert admin_resp.status_code == 200
+    assert user_resp.status_code == 200
+    assert [g["name"] for g in admin_resp.json()] == ["research-team"]
+    assert user_resp.json() == []
+
+
+async def test_list_models(
+    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    resp = await client.get("/resources/models", headers=auth_header(ADMIN_TOKEN))
+    assert resp.status_code == 200
+    [model] = resp.json()
+    assert model["name"] == "meta-llama/llama-3-8b"
+    assert model["access_group_name"] == "research-team"
+    assert len(model["pilot_deployments"]) == 1
+    assert len(model["static_deployments"]) == 1
+
+
+async def test_list_static_deployments(
+    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    resp = await client.get(
+        "/resources/static-deployments", headers=auth_header(ADMIN_TOKEN)
+    )
+    assert resp.status_code == 200
+    [d] = resp.json()
+    assert d["name"] == "sophia/static/llama-3-8b"
+    assert d["upstream_model_name"] == "s-llama-3-8b"
+
+
+async def test_list_and_get_pilot_deployment(
+    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    list_resp = await client.get(
+        "/resources/pilot-deployments", headers=auth_header(ADMIN_TOKEN)
+    )
+    assert list_resp.status_code == 200
+    [summary] = list_resp.json()
+    assert summary["name"] == "sophia/pilot/llama-3-8b"
+    assert "replicas" not in summary  # summary view defers replicas
+
+    detail_resp = await client.get(
+        f"/resources/pilot-deployments/{summary['name']}",
+        headers=auth_header(ADMIN_TOKEN),
+    )
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["name"] == summary["name"]
+    assert detail["replicas"] == []  # no replicas yet
+    assert detail["launch_spec"]["served_model_name"] == "meta-llama/llama-3-8b"
+
+
+async def test_list_and_get_cluster(
+    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    # List visible to ordinary users
+    user_list = await client.get("/resources/clusters", headers=auth_header(USER_TOKEN))
+    assert user_list.status_code == 200
+    [summary] = user_list.json()
+    assert summary["name"] == "sophia"
+    assert "pilot_jobs" not in summary
+
+    # Detail visible to admins
+    admin_detail = await client.get(
+        "/resources/clusters/sophia", headers=auth_header(ADMIN_TOKEN)
+    )
+    assert admin_detail.status_code == 200
+    detail = admin_detail.json()
+    assert detail["name"] == "sophia"
+    assert detail["pilot_jobs"] == []
+
+    # Ordinary users forbidden from cluster detail
+    user_detail = await client.get(
+        "/resources/clusters/sophia", headers=auth_header(USER_TOKEN)
+    )
+    assert user_detail.status_code == 403
+    assert user_detail.json()["error"]["code"] == "access_denied"
+
+
+async def test_user_filtered_out_when_no_access(
+    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    """Resources gated by an AccessGroup the user fails should disappear from
+    user-scoped listings, while admins still see them."""
+
+    async def names(path: str, token: str) -> set[str]:
+        resp = await client.get(path, headers=auth_header(token))
+        assert resp.status_code == 200, resp.text
+        return {o["name"] for o in resp.json()}
+
+    assert await names("/resources/models", USER_TOKEN) == set()
+    assert await names("/resources/pilot-deployments", USER_TOKEN) == set()
+    assert await names("/resources/static-deployments", USER_TOKEN) == set()
+    # Admin still sees the underlying resources.
+    assert await names("/resources/models", ADMIN_TOKEN) == {"meta-llama/llama-3-8b"}
+
+
+async def test_get_pilot_deployment_forbidden_for_unauthorized_user(
+    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    resp = await client.get(
+        "/resources/pilot-deployments/sophia/pilot/llama-3-8b",
+        headers=auth_header(USER_TOKEN),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "access_denied"

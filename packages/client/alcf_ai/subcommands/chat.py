@@ -41,7 +41,7 @@ def chat(
     the contents of --input-file (if any), and the positional PROMPT argument.
     """
     client = get_client(ctx)
-    oai = client.clusters.get(cluster).openai
+    oai = client.clusters.get_handle(cluster).openai
 
     parts: list[str] = []
     if not sys.stdin.isatty():

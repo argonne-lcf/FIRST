@@ -3,6 +3,10 @@ from typing import TYPE_CHECKING, Any
 
 from openai import OpenAI
 
+from first_common.schema.resources.read import ClusterDetail, ClusterSummary
+
+from .._http import raise_for_status
+
 if TYPE_CHECKING:
     from ..client import InferenceClient
 
@@ -35,5 +39,15 @@ class ClustersResource:
         self._client = client
         self._handles: dict[str, ClusterClient] = {}
 
-    def get(self, name: str) -> ClusterClient:
+    def get_handle(self, name: str) -> ClusterClient:
         return self._handles.setdefault(name, ClusterClient(name, self._client))
+
+    def list(self) -> list[ClusterSummary]:
+        resp = self._client.get("/resources/clusters")
+        raise_for_status(resp)
+        return [ClusterSummary.model_validate(o) for o in resp.json()]
+
+    def get(self, name: str) -> ClusterDetail:
+        resp = self._client.get(f"/resources/clusters/{name}")
+        raise_for_status(resp)
+        return ClusterDetail.model_validate(resp.json())

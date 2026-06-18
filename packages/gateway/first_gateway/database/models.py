@@ -7,7 +7,15 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.mutable import MutableList
-from sqlalchemy.orm import DeclarativeBase, Mapped, defer, mapped_column, relationship
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    defer,
+    joinedload,
+    mapped_column,
+    relationship,
+    selectinload,
+)
 
 from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
@@ -165,6 +173,15 @@ class Model(ResourceRow):
         back_populates="model", lazy="raise"
     )
 
+    @classmethod
+    async def list(cls, sess: AsyncSession) -> list[Self]:
+        q = sa.select(cls).options(
+            joinedload(cls.access_group),
+            selectinload(cls.pilot_deployments),
+            selectinload(cls.static_deployments),
+        )
+        return list(await sess.scalars(q))
+
 
 class Cluster(ResourceRow):
     __tablename__ = "cluster"
@@ -186,6 +203,20 @@ class Cluster(ResourceRow):
     static_deployments: Mapped[list["StaticDeployment"]] = relationship(
         back_populates="cluster", lazy="raise"
     )
+
+    @classmethod
+    async def get_detail(cls, sess: AsyncSession, name: str) -> Self:
+        q = (
+            sa.select(cls)
+            .where(cls.name == name)
+            .options(
+                selectinload(cls.pilot_jobs).selectinload(PilotJob.assigned_replicas)
+            )
+        )
+        res = await sess.scalar(q)
+        if res is None:
+            raise NotFound(f"No Cluster with {name=!r} was found.")
+        return res
 
 
 class StaticDeployment(ResourceRow):
@@ -255,11 +286,26 @@ class PilotDeployment(ResourceRow):
     def set_desired_replicas(self, n: int) -> None:
         self.desired_replicas = n
 
+    @classmethod
+    async def get_detail(cls, sess: AsyncSession, name: str) -> Self:
+        q = (
+            sa.select(cls)
+            .where(cls.name == name)
+            .options(
+                selectinload(cls.replicas),
+                joinedload(cls.model).joinedload(Model.access_group),
+            )
+        )
+        res = await sess.scalar(q)
+        if res is None:
+            raise NotFound(f"No PilotDeployment with {name=!r} was found.")
+        return res
+
 
 class PilotJob(ResourceRow):
     __tablename__ = "pilot_job"
 
-    cluster_uid: Mapped[int] = mapped_column(sa.ForeignKey("cluster.uid"))
+    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"))
     scheduler_job_id: Mapped[str | None]
     phase: Mapped[str] = mapped_column(default=PilotJobPhase.pending_submit.value)
     manager_url: Mapped[str | None]
@@ -279,10 +325,10 @@ class PilotJob(ResourceRow):
 
 class PilotReplica(ResourceRow):
     __tablename__ = "pilot_replica"
-    pilot_deployment_uid: Mapped[int] = mapped_column(
-        sa.ForeignKey("pilot_deployment.uid")
+    pilot_deployment_name: Mapped[str] = mapped_column(
+        sa.ForeignKey("pilot_deployment.name")
     )
-    pilot_job_uid: Mapped[int | None] = mapped_column(sa.ForeignKey("pilot_job.uid"))
+    pilot_job_name: Mapped[str | None] = mapped_column(sa.ForeignKey("pilot_job.name"))
     used_resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     model_url: Mapped[str | None]
     observed_served_name: Mapped[str | None]

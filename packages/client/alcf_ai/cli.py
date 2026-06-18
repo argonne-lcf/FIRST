@@ -7,12 +7,16 @@ from typer import Typer
 
 from .client import InferenceClient
 from .subcommands._context import CliContext
+from .subcommands.access_groups import cli as access_groups_cli
 from .subcommands.admin import cli as admin_cli
 from .subcommands.auth import cli as auth_cli
 from .subcommands.chat import chat as chat_command
 from .subcommands.clusters import cli as clusters_cli
 from .subcommands.endpoints import cli as endpoints_cli
+from .subcommands.models import cli as models_cli
+from .subcommands.pilot_deployments import cli as pilot_deployments_cli
 from .subcommands.sam3 import cli as sam3_cli
+from .subcommands.static_deployments import cli as static_deployments_cli
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
@@ -24,6 +28,20 @@ cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation servi
 cli.add_typer(admin_cli, name="admin", help="Manage Inference Gateway Resources")
 cli.add_typer(endpoints_cli, name="endpoints", help="Inspect available API endpoints")
 cli.add_typer(clusters_cli, name="clusters", help="Inspect cluster state")
+cli.add_typer(
+    access_groups_cli, name="access-groups", help="Inspect AccessGroup resources"
+)
+cli.add_typer(models_cli, name="models", help="Inspect Model resources")
+cli.add_typer(
+    pilot_deployments_cli,
+    name="pilot-deployments",
+    help="Inspect PilotDeployment resources",
+)
+cli.add_typer(
+    static_deployments_cli,
+    name="static-deployments",
+    help="Inspect StaticDeployment resources",
+)
 cli.command(name="chat")(chat_command)
 
 

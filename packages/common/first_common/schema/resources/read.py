@@ -68,7 +68,7 @@ class ModelSummary(ResourceMeta, spec.ModelSpec):
 
 class PilotJob(ResourceMeta):
     scheduler_job_id: str
-    cluster_uid: int
+    cluster_name: str
     phase: PilotJobPhase
     manager_url: str
     manager_health: HealthEndpointStatus

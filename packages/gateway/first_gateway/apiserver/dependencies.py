@@ -7,19 +7,20 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from first_common.schema.auth import UserAuthEvent
+from first_common.schema.resources.spec import AccessGroupSpec
 
 from ..settings import ClientState
-from .auth import GlobusAuthService, check_permission
+from .auth import GlobusAuthService, enforce_permission
 
 
 async def get_state(request: Request) -> ClientState:
     return cast(ClientState, request.state)
 
 
-State = Annotated[ClientState, Depends(get_state)]
+AppState = Annotated[ClientState, Depends(get_state)]
 
 
-async def get_session(state: State) -> AsyncGenerator[AsyncSession, None]:
+async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
     """
     Yields a "commit-as-you-go" AsyncSession.  Use sess.begin() or sess.commit()
     to manage transactions explicitly.
@@ -29,7 +30,7 @@ async def get_session(state: State) -> AsyncGenerator[AsyncSession, None]:
 
 
 async def get_auth_user(
-    state: State,
+    state: AppState,
     token: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
 ) -> UserAuthEvent:
     """
@@ -41,20 +42,29 @@ async def get_auth_user(
 
 
 async def get_admin_user(
-    state: State, user: UserAuthEvent = Depends(get_auth_user)
+    state: AppState, user: UserAuthEvent = Depends(get_auth_user)
 ) -> UserAuthEvent:
     """
     Returns UserAuthEvent if and only if the user is authenticated and is a
-    member of `settings.globus.admin_group`.  Raises Unauthorized otherwise.
+    member of `settings.globus.admin_group`.  Raises AccessDenied otherwise.
     """
     settings = state["settings"]
-    check_permission(
-        user, allowed_globus_groups=[settings.globus.admin_group], allowed_domains=None
+    enforce_permission(
+        user, AccessGroupSpec(allowed_groups=[settings.globus.admin_group])
     )
     return user
+
+
+async def is_user_admin(
+    state: AppState, user: UserAuthEvent = Depends(get_auth_user)
+) -> bool:
+    """Returns True if the user belongs to the admin group"""
+    admin_group = state["settings"].globus.admin_group
+    return admin_group in user.user_group_uuids
 
 
 BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
+IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
