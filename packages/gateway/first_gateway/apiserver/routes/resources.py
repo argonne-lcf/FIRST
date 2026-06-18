@@ -2,6 +2,7 @@ from fastapi import APIRouter, Body
 
 from first_common.schema.resources import (
     ConfigVersion,
+    ConfigVersionSummary,
     ResourceChangePlan,
     ResourceManifest,
 )
@@ -16,16 +17,16 @@ user_router = APIRouter(prefix="/resources")
 
 
 @user_router.get("/clusters", response_model=list[ClusterSummary])
-async def summarize_clusters(sess: DbSession) -> list[db.Cluster]:
+async def list_clusters(sess: DbSession) -> list[db.Cluster]:
     """List all configured Cluster resources."""
     return await db.Cluster.list(sess)
 
 
-@user_router.get("/clusters/{name}", response_model=list[ClusterSummary])
-async def describe_cluster(sess: DbSession, name: str) -> list[db.Cluster]:
-    """List all configured Cluster resources."""
-    ...
-    # return await db.Cluster.get_detail(sess, name)
+# @user_router.get("/clusters/{name}", response_model=list[ClusterSummary])
+# async def get_cluster(sess: DbSession, name: str) -> list[db.Cluster]:
+#     """List all configured Cluster resources."""
+#     ...
+#     # return await db.Cluster.get_detail(sess, name)
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)
@@ -62,3 +63,15 @@ async def apply_resources(
     """
     async with sess.begin():
         return await apply_plan(resources, approved_plan, admin, sess)
+
+
+@admin_router.get("/config-versions", response_model=list[ConfigVersionSummary])
+async def list_config_versions(sess: DbSession) -> list[db.ConfigVersion]:
+    """List all recorded ConfigVersions (without the large `changes` payload)."""
+    return await db.ConfigVersion.list(sess)
+
+
+@admin_router.get("/config-versions/{uid}", response_model=ConfigVersion)
+async def get_config_version(sess: DbSession, uid: int) -> db.ConfigVersion:
+    """Get a single ConfigVersion by uid, including the full `changes` record."""
+    return await db.ConfigVersion.get_detail(sess, uid)

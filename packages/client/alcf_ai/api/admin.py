@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 from first_common.schema.resources import (
     ConfigVersion,
+    ConfigVersionSummary,
     ResourceChangePlan,
     ResourceManifest,
 )
@@ -39,3 +40,13 @@ class AdminAPI:
         )
         raise_for_status(resp)
         return ConfigVersion.model_validate(resp.json()) if resp.json() else None
+
+    def list_config_versions(self) -> list[ConfigVersionSummary]:
+        resp = self._client.get("/resources/config-versions")
+        raise_for_status(resp)
+        return [ConfigVersionSummary.model_validate(v) for v in resp.json()]
+
+    def get_config_version(self, uid: int) -> ConfigVersion:
+        resp = self._client.get(f"/resources/config-versions/{uid}")
+        raise_for_status(resp)
+        return ConfigVersion.model_validate(resp.json())
