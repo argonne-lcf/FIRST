@@ -4,7 +4,7 @@ import logging
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -14,10 +14,13 @@ from pydantic import (
     ConfigDict,
 )
 
-from .resource import ClientResource
+if TYPE_CHECKING:
+    from ..client import InferenceClient
 
 NDArray = npt.NDArray[Any]
 logger = logging.getLogger(__name__)
+
+SAM3_DEPLOYMENT = "sophia/sam3service"
 
 
 def to_ndarray(obj: Any) -> NDArray:
@@ -74,8 +77,11 @@ class SubmitTaskResponse(BaseModel):
     task_id: str
 
 
-class Sam3Resource(ClientResource):
+class Sam3API:
     class TaskPending(Exception): ...
+
+    def __init__(self, client: "InferenceClient") -> None:
+        self._client = client
 
     def submit_image(
         self, image_uri: str, prompt: str, weights_dir_override: Path | None = None
@@ -91,7 +97,9 @@ class Sam3Resource(ClientResource):
             single_image_prompt=prompt,
             weights_dir_override=weights_dir_override,
         )
-        resp = self._client.post(f"{self.name}/process", json=payload.model_dump())
+        resp = self._client.post(
+            f"{SAM3_DEPLOYMENT}/process", json=payload.model_dump()
+        )
         resp.raise_for_status()
         return SubmitTaskResponse.model_validate(resp.json())
 
@@ -109,7 +117,7 @@ class Sam3Resource(ClientResource):
             weights_dir_override=weights_dir_override,
         )
         resp = self._client.post(
-            f"{self.name}/process", json=payload.model_dump(mode="json")
+            f"{SAM3_DEPLOYMENT}/process", json=payload.model_dump(mode="json")
         )
         resp.raise_for_status()
         return SubmitTaskResponse.model_validate(resp.json())
@@ -117,12 +125,12 @@ class Sam3Resource(ClientResource):
     def get_task_result(self, task_id: str) -> Sam3ImageResult | Sam3BatchResult:
         """
         Get the result of a submitted SAM3 inference task. Raises
-        Sam3Resource.TaskPending if the inference has not yet finished.
+        Sam3API.TaskPending if the inference has not yet finished.
         """
-        resp = self._client.get(f"{self.name}/tasks/{task_id}")
+        resp = self._client.get(f"{SAM3_DEPLOYMENT}/tasks/{task_id}")
 
         if resp.status_code == 202 and b"pending" in resp.content:
-            raise Sam3Resource.TaskPending
+            raise Sam3API.TaskPending
         elif resp.status_code >= 400:
             resp.raise_for_status()
 
@@ -145,6 +153,6 @@ class Sam3Resource(ClientResource):
         while time.monotonic() - start < timeout:
             try:
                 return self.get_task_result(task_id)
-            except Sam3Resource.TaskPending:
+            except Sam3API.TaskPending:
                 time.sleep(1)
         raise TimeoutError(f"{task_id=} not finished in {timeout=}")

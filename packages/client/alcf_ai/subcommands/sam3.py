@@ -15,8 +15,9 @@ import typer
 from PIL.Image import Image, fromarray
 from PIL.Image import open as imopen
 
-from .auth import STAGING_COLLECTION_ROOT
-from .resources.sam3 import Sam3BatchResult, Sam3ImageResult
+from ..api.sam3 import Sam3BatchResult, Sam3ImageResult
+from ..auth import STAGING_COLLECTION_ROOT
+from ._context import get_client
 
 NDArray = npt.NDArray[Any]
 
@@ -252,6 +253,7 @@ def write_wds_shard(
 
 @cli.command()
 def submit_batch(
+    ctx: typer.Context,
     dataset_path: Path,
     from_collection_id: str | None = None,
     weights_dir_override: Path | None = None,
@@ -259,14 +261,12 @@ def submit_batch(
     """
     Submit a WebDataset-structured tar file for batch inference.
     """
-    from .cli import _cli_state
-
-    client = _cli_state["client"]
+    client = get_client(ctx)
 
     dataset_path = dataset_path.expanduser().resolve()
 
     logger.info(f"Staging in {dataset_path}")
-    stagein = client.stage_in(
+    stagein = client.staging.stage_in(
         dataset_path, Path(dataset_path.name), from_collection_id=from_collection_id
     )
     logger.info(f"Stage in complete: {stagein}")
@@ -284,7 +284,7 @@ def submit_batch(
 
     logger.info(f"Staging out result file: {result.result_path}")
     if from_collection_id:
-        stageout = client.stage_out(
+        stageout = client.staging.stage_out(
             from_collection_id,
             Path(Path(result.result_path).name),
             dataset_path.with_suffix(".results.tar"),
@@ -294,18 +294,17 @@ def submit_batch(
 
 @cli.command()
 def submit_image(
+    ctx: typer.Context,
     image_uri: str,
     prompt: str,
     save_preview: Path | None = None,
 ) -> None:
-    from .cli import _cli_state
-
-    client = _cli_state["client"]
+    client = get_client(ctx)
     logger.info("Sending request...")
 
     if "://" not in image_uri and Path(image_uri).is_file():
         logger.info(f"{image_uri} is a local file; staging in...")
-        stagein = client.stage_in(Path(image_uri), Path(Path(image_uri).name))
+        stagein = client.staging.stage_in(Path(image_uri), Path(Path(image_uri).name))
         process_uri = STAGING_COLLECTION_ROOT + str(stagein.destination_path)
     else:
         process_uri = image_uri

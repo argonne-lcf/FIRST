@@ -12,6 +12,8 @@ from yaml import safe_load_all
 from first_common.errors import InvalidSpecError
 from first_common.schema.resources import ResourceChangePlan, ResourceManifest
 
+from ._context import get_client
+
 cli = typer.Typer(no_args_is_help=True)
 logger = logging.getLogger(__name__)
 
@@ -157,23 +159,19 @@ def print_plan(plan: ResourceChangePlan) -> None:
 
 
 @cli.command()
-def plan(spec_dir: Path) -> None:
-    from ..cli import _cli_state
-
+def plan(ctx: typer.Context, spec_dir: Path) -> None:
+    client = get_client(ctx)
     resources = load_resources_from_yaml(spec_dir)
-    client = _cli_state["client"]
-    result = client.admin.plan_resources(resources)
+    result = client.admin.plan(resources)
     print_plan(result)
 
 
 @cli.command()
-def apply(spec_dir: Path) -> None:
-    from ..cli import _cli_state
-
+def apply(ctx: typer.Context, spec_dir: Path) -> None:
+    client = get_client(ctx)
     console = Console()
     resources = load_resources_from_yaml(spec_dir)
-    client = _cli_state["client"]
-    plan = client.admin.plan_resources(resources)
+    plan = client.admin.plan(resources)
     print_plan(plan)
 
     if not (plan.to_add or plan.to_update or plan.to_delete):
@@ -182,7 +180,7 @@ def apply(spec_dir: Path) -> None:
     if not typer.confirm("Apply these changes?"):
         return
 
-    result = client.admin.apply_resources(resources, plan)
+    result = client.admin.apply(resources, plan)
     if result:
         console.print(
             f"\n[bold green]Applied ConfigVersion {result.uid} successfully.\n"

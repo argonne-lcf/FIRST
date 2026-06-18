@@ -1,11 +1,6 @@
-from typing import TYPE_CHECKING
-
 from httpx import Response
 
 from first_common.errors import FirstError
-
-if TYPE_CHECKING:
-    from alcf_ai.client import InferenceClient
 
 
 def raise_for_status(response: Response) -> None:
@@ -22,12 +17,3 @@ def raise_for_status(response: Response) -> None:
         raise FirstError(f"HTTP Error {response.status_code}: {message}\n {error}\n")
     else:
         response.raise_for_status()
-
-
-class ClientResource:
-    def __init__(self, name: str, client: "InferenceClient") -> None:
-        self.name = name
-        self._client = client
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(name={self.name})"

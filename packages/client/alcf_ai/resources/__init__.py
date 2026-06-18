@@ -1,6 +1,4 @@
-from .admin import AdminResource
-from .cluster import ClusterResource
-from .resource import ClientResource
-from .sam3 import Sam3Resource
+from .cluster import ClusterClient, ClustersResource
+from .endpoint import EndpointsResource
 
-__all__ = ["ClusterResource", "Sam3Resource", "ClientResource", "AdminResource"]
+__all__ = ["ClusterClient", "ClustersResource", "EndpointsResource"]

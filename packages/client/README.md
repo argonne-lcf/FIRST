@@ -36,14 +36,14 @@ curl -H "Authorization: Bearer $token" https://inference-api.alcf.anl.gov/resour
 To list the models and corresponding API endpoints that are currently available, use:
 
 ```bash
-uvx alcf-ai ls-endpoints
+uvx alcf-ai endpoints ls
 ```
 
 To view the status of models that are currently hot or starting up on a cluster, use:
 
 ```bash
 # Can substitute "sophia" with "metis"
-uvx alcf-ai ls-jobs sophia
+uvx alcf-ai clusters ls-jobs sophia
 ```
 
 ### Chat with an LLM
@@ -146,10 +146,10 @@ from rich import print
 client = InferenceClient()
 
 # Programmatically discover endpoints:
-print(client.list_endpoints()["clusters"]["sophia"])
+print(client.endpoints.list()["clusters"]["sophia"])
 
 # Get an OpenAI API client for an ALCF cluster:
-oai = client.clusters("sophia").openai
+oai = client.clusters.get("sophia").openai
 print(
     oai.chat.completions.create(
         model="openai/gpt-oss-120b",
@@ -174,7 +174,9 @@ dataset_path = Path("/path/to/my-dataset.tar")
 collection_id="globus collection uuid"
 
 # Stage in data:
-stagein = client.stage_in(collection_id, dataset_path, dataset_path.name)
+stagein = client.staging.stage_in(
+    dataset_path, Path(dataset_path.name), from_collection_id=collection_id
+)
 
 # Submit SAM3 inference:
 resp = client.sam3.submit_batch(
@@ -185,7 +187,7 @@ resp = client.sam3.submit_batch(
 result = client.sam3.poll_task_result(resp.task_id)
 
 # Copy results back:
-client.stage_out(
+client.staging.stage_out(
     collection_id,
     Path(result.result_path).name,
     dataset_path.with_suffix(".results.tar"),
