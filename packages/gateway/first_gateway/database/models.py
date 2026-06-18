@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.mutable import MutableList
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, defer, mapped_column, relationship
 
 from first_common.errors import SpecApplyError
 from first_common.schema.auth import UserAuthEvent
@@ -98,6 +98,16 @@ class ConfigVersion(Base):
         return res or 0
 
     @classmethod
+    async def list(cls, sess: AsyncSession) -> list[Self]:
+        q = sa.select(cls).options(defer(cls.changes))
+        return list(await sess.scalars(q))
+
+    @classmethod
+    async def get_detail(cls, sess: AsyncSession, uid: int) -> Self:
+        res = await sess.execute(sa.select(cls).where(cls.uid == uid))
+        return res.scalar_one()
+
+    @classmethod
     async def record_new_version(
         cls,
         previous_version: int,
@@ -143,12 +153,12 @@ class Model(ResourceBase):
     access_group_name: Mapped[str] = mapped_column(sa.ForeignKey("access_group.name"))
     supported_endpoints: Mapped[StrArray]
 
-    access_group: Mapped[AccessGroup] = relationship()
+    access_group: Mapped[AccessGroup] = relationship(lazy="raise")
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(
-        back_populates="model"
+        back_populates="model", lazy="raise"
     )
     static_deployments: Mapped[list["StaticDeployment"]] = relationship(
-        back_populates="model"
+        back_populates="model", lazy="raise"
     )
 
 
@@ -164,13 +174,13 @@ class Cluster(ResourceBase):
     last_status_check: Mapped[DateTimeOrNone]
 
     pilot_jobs: Mapped[list["PilotJob"]] = relationship(
-        back_populates="cluster", cascade="all, delete-orphan"
+        back_populates="cluster", cascade="all, delete-orphan", lazy="raise"
     )
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(
-        back_populates="cluster"
+        back_populates="cluster", lazy="raise"
     )
     static_deployments: Mapped[list["StaticDeployment"]] = relationship(
-        back_populates="cluster"
+        back_populates="cluster", lazy="raise"
     )
 
 
@@ -194,8 +204,12 @@ class StaticDeployment(ResourceBase):
     health: Mapped[str] = mapped_column(default=DeploymentHealth.offline.value)
     last_health_check: Mapped[DateTimeOrNone]
 
-    cluster: Mapped[Cluster] = relationship(back_populates="static_deployments")
-    model: Mapped[Model] = relationship(back_populates="static_deployments")
+    cluster: Mapped[Cluster] = relationship(
+        back_populates="static_deployments", lazy="raise"
+    )
+    model: Mapped[Model] = relationship(
+        back_populates="static_deployments", lazy="raise"
+    )
 
 
 class PilotDeployment(ResourceBase):
@@ -225,9 +239,14 @@ class PilotDeployment(ResourceBase):
     replicas: Mapped[list["PilotReplica"]] = relationship(
         back_populates="pilot_deployment",
         cascade="all, delete-orphan",
+        lazy="raise",
     )
-    cluster: Mapped[Cluster] = relationship(back_populates="pilot_deployments")
-    model: Mapped[Model] = relationship(back_populates="pilot_deployments")
+    cluster: Mapped[Cluster] = relationship(
+        back_populates="pilot_deployments", lazy="raise"
+    )
+    model: Mapped[Model] = relationship(
+        back_populates="pilot_deployments", lazy="raise"
+    )
 
 
 class PilotJob(ResourceBase):
@@ -245,9 +264,9 @@ class PilotJob(ResourceBase):
     idle_since: Mapped[DateTimeOrNone]
     walltime_sec: Mapped[int]
 
-    cluster: Mapped[Cluster] = relationship(back_populates="pilot_jobs")
+    cluster: Mapped[Cluster] = relationship(back_populates="pilot_jobs", lazy="raise")
     assigned_replicas: Mapped[list["PilotReplica"]] = relationship(
-        back_populates="pilot_job"
+        back_populates="pilot_job", lazy="raise"
     )
 
 
@@ -266,5 +285,9 @@ class PilotReplica(ResourceBase):
     status_info: Mapped[DictJsonb] = mapped_column(default=dict)
     last_health_check: Mapped[DateTimeOrNone]
 
-    pilot_deployment: Mapped[PilotDeployment] = relationship(back_populates="replicas")
-    pilot_job: Mapped[PilotJob] = relationship(back_populates="assigned_replicas")
+    pilot_deployment: Mapped[PilotDeployment] = relationship(
+        back_populates="replicas", lazy="raise"
+    )
+    pilot_job: Mapped[PilotJob] = relationship(
+        back_populates="assigned_replicas", lazy="raise"
+    )

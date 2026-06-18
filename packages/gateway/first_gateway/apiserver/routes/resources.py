@@ -16,9 +16,15 @@ user_router = APIRouter(prefix="/resources")
 
 
 @user_router.get("/clusters", response_model=list[ClusterSummary])
-async def list_clusters(sess: DbSession) -> list[db.Cluster]:
+async def summarize_clusters(sess: DbSession) -> list[db.Cluster]:
     """List all configured Cluster resources."""
     return await db.Cluster.list(sess)
+
+
+@user_router.get("/clusters/{name}", response_model=list[ClusterSummary])
+async def describe_cluster(sess: DbSession, name: str) -> list[db.Cluster]:
+    """List all configured Cluster resources."""
+    return await db.Cluster.get_detail(sess, name)
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)
