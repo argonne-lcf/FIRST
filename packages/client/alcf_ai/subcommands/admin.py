@@ -183,4 +183,9 @@ def apply(spec_dir: Path) -> None:
         return
 
     result = client.admin.apply_resources(resources, plan)
-    console.print(f"\n[bold green]Applied ConfigVersion {result.uid} successfully.\n")
+    if result:
+        console.print(
+            f"\n[bold green]Applied ConfigVersion {result.uid} successfully.\n"
+        )
+    else:
+        console.print("\nUnexpectedly, there was no ConfigVersion change.")

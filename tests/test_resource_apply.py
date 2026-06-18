@@ -103,6 +103,7 @@ async def test_additions(
 
     # Apply and verify version bumps
     result = await _apply(client, resources, plan)
+    assert result is not None
     assert result.uid == baseline_plan.previous_version + 2
 
     # Re-plan after apply: everything should be no_change now
@@ -132,6 +133,7 @@ async def test_deletions(
 
     # Apply and verify
     result = await _apply(client, resources, plan)
+    assert result is not None
     assert result.uid == baseline_plan.previous_version + 2
 
     # Re-plan: only 3 resources remain
@@ -175,6 +177,7 @@ async def test_updates(
 
     # Apply and verify
     result = await _apply(client, resources, plan)
+    assert result is not None
     assert result.uid == baseline_plan.previous_version + 2
 
 
