@@ -3,3 +3,25 @@ services:
     volumes:
       - type: tmpfs
         target: /var/lib/postgresql
+
+  migration:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - path: ../.env.default # common
+        required: true
+      - path: ../.env.compose # specific to compose stack
+        required: true
+      - path: ../.env.secret  # .gitignored secrets
+        required: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../tests/:/app/tests:ro
+    command: .venv/bin/python /app/tests/bootstrap_db.py
+    networks:
+      - gateway
