@@ -6,7 +6,7 @@ from httpx import Auth, Client, Request, Response, Timeout
 from pydantic import BaseModel
 
 from .auth import get_inference_authorizer
-from .resources import ClientResource, ClusterResource, Sam3Resource
+from .resources import AdminResource, ClientResource, ClusterResource, Sam3Resource
 from .transfer import TransferResult, https_put_to_collection, run_globus_transfer
 
 DEFAULT_BASE_URL = os.environ.get(
@@ -58,6 +58,10 @@ class InferenceClient(Client):
         return self._resources.setdefault(  # type: ignore[return-value]
             "sam3", Sam3Resource("sophia/sam3service", self)
         )
+
+    @property
+    def admin(self) -> "AdminResource":
+        return self._resources.setdefault("admin", AdminResource("admin", self))  # type: ignore[return-value]
 
     def list_endpoints(self) -> dict[str, Any]:
         resp = self.get("list-endpoints")

@@ -50,20 +50,20 @@ async def test_whoami_returns_identity_for_authenticated_users(
 async def test_clusters_rejects_missing_credentials(
     client: httpx.AsyncClient,
 ) -> None:
-    resp = await client.get("/clusters")
+    resp = await client.get("/resources/clusters")
     assert resp.status_code == 401
 
 
 async def test_plan_forbidden_for_non_admin(client: httpx.AsyncClient) -> None:
     # Authenticated, but not in the admin group -> 403 from check_permission.
-    resp = await client.post("/plan", headers=auth_header(USER_TOKEN))
+    resp = await client.post("/resources/plan", headers=auth_header(USER_TOKEN))
     assert resp.status_code == 403
 
-    resp = await client.post("/apply", headers=auth_header(USER_TOKEN))
+    resp = await client.post("/resources/apply", headers=auth_header(USER_TOKEN))
     assert resp.status_code == 403
 
 
 async def test_clusters_allowed_for_admin(client: httpx.AsyncClient) -> None:
-    resp = await client.get("/clusters", headers=auth_header(ADMIN_TOKEN))
+    resp = await client.get("/resources/clusters", headers=auth_header(ADMIN_TOKEN))
     assert resp.status_code == 200
     assert resp.json() == []

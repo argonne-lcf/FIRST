@@ -14,6 +14,7 @@ from typer import Typer
 from .auth import cli as auth_cli
 from .client import InferenceClient
 from .sam3 import cli as sam3_cli
+from .subcommands.admin import cli as admin_cli
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
@@ -28,6 +29,7 @@ _cli_state: CliState = {}
 
 cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
 cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation service")
+cli.add_typer(admin_cli, name="admin", help="Manage Inference Gateway Resources")
 
 
 @cli.callback()

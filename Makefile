@@ -24,17 +24,27 @@ test:
 install-dev: sync
 	pre-commit install
 
-dev-db-up:
-	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose up -d postgres redis
+# To use the compose shortcuts below, add these to your .env file:
+#  COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml
+#  COMPOSE_PROJECT_NAME=first
 
-dev-db-down:
-	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose down postgres redis
+compose-build:
+	docker compose build
 
-dev-up:
-	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose up -d
+db-up:
+	docker compose up -d postgres redis
 
-dev-down:
-	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml docker compose down
+db-down:
+	docker compose down postgres redis
+
+compose-down:
+	docker compose down
+
+compose-up:
+	docker compose up -d
+
+watch-logs:
+	docker compose logs inference-gateway -f --since=1m
 
 prod-up:
 	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml docker compose up -d

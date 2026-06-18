@@ -9,11 +9,11 @@ ENV UV_NO_DEV=1
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
-# # Install system dependencies
-# RUN apt-get update && apt-get install -y \
-#     build-essential \
-#     libpq-dev \
-#     && rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set work directory
 WORKDIR /app
@@ -46,8 +46,3 @@ CMD [".venv/bin/gunicorn", \
     "--access-logfile", "-", \
     "--error-logfile", "-", \
     "--capture-output"]
-
-# FROM python:3.12-slim
-# WORKDIR /app
-# COPY --from=build --chown=app:app /app/.venv /app/.venv
-# ENV PATH="/app/.venv/bin:$PATH"

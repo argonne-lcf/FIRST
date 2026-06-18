@@ -10,6 +10,7 @@ from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from first_common.errors import SpecApplyError
+from first_common.schema.auth import UserAuthEvent
 from first_common.schema.types import (
     ClusterStatus,
     DeploymentHealth,
@@ -81,13 +82,14 @@ class ResourceBase(Base):
             setattr(self, key, change.new)
 
 
-class ConfigHistory(Base):
-    __tablename__ = "config_history"
+class ConfigVersion(Base):
+    __tablename__ = "config_version"
 
     applied_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
         server_default=sa.func.now(),
     )
+    applied_by: Mapped[str]
     changes: Mapped[DictJsonb]
 
     @classmethod
@@ -97,7 +99,11 @@ class ConfigHistory(Base):
 
     @classmethod
     async def record_new_version(
-        cls, previous_version: int, changes: dict[str, Any], sess: AsyncSession
+        cls,
+        previous_version: int,
+        changes: dict[str, Any],
+        user: UserAuthEvent,
+        sess: AsyncSession,
     ) -> Self:
         q = sa.select(sa.exists().where(cls.uid == previous_version))
         previous_exists = await sess.scalar(q)
@@ -108,7 +114,7 @@ class ConfigHistory(Base):
                 status_code=HTTPStatus.BAD_REQUEST,
             )
 
-        obj = cls(uid=previous_version + 1, changes=changes)
+        obj = cls(uid=previous_version + 1, applied_by=user.username, changes=changes)
 
         try:
             async with sess.begin_nested():

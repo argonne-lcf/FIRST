@@ -1,0 +1,6 @@
+kind: Model
+name: orphan-model
+spec:
+  access_group_name: nonexistent-group
+  supported_endpoints:
+    - chat/completions

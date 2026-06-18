@@ -1,0 +1,35 @@
+kind: AccessGroup
+name: research-team
+spec:
+  allowed_groups: ["group:abc123"]
+  allowed_domains: ["@anl.gov"]
+
+---
+
+kind: Cluster
+name: sophia
+spec:
+  status_method: first_gateway.platforms.health.get_alcf_cluster_status
+  status_kwargs:
+    status_url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
+    timeout: 10
+  maintenance_notice: "Sophia is operational"
+  pilot_system:
+    scheduler_interface: first_gateway.platforms.scheduler.GlobusComputePBSWrapper
+    scheduler_config:
+      endpoint_uuid: sophia-endpoint-uuid
+    pilot_env_path: /eagle/inference-service/venvs/pilot/
+    pilot_config_path: /eagle/inference-service/pilot-config/
+    job_walltime: 2592000
+    queue: infer-svc
+    account: inference_svc
+
+---
+
+kind: Model
+name: meta-llama/llama-3-8b
+spec:
+  access_group_name: research-team
+  supported_endpoints:
+    - chat/completions
+    - completions

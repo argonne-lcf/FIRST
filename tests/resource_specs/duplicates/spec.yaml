@@ -1,0 +1,13 @@
+kind: AccessGroup
+name: dup-group
+spec:
+  allowed_groups: []
+  allowed_domains: []
+
+---
+
+kind: AccessGroup
+name: dup-group
+spec:
+  allowed_groups: ["group:xyz"]
+  allowed_domains: ["@example.com"]

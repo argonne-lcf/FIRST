@@ -2,22 +2,23 @@ from fastapi import APIRouter, Body
 
 from first_common.schema.resource import ClusterSummary
 from first_common.schema.resource_specs import (
+    ConfigVersion,
     ResourceApply,
     ResourceChangePlan,
 )
 
-from ...database.models import Cluster
+from ...database import models as db
 from ...services.apply_spec import apply, create_plan
-from ..dependencies import DbSession
+from ..dependencies import AdminUser, DbSession
 
-admin_router = APIRouter()
-user_router = APIRouter()
+admin_router = APIRouter(prefix="/resources")
+user_router = APIRouter(prefix="/resources")
 
 
 @user_router.get("/clusters", response_model=list[ClusterSummary])
-async def list_clusters(sess: DbSession) -> list[Cluster]:
+async def list_clusters(sess: DbSession) -> list[db.Cluster]:
     """List all configured Cluster resources."""
-    return await Cluster.list(sess)
+    return await db.Cluster.list(sess)
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)
@@ -36,12 +37,13 @@ async def plan_resources(
     return await create_plan(resources, sess)
 
 
-@admin_router.post("/apply")
+@admin_router.post("/apply", response_model=ConfigVersion | None)
 async def apply_resources(
     resources: list[ResourceApply],
     approved_plan: ResourceChangePlan,
     sess: DbSession,
-) -> dict[str, str]:
+    admin: AdminUser,
+) -> db.ConfigVersion | None:
     """
     Apply a previously-approved plan.
 
@@ -52,6 +54,4 @@ async def apply_resources(
     modifications have occurred.
     """
     async with sess.begin():
-        await apply(resources, approved_plan, sess)
-
-    return {"status": "applied"}
+        return await apply(resources, approved_plan, admin, sess)

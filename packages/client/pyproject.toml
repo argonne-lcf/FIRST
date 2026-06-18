@@ -31,7 +31,3 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
-
-[tool.ruff]
-line-length = 88
-target-version = "py312"

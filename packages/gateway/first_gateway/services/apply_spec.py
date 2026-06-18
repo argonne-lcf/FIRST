@@ -1,12 +1,10 @@
 from collections import Counter, defaultdict
-from pathlib import Path
 
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from yaml import safe_load_all
 
 import first_common.schema.resource_specs as specs
 from first_common.errors import InvalidSpecError, SpecApplyError
+from first_common.schema.auth import UserAuthEvent
 from first_common.schema.resource_specs import (
     FieldChange,
     ResourceApply,
@@ -15,56 +13,6 @@ from first_common.schema.resource_specs import (
     ResourcePatch,
 )
 from first_gateway.database import models
-
-
-def format_validation_error(
-    file: str | Path, kind: str, name: str, exc: ValidationError
-) -> str:
-    errors = []
-
-    for err in exc.errors(include_url=False):
-        location = ".".join(str(l) for l in err["loc"])
-        message = err["msg"]
-        errors.append(f" - {location}: {message}")
-
-    return f"In {file} ({kind}.{name}):\n{'\n'.join(errors)}\n"
-
-
-def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceApply]:
-    resources = []
-
-    files = (
-        f
-        for ext in ("yml", "yaml")
-        for f in Path(spec_dir).rglob(f"*.{ext}")
-        if f.is_file()
-    )
-
-    errors = []
-
-    for file in files:
-        with file.open("r") as fp:
-            try:
-                raw_docs = list(safe_load_all(fp))
-            except Exception as e:
-                raise InvalidSpecError(f"Failed to load YAML {file}: {e}") from None
-
-        for raw in raw_docs:
-            try:
-                resource = ResourceApply.model_validate(raw, extra="forbid")
-            except ValidationError as exc:
-                errors.append(
-                    format_validation_error(file, raw.get("kind"), raw.get("name"), exc)
-                )
-            else:
-                resources.append(resource)
-
-    if errors:
-        raise InvalidSpecError(
-            "One or more resource specs were invalid.\n\n" + "\n".join(errors)
-        )
-
-    return resources
 
 
 def validate_resources(
@@ -127,7 +75,7 @@ async def create_plan(
     to_update = []
 
     by_kind = validate_resources(resources)
-    current_version = await models.ConfigHistory.get_latest_version(sess)
+    current_version = await models.ConfigVersion.get_latest_version(sess)
 
     for db_model, spec in resource_order:
         kind = spec.__name__
@@ -172,17 +120,19 @@ async def create_plan(
 async def apply(
     resources: list[ResourceApply],
     approved_plan: ResourceChangePlan,
+    user: UserAuthEvent,
     sess: AsyncSession,
-) -> None:
+) -> models.ConfigVersion | None:
 
     if not (approved_plan.to_add or approved_plan.to_delete or approved_plan.to_update):
-        return
+        return None
 
     changes = approved_plan.model_dump(mode="json", exclude={"previous_version"})
 
-    await models.ConfigHistory.record_new_version(
+    config_version = await models.ConfigVersion.record_new_version(
         approved_plan.previous_version,
         changes,
+        user,
         sess,
     )
 
@@ -194,16 +144,19 @@ async def apply(
             "The actual plan has diverged from the approved plan. Please try again."
         )
 
-    for delete_resource in actual_plan.to_delete:
-        cls = models.resource_registry[delete_resource.kind]
-        obj = await cls.get_by_name(sess, delete_resource.name)
-        await obj.delete(sess)
+    with sess.no_autoflush:
+        for delete_resource in actual_plan.to_delete:
+            cls = models.resource_registry[delete_resource.kind]
+            obj = await cls.get_by_name(sess, delete_resource.name)
+            await obj.delete(sess)
 
-    for new_resource in actual_plan.to_add:
-        cls = models.resource_registry[new_resource.kind]
-        cls.create_from_spec(sess, new_resource.name, new_resource.spec)
+        for new_resource in actual_plan.to_add:
+            cls = models.resource_registry[new_resource.kind]
+            cls.create_from_spec(sess, new_resource.name, new_resource.spec)
 
-    for patch_resource in actual_plan.to_update:
-        cls = models.resource_registry[patch_resource.kind]
-        obj = await cls.get_by_name(sess, patch_resource.name)
-        obj.apply_patch(patch_resource.patch)
+        for patch_resource in actual_plan.to_update:
+            cls = models.resource_registry[patch_resource.kind]
+            obj = await cls.get_by_name(sess, patch_resource.name)
+            obj.apply_patch(patch_resource.patch)
+
+    return config_version

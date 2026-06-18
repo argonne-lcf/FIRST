@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Callable, ClassVar, NamedTuple
 
 from pydantic import (
@@ -133,3 +134,10 @@ class ResourceChangePlan(BaseModel):
     to_delete: list[ResourceIdentifier]
     to_add: SerializeAsAny[list[ResourceApply]]
     to_update: list[ResourcePatch]
+
+
+class ConfigVersion(BaseModel):
+    uid: int
+    applied_at: datetime
+    applied_by: str
+    changes: dict[str, Any]
