@@ -1,15 +1,12 @@
-from datetime import datetime
-from typing import Any, Callable, ClassVar, NamedTuple
+from typing import Any, Callable, ClassVar
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     ImportString,
-    SerializeAsAny,
-    model_validator,
 )
 
-from .types import (
+from ..types import (
     ClusterStatus,
     HealthEndpointStatus,
     LoadThresholdStrategy,
@@ -29,46 +26,26 @@ class ResourceSpec(BaseModel):
         super().__init_subclass__(**kwargs)
         # Only direct subclasses are registered:
         if cls.__bases__[0] is ResourceSpec:
-            ResourceSpec.registry[cls.__name__] = cls
+            if cls.__name__.endswith("Spec"):
+                kind = cls.__name__[:-4]
+                ResourceSpec.registry[kind] = cls
+            else:
+                raise RuntimeError(
+                    "Direct subclass of ResourceSpec: name must end in 'Spec'"
+                )
 
 
-class ResourceApply(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    kind: str
-    name: ResourceName
-    spec: SerializeAsAny[ResourceSpec]
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-
-        kind = data.get("kind")
-        if not kind:
-            raise ValueError("resource kind must be specified")
-
-        spec_cls = ResourceSpec.registry.get(kind)
-        if spec_cls is None:
-            raise ValueError(
-                f"unknown resource kind {kind!r}; "
-                f"known: {sorted(ResourceSpec.registry)}"
-            )
-
-        return {**data, "spec": spec_cls.model_validate(data.get("spec"))}
-
-
-class AccessGroup(ResourceSpec):
+class AccessGroupSpec(ResourceSpec):
     allowed_groups: list[str] = []
     allowed_domains: list[str] = []
 
 
-class Model(ResourceSpec):
+class ModelSpec(ResourceSpec):
     access_group_name: ResourceName
     supported_endpoints: list[str]
 
 
-class Cluster(ResourceSpec):
+class ClusterSpec(ResourceSpec):
     status_method: ImportString[Callable[[dict[str, Any]], ClusterStatus]]
     status_kwargs: dict[str, Any]
 
@@ -76,7 +53,7 @@ class Cluster(ResourceSpec):
     pilot_system: PilotConfig | None = None
 
 
-class StaticDeployment(ResourceSpec):
+class StaticDeploymentSpec(ResourceSpec):
     cluster_name: ResourceName
     model_name: ResourceName
 
@@ -93,7 +70,7 @@ class StaticDeployment(ResourceSpec):
     prometheus_scrape_interval: int = 15
 
 
-class PilotDeployment(ResourceSpec):
+class PilotDeploymentSpec(ResourceSpec):
     cluster_name: ResourceName
     model_name: ResourceName
 
@@ -110,34 +87,3 @@ class PilotDeployment(ResourceSpec):
     max_replicas: int = 1
 
     launch_spec: PilotLaunchSpec
-
-
-class ResourceIdentifier(BaseModel):
-    kind: str
-    name: str
-
-
-class FieldChange(NamedTuple):
-    old: Any
-    new: Any
-
-
-class ResourcePatch(BaseModel):
-    kind: str
-    name: str
-    patch: dict[str, FieldChange]
-
-
-class ResourceChangePlan(BaseModel):
-    previous_version: int
-    no_change: list[ResourceIdentifier]
-    to_delete: list[ResourceIdentifier]
-    to_add: SerializeAsAny[list[ResourceApply]]
-    to_update: list[ResourcePatch]
-
-
-class ConfigVersion(BaseModel):
-    uid: int
-    applied_at: datetime
-    applied_by: str
-    changes: dict[str, Any]

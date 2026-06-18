@@ -21,7 +21,7 @@ from first_common.schema.types import (
 )
 
 if TYPE_CHECKING:
-    from first_common.schema import resource_specs as spec
+    from first_common.schema.resources import FieldChange, spec
 
 StrArray = Annotated[
     list[str], mapped_column(MutableList.as_mutable(sa.ARRAY(sa.Text)))
@@ -30,7 +30,7 @@ DictJsonb = Annotated[dict[str, Any], mapped_column(JSONB)]
 DictJsonbOrNone = Annotated[dict[str, Any] | None, mapped_column(JSONB)]
 DateTimeOrNone = Annotated[datetime | None, mapped_column(sa.DateTime(timezone=True))]
 
-resource_registry: dict[str, type["ResourceBase"]] = {}
+resource_registry: dict[str, type["ResourceRow"]] = {}
 
 
 class Base(DeclarativeBase):
@@ -38,7 +38,7 @@ class Base(DeclarativeBase):
     uid: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True)
 
 
-class ResourceBase(Base):
+class ResourceRow(Base):
     __abstract__ = True
 
     name: Mapped[ResourceName] = mapped_column(sa.Text(), unique=True)
@@ -77,7 +77,7 @@ class ResourceBase(Base):
     async def delete(self, sess: AsyncSession) -> None:
         await sess.delete(self)
 
-    def apply_patch(self, patch: dict[str, "spec.FieldChange"]) -> None:
+    def apply_patch(self, patch: dict[str, "FieldChange"]) -> None:
         for key, change in patch.items():
             setattr(self, key, change.new)
 
@@ -140,14 +140,14 @@ class ConfigVersion(Base):
         return obj
 
 
-class AccessGroup(ResourceBase):
+class AccessGroup(ResourceRow):
     __tablename__ = "access_group"
 
     allowed_groups: Mapped[StrArray]
     allowed_domains: Mapped[StrArray]
 
 
-class Model(ResourceBase):
+class Model(ResourceRow):
     __tablename__ = "model"
 
     access_group_name: Mapped[str] = mapped_column(sa.ForeignKey("access_group.name"))
@@ -162,7 +162,7 @@ class Model(ResourceBase):
     )
 
 
-class Cluster(ResourceBase):
+class Cluster(ResourceRow):
     __tablename__ = "cluster"
 
     status_method: Mapped[str]
@@ -184,7 +184,7 @@ class Cluster(ResourceBase):
     )
 
 
-class StaticDeployment(ResourceBase):
+class StaticDeployment(ResourceRow):
     __tablename__ = "static_deployment"
 
     cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"))
@@ -212,7 +212,7 @@ class StaticDeployment(ResourceBase):
     )
 
 
-class PilotDeployment(ResourceBase):
+class PilotDeployment(ResourceRow):
     __tablename__ = "pilot_deployment"
 
     cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"))
@@ -249,7 +249,7 @@ class PilotDeployment(ResourceBase):
     )
 
 
-class PilotJob(ResourceBase):
+class PilotJob(ResourceRow):
     __tablename__ = "pilot_job"
 
     cluster_uid: Mapped[int] = mapped_column(sa.ForeignKey("cluster.uid"))
@@ -270,7 +270,7 @@ class PilotJob(ResourceBase):
     )
 
 
-class PilotReplica(ResourceBase):
+class PilotReplica(ResourceRow):
     __tablename__ = "pilot_replica"
     pilot_deployment_uid: Mapped[int] = mapped_column(
         sa.ForeignKey("pilot_deployment.uid")

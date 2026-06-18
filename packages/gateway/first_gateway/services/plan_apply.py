@@ -2,22 +2,28 @@ from collections import Counter, defaultdict
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import first_common.schema.resource_specs as specs
 from first_common.errors import InvalidSpecError, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
-from first_common.schema.resource_specs import (
+from first_common.schema.resources.plan_apply import (
     FieldChange,
-    ResourceApply,
     ResourceChangePlan,
-    ResourceIdentifier,
+    ResourceManifest,
     ResourcePatch,
+    ResourceRef,
+)
+from first_common.schema.resources.spec import (
+    AccessGroupSpec,
+    ClusterSpec,
+    ModelSpec,
+    PilotDeploymentSpec,
+    StaticDeploymentSpec,
 )
 from first_gateway.database import models
 
 
 def validate_resources(
-    resources: list[ResourceApply],
-) -> dict[str, list[ResourceApply]]:
+    resources: list[ResourceManifest],
+) -> dict[str, list[ResourceManifest]]:
     """
     Validate resource uniqueness and referential integrity, then return
     resources grouped by kind.
@@ -31,7 +37,7 @@ def validate_resources(
             + "\n".join(f" - DUPLICATED: {key[0]}.{key[1]}" for key in duplicates)
         )
 
-    by_kind: dict[str, list[ResourceApply]] = defaultdict(list)
+    by_kind: dict[str, list[ResourceManifest]] = defaultdict(list)
 
     # Referential Integrity
     references = [
@@ -59,14 +65,14 @@ def validate_resources(
 
 
 async def create_plan(
-    resources: list[ResourceApply], sess: AsyncSession
+    resources: list[ResourceManifest], sess: AsyncSession
 ) -> ResourceChangePlan:
     resource_order = (
-        (models.AccessGroup, specs.AccessGroup),
-        (models.Model, specs.Model),
-        (models.Cluster, specs.Cluster),
-        (models.StaticDeployment, specs.StaticDeployment),
-        (models.PilotDeployment, specs.PilotDeployment),
+        (models.AccessGroup, AccessGroupSpec),
+        (models.Model, ModelSpec),
+        (models.Cluster, ClusterSpec),
+        (models.StaticDeployment, StaticDeploymentSpec),
+        (models.PilotDeployment, PilotDeploymentSpec),
     )
 
     no_change = []
@@ -78,7 +84,7 @@ async def create_plan(
     current_version = await models.ConfigVersion.get_latest_version(sess)
 
     for db_model, spec in resource_order:
-        kind = spec.__name__
+        kind = db_model.__name__
         existing = {
             row.name: spec.model_validate(row, extra="ignore")
             for row in await db_model.list(sess)
@@ -92,7 +98,7 @@ async def create_plan(
             to_add.append(desired[name])
 
         for name in sorted(existing_names - desired_names):
-            to_delete.append(ResourceIdentifier(kind=kind, name=name))
+            to_delete.append(ResourceRef(kind=kind, name=name))
 
         for name in sorted(desired_names & existing_names):
             patch = {}
@@ -106,7 +112,7 @@ async def create_plan(
             if patch:
                 to_update.append(ResourcePatch(kind=kind, name=name, patch=patch))
             else:
-                no_change.append(ResourceIdentifier(kind=kind, name=name))
+                no_change.append(ResourceRef(kind=kind, name=name))
 
     return ResourceChangePlan(
         previous_version=current_version,
@@ -117,8 +123,8 @@ async def create_plan(
     )
 
 
-async def apply(
-    resources: list[ResourceApply],
+async def apply_plan(
+    resources: list[ResourceManifest],
     approved_plan: ResourceChangePlan,
     user: UserAuthEvent,
     sess: AsyncSession,

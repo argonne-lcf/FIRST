@@ -1,9 +1,9 @@
 import logging
 
-from first_common.schema.resource_specs import (
+from first_common.schema.resources import (
     ConfigVersion,
-    ResourceApply,
     ResourceChangePlan,
+    ResourceManifest,
 )
 
 from .resource import ClientResource, raise_for_status
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class AdminResource(ClientResource):
-    def plan_resources(self, resources: list[ResourceApply]) -> ResourceChangePlan:
+    def plan_resources(self, resources: list[ResourceManifest]) -> ResourceChangePlan:
         resp = self._client.post(
             "/resources/plan",
             json={"resources": [r.model_dump(mode="json") for r in resources]},
@@ -21,7 +21,7 @@ class AdminResource(ClientResource):
         return ResourceChangePlan.model_validate(resp.json())
 
     def apply_resources(
-        self, resources: list[ResourceApply], approved_plan: ResourceChangePlan
+        self, resources: list[ResourceManifest], approved_plan: ResourceChangePlan
     ) -> ConfigVersion | None:
         resp = self._client.post(
             "/resources/apply",

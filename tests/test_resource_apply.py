@@ -10,10 +10,10 @@ import httpx
 import pytest
 
 from alcf_ai.subcommands.admin import load_resources_from_yaml
-from first_common.schema.resource_specs import (
+from first_common.schema.resources import (
     ConfigVersion,
-    ResourceApply,
     ResourceChangePlan,
+    ResourceManifest,
 )
 
 from .fixtures.auth import ADMIN_TOKEN, auth_header
@@ -21,13 +21,13 @@ from .fixtures.auth import ADMIN_TOKEN, auth_header
 RESOURCES_DIR = Path(__file__).parent / "resource_specs"
 
 
-def _load(spec_dir: str) -> list[ResourceApply]:
+def _load(spec_dir: str) -> list[ResourceManifest]:
     """Load resource specs from a YAML bundle in the given subdirectory."""
     return load_resources_from_yaml(RESOURCES_DIR / spec_dir)
 
 
 async def _plan(
-    client: httpx.AsyncClient, resources: list[ResourceApply]
+    client: httpx.AsyncClient, resources: list[ResourceManifest]
 ) -> ResourceChangePlan:
     """POST /plan and return the parsed JSON response."""
     resp = await client.post(
@@ -40,7 +40,9 @@ async def _plan(
 
 
 async def _apply(
-    client: httpx.AsyncClient, resources: list[ResourceApply], plan: ResourceChangePlan
+    client: httpx.AsyncClient,
+    resources: list[ResourceManifest],
+    plan: ResourceChangePlan,
 ) -> ConfigVersion | None:
     """POST /apply with the given resources and approved plan."""
     resp = await client.post(

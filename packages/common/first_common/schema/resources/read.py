@@ -2,9 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from first_common.schema import resource_specs as spec
-
-from .types import (
+from ..types import (
     ClusterStatus,
     DeploymentHealth,
     GpuClaim,
@@ -14,20 +12,21 @@ from .types import (
     ResourceName,
     RouterParams,
 )
+from . import spec
 
 
-class ResourceBase(BaseModel):
+class ResourceMeta(BaseModel):
     kind: str
     name: str = Field(min_length=2, max_length=128)
     uid: int
     created_at: datetime
 
 
-class AccessGroup(ResourceBase, spec.AccessGroup):
+class AccessGroup(ResourceMeta, spec.AccessGroupSpec):
     pass
 
 
-class PilotDeploymentSummary(ResourceBase):
+class PilotDeploymentSummary(ResourceMeta):
     cluster_name: ResourceName
     model_name: ResourceName
     router_params: RouterParams
@@ -38,12 +37,12 @@ class PilotDeploymentSummary(ResourceBase):
     consecutive_launch_failures: int
 
 
-class StaticDeployment(ResourceBase, spec.StaticDeployment):
+class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
     health: DeploymentHealth
     last_health_check: datetime | None = None
 
 
-class PilotReplica(ResourceBase):
+class PilotReplica(ResourceMeta):
     pilot_deployment_name: str
     pilot_job_name: str | None
     used_resources: list[GpuClaim]
@@ -56,16 +55,16 @@ class PilotReplica(ResourceBase):
     last_health_check: datetime | None = None
 
 
-class PilotDeploymentDetail(PilotDeploymentSummary, spec.PilotDeployment):
+class PilotDeploymentDetail(PilotDeploymentSummary, spec.PilotDeploymentSpec):
     replicas: list[PilotReplica]
 
 
-class ModelSummary(ResourceBase, spec.Model):
+class ModelSummary(ResourceMeta, spec.ModelSpec):
     pilot_deployments: list[PilotDeploymentSummary]
     static_deployments: list[StaticDeployment]
 
 
-class PilotJob(ResourceBase):
+class PilotJob(ResourceMeta):
     scheduler_job_id: str
     cluster_uid: int
     phase: PilotJobPhase
@@ -77,7 +76,7 @@ class PilotJob(ResourceBase):
     walltime_sec: int
 
 
-class ClusterSummary(ResourceBase, spec.Cluster):
+class ClusterSummary(ResourceMeta, spec.ClusterSpec):
     model_config = ConfigDict(from_attributes=True)
     status: ClusterStatus
     last_status_check: datetime | None

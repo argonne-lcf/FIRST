@@ -10,7 +10,7 @@ from rich.text import Text
 from yaml import safe_load_all
 
 from first_common.errors import InvalidSpecError
-from first_common.schema.resource_specs import ResourceApply, ResourceChangePlan
+from first_common.schema.resources import ResourceChangePlan, ResourceManifest
 
 cli = typer.Typer(no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def format_validation_error(
     return f"In {file} ({kind}.{name}):\n{'\n'.join(errors)}\n"
 
 
-def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceApply]:
+def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
     resources = []
 
     files = (
@@ -50,7 +50,7 @@ def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceApply]:
 
         for raw in raw_docs:
             try:
-                resource = ResourceApply.model_validate(raw, extra="forbid")
+                resource = ResourceManifest.model_validate(raw, extra="forbid")
             except ValidationError as exc:
                 errors.append(
                     format_validation_error(file, raw.get("kind"), raw.get("name"), exc)

@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Body
 
-from first_common.schema.resource import ClusterSummary
-from first_common.schema.resource_specs import (
+from first_common.schema.resources import (
     ConfigVersion,
-    ResourceApply,
     ResourceChangePlan,
+    ResourceManifest,
 )
+from first_common.schema.resources.read import ClusterSummary
 
 from ...database import models as db
-from ...services.apply_spec import apply, create_plan
+from ...services.plan_apply import apply_plan, create_plan
 from ..dependencies import AdminUser, DbSession
 
 admin_router = APIRouter(prefix="/resources")
@@ -24,13 +24,14 @@ async def summarize_clusters(sess: DbSession) -> list[db.Cluster]:
 @user_router.get("/clusters/{name}", response_model=list[ClusterSummary])
 async def describe_cluster(sess: DbSession, name: str) -> list[db.Cluster]:
     """List all configured Cluster resources."""
-    return await db.Cluster.get_detail(sess, name)
+    ...
+    # return await db.Cluster.get_detail(sess, name)
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)
 async def plan_resources(
     sess: DbSession,
-    resources: list[ResourceApply] = Body(embed=True),
+    resources: list[ResourceManifest] = Body(embed=True),
 ) -> ResourceChangePlan:
     """
     Create a plan for applying a set of resources without actually applying them.
@@ -45,7 +46,7 @@ async def plan_resources(
 
 @admin_router.post("/apply", response_model=ConfigVersion | None)
 async def apply_resources(
-    resources: list[ResourceApply],
+    resources: list[ResourceManifest],
     approved_plan: ResourceChangePlan,
     sess: DbSession,
     admin: AdminUser,
@@ -60,4 +61,4 @@ async def apply_resources(
     modifications have occurred.
     """
     async with sess.begin():
-        return await apply(resources, approved_plan, admin, sess)
+        return await apply_plan(resources, approved_plan, admin, sess)
