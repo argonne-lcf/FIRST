@@ -7,6 +7,9 @@ from first_common.schema.resources import (
     ResourceChangePlan,
     ResourceManifest,
 )
+from first_common.schema.resources.read import (
+    PilotDeploymentSummary,
+)
 
 from .._http import raise_for_status
 
@@ -50,3 +53,13 @@ class AdminAPI:
         resp = self._client.get(f"/resources/config-versions/{uid}")
         raise_for_status(resp)
         return ConfigVersion.model_validate(resp.json())
+
+    def set_desired_pilot_deployment_replicas(
+        self, name: str, num_replicas: int
+    ) -> PilotDeploymentSummary:
+        resp = self._client.put(
+            f"/resources/pilot-deployments/{name}/desired-replicas",
+            json={"num_replicas": num_replicas},
+        )
+        raise_for_status(resp)
+        return PilotDeploymentSummary.model_validate(resp.json())

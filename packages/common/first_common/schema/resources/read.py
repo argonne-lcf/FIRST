@@ -16,6 +16,8 @@ from . import spec
 
 
 class ResourceMeta(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     kind: str
     name: str = Field(min_length=2, max_length=128)
     uid: int
@@ -77,7 +79,6 @@ class PilotJob(ResourceMeta):
 
 
 class ClusterSummary(ResourceMeta, spec.ClusterSpec):
-    model_config = ConfigDict(from_attributes=True)
     status: ClusterStatus
     last_status_check: datetime | None
 

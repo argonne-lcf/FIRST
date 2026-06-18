@@ -6,7 +6,7 @@ from first_common.schema.resources import (
     ResourceChangePlan,
     ResourceManifest,
 )
-from first_common.schema.resources.read import ClusterSummary
+from first_common.schema.resources.read import ClusterSummary, PilotDeploymentSummary
 
 from ...database import models as db
 from ...services.plan_apply import apply_plan, create_plan
@@ -75,3 +75,16 @@ async def list_config_versions(sess: DbSession) -> list[db.ConfigVersion]:
 async def get_config_version(sess: DbSession, uid: int) -> db.ConfigVersion:
     """Get a single ConfigVersion by uid, including the full `changes` record."""
     return await db.ConfigVersion.get_detail(sess, uid)
+
+
+@admin_router.put(
+    "/pilot-deployments/{name:path}/desired-replicas",
+    response_model=PilotDeploymentSummary,
+)
+async def set_desired_pilot_replicas(
+    sess: DbSession, name: str, num_replicas: int = Body(embed=True, ge=0, le=4096)
+) -> db.PilotDeployment:
+    async with sess.begin():
+        deployment = await db.PilotDeployment.get_by_name(sess, name)
+        deployment.set_desired_replicas(num_replicas)
+    return deployment

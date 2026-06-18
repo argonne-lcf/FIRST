@@ -6,7 +6,7 @@ import typer
 from pydantic import ValidationError
 from rich.console import Console
 from rich.panel import Panel
-from rich.pretty import pretty_repr
+from rich.pretty import Pretty, pretty_repr
 from rich.table import Table
 from rich.text import Text
 from yaml import safe_load_all
@@ -276,3 +276,15 @@ def get_config_version(ctx: typer.Context, uid: int) -> None:
     client = get_client(ctx)
     version = client.admin.get_config_version(uid)
     print_config_version(version)
+
+
+@cli.command()
+def set_desired_replicas(
+    ctx: typer.Context, deployment_name: str, num_replicas: int
+) -> None:
+    """Manually scale the number of replicas in a PilotDeployment"""
+    client = get_client(ctx)
+    deployment = client.admin.set_desired_pilot_deployment_replicas(
+        deployment_name, num_replicas
+    )
+    Console().print(Pretty(deployment.model_dump(mode="json")))

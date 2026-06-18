@@ -63,8 +63,10 @@ class ResourceRow(Base):
 
     @classmethod
     async def get_by_name(cls, sess: AsyncSession, name: str) -> Self:
-        res = await sess.execute(sa.select(cls).where(cls.name == name))
-        return res.scalar_one()
+        res = await sess.scalar(sa.select(cls).where(cls.name == name))
+        if res is None:
+            raise NotFound(f"No {cls.__name__} with {name=!r} was found.")
+        return res
 
     @classmethod
     def create_from_spec(
@@ -249,6 +251,9 @@ class PilotDeployment(ResourceRow):
     model: Mapped[Model] = relationship(
         back_populates="pilot_deployments", lazy="raise"
     )
+
+    def set_desired_replicas(self, n: int) -> None:
+        self.desired_replicas = n
 
 
 class PilotJob(ResourceRow):
