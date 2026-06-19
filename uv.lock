@@ -654,12 +654,14 @@ version = "0.1.0"
 source = { editable = "packages/pilot" }
 dependencies = [
     { name = "first-common" },
+    { name = "jinja2" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "first-common", editable = "packages/common" },
+    { name = "jinja2" },
     { name = "pydantic" },
 ]
 
