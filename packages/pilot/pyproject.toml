@@ -7,6 +7,9 @@ dependencies = ["first-common", "pydantic"]
 [tool.uv.sources]
 first-common = { workspace = true }
 
+[project.scripts]
+pilot-certmanager = "first_pilot.certmanager:app"
+
 [build-system]
 requires = ["uv_build<0.12"]
 build-backend = "uv_build"
