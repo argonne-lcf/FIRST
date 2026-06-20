@@ -2,7 +2,7 @@
 name = "first-pilot"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["first-common", "pydantic", "jinja2"]
+dependencies = ["first-common", "pydantic", "jinja2", "fastapi", "uvicorn[standard]"]
 
 [tool.uv.sources]
 first-common = { workspace = true }

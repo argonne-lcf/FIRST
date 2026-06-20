@@ -1,9 +1,11 @@
 import os
 import signal
+import socket
 import subprocess
+import time
 from pathlib import Path
 from textwrap import dedent
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 from jinja2 import Template
 
@@ -28,7 +30,7 @@ _conf_template_str = """
     }
 
     server {
-        listen 8000 ssl;
+        listen {{config.external_port}} ssl;
         ssl_protocols TLSv1.2 TLSv1.3;
         server_name _;
         ssl_certificate {{config.server_crt_path}};
@@ -39,13 +41,21 @@ _conf_template_str = """
         ssl_verify_client on;
         ssl_verify_depth 1;
 
-        {% for model in models %}
-        location /{{model.slug}}/ {
+        location {{control_path}} {
             {% for ip in config.ip_allowlist -%}
             allow {{ip}};
             {% endfor -%}
             deny all;
-            proxy_pass http://127.0.0.1:{{model.port}};
+            proxy_pass http://127.0.0.1:{{config.control_port}};
+        }
+
+        {% for replica in replicas %}
+        location /replica/{{replica.name}}/ {
+            {% for ip in config.ip_allowlist -%}
+            allow {{ip}};
+            {% endfor -%}
+            deny all;
+            proxy_pass http://127.0.0.1:{{replica.port}};
         }
         {% endfor %}
     }
@@ -54,25 +64,28 @@ _conf_template_str = """
 conf_template = Template(dedent(_conf_template_str).lstrip())
 
 
-class ModelPort(NamedTuple):
-    slug: str
+class ReplicaPort(NamedTuple):
+    name: str
     port: int
 
 
 class NginxManager:
-    def __init__(self, tmpdir: str | Path, pilot_config: Config) -> None:
-        self.pilot_config = pilot_config
+    control_path = "/control"
+
+    def __init__(self, config: Config, tmpdir: str | Path) -> None:
+        self.pilot_config = config
         self.tmpdir = Path(tmpdir)
         self.tmpdir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.tmpdir / "nginx.conf"
-        self.config_path.write_text(self.render_config(models=[]))
+        self.config_path.write_text(self.render_config(replicas=[]))
         self._nginx = None
 
-    def render_config(self, models: list[ModelPort]):
+    def render_config(self, replicas: list[ReplicaPort]):
         return conf_template.render(
             config=self.pilot_config,
             nginx_tmpdir=self.tmpdir.as_posix().rstrip("/"),
-            models=models,
+            replicas=replicas,
+            control_path=self.control_path,
         )
 
     def start(self) -> None:
@@ -100,12 +113,12 @@ class NginxManager:
         except subprocess.TimeoutExpired:
             self._nginx.kill()
 
-    def reload(self, models: list[ModelPort]) -> None:
+    def reload(self, replicas: list[ReplicaPort]) -> None:
         if self._nginx is None:
             raise RuntimeError("NGINX process is not set yet; must call start() first.")
 
         new_config = self.tmpdir / "nginx.conf.new"
-        new_config.write_text(self.render_config(models))
+        new_config.write_text(self.render_config(replicas))
 
         test = subprocess.run(
             [
@@ -126,9 +139,17 @@ class NginxManager:
         os.replace(new_config, self.config_path)
         self._nginx.send_signal(signal.SIGHUP)
 
-    def __enter__(self) -> Self:
-        self.start()
-        return self
+    def wait_until_healthy(self, timeout: float = 10.0, interval: float = 0.2) -> None:
+        port = self.pilot_config.external_port
+        deadline = time.monotonic() + timeout
 
-    def __exit__(self, _exc_type, _exc_val, _exc_tb) -> None:
-        self.stop()
+        while time.monotonic() < deadline:
+            if self._nginx.poll() is not None:
+                raise RuntimeError(f"nginx exited with code {self._nginx.returncode}")
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    return
+            except OSError:
+                time.sleep(interval)
+
+        raise TimeoutError(f"nginx not ready on port {port} after {timeout}s")

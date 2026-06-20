@@ -65,3 +65,8 @@ class Unauthorized(FirstError):
 class AccessDenied(FirstError):
     status_code = HTTPStatus.FORBIDDEN
     code: str = "access_denied"
+
+
+class BadPilotRequest(FirstError):
+    status_code = HTTPStatus.BAD_REQUEST
+    code: str = "bad_pilot_request"

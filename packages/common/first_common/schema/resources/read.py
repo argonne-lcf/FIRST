@@ -55,6 +55,7 @@ class PilotReplica(ResourceMeta):
     health: HealthEndpointStatus
     status_info: dict[str, str]
     last_health_check: datetime | None = None
+    started_at: datetime | None = None
 
 
 class PilotDeploymentDetail(PilotDeploymentSummary, spec.PilotDeploymentSpec):

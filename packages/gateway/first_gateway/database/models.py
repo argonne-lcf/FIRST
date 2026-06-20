@@ -337,6 +337,7 @@ class PilotReplica(ResourceRow):
     health: Mapped[str] = mapped_column(default=HealthEndpointStatus.unknown.value)
     status_info: Mapped[DictJsonb] = mapped_column(default=dict)
     last_health_check: Mapped[DateTimeOrNone]
+    started_at: Mapped[DateTimeOrNone]
 
     pilot_deployment: Mapped[PilotDeployment] = relationship(
         back_populates="replicas", lazy="raise"

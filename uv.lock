@@ -653,16 +653,20 @@ name = "first-pilot"
 version = "0.1.0"
 source = { editable = "packages/pilot" }
 dependencies = [
+    { name = "fastapi" },
     { name = "first-common" },
     { name = "jinja2" },
     { name = "pydantic" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi" },
     { name = "first-common", editable = "packages/common" },
     { name = "jinja2" },
     { name = "pydantic" },
+    { name = "uvicorn", extras = ["standard"] },
 ]
 
 [[package]]
