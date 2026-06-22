@@ -27,37 +27,37 @@ _conf_template_str = """
         proxy_temp_path {{nginx_tmpdir}}/proxy;
         fastcgi_temp_path {{nginx_tmpdir}}/fastcgi;
         access_log {{nginx_tmpdir}}/access.log;
-    }
 
-    server {
-        listen {{config.external_port}} ssl;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        server_name _;
-        ssl_certificate {{config.server_crt_path}};
-        ssl_certificate_key {{config.server_key_path}};
+        server {
+            listen {{config.external_port}} ssl;
+            ssl_protocols TLSv1.2 TLSv1.3;
+            server_name _;
+            ssl_certificate {{server_crt_path}};
+            ssl_certificate_key {{server_key_path}};
 
-        # Client Authentication (mTLS)
-        ssl_client_certificate {{config.ca_crt_path}};
-        ssl_verify_client on;
-        ssl_verify_depth 1;
+            # Client Authentication (mTLS)
+            ssl_client_certificate {{ca_crt_path}};
+            ssl_verify_client on;
+            ssl_verify_depth 1;
 
-        location {{control_path}} {
-            {% for ip in config.ip_allowlist -%}
-            allow {{ip}};
-            {% endfor -%}
-            deny all;
-            proxy_pass http://127.0.0.1:{{config.control_port}};
+            location {{control_path}} {
+                {% for ip in config.ip_allowlist -%}
+                allow {{ip}};
+                {% endfor -%}
+                deny all;
+                proxy_pass http://127.0.0.1:{{config.control_port_internal}}/;
+            }
+
+            {% for replica in replicas %}
+            location /replicas/{{replica.name}}/ {
+                {% for ip in config.ip_allowlist -%}
+                allow {{ip}};
+                {% endfor -%}
+                deny all;
+                proxy_pass http://127.0.0.1:{{replica.port}}/;
+            }
+            {% endfor %}
         }
-
-        {% for replica in replicas %}
-        location /replica/{{replica.name}}/ {
-            {% for ip in config.ip_allowlist -%}
-            allow {{ip}};
-            {% endfor -%}
-            deny all;
-            proxy_pass http://127.0.0.1:{{replica.port}};
-        }
-        {% endfor %}
     }
 """
 
@@ -70,22 +70,40 @@ class ReplicaPort(NamedTuple):
 
 
 class NginxManager:
-    control_path = "/control"
+    control_path = "/control/"
 
     def __init__(self, config: Config, tmpdir: str | Path) -> None:
         self.pilot_config = config
         self.tmpdir = Path(tmpdir)
         self.tmpdir.mkdir(parents=True, exist_ok=True)
+
+        # Materialize cert/key PEMs from the config
+        self.ca_crt_path = self._write_secret("ca.crt", config.ca_crt)
+        self.server_crt_path = self._write_secret("server.crt", config.server_crt)
+        self.server_key_path = self._write_secret("server.key", config.server_key)
+
         self.config_path = self.tmpdir / "nginx.conf"
         self.config_path.write_text(self.render_config(replicas=[]))
-        self._nginx = None
+        self._nginx: subprocess.Popen[bytes] | None = None
 
-    def render_config(self, replicas: list[ReplicaPort]):
+    def _write_secret(self, name: str, content: str) -> Path:
+        path = self.tmpdir / name
+        path.touch(0o600)
+        path.chmod(0o600)
+        with path.open("w") as fp:
+            fp.write(content.strip() + "\n")
+        return path
+
+    def render_config(self, replicas: list[ReplicaPort]) -> str:
+
         return conf_template.render(
             config=self.pilot_config,
             nginx_tmpdir=self.tmpdir.as_posix().rstrip("/"),
             replicas=replicas,
             control_path=self.control_path,
+            ca_crt_path=self.ca_crt_path.as_posix(),
+            server_crt_path=self.server_crt_path.as_posix(),
+            server_key_path=self.server_key_path.as_posix(),
         )
 
     def start(self) -> None:
@@ -140,6 +158,9 @@ class NginxManager:
         self._nginx.send_signal(signal.SIGHUP)
 
     def wait_until_healthy(self, timeout: float = 10.0, interval: float = 0.2) -> None:
+        if self._nginx is None:
+            raise RuntimeError("NGINX process is not set yet; must call start() first.")
+
         port = self.pilot_config.external_port
         deadline = time.monotonic() + timeout
 

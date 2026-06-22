@@ -126,9 +126,9 @@ class PilotLaunchSpec(BaseModel):
 
     env: dict[str, str]
     serve_script_template: str
-    log_dir: Path
 
     max_startup_time: int
+    health_path: str | None = "/health"
 
 
 class GpuClaim(BaseModel):
