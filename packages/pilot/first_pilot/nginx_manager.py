@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 from jinja2 import Template
 
-from .config import Config
+from first_common.schema.pilot import PilotRuntimeConfig
 
 _conf_template_str = """
     worker_processes 2;
@@ -72,7 +72,7 @@ class ReplicaPort(NamedTuple):
 class NginxManager:
     control_path = "/control/"
 
-    def __init__(self, config: Config, tmpdir: str | Path) -> None:
+    def __init__(self, config: PilotRuntimeConfig, tmpdir: str | Path) -> None:
         self.pilot_config = config
         self.tmpdir = Path(tmpdir)
         self.tmpdir.mkdir(parents=True, exist_ok=True)

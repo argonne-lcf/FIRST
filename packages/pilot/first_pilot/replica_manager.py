@@ -14,13 +14,13 @@ from first_common.schema.pilot import (
     GpuInfo,
     HostGpus,
     PilotResources,
+    PilotRuntimeConfig,
     ReplicaStartRequest,
 )
 from first_common.schema.types import (
     GpuClaim,
 )
 
-from .config import Config
 from .replica import Replica
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ def discover_hosts(node_file_env: str) -> list[str]:
 class ReplicaManager:
     _STOP_JOIN_TIMEOUT = 45.0
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: PilotRuntimeConfig) -> None:
         self.config = config
 
         self.node_hostnames = discover_hosts(self.config.node_file_env)

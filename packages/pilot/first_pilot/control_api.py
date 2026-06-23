@@ -13,11 +13,11 @@ from first_common.errors import FirstError
 from first_common.schema.pilot import (
     AddressInfo,
     PilotJobStatus,
+    PilotRuntimeConfig,
     ReplicaInfo,
     ReplicaStartRequest,
 )
 
-from .config import Config
 from .nginx_manager import NginxManager, ReplicaPort
 from .replica_manager import ReplicaManager
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class _PilotManager:
-    def __init__(self, config: Config, nginx_tmpdir: Path) -> None:
+    def __init__(self, config: PilotRuntimeConfig, nginx_tmpdir: Path) -> None:
         self.config = config
         self.nginx = NginxManager(self.config, nginx_tmpdir)
         self.replica_manager = ReplicaManager(self.config)
@@ -99,7 +99,7 @@ class _PilotManager:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    config = Config.load()
+    config = PilotRuntimeConfig.load()
     config.ensure_dirs()
     readyfile = config.readyfile_dir / f"{config.job_name}.ready.json"
 
@@ -162,7 +162,7 @@ def handle_app_error(_request: Request, exc: FirstError) -> JSONResponse:
 
 
 def entrypoint() -> None:
-    config = Config.load()
+    config = PilotRuntimeConfig.load()
     uvicorn.run(
         app,
         host="127.0.0.1",

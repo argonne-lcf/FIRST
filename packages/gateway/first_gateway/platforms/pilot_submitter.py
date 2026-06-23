@@ -8,10 +8,9 @@ from first_common.schema.base_scheduler import (
     JobSubmitResult,
     SchedulerAdapter,
 )
-from first_common.schema.pilot import AddressInfo
+from first_common.schema.pilot import AddressInfo, PilotRuntimeConfig
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import PilotConfig
-from first_pilot.config import Config as PilotRuntimeConfig
 
 from ..certmanager import generate_server_cert
 

@@ -602,10 +602,14 @@ version = "0.1.0"
 source = { editable = "packages/common" }
 dependencies = [
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic" }]
+requires-dist = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
 
 [[package]]
 name = "first-dashboard"
