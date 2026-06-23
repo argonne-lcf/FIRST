@@ -15,7 +15,7 @@ spec:
     timeout: 10
   maintenance_notice: "Sophia is operational"
   pilot_system:
-    scheduler_interface: first_gateway.platforms.scheduler.GlobusComputePBSWrapper
+    scheduler_interface: first_gateway.platforms.schedulers.GlobusComputePBSWrapper
     scheduler_config:
       endpoint_uuid: sophia-endpoint-uuid
     pilot_env_path: /eagle/inference-service/venvs/pilot/

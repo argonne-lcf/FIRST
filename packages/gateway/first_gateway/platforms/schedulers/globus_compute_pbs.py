@@ -17,6 +17,7 @@ from first_common.schema.base_scheduler import (
     JobSubmitResult,
     SchedulerInterface,
 )
+from first_gateway.settings import ClientState
 
 logger = logging.getLogger(__name__)
 
@@ -161,10 +162,15 @@ class GlobusComputePBSWrapper(SchedulerInterface):
         self.func_ids = func_ids
 
     @classmethod
-    async def initialize(cls, client: Client, endpoint_id: str) -> Self:
+    async def build(cls, deps: ClientState, config: dict[str, Any]) -> Self:
         """
-        Constructs wrapper with just-in-time function registration
+        Constructs wrapper with just-in-time function registration.
+
+        Required config keys:
+            endpoint_id: str — Globus Compute endpoint UUID for the target HPC system.
         """
+        endpoint_id = config["endpoint_id"]
+        client = deps.compute_client
         func_ids = FuncRegistry(
             qsub=await asyncio.to_thread(client.register_function, _qsub),
             qstat=await asyncio.to_thread(client.register_function, _qstat),

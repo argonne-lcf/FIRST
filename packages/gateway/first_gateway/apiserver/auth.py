@@ -33,9 +33,9 @@ class TokenIntrospectionResult(BaseModel):
 
 class GlobusAuthService:
     def __init__(self, client_state: ClientState) -> None:
-        self.cfg = client_state["settings"].globus
-        self.client = client_state["auth_client"]
-        self.cache = client_state["redis"]
+        self.cfg = client_state.settings.globus
+        self.client = client_state.auth_client
+        self.cache = client_state.redis
 
     async def introspect_token(self, bearer_token: str) -> TokenIntrospectionResult:
         """

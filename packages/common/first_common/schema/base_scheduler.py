@@ -3,6 +3,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from first_gateway.settings import ClientState
 
 
 @dataclass
@@ -54,6 +58,12 @@ class JobStatusInfo:
 
 
 class SchedulerInterface(ABC):
+    @classmethod
+    @abstractmethod
+    async def build(
+        cls, client_state: "ClientState", config: dict[str, Any]
+    ) -> Self: ...
+
     @abstractmethod
     async def submit_job(self, job_spec: JobSubmitPayload) -> JobSubmitResult: ...
 

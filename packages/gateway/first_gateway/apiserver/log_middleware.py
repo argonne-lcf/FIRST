@@ -19,7 +19,7 @@ from .context import RequestContext, _request_context
 logger = getLogger(__name__)
 
 
-def initialize_access_log(request: Request[ClientState]) -> AccessLog:
+def initialize_access_log(request: Request) -> AccessLog:
     """Return initial state of an AccessLog entry"""
     origin_ip = request.headers.get("X-Forwarded-For")
     if not origin_ip and request.client is not None:
@@ -69,7 +69,7 @@ def _on_done(task: asyncio.Task[None]) -> None:
         logger.error("Background log write failed", exc_info=exc)
 
 
-async def log_request(request: Request[ClientState], call_next: Any) -> Response:
+async def log_request(request: Request, call_next: Any) -> Response:
 
     token = _request_context.set(RequestContext(initialize_access_log(request)))
 
@@ -79,12 +79,13 @@ async def log_request(request: Request[ClientState], call_next: Any) -> Response
     finally:
         _request_context.reset(token)
 
-    if await should_skip_logging(ctx_data, request, response, request.state["redis"]):
+    client_state: ClientState = request.app.state.client_state
+    if await should_skip_logging(ctx_data, request, response, client_state.redis):
         return response
 
     # Fire-and-forget logging pattern:
     task = asyncio.create_task(
-        write_logs(ctx_data, response, request.state["settings"].prompt_storage_dir)
+        write_logs(ctx_data, response, client_state.settings.prompt_storage_dir)
     )
     _background_tasks.add(task)
     task.add_done_callback(_on_done)
@@ -93,7 +94,7 @@ async def log_request(request: Request[ClientState], call_next: Any) -> Response
 
 async def should_skip_logging(
     ctx: RequestContext,
-    request: Request[ClientState],
+    request: Request,
     response: Response,
     redis: Redis,
 ) -> bool:

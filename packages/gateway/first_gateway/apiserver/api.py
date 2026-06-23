@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from first_common.errors import FirstError, TaskPending
-from first_gateway.settings import ClientState, Settings
+from first_gateway.settings import Settings
 
 from ..log_config import config_logging
 from .log_middleware import log_request
@@ -17,14 +17,16 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncGenerator[ClientState, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
-    Initializes ClientState and makes it available on all request.state.
+    Initializes ClientState and stashes it on app.state so request handlers
+    can reach it via request.app.state.client_state.
     """
     settings = Settings()
     config_logging(settings.log_level)
     async with settings.build_clients() as client_state:
-        yield client_state
+        app.state.client_state = client_state
+        yield
 
 
 app = FastAPI(title="ALCF Inference Service", lifespan=lifespan)

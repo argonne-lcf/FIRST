@@ -15,7 +15,7 @@ spec:
     timeout: 10
   maintenance_notice: "Sophia is operational"
   pilot_system:
-    scheduler_interface: first_gateway.platforms.scheduler.GlobusComputePBSWrapper
+    scheduler_interface: first_gateway.platforms.schedulers.GlobusComputePBSWrapper
     scheduler_config:
       endpoint_uuid: sophia-endpoint-uuid
     pilot_env_path: /eagle/inference-service/venvs/pilot/
@@ -49,7 +49,7 @@ spec:
     max_parallel_requests: 100
   prometheus_metrics_path: "/metrics"
   prometheus_scrape_interval: 30
-  health_check_method: first_gateway.pilot.health.check_health_endpoint
+  health_check_method: first_gateway.platforms.health.check_health_endpoint
   health_check_kwargs:
     timeout: 10
     health_path: "/health"
@@ -74,7 +74,7 @@ spec:
       - [0.0, 1]
       - [10.0, 2]
       - [20.0, 3]
-  health_check_method: first_gateway.pilot.health.check_health_endpoint
+  health_check_method: first_gateway.platforms.health.check_health_endpoint
   health_check_kwargs:
     timeout: 10
     health_path: "/health"

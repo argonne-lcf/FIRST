@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncGenerator, TypedDict
+from typing import AsyncGenerator
 
 from globus_compute_sdk import Client as ComputeClient
 from globus_sdk import ClientApp, ConfidentialAppAuthClient
@@ -19,7 +20,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 
-class ClientState(TypedDict):
+@dataclass
+class ClientState:
     """
     Centralized, shared instances of connection-pooling client resources.
     """
