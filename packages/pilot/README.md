@@ -59,8 +59,8 @@ time** and stages it into the allocation's working directory:
 Because everything except the **root CA** is rendered per-job, admins do
 not need to maintain pilot config files on the HPC cluster. Server/client
 mTLS certs are ephemeral and re-issued for every submission via
-`first_pilot.certmanager`; see
-[`first_pilot/certmanager/README.md`](first_pilot/certmanager/README.md).
+`first_gateway.certmanager`; see
+[`first_gateway/certmanager/README.md`](../gateway/first_gateway/certmanager/README.md).
 
 
 ## Subsystems

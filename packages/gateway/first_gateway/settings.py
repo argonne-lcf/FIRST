@@ -2,7 +2,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, TypedDict
 
-from globus_sdk import ConfidentialAppAuthClient
+from globus_compute_sdk import Client as ComputeClient
+from globus_sdk import ClientApp, ConfidentialAppAuthClient
 from httpx import AsyncClient
 from pydantic import (
     SecretStr,
@@ -29,6 +30,7 @@ class ClientState(TypedDict):
     db_engine: AsyncEngine
     db_sessionmaker: async_sessionmaker[AsyncSession]
     auth_client: ConfidentialAppAuthClient
+    compute_client: ComputeClient
 
 
 class GlobusAuthSettings(BaseSettings):
@@ -87,6 +89,8 @@ class Settings(BaseSettings):
     redis_url: str
 
     globus: GlobusAuthSettings
+    pilot_ca_crt: str
+    pilot_ca_key: SecretStr
 
     @asynccontextmanager
     async def build_clients(self) -> AsyncGenerator[ClientState, None]:
@@ -112,6 +116,13 @@ class Settings(BaseSettings):
                     httpx_client=httpx_client,
                     auth_client=ConfidentialAppAuthClient(
                         self.globus.app_id, self.globus.app_secret.get_secret_value()
+                    ),
+                    compute_client=ComputeClient(
+                        app=ClientApp(
+                            client_id=self.globus.app_id,
+                            client_secret=self.globus.app_secret.get_secret_value(),
+                        ),
+                        do_version_check=False,
                     ),
                 )
         finally:

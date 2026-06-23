@@ -28,6 +28,8 @@ dependencies = [
     "SQLAlchemy[asyncio]",
 ]
 
+[project.scripts]
+pilot-certmanager = "first_gateway.certmanager:app"
 
 [tool.uv.sources]
 first-common = { workspace = true }

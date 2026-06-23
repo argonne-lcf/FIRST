@@ -11,7 +11,7 @@ from pydantic import (
 )
 from pydantic_core import core_schema
 
-from .scheduler import SchedulerInterface
+from .base_scheduler import SchedulerInterface
 
 ResourceName = NewType("ResourceName", str)
 
@@ -50,19 +50,6 @@ class ClusterStatus(str, Enum):
     unknown = "unknown"
 
 
-class PilotJobPhase(str, Enum):
-    """
-    Pilot Job State, from the HPC scheduler's point of view
-    """
-
-    pending_submit = "pending_submit"
-    queued = "queued"
-    starting = "starting"
-    running = "running"
-    exiting = "exiting"
-    gone = "gone"
-
-
 class ReplicaPhase(str, Enum):
     """
     Lifecycle of a single AI model instance (replica).
@@ -91,8 +78,6 @@ class RouterParams(BaseModel):
 class PilotConfig(BaseModel):
     scheduler_interface: ImportString[type[SchedulerInterface]]
     scheduler_interface_config: dict[str, Any] = {}
-    pilot_env_path: Path
-    pilot_config_path: Path
 
     job_walltime: int
     queue: str

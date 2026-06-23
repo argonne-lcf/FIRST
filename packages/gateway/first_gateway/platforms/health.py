@@ -1,9 +1,10 @@
 import json
+from http import HTTPMethod
 
 from httpx import AsyncClient, HTTPError
 
 from first_common.errors import ClusterStatusCheckError
-from first_common.schema.types import ClusterStatus
+from first_common.schema.types import ClusterStatus, HealthEndpointStatus
 
 
 async def get_alcf_cluster_status(
@@ -39,6 +40,9 @@ async def get_alcf_cluster_status(
 async def get_metis_cluster_status(
     client: AsyncClient, status_url: str, timeout: int
 ) -> ClusterStatus:
+    """
+    Metis-specific cluster status introspection
+    """
     try:
         resp = await client.get(status_url, timeout=timeout)
         resp.raise_for_status()
@@ -65,3 +69,30 @@ async def get_metis_cluster_status(
         return ClusterStatus.up
     else:
         return ClusterStatus.down
+
+
+async def check_health_endpoint(
+    httpx_client: AsyncClient,
+    base_url: str,
+    health_path: str,
+    timeout: int,
+    headers: dict[str, str] | None = None,
+    method: HTTPMethod = HTTPMethod.GET,
+) -> HealthEndpointStatus:
+    """
+    Check http(s) health endpoint
+    """
+    try:
+        resp = await httpx_client.request(
+            method,
+            f"{base_url}/{health_path.strip('/')}",
+            timeout=timeout,
+            headers=headers,
+        )
+    except HTTPError:
+        return HealthEndpointStatus.unhealthy
+
+    if 200 <= resp.status_code < 300:
+        return HealthEndpointStatus.healthy
+    else:
+        return HealthEndpointStatus.unhealthy

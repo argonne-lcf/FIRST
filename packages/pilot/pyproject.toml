@@ -8,7 +8,6 @@ dependencies = ["first-common", "pydantic", "jinja2", "fastapi", "uvicorn[standa
 first-common = { workspace = true }
 
 [project.scripts]
-pilot-certmanager = "first_pilot.certmanager:app"
 first-pilot = "first_pilot.control_api:entrypoint"
 
 [build-system]

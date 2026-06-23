@@ -2,12 +2,12 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..base_scheduler import JobPhase
 from ..types import (
     ClusterStatus,
     DeploymentHealth,
     GpuClaim,
     HealthEndpointStatus,
-    PilotJobPhase,
     ReplicaPhase,
     ResourceName,
     RouterParams,
@@ -70,7 +70,7 @@ class ModelSummary(ResourceMeta, spec.ModelSpec):
 class PilotJob(ResourceMeta):
     scheduler_job_id: str
     cluster_name: str
-    phase: PilotJobPhase
+    phase: JobPhase
     manager_url: str
     manager_health: HealthEndpointStatus
     resources: list[GpuClaim]

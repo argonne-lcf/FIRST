@@ -19,11 +19,11 @@ from sqlalchemy.orm import (
 
 from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
+from first_common.schema.base_scheduler import JobPhase
 from first_common.schema.types import (
     ClusterStatus,
     DeploymentHealth,
     HealthEndpointStatus,
-    PilotJobPhase,
     ReplicaPhase,
     ResourceName,
 )
@@ -307,7 +307,7 @@ class PilotJob(ResourceRow):
 
     cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"))
     scheduler_job_id: Mapped[str | None]
-    phase: Mapped[str] = mapped_column(default=PilotJobPhase.pending_submit.value)
+    phase: Mapped[str] = mapped_column(default=JobPhase.pending_submit.value)
     manager_url: Mapped[str | None]
     manager_health: Mapped[str] = mapped_column(
         default=HealthEndpointStatus.unknown.value
