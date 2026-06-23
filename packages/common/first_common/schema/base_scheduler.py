@@ -57,7 +57,7 @@ class JobStatusInfo:
         return self.started_at + timedelta(minutes=self.walltime_minutes)
 
 
-class SchedulerInterface(ABC):
+class SchedulerAdapter(ABC):
     @classmethod
     @abstractmethod
     async def build(

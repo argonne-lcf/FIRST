@@ -11,7 +11,7 @@ from pydantic import (
 )
 from pydantic_core import core_schema
 
-from .base_scheduler import SchedulerInterface
+from .base_scheduler import SchedulerAdapter
 
 ResourceName = NewType("ResourceName", str)
 
@@ -76,7 +76,7 @@ class RouterParams(BaseModel):
 
 
 class PilotConfig(BaseModel):
-    scheduler_interface: ImportString[type[SchedulerInterface]]
+    scheduler_adapter: ImportString[type[SchedulerAdapter]]
     scheduler_interface_config: dict[str, Any] = {}
 
     job_walltime: int

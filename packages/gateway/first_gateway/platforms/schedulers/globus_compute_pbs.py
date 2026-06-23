@@ -15,7 +15,7 @@ from first_common.schema.base_scheduler import (
     JobStatusInfo,
     JobSubmitPayload,
     JobSubmitResult,
-    SchedulerInterface,
+    SchedulerAdapter,
 )
 from first_gateway.settings import ClientState
 
@@ -153,7 +153,7 @@ def _parse_qstat(jobs: dict[str, Any]) -> list[JobStatusInfo]:
     return results
 
 
-class GlobusComputePBSWrapper(SchedulerInterface):
+class GlobusComputePBSAdapter(SchedulerAdapter):
     def __init__(
         self, client: Client, endpoint_id: str, func_ids: FuncRegistry
     ) -> None:

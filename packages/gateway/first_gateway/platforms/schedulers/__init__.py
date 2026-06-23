@@ -1,20 +1,20 @@
-from first_common.schema.base_scheduler import SchedulerInterface
+from first_common.schema.base_scheduler import SchedulerAdapter
 from first_common.schema.types import PilotConfig
 
 from ...settings import ClientState
-from .globus_compute_pbs import GlobusComputePBSWrapper
+from .globus_compute_pbs import GlobusComputePBSAdapter
 
 
 async def build_scheduler(
     pilot: PilotConfig, client_state: ClientState
-) -> SchedulerInterface:
+) -> SchedulerAdapter:
     """
-    Construct a SchedulerInterface from a PilotConfig and the process's shared
+    Construct a SchedulerAdapter from a PilotConfig and the process's shared
     client resources.
     """
-    return await pilot.scheduler_interface.build(
+    return await pilot.scheduler_adapter.build(
         client_state, pilot.scheduler_interface_config
     )
 
 
-__all__ = ["build_scheduler", "GlobusComputePBSWrapper"]
+__all__ = ["build_scheduler", "GlobusComputePBSAdapter"]

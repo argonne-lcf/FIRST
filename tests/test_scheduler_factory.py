@@ -7,7 +7,7 @@ import pytest
 from first_common.schema.types import PilotConfig
 from first_gateway.platforms.schedulers import build_scheduler
 from first_gateway.platforms.schedulers.globus_compute_pbs import (
-    GlobusComputePBSWrapper,
+    GlobusComputePBSAdapter,
 )
 from first_gateway.settings import ClientState
 
@@ -23,7 +23,7 @@ async def test_build_scheduler_dispatches_globus_compute_pbs() -> None:
 
     pilot = PilotConfig.model_validate(
         {
-            "scheduler_interface": "first_gateway.platforms.schedulers.globus_compute_pbs.GlobusComputePBSWrapper",
+            "scheduler_adapter": "first_gateway.platforms.schedulers.globus_compute_pbs.GlobusComputePBSAdapter",
             "scheduler_interface_config": {"endpoint_id": "endpoint-uuid-xyz"},
             "job_walltime": 60,
             "queue": "debug",
@@ -33,7 +33,7 @@ async def test_build_scheduler_dispatches_globus_compute_pbs() -> None:
 
     scheduler = await build_scheduler(pilot, deps)
 
-    assert isinstance(scheduler, GlobusComputePBSWrapper)
+    assert isinstance(scheduler, GlobusComputePBSAdapter)
     assert scheduler.endpoint_id == "endpoint-uuid-xyz"
     assert scheduler.client is compute_client
     assert compute_client.register_function.call_count == 6
