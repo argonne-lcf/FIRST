@@ -43,6 +43,8 @@ jobs:
     env:
       FIRST_GLOBUS__APP_ID: ci-dummy-app-id
       FIRST_GLOBUS__APP_SECRET: ci-dummy-app-secret
+      FIRST_PILOT_CA_CRT: "certificate"
+      FIRST_PILOT_CA_KEY: "begin fake private key"
 
     steps:
       - uses: actions/checkout@v4
