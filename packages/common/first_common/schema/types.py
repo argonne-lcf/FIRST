@@ -83,6 +83,13 @@ class PilotConfig(BaseModel):
     queue: str
     account: str
     scheduler_flags: str = ""
+    workdir: Path
+    external_port: int
+    nginx_path: Path
+    ip_allowlist: list[str]
+    node_file_env: str
+    submit_script_preamble: str
+    pilot_version: str
 
 
 class LoadThresholdStrategy(BaseModel):

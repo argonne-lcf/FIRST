@@ -315,7 +315,9 @@ class PilotJob(ResourceRow):
     resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     time_started: Mapped[DateTimeOrNone]
     idle_since: Mapped[DateTimeOrNone]
-    walltime_sec: Mapped[int]
+    walltime_min: Mapped[int]
+    num_nodes: Mapped[int]
+    gpus_per_node: Mapped[int]
 
     cluster: Mapped[Cluster] = relationship(back_populates="pilot_jobs", lazy="raise")
     assigned_replicas: Mapped[list["PilotReplica"]] = relationship(

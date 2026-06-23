@@ -76,7 +76,9 @@ class PilotJob(ResourceMeta):
     resources: list[GpuClaim]
     assigned_replicas: list[PilotReplica]
     time_started: datetime | None = None
-    walltime_sec: int
+    walltime_min: int
+    num_nodes: int
+    gpus_per_node: int
 
 
 class ClusterSummary(ResourceMeta, spec.ClusterSpec):
