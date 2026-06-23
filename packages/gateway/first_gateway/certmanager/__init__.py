@@ -1,179 +1,152 @@
-"""Manage self-signed certificates for mTLS using openssl.
-
-Workflow:
-    mtls.py ca --name "FIRST CA"     # one self-signed Root CA (default 10 years)
-    mtls.py server first_pilot       # server cert signed by that CA (default 2 years)
-    mtls.py client first_gateway     # client cert signed by that CA (default 2 years)
-
-Re-running `server` / `client` with the same name re-issues (rotates) that cert
-against the existing CA. Requires OpenSSL 3.x.
-"""
-
-import re
+import secrets
 import subprocess
+import tempfile
 from pathlib import Path
 from shutil import which
-from typing import Annotated
-
-import typer
-
-app = typer.Typer(add_completion=False, help=__doc__, no_args_is_help=True)
-DirOpt = Annotated[Path, typer.Option("--dir", help="PKI directory.")]
 
 
-def run(*args: str) -> None:
-    """Run an openssl subcommand, surfacing stderr on failure."""
+class OpenSSLError(RuntimeError):
+    """openssl is missing or a subprocess invocation failed."""
+
+
+def _run(*args: str, stdin: str | None = None) -> str:
     if which("openssl") is None:
-        typer.secho(
-            "Please install openssl, which is needed to use this tool.",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    proc = subprocess.run(["openssl", *args], capture_output=True, text=True)
+        raise OpenSSLError("openssl is not installed or not on PATH")
+    proc = subprocess.run(
+        ["openssl", *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
     if proc.returncode:
-        typer.secho(proc.stderr.strip(), fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        raise OpenSSLError(f"openssl {args[0]} failed: {proc.stderr.strip()}")
+    return proc.stdout
 
 
-def gen_key(path: Path) -> None:
-    run(
+def gen_key_pem() -> str:
+    """Generate a new EC P-256 private key and return it as PEM."""
+    return _run(
         "genpkey",
         "-algorithm",
         "EC",
         "-pkeyopt",
         "ec_paramgen_curve:P-256",
-        "-out",
-        str(path),
     )
 
 
-def slug(text: str) -> str:
-    return re.sub(r"[^A-Za-z0-9.-]+", "_", text).strip("_")
+def gen_ca_pem(*, name: str, days: int = 3650) -> tuple[str, str]:
+    """Generate a self-signed Root CA. Returns ``(cert_pem, key_pem)``."""
+    key_pem = gen_key_pem()
+    with tempfile.TemporaryDirectory() as td:
+        key_path = Path(td) / "ca.key"
+        key_path.write_text(key_pem)
+        cert_pem = _run(
+            "req",
+            "-x509",
+            "-new",
+            "-key",
+            str(key_path),
+            "-sha256",
+            "-days",
+            str(days),
+            "-subj",
+            f"/CN={name}",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE,pathlen:0",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-addext",
+            "subjectKeyIdentifier=hash",
+        )
+    return cert_pem, key_pem
 
 
-def issue(
+def _issue_leaf_pem(
     *,
-    kind: str,
     cn: str,
-    directory: Path,
+    ca_cert_pem: str,
+    ca_key_pem: str,
     days: int,
     eku: str,
-) -> None:
-    """Generate a leaf key + CSR and sign it with the CA."""
-    ca_key, ca_crt = directory / "ca.key", directory / "ca.crt"
-    if not (ca_key.exists() and ca_crt.exists()):
-        typer.secho(
-            f"No CA in '{directory}'. Run `ca` first.", fg=typer.colors.RED, err=True
+) -> tuple[str, str]:
+    """Issue a leaf cert signed by the given CA. Returns ``(cert_pem, key_pem)``."""
+    key_pem = gen_key_pem()
+    # Random 159-bit positive serial — keeps each issued cert unique without
+    # needing a persistent serial counter on disk.
+    serial_hex = f"0x{secrets.randbits(159):x}"
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        key_path = d / "leaf.key"
+        ca_cert_path = d / "ca.crt"
+        ca_key_path = d / "ca.key"
+        key_path.write_text(key_pem)
+        ca_cert_path.write_text(ca_cert_pem)
+        ca_key_path.write_text(ca_key_pem)
+
+        csr_pem = _run(
+            "req",
+            "-new",
+            "-key",
+            str(key_path),
+            "-subj",
+            f"/CN={cn}",
+            "-addext",
+            "basicConstraints=critical,CA:FALSE",
+            "-addext",
+            "keyUsage=critical,digitalSignature",
+            "-addext",
+            f"extendedKeyUsage={eku}",
         )
-        raise typer.Exit(1)
+        cert_pem = _run(
+            "x509",
+            "-req",
+            "-CA",
+            str(ca_cert_path),
+            "-CAkey",
+            str(ca_key_path),
+            "-set_serial",
+            serial_hex,
+            "-days",
+            str(days),
+            "-sha256",
+            "-copy_extensions",
+            "copy",
+            stdin=csr_pem,
+        )
+    return cert_pem, key_pem
 
-    base = slug(cn)
-    key, csr, crt = (directory / f"{base}.{ext}" for ext in ("key", "csr", "crt"))
-    key_usage = "digitalSignature"
-    gen_key(key)
 
-    req = [
-        "req",
-        "-new",
-        "-key",
-        str(key),
-        "-out",
-        str(csr),
-        "-subj",
-        f"/CN={cn}",
-        "-addext",
-        "basicConstraints=critical,CA:FALSE",
-        "-addext",
-        f"keyUsage=critical,{key_usage}",
-        "-addext",
-        f"extendedKeyUsage={eku}",
-    ]
-    run(*req)
-
-    run(
-        "x509",
-        "-req",
-        "-in",
-        str(csr),
-        "-CA",
-        str(ca_crt),
-        "-CAkey",
-        str(ca_key),
-        "-CAcreateserial",
-        "-days",
-        str(days),
-        "-sha256",
-        "-copy_extensions",
-        "copy",
-        "-out",
-        str(crt),
-    )
-    csr.unlink(missing_ok=True)
-    typer.secho(
-        f"\u2713 {kind} cert: {crt}  (key: {key}, {days} days)", fg=typer.colors.GREEN
+def generate_client_cert(
+    *,
+    cn: str,
+    ca_cert_pem: str,
+    ca_key_pem: str,
+    days: int = 730,
+) -> tuple[str, str]:
+    """Issue a clientAuth leaf cert. Returns ``(cert_pem, key_pem)``."""
+    return _issue_leaf_pem(
+        cn=cn,
+        ca_cert_pem=ca_cert_pem,
+        ca_key_pem=ca_key_pem,
+        days=days,
+        eku="clientAuth",
     )
 
 
-@app.command()
-def ca(
-    name: Annotated[str, typer.Option(help="CA common name (CN).")],
-    directory: DirOpt = Path("pki"),
-    days: Annotated[int, typer.Option(help="Validity in days.")] = 3650,
-) -> None:
-    """Create a CA key and self-signed Root CA certificate (default 10 years)."""
-    directory.mkdir(parents=True, exist_ok=True)
-    ca_key, ca_crt = directory / "ca.key", directory / "ca.crt"
-    gen_key(ca_key)
-    run(
-        "req",
-        "-x509",
-        "-new",
-        "-key",
-        str(ca_key),
-        "-sha256",
-        "-days",
-        str(days),
-        "-out",
-        str(ca_crt),
-        "-subj",
-        f"/CN={name}",
-        "-addext",
-        "basicConstraints=critical,CA:TRUE,pathlen:0",
-        "-addext",
-        "keyUsage=critical,keyCertSign,cRLSign",
-        "-addext",
-        "subjectKeyIdentifier=hash",
+def generate_server_cert(
+    *,
+    cn: str,
+    ca_cert_pem: str,
+    ca_key_pem: str,
+    days: int = 730,
+) -> tuple[str, str]:
+    """Issue a serverAuth leaf cert. Returns ``(cert_pem, key_pem)``."""
+    return _issue_leaf_pem(
+        cn=cn,
+        ca_cert_pem=ca_cert_pem,
+        ca_key_pem=ca_key_pem,
+        days=days,
+        eku="serverAuth",
     )
-    typer.secho(
-        f"\u2713 Root CA: {ca_crt}  (key: {ca_key}, {days} days)", fg=typer.colors.GREEN
-    )
-
-
-@app.command()
-def server(
-    cn: Annotated[
-        str, typer.Argument(help="Server hostname / identity, e.g. api.internal.")
-    ],
-    directory: DirOpt = Path("pki"),
-    days: Annotated[int, typer.Option(help="Validity in days.")] = 730,
-) -> None:
-    """Issue a server certificate (serverAuth) signed by the CA (default 2 years)."""
-    issue(kind="Server", cn=cn, directory=directory, days=days, eku="serverAuth")
-
-
-@app.command()
-def client(
-    cn: Annotated[
-        str, typer.Argument(help="Client identity, e.g. alice or a service name.")
-    ],
-    directory: DirOpt = Path("pki"),
-    days: Annotated[int, typer.Option(help="Validity in days.")] = 730,
-) -> None:
-    """Issue a client certificate (clientAuth) signed by the CA (default 2 years)."""
-    issue(kind="Client", cn=cn, directory=directory, days=days, eku="clientAuth")
-
-
-if __name__ == "__main__":
-    app()
