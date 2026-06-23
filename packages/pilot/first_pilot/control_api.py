@@ -127,7 +127,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 async def get_manager(request: Request) -> _PilotManager:
-    return cast(_PilotManager, request.state.pilot_manager)
+    return cast(_PilotManager, request.app.state.pilot_manager)
 
 
 PilotManager = Annotated[_PilotManager, Depends(get_manager)]
