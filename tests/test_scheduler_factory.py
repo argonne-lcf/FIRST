@@ -28,6 +28,13 @@ async def test_build_scheduler_dispatches_globus_compute_pbs() -> None:
             "job_walltime": 60,
             "queue": "debug",
             "account": "ALCFTest",
+            "workdir": "/tmp/pilot-workdir",
+            "external_port": 8443,
+            "nginx_path": "/usr/bin/nginx",
+            "ip_allowlist": ["10.0.0.0/8"],
+            "node_file_env": "PBS_NODEFILE",
+            "submit_script_preamble": "#!/bin/bash",
+            "pilot_version": "0.1.0",
         }
     )
 

@@ -19,11 +19,6 @@ class ReplicaInfo(BaseModel):
     started_at: datetime
 
 
-class ReplicaLogTail(BaseModel):
-    stdout: str
-    stderr: str
-
-
 class AddressInfo(BaseModel):
     hostname: str
     ip: str

@@ -197,7 +197,7 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
     async def submit_job(self, job: JobSubmitPayload) -> JobSubmitResult:
         args = shlex.split(f"""
             -A {job.account} -q {job.queue} -N {job.name}
-            -e {job.stderr_path} -o {job.stdout_path}
+            -e {job.log_path} -o {job.log_path} -j oe
             -l select="{job.num_nodes}:ngpus={job.gpus_per_node}"
             -l "walltime=00:{job.walltime_min}:00"
             {job.scheduler_flags}

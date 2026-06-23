@@ -1,19 +1,9 @@
 import os
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Self
 
 import yaml
-from pydantic import AfterValidator
 from pydantic_settings import BaseSettings
-
-
-def _is_file(p: Path) -> Path:
-    if not p.is_file():
-        raise ValueError(f"{p} does not point to a valid file")
-    return p
-
-
-FilePath = Annotated[Path, AfterValidator(_is_file)]
 
 
 class Config(BaseSettings):
@@ -26,7 +16,7 @@ class Config(BaseSettings):
     server_key: str
 
     external_port: int
-    nginx_path: FilePath
+    nginx_path: Path
     ip_allowlist: list[str]
     workdir: Path
     node_file_env: str

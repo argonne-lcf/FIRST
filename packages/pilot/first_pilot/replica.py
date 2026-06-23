@@ -12,7 +12,6 @@ from pathlib import Path
 
 from jinja2 import Template
 
-from first_common.schema.pilot import ReplicaLogTail
 from first_common.schema.types import (
     GpuClaim,
     HealthEndpointStatus,
@@ -75,15 +74,13 @@ class Replica:
         self.launch_spec = launch_spec
         self.workdir = workdir
 
-        self.stdout_path = workdir / f"{self.name}.stdout"
-        self.stderr_path = workdir / f"{self.name}.stderr"
+        self.log_path = workdir / f"{self.name}.log"
 
         script_path = self.workdir / "serve.sh"
         script_path.write_text(self._render_script())
         script_path.chmod(0o755)
 
-        self._stdout_fh = open(self.stdout_path, "ab")
-        self._stderr_fh = open(self.stderr_path, "ab")
+        self._log_fh = open(self.log_path, "ab")
 
         env = os.environ.copy()
         env.update(self.launch_spec.env)
@@ -98,8 +95,8 @@ class Replica:
             self.proc = subprocess.Popen(
                 ["/bin/bash", str(script_path)],
                 cwd=str(self.workdir),
-                stdout=self._stdout_fh,
-                stderr=self._stderr_fh,
+                stdout=self._log_fh,
+                stderr=subprocess.STDOUT,
                 env=env,
                 start_new_session=True,
             )
@@ -324,14 +321,10 @@ class Replica:
             time.sleep(self._GROUP_POLL_INTERVAL)
 
     def _close_log_handles(self) -> None:
-        for fh in (self._stdout_fh, self._stderr_fh):
-            try:
-                fh.close()
-            except OSError:
-                pass
+        try:
+            self._log_fh.close()
+        except OSError:
+            pass
 
-    def get_logs(self) -> ReplicaLogTail:
-        return ReplicaLogTail(
-            stdout=tail_file(self.stdout_path),
-            stderr=tail_file(self.stderr_path),
-        )
+    def get_logs(self) -> str:
+        return tail_file(self.log_path)

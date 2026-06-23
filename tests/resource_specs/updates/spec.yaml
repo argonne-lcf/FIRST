@@ -23,6 +23,16 @@ spec:
     job_walltime: 2592000
     queue: infer-svc
     account: inference_svc
+    workdir: /eagle/inference-service/pilot-workdir/
+    external_port: 8443
+    nginx_path: /eagle/inference-service/bin/nginx
+    ip_allowlist: ["10.0.0.0/8"]
+    node_file_env: PBS_NODEFILE
+    submit_script_preamble: |
+      #!/bin/bash
+      set -eu
+      module load python
+    pilot_version: "0.1.0"
 
 ---
 

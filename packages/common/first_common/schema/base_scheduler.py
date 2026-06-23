@@ -19,8 +19,7 @@ class JobSubmitPayload:
     gpus_per_node: int
     walltime_min: int
     script_path: Path
-    stdout_path: Path
-    stderr_path: Path
+    log_path: Path
 
 
 @dataclass

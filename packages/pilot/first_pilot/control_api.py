@@ -14,13 +14,14 @@ from first_common.schema.pilot import (
     AddressInfo,
     PilotJobStatus,
     ReplicaInfo,
-    ReplicaLogTail,
     ReplicaStartRequest,
 )
 
 from .config import Config
 from .nginx_manager import NginxManager, ReplicaPort
 from .replica_manager import ReplicaManager
+
+logger = logging.getLogger(__name__)
 
 
 class _PilotManager:
@@ -63,7 +64,7 @@ class _PilotManager:
         try:
             self.nginx.reload(ports)
         except Exception:
-            logging.getLogger(__name__).exception("nginx reload failed")
+            logger.exception("nginx reload failed")
 
     def _replica_url(self, name: str) -> str:
         return f"{self._endpoint.base_url}/replicas/{name}/"
@@ -91,7 +92,7 @@ class _PilotManager:
             replicas=replica_statuses,
         )
 
-    def get_replica_logs(self, replica_name: str) -> ReplicaLogTail:
+    def get_replica_logs(self, replica_name: str) -> str:
         replica = self.replica_manager.get_replica(replica_name)
         return replica.get_logs()
 
@@ -147,8 +148,8 @@ def get_status(manager: PilotManager) -> PilotJobStatus:
     return manager.get_status()
 
 
-@app.get("/logs/{replica_name}", response_model=ReplicaLogTail)
-def get_replica_logs(replica_name: str, manager: PilotManager) -> ReplicaLogTail:
+@app.get("/logs/{replica_name}")
+def get_replica_logs(replica_name: str, manager: PilotManager) -> str:
     return manager.get_replica_logs(replica_name)
 
 
