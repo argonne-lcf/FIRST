@@ -14,6 +14,13 @@ from .spec import ResourceSpec
 
 
 class ResourceManifest(BaseModel):
+    """
+    Validator of declarative YAML resource specs.
+
+    `kind` identifies a specific ResourceSpec subclass which is used to validate
+    the content of `spec` dynamically.
+    """
+
     model_config = ConfigDict(extra="forbid")
     kind: str
     name: ResourceName
@@ -40,22 +47,38 @@ class ResourceManifest(BaseModel):
 
 
 class ResourceRef(BaseModel):
+    """
+    Unique Resource Identifier
+    """
+
     kind: str
     name: str
 
 
 class FieldChange(NamedTuple):
+    """
+    Represents a diff (old) -> (new)
+    """
+
     old: Any
     new: Any
 
 
-class ResourcePatch(BaseModel):
-    kind: str
-    name: str
+class ResourcePatch(ResourceRef):
+    """
+    A resource update action: a specific (kind, name) has attributes in `patch`
+    updated.
+    """
+
     patch: dict[str, FieldChange]
 
 
 class ResourceChangePlan(BaseModel):
+    """
+    A complete terraform-style change plan: what resources are being added,
+    updated, deleted relative to the previous declarative version.
+    """
+
     previous_version: int
     no_change: list[ResourceRef]
     to_delete: list[ResourceRef]

@@ -108,6 +108,11 @@ GlobusIntrospectResponse = (
 
 
 class UserAuthEvent(BaseModel):
+    """
+    Information available after a user has successfully authenticated with the
+    apiserver.
+    """
+
     id: str
     name: str
     username: str

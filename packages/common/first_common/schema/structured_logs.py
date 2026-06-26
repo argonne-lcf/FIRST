@@ -41,6 +41,10 @@ class UsageTokens:
 
 
 class AccessLog(BaseModel):
+    """
+    Logged event: the apiserver has been accessed.
+    """
+
     id: str
     timestamp_request: datetime
     api_route: str
@@ -75,6 +79,10 @@ class AccessLog(BaseModel):
 
 
 class RequestLog(BaseModel):
+    """
+    Logged event: an LLM request has completed processing.
+    """
+
     id: str
     access_log_id: str
     user_id: str
@@ -147,6 +155,10 @@ class RequestLog(BaseModel):
 
 
 class RequestMetrics(BaseModel):
+    """
+    Logged event: stats of a completed LLM request are available.
+    """
+
     request_id: str
     cluster: str
     framework: str
@@ -181,6 +193,10 @@ class RequestMetrics(BaseModel):
 
 
 class BatchLog(BaseModel):
+    """
+    Logged event: a BatchJob has been submitted.
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: str

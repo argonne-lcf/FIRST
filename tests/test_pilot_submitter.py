@@ -12,7 +12,7 @@ from first_common.schema.base_scheduler import (
     JobSubmitResult,
     SchedulerAdapter,
 )
-from first_common.schema.pilot import AddressInfo
+from first_common.schema.pilot import AddressInfo, PilotResources
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import HealthEndpointStatus, PilotConfig
 from first_gateway.certmanager import gen_ca_pem
@@ -67,7 +67,7 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
     return PilotConfig.model_validate(
         {
             "scheduler_adapter": "first_gateway.platforms.schedulers.globus_compute_pbs.GlobusComputePBSAdapter",
-            "scheduler_interface_config": {},
+            "scheduler_config": {},
             "job_walltime": 60,
             "queue": "debug",
             "account": "TestAcct",
@@ -94,7 +94,7 @@ def _make_pilot_job(name: str) -> PilotJob:
         phase=JobPhase.pending_submit,
         manager_url="",
         manager_health=HealthEndpointStatus.unknown,
-        resources=[],
+        resources=PilotResources(hosts=[]),
         assigned_replicas=[],
         walltime_min=120,
         num_nodes=2,

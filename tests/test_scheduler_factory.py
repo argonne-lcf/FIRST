@@ -24,7 +24,7 @@ async def test_build_scheduler_dispatches_globus_compute_pbs() -> None:
     pilot = PilotConfig.model_validate(
         {
             "scheduler_adapter": "first_gateway.platforms.schedulers.globus_compute_pbs.GlobusComputePBSAdapter",
-            "scheduler_interface_config": {"endpoint_id": "endpoint-uuid-xyz"},
+            "scheduler_config": {"endpoint_id": "endpoint-uuid-xyz"},
             "job_walltime": 60,
             "queue": "debug",
             "account": "ALCFTest",

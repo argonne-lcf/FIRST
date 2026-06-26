@@ -24,7 +24,7 @@ import httpx
 import pytest
 
 from first_common.schema.base_scheduler import JobPhase
-from first_common.schema.pilot import AddressInfo, PilotJobStatus
+from first_common.schema.pilot import AddressInfo, PilotJobStatus, PilotResources
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import (
     GpuClaim,
@@ -63,11 +63,30 @@ http.server.HTTPServer(("127.0.0.1", {{port}}), H).serve_forever()
 """
 
 
-def _free_port() -> int:
-    """Grab a port the OS just bound and immediately released. Best-effort."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
+def _free_port_window(n: int = 3) -> int:
+    """
+    Find a base port P such that P, P+1, ..., P+n-1 are all bindable on
+    127.0.0.1. The pilot uses external_port for nginx, +1 for the internal
+    control API, and +2 for the first replica — picking only the first slot
+    is racy and made test_replica_lifecycle flake with EADDRINUSE on +2.
+    """
+    for _ in range(100):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s0:
+            s0.bind(("127.0.0.1", 0))
+            base = int(s0.getsockname()[1])
+        held: list[socket.socket] = []
+        try:
+            for off in range(1, n):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind(("127.0.0.1", base + off))
+                held.append(s)
+            return base
+        except OSError:
+            continue
+        finally:
+            for s in held:
+                s.close()
+    raise RuntimeError(f"could not find {n} contiguous free ports")
 
 
 @pytest.fixture
@@ -88,14 +107,14 @@ def ca_pair() -> tuple[str, str]:
 
 @pytest.fixture
 def pilot_config(workdir: Path) -> PilotConfig:
-    external_port = _free_port()
+    external_port = _free_port_window(3)
     return PilotConfig.model_validate(
         {
             "scheduler_adapter": (
                 "first_gateway.platforms.schedulers."
                 "globus_compute_pbs.GlobusComputePBSAdapter"
             ),
-            "scheduler_interface_config": {},
+            "scheduler_config": {},
             "job_walltime": 60,
             "queue": "test",
             "account": "test",
@@ -156,7 +175,7 @@ def _make_pilot_job(name: str) -> PilotJob:
         phase=JobPhase.pending_submit,
         manager_url="",
         manager_health=HealthEndpointStatus.unknown,
-        resources=[],
+        resources=PilotResources(hosts=[]),
         assigned_replicas=[],
         walltime_min=60,
         num_nodes=1,
@@ -262,7 +281,7 @@ async def test_replica_lifecycle(
             "deployment_name": "depl",
             "launch_spec": PilotLaunchSpec(
                 served_model_name="mock",
-                num_gpus=1,
+                gpus_per_node=1,
                 num_nodes=1,
                 venv_path=Path("/unused"),
                 weights_path=Path("/unused"),
@@ -300,6 +319,10 @@ async def test_replica_lifecycle(
         logs_resp = await client.get("/logs/r0")
         assert logs_resp.status_code == 200
         assert isinstance(logs_resp.json(), str)
+
+        r = await client.get("/status")
+        assert r.status_code == 200, r.text
+        assert "Replica r0 ready" in r.json()["replicas"][0]["status_info"]
 
         stop = await client.post("/stop-replica/r0")
         assert stop.status_code == 200

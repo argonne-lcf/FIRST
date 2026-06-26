@@ -12,9 +12,7 @@ async def build_scheduler(
     Construct a SchedulerAdapter from a PilotConfig and the process's shared
     client resources.
     """
-    return await pilot.scheduler_adapter.build(
-        client_state, pilot.scheduler_interface_config
-    )
+    return await pilot.scheduler_adapter.build(client_state, pilot.scheduler_config)
 
 
 __all__ = ["build_scheduler", "GlobusComputePBSAdapter"]

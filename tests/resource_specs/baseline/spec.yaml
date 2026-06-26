@@ -93,7 +93,7 @@ spec:
   launch_spec:
     served_model_name: meta-llama/llama-3-8b
     num_nodes: 1
-    num_gpus: 8
+    gpus_per_node: 8
     venv_path: /eagle/inference-service/venvs/vllm/
     weights_path: /eagle/inference-service/weights/llama-3-8b/
     weights_cache_path: /raid/scratch/weights-cache/llama-3-8b/

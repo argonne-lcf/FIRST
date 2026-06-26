@@ -19,6 +19,15 @@ class TaskPending(Exception):
 class FirstError(Exception):
     """
     Base class for all errors.
+
+    Instead of returning error strings, raise the appropriate
+    `FirstError` subclass.
+
+    Unhandled FirstErrors in the apiserver automatically get logged and return a
+    nice response to the user via `handle_uncaught_error` on the FastAPI app.
+
+    Therefore, callers only need to catch exceptions to do something other than
+    the generic log/return error repsonse flow.
     """
 
     status_code: HTTPStatus = HTTPStatus.INTERNAL_SERVER_ERROR

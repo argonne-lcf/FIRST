@@ -336,8 +336,7 @@ class PilotReplica(ResourceRow):
     observed_served_name: Mapped[str | None]
 
     phase: Mapped[str] = mapped_column(default=ReplicaPhase.pending.value)
-    health: Mapped[str] = mapped_column(default=HealthEndpointStatus.unknown.value)
-    status_info: Mapped[DictJsonb] = mapped_column(default=dict)
+    status_info: Mapped[str] = mapped_column(default="Replica created.")
     last_health_check: Mapped[DateTimeOrNone]
     started_at: Mapped[DateTimeOrNone]
 

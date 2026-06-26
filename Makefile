@@ -18,7 +18,7 @@ lint: sync
 lint-fix: sync
 	uv run ruff check --fix .
 
-test:
+test: sync
 	uv run pytest
 
 install-dev: sync

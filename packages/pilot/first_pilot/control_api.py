@@ -84,6 +84,8 @@ class _PilotManager:
                 url=self._replica_url(r.name),
                 phase=r.phase,
                 started_at=r.started_at,
+                status_info=r.status_info,
+                served_model_name=r.launch_spec.served_model_name,
             )
             for r in self.replica_manager.get_replicas()
         ]

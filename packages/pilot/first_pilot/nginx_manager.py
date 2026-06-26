@@ -44,6 +44,7 @@ _conf_template_str = """
                 {% for ip in config.ip_allowlist -%}
                 allow {{ip}};
                 {% endfor -%}
+                allow 127.0.0.1;
                 deny all;
                 proxy_pass http://127.0.0.1:{{config.control_port_internal}}/;
             }
@@ -53,6 +54,7 @@ _conf_template_str = """
                 {% for ip in config.ip_allowlist -%}
                 allow {{ip}};
                 {% endfor -%}
+                allow 127.0.0.1;
                 deny all;
                 proxy_pass http://127.0.0.1:{{replica.port}}/;
             }

@@ -1,3 +1,8 @@
+"""
+These schemas describe the communication between first-gateway and first-pilot.
+These are not user-facing resources.
+"""
+
 import os
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +15,10 @@ from .types import GpuClaim, PilotLaunchSpec, ReplicaPhase
 
 
 class ReplicaStartRequest(BaseModel):
+    """
+    Gateway request to start a replica on the pilot manager.
+    """
+
     name: str
     deployment_name: str
     launch_spec: PilotLaunchSpec
@@ -17,13 +26,24 @@ class ReplicaStartRequest(BaseModel):
 
 
 class ReplicaInfo(BaseModel):
+    """
+    Status information about a replica placed on the pilot manager.
+    """
+
     name: str
     url: str
     phase: ReplicaPhase
     started_at: datetime
+    status_info: str
+    served_model_name: str
 
 
 class AddressInfo(BaseModel):
+    """
+    Endpoint discovery: how the gateway learns where the pilot manager can be
+    reached.
+    """
+
     hostname: str
     ip: str
     external_port: int
@@ -40,6 +60,10 @@ class AddressInfo(BaseModel):
 
 
 class GpuInfo(BaseModel):
+    """
+    Information about a GPU resource managed by a pilot.
+    """
+
     index: str
     name: str
     memory_total_mib: int | None
@@ -47,17 +71,28 @@ class GpuInfo(BaseModel):
 
 
 class HostGpus(BaseModel):
-    """The GPUs presumed available on one host."""
+    """
+    Information about a host and its GPU resources managed under a pilot.
+    """
 
     hostname: str
     gpus: list[GpuInfo]
 
 
 class PilotResources(BaseModel):
+    """
+    Information about all hosts/GPUs managed under a pilot.
+    """
+
     hosts: list[HostGpus]
 
 
 class PilotJobStatus(BaseModel):
+    """
+    Result of /status endpoint from pilot manager control API: polled by gateway
+    to discover resources and sync Replica status.
+    """
+
     resources: PilotResources
     replicas: list[ReplicaInfo]
 

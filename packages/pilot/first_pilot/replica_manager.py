@@ -9,7 +9,7 @@ from typing import Literal
 
 from cachetools.func import ttl_cache
 
-from first_common.errors import BadPilotRequest, NotFound
+from first_common.errors import BadPilotRequest, FirstError, NotFound
 from first_common.schema.pilot import (
     GpuInfo,
     HostGpus,
@@ -238,13 +238,13 @@ class ReplicaManager:
                 launch_spec=replica.launch_spec,
                 workdir=workdir,
             )
-        except Exception:
-            logger.warning(
+        except Exception as e:
+            logger.exception(
                 "failed to start replica %s; releasing reservation", replica.name
             )
             with self._lock:
                 self._release_locked(replica.name, replica.resources, port)
-            raise
+            raise FirstError(f"Failed to start replica: {e}") from e
 
         with self._lock:
             self._replicas[replica.name] = r
