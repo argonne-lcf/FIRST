@@ -23,5 +23,5 @@
 - [ ] Prometheus+Grafana integration
 - [ ] Log export pipeline to DuckDB + archival
 - [ ] Batch system
-- [ ] Consider merging Riccardo and Hari’s batch inference tools with alcf-ai client, enabling users to customize and submit batch jobs on their own allocations?
+    - Consider merging Riccardo and Hari’s batch inference tools with alcf-ai client, enabling users to customize and submit batch jobs on their own allocations?
 

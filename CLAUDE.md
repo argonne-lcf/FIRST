@@ -20,7 +20,6 @@ Postgres correctly before `make test`.
 - Use `docker compose ps` and `docker compose logs <SERVICE> --since=1m` to view service logs
 
 # Agent Instructions
-- Ignore all code in the archived/ folder. It is never used or modified.
 - Feel free to work autonomously within this repo.  Do not touch files outside of this project root directory.
 - Never stage or git commit changes: I will review, stage, and commit myself.
 

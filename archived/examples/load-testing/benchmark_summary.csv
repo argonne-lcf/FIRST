@@ -1,9 +1,0 @@
-model,approach,request_throughput,output_throughput,median_e2e_latency_s,p99_e2e_latency_ms,duration,hardware_config
-Llama 3.1-8B,FIRST,25.10,3282.88,16.26,33693.24,40.28,"4 GPUs, TP=4"
-GPT-4o-mini,OpenAI API,6.65,1199.40,1.97,12415.20,150.27,Unknown
-Llama 3.1-8B,vLLM Direct,19.16,2502.72,24.37,43260.51,52.34,"4 GPUs, TP=4"
-Llama 3.3-70B,FIRST,8.29,1431.56,54.50,112323.05,120.67,"8 GPUs, TP=8"
-Llama 3.3-70B,FIRST (2 Instances),14.57,2516.34,30.14,62105.06,68.76,"8 GPUs, TP=8"
-Llama 3.3-70B,FIRST (3 Instances),20.92,3615.25,18.78,43768.46,47.80,"8 GPUs, TP=8"
-Llama 3.3-70B,FIRST (4 Instances),23.88,4131.13,16.05,36689.87,41.88,"8 GPUs, TP=8"
-Llama 3.3-70B,vLLM Direct,5.67,1059.04,77.37,147133.43,176.33,"8 GPUs, TP=8"

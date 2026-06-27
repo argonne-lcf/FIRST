@@ -1,0 +1,89 @@
+site_name: FIRST Inference Gateway
+site_description: Federated Inference Resource Scheduling Toolkit
+site_url: https://auroragpt-anl.github.io/inference-gateway/
+repo_url: https://github.com/auroraGPT-ANL/inference-gateway
+repo_name: auroraGPT-ANL/inference-gateway
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Developer Guide: getting-started/developer.md
+  - Architecture:
+      - Motivation: architecture/motivation.md
+      - Project Layout: architecture/project-layout.md
+      - Control / Data Plane: architecture/control-data-plane.md
+      - Request Routing: architecture/request-routing.md
+      - Pilot Job System: architecture/pilot-system.md
+      - Declarative Configuration: architecture/declarative-config.md
+      - Data Model: architecture/data-model.md
+      - Controller Framework: architecture/controllers.md
+  - Packages:
+      - Gateway: packages/gateway.md
+      - Pilot: packages/pilot.md
+      - Client SDK: packages/client.md
+      - Certificate Manager: packages/certmanager.md
+  - Deployment:
+      - Docker: deployment/docker.md
+  - Roadmap: roadmap.md
