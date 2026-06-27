@@ -1,5 +1,25 @@
 # Controller Framework
 
+!!! info "Aspirational design document"
+    This page is the **design** for the FIRST controller stack. Treat it
+    as the spec the next iteration of `first_gateway.controllers/` will
+    be built against.
+
+    What exists today:
+
+    - The `Worker` base class and the supervising
+      `first_gateway.controllers.manager.main` process (backoff,
+      crash recovery, heartbeat monitor).
+    - A stub `ClusterHealthController` that sleeps in a loop — registered
+      so the wiring is exercised end-to-end.
+    - `PilotSubmitter` and `GlobusComputePBSAdapter` — the platform layer
+      that the controllers below will drive.
+
+    Not yet implemented: the `Controller` reconcile-loop subclass, the
+    `WorkQueue`, the per-controller lease, column-level OCC helper,
+    LISTEN/NOTIFY plumbing, and every controller listed under
+    [FIRST Controllers](#first-controllers).
+
 FIRST allows admins to declaratively configure models with access controls,
 routing policies, and multi-cluster HPC deployments.  The controllers work
 continuously in the background to ensure that these deployments are enacted and
@@ -11,7 +31,7 @@ observes the declared spec and current status, performs external side effects,
 and makes database updates to synchronize the status and drive the system
 towards the desired state.
 
-This section provides a design sketch for the core controller framework.  The actual requirements for FIRST controllers are set out in [FIRST Controllers](#first-controllers).
+The next sections describe the design for the core controller framework.  The actual requirements for FIRST controllers are set out in [FIRST Controllers](#first-controllers).
 
 ## Concurrency Control
 

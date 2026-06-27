@@ -7,6 +7,15 @@ a backend replica. For the durable resource model behind these views, see
 [Declarative Configuration](declarative-config.md) and the
 [Controller Framework](controllers.md).
 
+!!! note "Status"
+    The admin/control routes (plan, apply, resource reads, replica
+    scale) are implemented today. The user-facing inference routes
+    described below — LLM dispatch through `litellm.Router`, non-LLM
+    pass-through, the Redis-cached router map — are the **target
+    design** that the Router Config Controller and the corresponding
+    apiserver routes will materialize. See
+    [Roadmap](../roadmap.md) for the current state.
+
 ## Endpoints name the task, not the model
 
 Inference views are organized around the **task** (create responses,

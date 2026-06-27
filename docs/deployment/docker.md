@@ -1,102 +1,108 @@
 # Docker Deployment
 
-This directory contains all the necessary files for deploying the FIRST Inference Gateway using Docker.
+The gateway stack runs as a small Docker Compose application: the
+**apiserver**, the **controller-manager**, an NGINX reverse proxy in
+front of the apiserver, plus Postgres and Redis.
 
-## Files
+The Compose definitions live under `deploy/`:
 
-- `docker-compose.yml` - Docker Compose configuration for multi-container deployment
-- `Dockerfile` - Container image definition for the gateway application
-- `nginx.conf` - Nginx reverse proxy configuration
-- `env.example` - Example environment variables file
+| File | Role |
+|---|---|
+| `deploy/compose.yaml` | Base service definitions (apiserver, controller-manager, nginx, postgres, redis). |
+| `deploy/compose.dev.yaml` | Dev overlay — `tmpfs`-backed Postgres for fast, isolated test runs. |
+| `deploy/compose.prod.yaml` | Prod overlay — persistent Postgres volume. |
+| `deploy/Dockerfile` | Image used by both apiserver and controller-manager (same image, different command). |
+| `deploy/nginx.conf` | Reverse proxy config; publishes the apiserver on `:8000`. |
 
-## Prerequisites
+## Quick start
 
-- Docker Engine 20.10+
-- Docker Compose 2.0+
+The Makefile wraps the common Compose invocations. Configure
+`COMPOSE_FILE` in your `.env` once and the targets do the rest — see the
+[Developer Guide](../getting-started/developer.md) for the full env-file
+layering.
 
-## Quick Start
+```bash
+# Bring up the full stack (dev overlay):
+make compose-up
 
-**Note**: All commands should be run from this directory (`deploy/docker/`)
+# Apiserver-only logs:
+make watch-logs
 
-1. Copy the example environment file:
-   ```bash
-   cp env.example .env
-   ```
+# Tear down:
+make compose-down
 
-2. Edit `.env` with your configuration:
-   - Set a strong `SECRET_KEY` (generate with: `python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"`)
-   - **For development**: Keep `RUNNING_AUTOMATED_TEST_SUITE=True` to skip Globus policy checks
-   - **For production**: Set `RUNNING_AUTOMATED_TEST_SUITE=False` and configure:
-     - Globus credentials (`GLOBUS_APPLICATION_ID`, `GLOBUS_APPLICATION_SECRET`, etc.)
-     - Globus policies (`GLOBUS_POLICIES`)
-     - Authorized IDP domains (`AUTHORIZED_IDP_DOMAINS`)
-   - Set `LOG_TO_STDOUT=True` so application logs are visible via `docker-compose logs`
-   - Adjust database credentials if needed
-   - Update `ALLOWED_HOSTS` for your domain
+# Production overlay (persistent postgres volume):
+make prod-up
+make prod-down
+```
 
-3. Start the services:
-   ```bash
-   docker-compose up -d
-   ```
+Once up, the apiserver is reachable at <http://localhost:8000>; Postgres
+and Redis are bound to their default ports for local testing.
 
-4. Initialize the database:
-   ```bash
-   docker-compose exec inference-gateway python manage.py migrate
-   ```
+## Services
 
-## Accessing the Gateway
+```mermaid
+flowchart LR
+    classDef gw fill:#e8f0ff,stroke:#3b6ea8,color:#1a2a3a
+    classDef store fill:#ffffff,stroke:#888,color:#222
+    classDef proxy fill:#fff5e6,stroke:#d49a3a,color:#3a2a10
 
-- Gateway API: http://localhost:8000
+    NX["nginx<br/>:8000"]:::proxy
+    API["inference-gateway<br/>(apiserver)"]:::gw
+    CM["controller-manager"]:::gw
+    PG[("postgres:18")]:::store
+    RD[("redis:7")]:::store
 
-## Managing the Services
+    NX --> API
+    API --> PG
+    API --> RD
+    CM --> PG
+    CM --> RD
+```
 
-- **View logs**: `docker-compose logs -f`
-- **Stop services**: `docker-compose down`
-- **Rebuild after code changes**: `docker-compose up -d --build`
-- **View running containers**: `docker-compose ps`
+Both `inference-gateway` and `controller-manager` are built from the same
+`deploy/Dockerfile`; the controller-manager overrides `command` to run
+`python -m first_gateway.controllers.manager`.
+
+## Environment files
+
+`env_file` layering (see `deploy/compose.yaml`):
+
+1. `.env.default` — common defaults, checked in.
+2. `.env.compose` — service-network specifics (e.g. `redis` / `postgres`
+   hostnames inside the Compose network).
+3. `.env.secret` — local-only secrets (Globus app credentials, CA
+   material). `.gitignore`d.
+4. `.env.prod` — optional production overrides.
+
+`.env.local` is **not** loaded inside Compose; it exists only so that
+running tests on the host machine can reach the published `localhost`
+ports of the containerised Postgres/Redis.
+
+All gateway settings use the `FIRST_` prefix with `__` for nested
+fields — e.g. `FIRST_DB_URL`, `FIRST_GLOBUS__APP_ID`. See
+[`settings.py`](https://github.com/argonne-lcf/inference-gateway/blob/main/packages/gateway/first_gateway/settings.py)
+for the full `Settings` model.
 
 ## Troubleshooting
 
-### Application Not Starting / "Globus High Assurance Policy" Error
-If the container exits immediately with no logs, or you see an error about Globus policies:
 ```bash
-docker-compose logs inference-gateway
+# Process status:
+docker compose ps
+
+# Recent logs from one service:
+docker compose logs inference-gateway --since=1m
+docker compose logs controller-manager --since=1m
+
+# Reset dev DB (tmpfs — wipe is automatic, but force a rebuild too):
+docker compose down -v
+docker compose up -d --build
 ```
 
-**Solution**: Ensure your `.env` file has `RUNNING_AUTOMATED_TEST_SUITE=True` for development, or configure proper Globus credentials for production.
+## Production notes
 
-### Database Connection Issues
-If you see database connection errors, ensure PostgreSQL is fully initialized:
-```bash
-docker-compose logs postgres
-```
-
-### View Application Logs
-To see detailed application logs:
-```bash
-# Follow all logs
-docker-compose logs -f
-
-# View only gateway logs
-docker-compose logs -f inference-gateway
-
-# Check if container is running
-docker-compose ps
-```
-
-### Rebuilding from Scratch
-To completely reset the deployment:
-```bash
-docker-compose down -v  # Warning: This deletes all data!
-docker-compose up -d --build
-```
-
-## Production Considerations
-
-For production deployments:
-1. Set `DEBUG=False` in `.env`
-2. Use a strong, randomly generated `SECRET_KEY`
-3. Configure proper `ALLOWED_HOSTS`
-4. Set up SSL/TLS termination (use nginx with SSL certificates)
-5. Configure proper backup strategies for PostgreSQL data
-6. Use Docker secrets for sensitive credentials
+Container-native deployment is a primary goal of v2 (see
+[Motivation](../architecture/motivation.md)) and the eventual target is
+the ALCF Hermes Kubernetes cluster. The Compose prod overlay is a
+single-host staging step; the same image, settings, and `Settings`
+loading work in either environment.

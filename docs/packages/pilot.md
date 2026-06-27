@@ -34,16 +34,24 @@ The pilot is meant to be launched as the body of an HPC scheduler script.
 There is nothing to install on the cluster beyond `uv` and `nginx`:
 
 ```bash
-PILOT_CONFIG_FILE=/path/to/config.yaml uvx first-pilot:app
+PILOT_CONFIG_FILE=/path/to/config.yaml uvx first-pilot
 ```
+
+This invokes `first_pilot.control_api:entrypoint`, which loads the YAML
+config and runs the FastAPI app under uvicorn on
+`127.0.0.1:control_port_internal`. NGINX, started by the app's lifespan,
+is what listens on `external_port` and reverse-proxies inbound mTLS
+traffic to it.
 
 
 ## Configuration
 
-`first_pilot.config.Config` is a `pydantic-settings` model loaded either
-from the path in `$PILOT_CONFIG_FILE` (YAML) or from environment variables.
-The control plane (not the cluster) renders this config at **job submission
-time** and stages it into the allocation's working directory:
+`PilotRuntimeConfig` (defined in
+`first_common.schema.pilot:PilotRuntimeConfig`) is the on-disk YAML
+contract between the gateway and the pilot. It is loaded once at startup
+from the path in `$PILOT_CONFIG_FILE`. The control plane (not the
+cluster) renders this config at **job submission time** and stages it
+into the allocation's working directory:
 
 | Field | Meaning |
 |---|---|
@@ -57,9 +65,10 @@ time** and stages it into the allocation's working directory:
 | `job_name` | Unique pilot job name, used in file naming and the ready-file |
 
 Because everything except the **root CA** is rendered per-job, admins do
-not need to maintain pilot config files on the HPC cluster. Server/client
-mTLS certs are ephemeral and re-issued for every submission via
-`first_gateway.certmanager`; see the [Certificate Manager](certmanager.md) docs.
+not need to maintain pilot config files on the HPC cluster. Server certs
+are ephemeral and re-issued for every submission via
+`first_gateway.certmanager.generate_server_cert` (called from
+`PilotSubmitter.submit`); see the [Certificate Manager](certmanager.md) docs.
 
 
 ## Subsystems
@@ -79,11 +88,23 @@ mTLS client-cert requirement (`ssl_verify_client on`).
 ### Replica manager — `replica_manager.py`
 
 `ReplicaManager` is the local placement controller. It self-discovers
-GPUs via `nvidia-smi` and the host list via the scheduler's node-file env
-var, then tracks the full `(host, gpu_id)` inventory plus what's claimed
-vs free.
+GPUs by `ssh <host> nvidia-smi …` over the host list read from the
+scheduler's node-file env var, then tracks the full `(host, gpu_id)`
+inventory plus what's claimed vs free. The inventory query is cached
+(`@ttl_cache(ttl=60)`); placement bookkeeping (`_replicas`, `_claimed`,
+`_used_ports`) is guarded by a single asyncio lock. A pending placement
+is held in `_replicas` as a `_RESERVED` sentinel between the validate
+and construct steps so concurrent `start_replica` calls cannot race on
+the same GPUs or port.
 
-Each `Replica` owns the model subprocess and a daemon health monitor thread.
+Each `Replica` owns the model subprocess (launched as a process group
+via `start_new_session=True`) and a daemon thread that polls
+`http://127.0.0.1:<port><health_path>` every 0.4 s. Phase transitions:
+`launching → ready` on first healthy hit (or `start_timeout` after
+`max_startup_time`), `ready → unhealthy` after 10 consecutive failed
+checks, recovery back to `ready` on success, and `error` if the process
+exits with nonzero status. Termination escalates SIGTERM → 8 s grace →
+SIGKILL across the whole process group.
 
 ### Control plane API — `control_api.py`
 

@@ -33,23 +33,35 @@ Keys are **EC P-256**, certificates use **SHA-256**, and private keys are writte
 
 ## Quick start
 
-Run these on a **trusted admin host** — this is the only machine that should ever
-hold the CA private key.
+The CLI is shipped with `first-gateway` as `pilot-certmanager` (see
+`packages/gateway/pyproject.toml`). Run these on a **trusted admin host** —
+this is the only machine that should ever hold the CA private key.
 
 ```bash
 # 1. Create the Root CA (default 10 years). Do this once.
-python mtls.py ca --name "FIRST Inference Root CA"
+pilot-certmanager ca --name "FIRST Inference Root CA"
 
-# 2. Issue the server certificate (default 2 years). Logical name, not a host.
-python mtls.py server inference-server --name server
+# 2. Issue the server certificate (default 2 years).
+pilot-certmanager server inference-server
 
 # 3. Issue the gateway's client certificate (default 2 years).
-python mtls.py client inference-gateway --name client
+pilot-certmanager client inference-gateway
 ```
 
-Override a lifetime with `--days`, e.g. `python mtls.py server inference-server --name server --days 365`.
+Override a lifetime with `--days`, e.g. `pilot-certmanager server inference-server --days 365`.
 
-All files land in `./pki/` by default (`--dir` to change it).
+All files land in `./pki/` by default (`--dir` to change it). File names
+are derived from the CN argument (`ca.{key,crt}`, `<slug(cn)>.{key,crt}`).
+
+### Programmatic use
+
+The gateway itself does **not** invoke this CLI in production. Instead,
+`first_gateway.platforms.pilot_submitter.PilotSubmitter` calls
+`first_gateway.certmanager.generate_server_cert(...)` directly at job submit
+time, issuing a fresh server cert per pilot job that is rendered into the
+pilot's `PilotRuntimeConfig` YAML and staged onto the cluster. The CLI is
+the operator-facing wrapper for one-time CA bootstrap and client-cert
+issuance.
 
 
 ## Output files

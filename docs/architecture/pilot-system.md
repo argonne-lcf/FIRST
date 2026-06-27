@@ -18,15 +18,31 @@ config field details, ports, and CLI entry points.
 
 ![Pilot Job Submission via qsub](../images/Diagrams-Control-Plane-qsub.drawio.svg)
 
-The gateway's pilot system takes a **pluggable `SchedulerAdapter`** so
-the same controllers can drive different HPC facilities:
+The gateway's pilot system takes a **pluggable `SchedulerAdapter`** (the
+ABC in `first_common.schema.base_scheduler:SchedulerAdapter`) so the
+same controllers can drive different HPC facilities. The adapter
+surface is small — `submit_job`, `get_job_statuses`, `terminate_job`,
+plus `put_file`/`list_files`/`read_file` for staging the pilot's config
++ submit script onto the cluster filesystem.
 
-- **Globus Compute** — fan out submissions through Globus Compute
-  endpoints (default for ALCF clusters).
-- **IRI** — DOE's Integrated Research Infrastructure.
-- **Direct PBS** — talk to a PBS server directly when we have a login
-  shell on the cluster.
-- …easy to add others; the adapter surface is small.
+`PilotSubmitter` (in `first_gateway.platforms.pilot_submitter`) is the
+layer above the adapter. Per pilot-job submission it:
+
+1. Generates a fresh per-job server cert via `certmanager.generate_server_cert`.
+2. Renders a `PilotRuntimeConfig` YAML (certs, ports, allowlist, workdir,
+   job name) and writes it to the cluster via `adapter.put_file`.
+3. Writes a small shell script that `uvx`-launches the pinned
+   `first-pilot` version with `PILOT_CONFIG_FILE` pointing at the YAML.
+4. Calls `adapter.submit_job` with the resulting `JobSubmitPayload`,
+   under a name prefixed `__FIRST_PILOT_` so zombie discovery can
+   distinguish FIRST-owned jobs from anything else on the queue.
+
+### Adapters shipped today
+
+| Adapter | Status |
+|---|---|
+| `GlobusComputePBSAdapter` (`platforms/schedulers/globus_compute_pbs.py`) | Implemented. Just-in-time registers `_qsub`/`_qstat`/`_qdel`/`_put_file`/`_list_files`/`_read_file` as Globus Compute functions at `build()` time and dispatches each adapter call via Globus Compute. Polls for results with a `TaskPending`/asyncio sleep loop. |
+| IRI / Direct PBS / others | Future adapters; the abstraction is in place. |
 
 The adapter's only job is to **get the pilot job submitted and report
 back its scheduler id**. It is *not* on the runtime path.
@@ -69,15 +85,18 @@ behind a single NGINX terminator.
 
 ### Control APIs
 
-The pilot exposes a small control plane reachable at
-`https://<job-ip>:<external_port>/control/`:
+The pilot exposes a small FastAPI control plane reachable at
+`https://<job-ip>:<external_port>/control/`. Internally it binds to
+`127.0.0.1:<external_port + 1>` so NGINX is the only externally-reachable
+listener; replicas live on `external_port + 2`, `+3`, … and are reverse-
+proxied at `/replicas/{name}/`.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /start-replica` | Place a replica with a given spec and GPU set |
-| `POST /stop-replica/{name}` | Terminate a replica and free its GPUs |
-| `GET /status` | List replicas and node inventory |
-| `GET /logs/{name}` | On-demand tail of stdout/stderr/user log |
+| `POST /start-replica` | Body `ReplicaStartRequest` — place a replica with the given `PilotLaunchSpec` and `GpuClaim`s; fails fast on local conflict |
+| `POST /stop-replica/{name}` | Terminate the replica subprocess, free its GPUs, drop its NGINX route |
+| `GET /status` | `PilotJobStatus` — replica list + node/GPU inventory |
+| `GET /logs/{name}` | On-demand tail (~200 lines) of `stdout`/`stderr`/user log |
 
 ### Replica manager
 

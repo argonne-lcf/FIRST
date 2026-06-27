@@ -58,3 +58,13 @@ pilot's NGINX, and proxies straight through.
 - **Admin reads vs user reads.** Admin views can join Postgres and Redis
   freely; user-facing discovery endpoints (list models, check load) are
   served from Redis.
+
+!!! note "Status"
+    Today the apiserver, controller-manager, Postgres, and Redis are
+    all running in the Compose stack, and the control-plane admin
+    endpoints (plan/apply, resource reads) are wired through them.
+    The data-plane inference path described above (mTLS to NGINX on the
+    compute node, Redis-cached router map) is the **target**: pilot
+    integration tests exercise the mTLS leg end-to-end, but the
+    router-map publishing and the inference views that consume it are
+    still being built. See [Roadmap](../roadmap.md).

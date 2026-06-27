@@ -62,6 +62,33 @@ Apply is fully declarative — **there is no PATCH model and no partial
 apply**. The manifest is authoritative; anything not in it does not
 exist.
 
+### Plan / Apply protocol
+
+The CLI runs two HTTP calls so the user can review changes before
+committing them, and so that concurrent admins cannot stomp each other:
+
+1. `POST /resources/plan` with the manifests → returns a
+   `ResourceChangePlan` (`previous_version`, `to_add`, `to_update`,
+   `to_delete`, `no_change`).
+2. `POST /resources/apply` with the manifests **and** the approved plan.
+
+`apply_plan` (in `first_gateway.services.plan_apply`) then:
+
+- Records a new `ConfigVersion` row keyed at `previous_version + 1`. The
+  PK uniqueness gives optimistic concurrency for free — if another admin
+  committed in between, `IntegrityError` becomes a `SpecApplyError`
+  with HTTP 409.
+- Re-runs `create_plan` against the now-locked transaction and aborts
+  with `SpecApplyError` if the recomputed plan diverges from the
+  approved one.
+- Dispatches creates/updates/deletes through `models.resource_registry`
+  (the ORM auto-registers each `ResourceRow` subclass by name, so adding
+  a new resource kind is just defining a new `Spec` and a new
+  `ResourceRow`).
+
+Every applied `ConfigVersion` keeps a JSONB snapshot of `changes` for
+audit; `GET /resources/config-versions/{uid}` returns one.
+
 ### Vignette: zero-downtime vLLM upgrade via canary
 
 To upgrade vLLM on Sophia with no downtime and no SSH:

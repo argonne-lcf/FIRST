@@ -125,11 +125,11 @@ under `packages/`:
 
 | Package | Installed on | Purpose |
 |---|---|---|
-| [`first_common`](packages/gateway.md) | everywhere | Shared schema and error types |
+| `first_common` | everywhere | Shared schema (resource Specs, pilot wire types, scheduler ABC) and error hierarchy |
 | [`first_gateway`](packages/gateway.md) | user-facing server | API server + controller manager |
 | [`first_pilot`](packages/pilot.md) | HPC compute nodes | Pilot job agent (one per allocation) |
 | [`alcf_ai`](packages/client.md) | end users | Python SDK and CLI |
-| `first_dashboard` | analytics server | Log aggregation, queries, dashboards |
+| `first_dashboard` | analytics server | Log aggregation, queries, dashboards (skeleton only) |
 
 ## Where to next
 
