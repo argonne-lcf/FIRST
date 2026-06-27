@@ -14,14 +14,7 @@ dev = [
     "asgi-lifespan",
 ]
 
-docs = [
-    "mkdocs-get-deps",
-    "mkdocs-material-extensions",
-    "mkdocs-material>=9.7.0,<10",
-    "mkdocs-minify-plugin<0.9",
-    "mkdocs>=1.5.0",
-    "pymdown-extensions>=10.0",
-]
+docs = ["mkdocs-material"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

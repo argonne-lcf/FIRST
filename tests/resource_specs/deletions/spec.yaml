@@ -20,7 +20,7 @@ spec:
       endpoint_uuid: sophia-endpoint-uuid
     pilot_env_path: /eagle/inference-service/venvs/pilot/
     pilot_config_path: /eagle/inference-service/pilot-config/
-    job_walltime: 2592000
+    job_walltime_min: 2592000
     queue: infer-svc
     account: inference_svc
     workdir: /eagle/inference-service/pilot-workdir/

@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from .._http import raise_for_status
 from ..transfer import TransferResult, https_put_to_collection, run_globus_transfer
 
 if TYPE_CHECKING:
@@ -22,7 +23,7 @@ class StagingAPI:
     def ensure_staging_area(self) -> StagingAreaResponse:
         if self._staging_area is None:
             resp = self._client.put("data/staging")
-            resp.raise_for_status()
+            raise_for_status(resp)
             self._staging_area = StagingAreaResponse.model_validate(resp.json())
         return self._staging_area
 

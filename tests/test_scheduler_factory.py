@@ -25,7 +25,7 @@ async def test_build_scheduler_dispatches_globus_compute_pbs() -> None:
         {
             "scheduler_adapter": "first_gateway.platforms.schedulers.globus_compute_pbs.GlobusComputePBSAdapter",
             "scheduler_config": {"endpoint_id": "endpoint-uuid-xyz"},
-            "job_walltime": 60,
+            "job_walltime_min": 60,
             "queue": "debug",
             "account": "ALCFTest",
             "workdir": "/tmp/pilot-workdir",

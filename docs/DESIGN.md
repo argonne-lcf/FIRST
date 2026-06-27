@@ -61,6 +61,10 @@ async def try_acquire_lease(conn, controller_name, holder_id):
 
 ### Column-level OCC
 
+Both row locking and [traditional optimistic concurrency
+control](https://docs.sqlalchemy.org/en/21/orm/versioning.html) approaches were
+considered in this design.
+
 A single version column per row is too coarse when multiple controllers write to
 the same row, even if they write disjoint fields. Instead, we perform OCC at the
 column level. Each update's WHERE clause includes the _premises_ of the
@@ -753,7 +757,7 @@ that the monitor only messages on health degradations/recoveries.
 - For all matching jobs in the database, updates `phase`, `time_started`.
 - Jobs that don't exist in the database but have a name matching the system
 prefix (`__FIRST_PILOT_`) are inserted into the database in the **zombie**
-phase, so they can be reaped.
+phase with tombstone and finalizers set, so they can be reaped and deleted on the next pass.
 
 ---
 **Pilot Endpoint Discovery Controller:**
@@ -763,10 +767,13 @@ phase, so they can be reaped.
 
 ---
 **Pilot Replica Status Observer:**
-- `list_actionable` returns PilotJobs that are running, have a manager URL, and _either_ empty `resources` (need to discover) or at least 1 replica.
-- Listener: queue changes to `PilotJob` AND `PilotReplica`.  For PilotReplicas popped off the queue, simply lookup the related `PilotJob` and queue it.
-- Reconcile function: if the pilot is running and has a manager URL, hit the `get_status` endpoint of the pilot manager.  Update PilotJob.`resources`, `manager_health`, `idle_since` (set to None if any replica is running, timestamp otherwise).
-- For each replica in the status response, update PilotReplica.`model_url`, `observed_served_name`, `phase`, `status_info`, `last_health_check`, `started_at`.
+- `list_actionable` returns PilotJobs that are running and have a manager URL.
+- Listener: queue changes to `PilotJob` AND `PilotReplica`.  For PilotReplicas popped off the queue, simply lookup the parent `PilotJob` and queue it.
+- Reconcile function: if the pilot is running and has a manager URL, hit the `get_status` endpoint of the pilot manager.
+  - Update PilotJob.`resources`, `manager_health`, `idle_since`
+    - `idle_since` should be updated to None if any replica is running.
+    - `idle_since` should be set to the current timestamp **if and only if** it is None and zero replicas are running ([OCC](#column-level-occ))
+  - For each replica in the status response, update PilotReplica.`model_url`, `observed_served_name`, `phase`, `status_info`, `last_health_check`, `started_at`.
 
 **QUESTION:** Updating `last_health_check` on every check will create an infininte feedback loop as feared in [framework discussion above](#integrated-polling-and-notification-driven-loop).  How do we best tackle this issue?
 
@@ -774,34 +781,29 @@ phase, so they can be reaped.
 **PilotJob controller:**
 - Listens for PilotJob changes
 - `list_actionable`: ???
--
-- reap pilots that have been idle for max idle time
-- reap pilots that are orphaned (no record in DB) immediately
-- When we reap/cleanup Pilots and Replicas, we actually want to ensure their resources are fully cleaned up/freed, but keep them around for postmortem/visibility into recent activity (only once `now() > deleted_at + '7 days'` it gets `DELETE`)
 
+**PilotJob Reconcile:**
+- If the Pilot has the tombstone and submit finalizer, terminate the job and mark it terminated.
+  - Set the tombstone on the replicas (sorted UPDATEs) at this time as well.
+- If the Pilot has been idle for longer than `pilot_max_idle_time_min`, mark it for removal and return.
+    - When we reap/cleanup Pilots and Replicas, we actually want to ensure their resources are fully cleaned up/freed, but keep them around for postmortem/visibility into recent activity (only once `now() > deleted_at + '7 days'` it gets the hard `DELETE`)
+    - Consider a ClassVar `DELETE_AFTER` that controls the earliest that
+    resource may be deleted after tombstone is set and finalizers all cleared
+- If the job is in a terminal state, set the tombstone on the job and its replicas.
+- If the job has a tombstone, return.
+- If the resource is pending-submit, perform `PilotSubmitter.submit()`, record the submitted job id, and advance the phase.
+    - Track total num queued+running jobs. Only submit up to a max depth, configured on the cluster pilot_system.
+- If the manager has been consistently unhealthy for a debounce period (control plane not responding with 200s), set the tombstone.
 
 ---
 **Pilot Deployment Controller:**
-- Health aggregation (from replica healths/statuses)
+- Health aggregation (roll up from replica statuses)
 - Load Average Tracking (see [Load Average utility](#load-average-utility))
 
 ---
 **Pilot Autoscaling controller:**
 - Follow load averages and set desired num replicas
 - Responsible for scaling at a controlled rate (e.g. respect minimum intervals between scale-up/scale-down)
-
----
-**Pilot Job Controller:**
-- Reaper: terminate orphaned pilot jobs that have no counterpart in the DB.
-- Submit new pending jobs to scheduler
-- Track node count; how many nodes are used/free.
-- Track queue depth.  Only submit up to a max queue depth.
-- Poll scheduler status of submitted/active jobs; Slack alerts when needed
-- Stop jobs with scheduler that need to be stopped
-- Check health of pilot manager endpoint
-- Populate pilot manager details in status
-- Pilot job controller clears out idle pilots or pilots that have become unhealthy (self-reported pilot health check, or unexpected errors from pilot control plane API)
-- Uses `PilotSubmitter` (see e.g. `tests.test_pilot_integration._submit_and_wait_ready`)
 
 ---
 **Pilot Replica Controller:**

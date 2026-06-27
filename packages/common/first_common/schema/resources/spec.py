@@ -100,7 +100,7 @@ class StaticDeploymentSpec(ResourceSpec):
     health_check_kwargs: dict[str, Any]
 
     prometheus_metrics_path: str | None = "/metrics"
-    prometheus_scrape_interval: int = 15
+    prometheus_scrape_interval_sec: int = 15
 
 
 class PilotDeploymentSpec(ResourceSpec):
@@ -124,7 +124,7 @@ class PilotDeploymentSpec(ResourceSpec):
     health_check_kwargs: dict[str, Any]
 
     prometheus_metrics_path: str | None = "/metrics"
-    prometheus_scrape_interval: int = 15
+    prometheus_scrape_interval_sec: int = 15
 
     scaling_strategy: LoadThresholdStrategy | None = None
     min_replicas: int = 0

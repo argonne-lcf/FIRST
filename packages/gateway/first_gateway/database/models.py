@@ -235,7 +235,7 @@ class StaticDeployment(ResourceRow):
     health_check_kwargs: Mapped[DictJsonb]
 
     prometheus_metrics_path: Mapped[str | None]
-    prometheus_scrape_interval: Mapped[int]
+    prometheus_scrape_interval_sec: Mapped[int]
     health: Mapped[str] = mapped_column(default=DeploymentHealth.offline.value)
     last_health_check: Mapped[DateTimeOrNone]
 
@@ -258,7 +258,7 @@ class PilotDeployment(ResourceRow):
     health_check_kwargs: Mapped[DictJsonb]
 
     prometheus_metrics_path: Mapped[str | None]
-    prometheus_scrape_interval: Mapped[int]
+    prometheus_scrape_interval_sec: Mapped[int]
 
     scaling_strategy: Mapped[DictJsonbOrNone]
     min_replicas: Mapped[int]

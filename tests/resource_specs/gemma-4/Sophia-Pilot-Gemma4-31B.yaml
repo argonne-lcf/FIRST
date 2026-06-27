@@ -1,6 +1,45 @@
 # Example of translating from Globus Compute config to a semi-realistic
 # PilotDeployment Spec.
 
+kind: AccessGroup
+name: research-team
+spec:
+  allowed_groups: []
+  allowed_domains: []
+
+---
+
+kind: Cluster
+name: sophia
+spec:
+  status_method: first_gateway.platforms.health.get_alcf_cluster_status
+  status_kwargs:
+    status_url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
+    timeout: 10
+  maintenance_notice: "Sophia is offline until tomorrow"
+  pilot_system:
+    scheduler_adapter: first_gateway.platforms.schedulers.GlobusComputePBSAdapter
+    scheduler_config:
+      endpoint_uuid: sophia-endpoint-uuid
+    pilot_env_path: /eagle/inference-service/venvs/pilot/
+    pilot_config_path: /eagle/inference-service/pilot-config/
+    job_walltime_min: 2592000
+    queue: infer-svc
+    account: inference_svc
+    workdir: /eagle/inference-service/pilot-workdir/
+    external_port: 8443
+    nginx_path: /eagle/inference-service/bin/nginx
+    ip_allowlist: ["10.0.0.0/8"]
+    node_file_env: PBS_NODEFILE
+    submit_script_preamble: |
+      #!/bin/bash
+      set -eu
+      module load python
+    pilot_version: "0.1.0"
+
+
+---
+
 kind: Model
 name: google/gemma-4-31B-it
 
@@ -8,6 +47,13 @@ spec:
   access_group_name: research-team
   supported_endpoints: ["/messages", "/chat/completions", "/responses"]
 
+---
+kind: Model
+name: google/gemma-4-32B
+
+spec:
+  access_group_name: research-team
+  supported_endpoints: ["/messages", "/chat/completions", "/responses"]
 ---
 
 kind: PilotDeployment
@@ -26,8 +72,8 @@ spec:
 
   scaling_strategy:
     strategy: LoadThresholdStrategy
-    scale_up_interval: 120
-    min_scale_down_age: 7200
+    scale_up_interval_min: 120
+    scale_down_age_min: 7200
     scaling_thresholds:
       - [0.0, 1]
       - [10.0, 2]
@@ -39,7 +85,7 @@ spec:
     health_path: "/health"
 
   prometheus_metrics_path: "/metrics"
-  prometheus_scrape_interval: 30
+  prometheus_scrape_interval_sec: 30
 
   launch_spec:
     served_model_name: google/gemma-4-31B-it
@@ -51,7 +97,7 @@ spec:
     weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it
 
     log_dir: /eagle/inference-service/logs/
-    max_startup_time: 1200
+    max_startup_time: 500
     health_path: /health
 
     env:

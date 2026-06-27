@@ -1,9 +1,15 @@
 import logging
+import sys
+from typing import Any
 
+import httpx
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.panel import Panel
 from typer import Typer
+
+from first_common.errors import FirstError
 
 from .client import InferenceClient
 from .subcommands._context import CliContext
@@ -46,7 +52,7 @@ cli.command(name="chat")(chat_command)
 
 
 @cli.callback()
-def main(
+def _root(
     ctx: typer.Context,
     base_url: str | None = None,
     log_level: str = "INFO",
@@ -72,5 +78,32 @@ def version() -> None:
     print(version("alcf-ai"))
 
 
+def main() -> None:
+    """
+    Entry point used by the `alcf-ai` script.
+
+    Catches expected error types so the user sees a clean, formatted message
+    instead of a multi-frame Rich traceback. Use --log-level=DEBUG to see the
+    full traceback when diagnosing client bugs.
+    """
+    try:
+        cli()
+    except FirstError as exc:
+        _print_error(f"Error ({exc.status_code})", str(exc), info=exc.info or None)
+        sys.exit(1)
+    except httpx.HTTPError as exc:
+        _print_error("HTTP Error", f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+
+
+def _print_error(title: str, message: str, info: dict[str, Any] | None = None) -> None:
+    body = message.strip() or "(no message)"
+    if info:
+        body += "\n\n" + "\n".join(f"{k}: {v}" for k, v in info.items())
+    console.print(Panel(body, title=title, border_style="red"))
+    if logger.isEnabledFor(logging.DEBUG):
+        console.print_exception()
+
+
 if __name__ == "__main__":
-    cli()
+    main()

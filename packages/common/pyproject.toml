@@ -2,7 +2,7 @@
 name = "first-common"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pydantic", "PyYAML"]
+dependencies = ["pydantic", "PyYAML", "Jinja2"]
 
 [build-system]
 requires = ["uv_build<0.12"]

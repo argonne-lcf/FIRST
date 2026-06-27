@@ -11,7 +11,7 @@ logging.basicConfig(level="INFO")
 
 
 async def main():
-    async with Settings().build_clients() as state, state["db_sessionmaker"]() as sess:
+    async with Settings().build_clients() as state, state.db_sessionmaker() as sess:
         conn = await sess.connection()
         await conn.execute(CreateSchema("first", if_not_exists=True))
         await conn.run_sync(Base.metadata.create_all)

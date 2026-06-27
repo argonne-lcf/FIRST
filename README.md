@@ -1,11 +1,4 @@
 ```mermaid
-  %%{init: {'theme':'base', 'flowchart':{'curve':'basis','nodeSpacing':40,'rankSpacing':55}, 'themeVariables': {
-    'primaryColor':'#eef4ff',
-    'primaryBorderColor':'#3b6ea8',
-    'primaryTextColor':'#1a2a3a',
-    'lineColor':'#6b8cae',
-    'fontFamily':'Helvetica'
-  }}}%%
   flowchart TB
       classDef user fill:#fff5e6,stroke:#d49a3a,stroke-width:2px,color:#3a2a10
       classDef gw fill:#e8f0ff,stroke:#3b6ea8,stroke-width:2px,color:#1a2a3a
@@ -14,7 +7,7 @@
       classDef static fill:#fde8e8,stroke:#b03a3a,stroke-width:2px,color:#3a1010
       classDef store fill:#ffffff,stroke:#888,stroke-width:1px,color:#222
 
-      subgraph Laptop["💻 User's Laptop"]
+      subgraph Laptop["Client Machine"]
           CLI["alcf-ai<br/><i>Python SDK / CLI</i>"]:::user
       end
 
@@ -54,7 +47,7 @@
           PROM --- GRAF --- DUCK
       end
 
-      CLI -->|"API requests"| API
+      CLI -->|"HTTPS"| API
 
       CM -->|"control plane<br/>launch / manage models"| PJ
       API ==>|"data plane<br/>inference proxy"| PJ

@@ -98,7 +98,8 @@ class PilotConfig(BaseModel):
     scheduler_adapter: ImportString[type[SchedulerAdapter]]
     scheduler_config: dict[str, Any] = {}
 
-    job_walltime: int
+    job_walltime_min: int
+    pilot_max_idle_time_min: int = 60
     queue: str
     account: str
     scheduler_flags: str = ""
@@ -119,9 +120,8 @@ class LoadThresholdStrategy(BaseModel):
     """
 
     strategy: Literal["LoadThresholdStrategy"] = "LoadThresholdStrategy"
-    scale_up_interval: int = 120  # scale up at most once / 2 min
-    min_scale_down_age: int = 7200  # a started replica lives 2 hr before scale-down
-    check_interval: int = 30  # evaluate scaling every 30 s
+    scale_up_interval_min: int = 2  # scale up at most once / 2 min
+    scale_down_age_min: int = 120  # a started replica lives 2 hr before scale-down
 
     # Ordered (load_lower_bound_exclusive, num_replicas). At/below the lowest
     # threshold, scale to min_replicas.

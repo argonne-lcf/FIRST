@@ -115,7 +115,7 @@ def pilot_config(workdir: Path) -> PilotConfig:
                 "globus_compute_pbs.GlobusComputePBSAdapter"
             ),
             "scheduler_config": {},
-            "job_walltime": 60,
+            "job_walltime_min": 60,
             "queue": "test",
             "account": "test",
             "scheduler_flags": "",

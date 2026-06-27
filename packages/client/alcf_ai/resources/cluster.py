@@ -21,7 +21,7 @@ class ClusterClient:
 
     def get_jobs(self) -> Any:
         resp = self._client.get(f"/{self.name}/jobs")
-        resp.raise_for_status()
+        raise_for_status(resp)
         return resp.json()
 
     @cached_property

@@ -14,6 +14,8 @@ from pydantic import (
     ConfigDict,
 )
 
+from .._http import raise_for_status
+
 if TYPE_CHECKING:
     from ..client import InferenceClient
 
@@ -100,7 +102,7 @@ class Sam3API:
         resp = self._client.post(
             f"{SAM3_DEPLOYMENT}/process", json=payload.model_dump()
         )
-        resp.raise_for_status()
+        raise_for_status(resp)
         return SubmitTaskResponse.model_validate(resp.json())
 
     def submit_batch(
@@ -119,7 +121,7 @@ class Sam3API:
         resp = self._client.post(
             f"{SAM3_DEPLOYMENT}/process", json=payload.model_dump(mode="json")
         )
-        resp.raise_for_status()
+        raise_for_status(resp)
         return SubmitTaskResponse.model_validate(resp.json())
 
     def get_task_result(self, task_id: str) -> Sam3ImageResult | Sam3BatchResult:
@@ -132,7 +134,7 @@ class Sam3API:
         if resp.status_code == 202 and b"pending" in resp.content:
             raise Sam3API.TaskPending
         elif resp.status_code >= 400:
-            resp.raise_for_status()
+            raise_for_status(resp)
 
         result = resp.json().get("result")
         if result and "scores" in result:

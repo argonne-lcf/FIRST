@@ -1,6 +1,7 @@
 """
 These schemas describe the communication between first-gateway and first-pilot.
-These are not user-facing resources.
+
+Do not confuse with admin-created pilot resources inside `resources` subpackage
 """
 
 import os

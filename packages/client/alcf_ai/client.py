@@ -1,6 +1,7 @@
 import os
 from typing import Generator
 
+from dotenv import load_dotenv
 from httpx import Auth, Client, Request, Response, Timeout
 
 from .api import AdminAPI, Sam3API, StagingAPI
@@ -14,6 +15,7 @@ from .resources import (
     StaticDeploymentsResource,
 )
 
+load_dotenv()
 DEFAULT_BASE_URL = os.environ.get(
     "inference_base_url", "https://inference-api.alcf.anl.gov/resource_server/"
 )

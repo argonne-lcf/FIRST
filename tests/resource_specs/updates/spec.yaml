@@ -20,7 +20,7 @@ spec:
       endpoint_uuid: sophia-endpoint-uuid
     pilot_env_path: /eagle/inference-service/venvs/pilot/
     pilot_config_path: /eagle/inference-service/pilot-config/
-    job_walltime: 2592000
+    job_walltime_min: 2592000
     queue: infer-svc
     account: inference_svc
     workdir: /eagle/inference-service/pilot-workdir/
@@ -58,7 +58,7 @@ spec:
     weight: 2
     max_parallel_requests: 100
   prometheus_metrics_path: "/metrics"
-  prometheus_scrape_interval: 30
+  prometheus_scrape_interval_sec: 30
   health_check_method: first_gateway.platforms.health.check_health_endpoint
   health_check_kwargs:
     timeout: 10
@@ -78,8 +78,8 @@ spec:
   max_replicas: 3
   scaling_strategy:
     strategy: LoadThresholdStrategy
-    scale_up_interval: 120
-    min_scale_down_age: 7200
+    scale_up_interval_min: 120
+    scale_down_age_min: 7200
     scaling_thresholds:
       - [0.0, 1]
       - [10.0, 2]
@@ -89,7 +89,7 @@ spec:
     timeout: 10
     health_path: "/health"
   prometheus_metrics_path: "/metrics"
-  prometheus_scrape_interval: 30
+  prometheus_scrape_interval_sec: 30
   launch_spec:
     served_model_name: meta-llama/llama-3-8b
     num_nodes: 1

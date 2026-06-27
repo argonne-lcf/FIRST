@@ -7,6 +7,7 @@ from time import perf_counter
 import globus_sdk
 import httpx
 
+from ._http import raise_for_status
 from .auth import STAGING_COLLECTION_ID, get_https_authorizer, get_transfer_authorizer
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ def https_put_to_collection(local_path: Path, remote_path: Path) -> TransferResu
             headers=headers,
             timeout=None,
         )
-    r.raise_for_status()
+    raise_for_status(r)
     elapsed = perf_counter() - start
     return TransferResult(
         elapsed_seconds=elapsed,
