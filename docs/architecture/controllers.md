@@ -362,7 +362,7 @@ loop: once `failures` is large enough that `backoff(failures) >= max_backoff`,
 every retry is scheduled an hour out. The `list_actionable` predicate filters
 on `retry_at`, so a stuck row is reconsidered ~once per hour forever.
 Transient platform breakage self-heals; persistent breakage stays cold but
-is never permanently abandoned. No separate sweeper needed.
+is never permanently abandoned.
 
 `reconcile_failures` is a running total, not a state flag — it keeps
 climbing past the cap (9, 10, 11, ...) at the hourly cadence. Treat
@@ -387,10 +387,8 @@ Resolution path for a stuck resource:
 
 ### Reconcile function rules
 
-- **Level-triggered.** Read current state; act on what *is*, not what
-  *changed*. If a controller crashes mid-step, the next reconcile resumes
-  from whatever state the DB reflects.
-- **Each external side effect must be idempotent.** Build it in. For
+- **Level-triggered.** Re-read current state from Postgres; act on what *is*, not what *changed*. If a controller crashes mid-step, the next reconcile resumes from whatever state the DB reflects.
+- **Each external side effect must be idempotent.** For
   schedulers without idempotency keys (PBS): use a deterministic job name
   (`__FIRST_PILOT_<resource-name>`), `qstat` to check, then `qsub` only on
   absence. Mutual exclusion is provided by the manager's single-coroutine
@@ -399,7 +397,7 @@ Resolution path for a stuck resource:
   submitted -> running`, do one transition per reconcile. Write back state,
   return. Next reconcile picks up the next step. Each step is independently
   recoverable.
-- **Updates are premised.** Always. See [Premised Updates](#premised-updates).
+- **Updates are premised.** See [Premised Updates](#premised-updates).
 - **Postgres is the only state.** Controllers may cache nothing across
   reconcile invocations. (Redis is fine as a separate source of truth for
   high-churn fields — see below.)
@@ -503,9 +501,7 @@ class PilotJobController(Controller):
 
 ## Observers
 
-An "observer" is just a `Worker` with `while True: poll(); sleep()`. There's
-no special base class — that wasn't pulling its weight. The polling pattern is
-small enough to write inline:
+An "observer" is just a `Worker` with `while True: poll(); sleep()`. The polling pattern is small enough to write inline:
 
 ```python
 class HpcSchedulerObserver(Worker):
