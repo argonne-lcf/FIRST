@@ -112,7 +112,7 @@ class Replica:
         self.phase = ReplicaPhase.launching
         self.status_info = "Model startup script has begun."
         self.started_at = datetime.now(timezone.utc)
-        self._startup_deadline = time.monotonic() + self.launch_spec.max_startup_time
+        self._startup_deadline = time.monotonic() + self.launch_spec.max_startup_sec
 
         self.consecutive_health_ok = 0
         self.consecutive_health_fail = 0
@@ -179,7 +179,7 @@ class Replica:
         if self._unhealthy_since is None:
             return False
         elapsed = time.monotonic() - self._unhealthy_since
-        return elapsed > self.launch_spec.max_startup_time
+        return elapsed > self.launch_spec.max_startup_sec
 
     def _monitor_loop(self) -> None:
         while not self._monitor_exit.wait(timeout=self._HEALTH_INTERVAL):
@@ -232,7 +232,7 @@ class Replica:
                 self.phase = ReplicaPhase.ready
             elif time.monotonic() > self._startup_deadline:
                 log = self.get_logs(num_lines=10)
-                msg = f"Replica {self.name} did not become healthy within spec max_startup_time; tearing down:\n{log}"
+                msg = f"Replica {self.name} did not become healthy within spec max_startup_sec; tearing down:\n{log}"
                 logger.error(msg)
                 self.status_info = msg
                 self.phase = ReplicaPhase.start_timeout
@@ -253,7 +253,7 @@ class Replica:
                 self._unhealthy_since = None
             elif self._unhealthy_for_too_long():
                 log = self.get_logs(num_lines=10)
-                msg = f"replica {self.name} unhealthy for over max_startup_time; tearing down:\n{log}"
+                msg = f"replica {self.name} unhealthy for over max_startup_sec; tearing down:\n{log}"
                 logger.error(msg)
                 self.status_info = msg
                 self.phase = ReplicaPhase.error

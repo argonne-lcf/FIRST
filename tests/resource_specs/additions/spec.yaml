@@ -102,7 +102,7 @@ spec:
     serve_script_template: |
       vllm serve {{weights_path}}
     log_dir: /eagle/inference-service/logs/
-    max_startup_time: 900
+    max_startup_sec: 900
 
 ---
 
@@ -167,4 +167,4 @@ spec:
     serve_script_template: |
       vllm serve {{weights_path}}
     log_dir: /eagle/inference-service/logs/
-    max_startup_time: 600
+    max_startup_sec: 600

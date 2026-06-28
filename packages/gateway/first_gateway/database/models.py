@@ -222,8 +222,8 @@ class Cluster(ResourceRow):
 class StaticDeployment(ResourceRow):
     __tablename__ = "static_deployment"
 
-    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"))
-    model_name: Mapped[str] = mapped_column(sa.ForeignKey("model.name"))
+    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"), index=True)
+    model_name: Mapped[str] = mapped_column(sa.ForeignKey("model.name"), index=True)
 
     api_url: Mapped[str]
     api_key: Mapped[str | None]
@@ -250,8 +250,8 @@ class StaticDeployment(ResourceRow):
 class PilotDeployment(ResourceRow):
     __tablename__ = "pilot_deployment"
 
-    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"))
-    model_name: Mapped[str] = mapped_column(sa.ForeignKey("model.name"))
+    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"), index=True)
+    model_name: Mapped[str] = mapped_column(sa.ForeignKey("model.name"), index=True)
     router_params: Mapped[DictJsonb]
 
     health_check_method: Mapped[str]
@@ -305,7 +305,7 @@ class PilotDeployment(ResourceRow):
 class PilotJob(ResourceRow):
     __tablename__ = "pilot_job"
 
-    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"))
+    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"), index=True)
     scheduler_job_id: Mapped[str | None]
     phase: Mapped[str] = mapped_column(default=JobPhase.pending_submit.value)
     manager_url: Mapped[str | None]
@@ -328,9 +328,11 @@ class PilotJob(ResourceRow):
 class PilotReplica(ResourceRow):
     __tablename__ = "pilot_replica"
     pilot_deployment_name: Mapped[str] = mapped_column(
-        sa.ForeignKey("pilot_deployment.name")
+        sa.ForeignKey("pilot_deployment.name"), index=True
     )
-    pilot_job_name: Mapped[str | None] = mapped_column(sa.ForeignKey("pilot_job.name"))
+    pilot_job_name: Mapped[str | None] = mapped_column(
+        sa.ForeignKey("pilot_job.name"), index=True
+    )
     used_resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     model_url: Mapped[str | None]
     observed_served_name: Mapped[str | None]

@@ -69,7 +69,7 @@ class ReplicaPhase(str, Enum):
 
     # Terminal states:
     error = "error"  # Process exited with nonzero status code
-    start_timeout = "start_timeout"  # Did not become healthy within max_startup_time
+    start_timeout = "start_timeout"  # Did not become healthy within max_startup_sec
     terminating = "terminating"  # being torn down
     terminated = "terminated"  # finished tear down
 
@@ -100,6 +100,7 @@ class PilotConfig(BaseModel):
 
     job_walltime_min: int
     pilot_max_idle_time_min: int = 60
+    max_concurrent_jobs: int = 100
     queue: str
     account: str
     scheduler_flags: str = ""
@@ -208,7 +209,7 @@ class PilotLaunchSpec(BaseModel):
 
     serve_script_template: str
 
-    max_startup_time: int
+    max_startup_sec: int
     health_path: str | None = "/health"
 
     @field_validator("serve_script_template")

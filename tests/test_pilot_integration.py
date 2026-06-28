@@ -288,7 +288,7 @@ async def test_replica_lifecycle(
                 weights_cache_path=Path("/unused"),
                 env={},
                 serve_script_template=_MOCK_REPLICA_SCRIPT,
-                max_startup_time=20,
+                max_startup_sec=20,
                 health_path="/health",
             ).model_dump(mode="json"),
             "resources": [

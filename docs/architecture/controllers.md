@@ -121,9 +121,9 @@ await sess.execute(
     sa.update(PilotJob)
     .where(
         PilotJob.uid == sa.bindparam("uid"),
-        PilotJob.scheduler_phase.is_distinct_from(sa.bindparam("phase")),
+        PilotJob.phase.is_distinct_from(sa.bindparam("phase")),
     )
-    .values(scheduler_phase=sa.bindparam("phase")),
+    .values(phase=sa.bindparam("phase")),
     updates,  # list[dict[str, Any]] — executemany
 )
 ```
@@ -264,6 +264,7 @@ CREATE TRIGGER pilot_job_notify
     NEW.phase IS DISTINCT FROM OLD.phase
     OR NEW.scheduled_deletion IS DISTINCT FROM OLD.scheduled_deletion
     OR NEW.manager_url IS DISTINCT FROM OLD.manager_url
+    OR NEW.resources IS DISTINCT FROM OLD.resources
     OR (TG_OP != 'UPDATE')  -- insert/delete always notify
   )
   EXECUTE FUNCTION notify_resource_change();
@@ -888,7 +889,7 @@ These read external systems and write to Postgres/Redis.
 #### HPC Scheduler Observer
 - Polls `qstat` per cluster's pilot system.
 - For each known `PilotJob`: bulk premised UPDATE of
-  `scheduler_phase`, `time_started` (`IS DISTINCT FROM` per field).
+  `phase`, `time_started` (`IS DISTINCT FROM` per field).
 - For each **orphan** — a scheduler job whose name starts with
   `__FIRST_PILOT_` but has no matching `PilotJob` row — issues `qdel`
   directly. The observer owns the `__FIRST_PILOT_` namespace; cleaning up
@@ -975,10 +976,11 @@ update `consecutive_launch_failures` (incrementing per failed or timed-out repli
      `consecutive_launch_failures` exceeds threshold, aggregate state is
      `deployments_failing` (the Autoscaler separately pins
      `desired_replicas = 0` on this signal).
-  2. When `scheduled_deletion = true` and every owned replica has
-     `deleted_at IS NOT NULL`, set `PilotDeployment.deleted_at = now()`.
-     (The Autoscaler is responsible for driving `desired_replicas` to 0
-     once `scheduled_deletion` flips; the Replica Reconciler then drains.)
+  2. When `scheduled_deletion = true`, an admin has requested that the
+  entire deployment is deleted.  We immediately comply, cascading the
+  delete to all child `PilotReplicas` without respecting their retention
+  period. This enables immediate recycling of deployment names and clears
+  out data for deployments that are no longer under the purview of the system.
 - Owns: `PilotDeployment.health`, `PilotDeployment.deleted_at`.
 
 #### PilotReplica controllers
@@ -1019,6 +1021,8 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
 ##### Replica Placement Controller
 - `list_actionable`: `PilotReplica` where `phase = pending` AND
   `pilot_job_name IS NULL` AND `scheduled_deletion = false`.
+- Listener subscribes to both Replica and Pilot Job tables, because Pilot
+Job Resources becoming available/ready unblocks placing replicas.
 - `reconcile`: bin-pack onto an existing `PilotJob` that has free resources.
   - If a job fits: call `POST /start-replica` on the pilot manager and
     set `pilot_job_name = <job>` and `phase= 'placed'` in the same transaction. If the API call

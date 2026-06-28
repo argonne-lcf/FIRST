@@ -101,7 +101,7 @@ Each `Replica` owns the model subprocess (launched as a process group
 via `start_new_session=True`) and a daemon thread that polls
 `http://127.0.0.1:<port><health_path>` every 0.4 s. Phase transitions:
 `launching → ready` on first healthy hit (or `start_timeout` after
-`max_startup_time`), `ready → unhealthy` after 10 consecutive failed
+`max_startup_sec`), `ready → unhealthy` after 10 consecutive failed
 checks, recovery back to `ready` on success, and `error` if the process
 exits with nonzero status. Termination escalates SIGTERM → 8 s grace →
 SIGKILL across the whole process group.

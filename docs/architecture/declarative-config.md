@@ -166,7 +166,7 @@ spec:
     weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it
 
     log_dir: /eagle/inference-service/logs/
-    max_startup_time: 500
+    max_startup_sec: 500
     health_path: /health
 
     env:
