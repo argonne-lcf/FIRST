@@ -59,7 +59,7 @@ CREATE TABLE controller_manager_lease (
 );
 ```
 
-One row, ever. The manager:
+The manager:
 
 1. On startup, attempts to claim the lease (insert or take over an expired one).
    If it can't, refuses to start any controllers and exits — supervisor (e.g.
@@ -68,9 +68,6 @@ One row, ever. The manager:
 3. If two consecutive renewals fail (network blip, contention, db down), the
    manager *kills the process* (`os._exit(1)`). Don't try to "drain" — the
    safe assumption is that another instance may have taken over.
-
-Controllers never know the lease exists. There's no per-reconcile check, no
-per-controller lease, no holder identity threaded through call sites.
 
 ### Premised Updates
 
@@ -152,8 +149,8 @@ Inside a single manager process, two coroutines belonging to the same
 controller may not act on the same resource concurrently. We enforce this
 structurally, not with locks:
 
-- Every controller runs **one** reconcile coroutine. If you need parallelism
-  later, partition by resource ID, never overlap.
+- Every controller runs **one** reconcile coroutine. If you need finer
+  concurrency, split resource IDs across an `asyncio.TaskGroup()`.
 - Cross-controller concurrency *is* allowed (different controllers own
   different fields). Premised updates catch any genuine conflict.
 
@@ -264,8 +261,7 @@ CREATE TRIGGER pilot_job_notify
   AFTER INSERT OR UPDATE OR DELETE ON pilot_job
   FOR EACH ROW
   WHEN (
-    -- Only fire for columns that drive controller behavior. This is the
-    -- main lever against the notification feedback loop.
+    -- Only fire for columns that drive controller behavior.
     NEW.phase IS DISTINCT FROM OLD.phase
     OR NEW.scheduled_deletion IS DISTINCT FROM OLD.scheduled_deletion
     OR NEW.manager_url IS DISTINCT FROM OLD.manager_url
@@ -284,9 +280,7 @@ Two layers of defense:
 1. **Don't store high-churn observational fields in Postgres at all.** Things
    like `last_health_check`, `last_status_check`, and per-poll
    `manager_health` go to Redis (see
-   [Hybrid Postgres+Redis Status](#hybrid-postgresredis-status)). Postgres
-   only learns about state when an *aggregated, semantically meaningful*
-   transition occurs (e.g. degraded -> healthy).
+   [Hybrid Postgres+Redis Status](#hybrid-postgresredis-status)).
 2. **Triggers only fire on watched columns.** The `WHEN` clause above
    names the columns that should wake controllers. Editing the trigger when
    you add a new such column is a forcing function — it makes you think
@@ -784,7 +778,7 @@ Neither requires a special "controllers paused" mode. Restarting the manager
 is also safe at any time — premised updates + level-triggered reconcile
 mean an interrupted reconcile is just resumed by the next one.
 
-# FIRST Controllers
+## FIRST Controllers
 
 The list below uses the conventions established above. Each entry names the
 table it owns (`table_name`), what its `list_actionable` predicate returns,
@@ -797,25 +791,25 @@ controller adds one asyncio task and one SQL predicate. Splitting a fat
 controller into focused ones makes each easier to test, reason about, and
 restart on failure without disturbing the others.
 
-## Observer controllers
+### Observer controllers
 
 These read external systems and write to Postgres/Redis.
 
-### Cluster Status Observer
+#### Cluster Status Observer
 - Polls each `Cluster`'s configured health endpoint.
 - Postgres write: `Cluster.status` (only on transition).
 - Redis write: `last_status_check` via `ClusterStatusStore`.
 
-### StaticDeployment Health Observer
+#### StaticDeployment Health Observer
 - Polls health endpoint for each `StaticDeployment`.
 - Postgres write: `StaticDeployment.health` (only on transition).
 - Redis write: `last_health_check`.
 
-### StaticDeployment Load Observer
+#### StaticDeployment Load Observer
 - Samples in-flight counts (see [Load Average utility](#load-average-utility)).
 - All writes to Redis only.
 
-### HPC Scheduler Observer
+#### HPC Scheduler Observer
 - Polls `qstat` per cluster's pilot system.
 - For each known `PilotJob`: bulk premised UPDATE of
   `scheduler_phase`, `time_started` (`IS DISTINCT FROM` per field).
@@ -827,7 +821,7 @@ These read external systems and write to Postgres/Redis.
 - Logs every orphan reap at INFO so operators can see it in
   `docker compose logs`.
 
-### Pilot Replica Status Observer
+#### Pilot Replica Status Observer
 - `list_actionable` (Postgres): `PilotJob` where `phase = running` AND
   `manager_url IS NOT NULL`.
 - LISTEN wakes on both `pilot_job` and `pilot_replica`.
@@ -839,10 +833,12 @@ These read external systems and write to Postgres/Redis.
     `started_at`.
   - Redis writes: `PilotJob.last_status_check`, `manager_health`, per-replica
     `last_health_check`. None of these fire triggers.
+- Groups successful startups and failures by PilotDeployment.  For each PilotDeployment,
+update `consecutive_launch_failures` (incrementing per failed replica and resetting to 0 on success)
 
-## Lifecycle controllers
+### Lifecycle controllers
 
-### PilotJob Controller (`table_name = "pilot_job"`)
+#### PilotJob Controller (`table_name = "pilot_job"`)
 - `list_actionable`:
   ```sql
   SELECT uid FROM pilot_job
@@ -869,7 +865,7 @@ These read external systems and write to Postgres/Redis.
   3. If `idle_since` exceeds the cluster's threshold: set
      `scheduled_deletion = true` and return — the next reconcile handles
      teardown.
-  4. If manager has been unhealthy past debounce: set
+  4. If manager has been unhealthy (control APIs not responding with 200s) past debounce: set
      `scheduled_deletion = true` and return.
   5. If `phase = pending_submit`: check cluster's pilot_system
      `max_concurrent_jobs`. If under cap, `PilotSubmitter.submit()`,
@@ -877,7 +873,7 @@ These read external systems and write to Postgres/Redis.
      `SELECT count(*) FROM pilot_job WHERE cluster_name=... AND phase IN
      ('submitted','running')`.)
 
-### PilotJob Endpoint Discovery Controller (`table_name = "pilot_job"`)
+#### PilotJob Endpoint Discovery Controller (`table_name = "pilot_job"`)
 - `list_actionable`: `PilotJob` where `phase = running` AND
   `manager_url IS NULL`. Optionally intersected with
   `PilotSubmitter.list_ready_endpoints()` if you want to skip ones the
@@ -886,7 +882,7 @@ These read external systems and write to Postgres/Redis.
 - Owns only `manager_url` on `PilotJob`. PilotJob Controller does not
   write that field.
 
-### PilotDeployment Controller (`table_name = "pilot_deployment"`)
+#### PilotDeployment Controller (`table_name = "pilot_deployment"`)
 - `list_actionable`: all `PilotDeployment` rows not in
   `reconcile_blocked` (small N; cheap to do unconditionally).
 - `reconcile`:
@@ -898,14 +894,15 @@ These read external systems and write to Postgres/Redis.
      triggered by:
      - `launch_spec` changing (spec-apply path).
      - Admin command: `alcf-ai admin reset-failures <deployment>`.
+  3. Samples in-flight counts (see [Load Average Utility](#load-average-utility)).
 - Owns: `PilotDeployment.health`, `PilotDeployment.consecutive_launch_failures`
   (resets only).
 
-### PilotReplica controllers
+#### PilotReplica controllers
 
 Split into three focused controllers, all on `table_name = "pilot_replica"`:
 
-#### Replica Reconciler
+##### Replica Reconciler
 - Drives observed count toward `desired_replicas`.
 - `list_actionable`: rows where `pilot_deployment.desired_replicas` differs
   from `count(replicas where deleted_at IS NULL)`, plus any individual replica
@@ -918,12 +915,12 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
     among `running`, oldest first), set `scheduled_deletion = true`. The
     Drainer handles the rest.
 
-#### Replica Placement Controller
+##### Replica Placement Controller
 - `list_actionable`: `PilotReplica` where `phase = pending` AND
   `pilot_job_name IS NULL` AND `scheduled_deletion = false`.
 - `reconcile`: bin-pack onto an existing `PilotJob` that has free resources.
   - If a job fits: call `POST /start-replica` on the pilot manager and
-    set `pilot_job_name = <job>` in the same transaction. If the API call
+    set `pilot_job_name = <job>` and `phase= 'placed'` in the same transaction. If the API call
     fails, leave `pilot_job_name = NULL` — next reconcile retries (it's
     idempotent because the pilot manager keys replicas by name).
   - If nothing fits: INSERT a new `PilotJob` in `phase = pending_submit`
@@ -934,14 +931,13 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
     picks it up periodically until capacity opens.
 
   *Recovery from partial failure:* If `start-replica` succeeded but the
-  DB write failed, the next reconcile sees a running pilot-side replica
-  with no FK. The reconciler chooses to either set the FK (treating the
-  pilot-side state as ground truth, since it's keyed by replica name) or
-  call `stop-replica` and start fresh. Both are idempotent; the simpler
-  rule is "if the replica appears in the target pilot's status, set the
-  FK; else retry start-replica."
+  DB write failed, the next reconcile sees an unplaced replica and attempts
+  placement on a Pilot Job again. If placed on a different pilot job, the
+  unregistered first replica (now an orphan) will [be reaped](#replica-drainerreaper).
+  If placed on the same pilot job, the Control API will raise a `409 CONFLICT` and
+  the FK to the pilot job can be written.
 
-#### Replica Drainer/Reaper
+##### Replica Drainer/Reaper
 - Two related jobs:
   - **Drain**: replicas with `scheduled_deletion = true` and
     `phase != terminated`. Reconcile: ensure removed from router (router
@@ -949,8 +945,12 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
     `deleted_at_router IS NOT NULL`), then after a 30s drain window call
     `POST /stop-replica`, set `phase = terminated`, `deleted_at = now()`.
   - **Reap orphans**: replicas appearing in pilot manager `/status` with
-    no matching `PilotReplica` row (or with a row that has
-    `scheduled_deletion = true`). Issue `stop-replica` immediately.
+    no matching `PilotReplica` row, with a row that has
+    `scheduled_deletion = true`, or with row that has a non-matching Pilot Job FK.
+    Issue `stop-replica` immediately.  (Consider a replica that is placed on Pilot Job 1,
+    then a transient DB error occurs so the placement is never recorded, and finally the replica
+    is placed again on Pilot Job 2.  Now the same replica name exists in two pilot jobs. The first
+    replica on Pilot Job 1 is unregistered and should be reaped.)
 - Also marks replicas unhealthy or "stuck in launching > N min" with
   `scheduled_deletion = true`, which routes them through the same drain
   path.
@@ -958,7 +958,7 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
   `list_actionable` includes any replica whose parent job is in a terminal
   state.)
 
-### Replica pipeline summary
+#### Replica pipeline summary
 
 ```
 Autoscaler (writes PilotDeployment.desired_replicas)
@@ -979,7 +979,7 @@ Retention Sweeper (hard-deletes after retention_days)
 Each arrow is exactly one controller hand-off via Postgres state. Failures
 at any stage are recovered by the level-triggered loop.
 
-### Pilot Autoscaler Controller (`table_name = "pilot_deployment"`)
+#### Pilot Autoscaler Controller (`table_name = "pilot_deployment"`)
 - Reads load averages from Redis (1m/5m).
 - Computes target `desired_replicas` per the deployment's `scaling_strategy`.
 - Writes back `desired_replicas`, subject to a minimum interval between
@@ -987,7 +987,7 @@ at any stage are recovered by the level-triggered loop.
   (`scaling:last_change:<deployment>`). Stops scale-up if the deployment's
   `consecutive_launch_failures` exceeds a threshold.
 
-### Router Config Controller (`table_name = "pilot_deployment", "static_deployment", "pilot_replica"`)
+#### Router Config Controller (`table_name = "pilot_deployment", "static_deployment", "pilot_replica"`)
 - Listens for changes to any of: deployments, replicas, models, access
   groups, cluster `maintenance_notice`.
 - `list_actionable`: returns a sentinel (e.g. always `[0]`) — there's one
@@ -999,24 +999,27 @@ at any stage are recovered by the level-triggered loop.
   - Deployments whose cluster has `maintenance_notice` set.
   - Replicas in `pending`, `terminated`, or with `scheduled_deletion`.
   - Replicas whose parent `PilotJob.manager_health != healthy`.
-- Supports aliases: a model may declare multiple non-overlapping alias names
-  that resolve to the canonical name in the router.
+- The router config is keyed on `Model.name` and provides the full map of:
+    - Model aliases: models may declare multiple non-overlapping alias names
+    that resolve to the canonical name in the router.
+    - Live deployment endpoints and corresponding routing parameters
+    - Access Group information for pre-flight authorization
 
-### Retention Sweeper
+#### Retention Sweeper
 - One small `Worker`, runs every ~5 minutes.
 - `DELETE FROM <each table>` where `deleted_at IS NOT NULL` and the
   retention window has elapsed.
 - Logs the count per table on each pass.
 
-### Reconcile Unblock Sweeper
+#### Reconcile Unblock Sweeper
 - Runs every hour.
 - `UPDATE ... SET reconcile_blocked = false WHERE reconcile_blocked = true
   AND reconcile_retry_at < now() - interval '1 hour'`.
 - Transient platform breakage self-heals without operator action.
 
-## Alerting
+### Alerting
 
-### Health Alert Controller
+#### Health Alert Controller
 - Watches table changes to `Cluster`, `PilotJob`, `StaticDeployment`,
   `PilotReplica`, `PilotDeployment`, plus periodic checks for things not
   represented as `ResourceRow`s:
@@ -1030,7 +1033,7 @@ at any stage are recovered by the level-triggered loop.
 - Owns its own table `alert_state(resource_table, resource_id,
   last_alerted_status, last_alerted_at)`.
 
-### Debouncing and flap suppression
+##### Debouncing and flap suppression
 
 Two windows interact:
 
@@ -1058,9 +1061,9 @@ genuine degradation that holds for the debounce window sends one Slack
 message; if recovery happens before the next batch flush, the recovery
 piggy-backs into the same message; if after, it sends a separate one.
 
-# Appendix
+## Appendix
 
-## Load Average Utility
+### Load Average Utility
 
 We measure **concurrent in-flight requests** using a Redis sorted set. Briefly,
 `ZADD key score member` is like creating a Python dictionary identified as the top-level redis `key`, and setting `dict[member] = score` with the bonus that Redis keeps the entries sorted by score under the hood, making score-range queries cheap.

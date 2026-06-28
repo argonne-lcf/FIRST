@@ -79,3 +79,8 @@ class AccessDenied(FirstError):
 class BadPilotRequest(FirstError):
     status_code = HTTPStatus.BAD_REQUEST
     code: str = "bad_pilot_request"
+
+
+class ReplicaAlreadyPlaced(FirstError):
+    status_code = HTTPStatus.CONFLICT
+    code: str = "replica_already_placed"

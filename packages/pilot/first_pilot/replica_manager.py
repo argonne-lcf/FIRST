@@ -9,7 +9,12 @@ from typing import Literal
 
 from cachetools.func import ttl_cache
 
-from first_common.errors import BadPilotRequest, FirstError, NotFound
+from first_common.errors import (
+    BadPilotRequest,
+    FirstError,
+    NotFound,
+    ReplicaAlreadyPlaced,
+)
 from first_common.schema.pilot import (
     GpuInfo,
     HostGpus,
@@ -210,7 +215,9 @@ class ReplicaManager:
         # Short critical section: reserve name + GPUs + port atomically.
         with self._lock:
             if replica.name in self._replicas:
-                raise BadPilotRequest(f"Replica {replica.name} is already registered")
+                raise ReplicaAlreadyPlaced(
+                    f"Replica {replica.name} is already registered"
+                )
 
             conflicting = [r for r in requested if r in self._claimed]
             if conflicting:
