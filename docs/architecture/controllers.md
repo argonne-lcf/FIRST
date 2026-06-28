@@ -346,39 +346,44 @@ itself:
 ALTER TABLE pilot_job
     ADD COLUMN reconcile_failures   integer    NOT NULL DEFAULT 0,
     ADD COLUMN reconcile_last_error text,
-    ADD COLUMN reconcile_blocked    boolean    NOT NULL DEFAULT false,
     ADD COLUMN reconcile_retry_at   timestamptz;
 -- (same columns on every controller-managed table)
 ```
 
 After each reconcile, the controller writes back:
 
-- success: `reconcile_failures=0, reconcile_blocked=false, retry_at=NULL`
+- success: `reconcile_failures=0, retry_at=NULL`
 - failure: `reconcile_failures+=1, last_error=str(exc),
-  retry_at = now() + backoff(failures)` (capped at `max_backoff`)
-- After `MAX_RECONCILE_FAILURES` (default 8) consecutive failures: set
-  `reconcile_blocked=true`. The `list_actionable` predicate filters out
-  blocked rows from the fast loop.
+  retry_at = now() + backoff(failures)` (capped at `max_backoff`, default
+  1 hour)
 
-A separate hourly **unblock sweeper** clears `reconcile_blocked=true` rows
-that have been parked for >1h, giving them another chance. Transient
-platform breakage self-heals; persistent breakage stays out of the hot loop
-but is never permanently abandoned.
+The backoff cap is what keeps persistently broken resources out of the hot
+loop: once `failures` is large enough that `backoff(failures) >= max_backoff`,
+every retry is scheduled an hour out. The `list_actionable` predicate filters
+on `retry_at`, so a stuck row is reconsidered ~once per hour forever.
+Transient platform breakage self-heals; persistent breakage stays cold but
+is never permanently abandoned. No separate sweeper needed.
+
+`reconcile_failures` is a running total, not a state flag — it keeps
+climbing past the cap (9, 10, 11, ...) at the hourly cadence. Treat
+`reconcile_failures >= 8` (or whatever threshold) as the "stuck" signal
+for dashboards and alerts.
 
 Resolution path for a stuck resource:
 
-1. Operator sees the resource in the dashboard with `reconcile_blocked=true`
-   and `reconcile_last_error` shown verbatim.
+1. Operator sees the resource in the dashboard with a high
+   `reconcile_failures` and `reconcile_last_error` shown verbatim.
 2. They either:
    - **Fix in place**: edit the spec (e.g. correct `launch_spec`). The
-     spec-apply path resets `reconcile_failures=0, reconcile_blocked=false`
+     spec-apply path resets `reconcile_failures=0, retry_at=NULL`
      atomically with the spec change.
-   - **Manually unblock**: `alcf-ai admin reconcile-reset <resource>` —
+   - **Manually retry now**: `alcf-ai admin reconcile-reset <resource>` —
      same reset, no spec change. Useful when the fix was external (cluster
      filesystem permissions, etc).
    - **Tear down**: `alcf-ai admin delete <resource>`. The owning controller
      handles cleanup as usual.
-3. The hourly sweeper handles the case where the operator did nothing.
+3. If the operator does nothing, the hourly retry eventually succeeds on
+   its own once the underlying problem is gone.
 
 ### Reconcile function rules
 
@@ -471,7 +476,6 @@ class PilotJobController(Controller):
     async def list_actionable(self, sess: AsyncSession) -> list[int]:
         # See FIRST Controllers / PilotJob for the real predicate.
         stmt = sa.select(PilotJob.uid).where(
-            PilotJob.reconcile_blocked.is_(False),
             sa.or_(
                 PilotJob.reconcile_retry_at.is_(None),
                 PilotJob.reconcile_retry_at < sa.func.now(),
@@ -743,7 +747,6 @@ Standard metrics exported by the `Controller` base class for every subclass:
 | `first_reconcile_duration_seconds` | histogram | controller |
 | `first_resync_interval_used_fraction` | gauge | controller |
 | `first_actionable_rows` | gauge | controller |
-| `first_reconcile_blocked_rows` | gauge | controller |
 | `first_worker_restarts_total` | counter | worker |
 | `first_seconds_since_last_resync` | gauge | controller |
 | `first_premised_update_stale_total` | counter | controller, table |
@@ -842,8 +845,7 @@ update `consecutive_launch_failures` (incrementing per failed replica and resett
 - `list_actionable`:
   ```sql
   SELECT uid FROM pilot_job
-   WHERE reconcile_blocked = false
-     AND (reconcile_retry_at IS NULL OR reconcile_retry_at < now())
+   WHERE (reconcile_retry_at IS NULL OR reconcile_retry_at < now())
      AND phase NOT IN ('terminated', 'failed')
      AND (
             scheduled_deletion = true
@@ -883,8 +885,8 @@ update `consecutive_launch_failures` (incrementing per failed replica and resett
   write that field.
 
 #### PilotDeployment Controller (`table_name = "pilot_deployment"`)
-- `list_actionable`: all `PilotDeployment` rows not in
-  `reconcile_blocked` (small N; cheap to do unconditionally).
+- `list_actionable`: all `PilotDeployment` rows (small N; cheap to do
+  unconditionally).
 - `reconcile`:
   1. Aggregate health from current `PilotReplica.phase` for owned replicas;
      write `PilotDeployment.health` (premised, only on transition).
@@ -1010,12 +1012,6 @@ at any stage are recovered by the level-triggered loop.
 - `DELETE FROM <each table>` where `deleted_at IS NOT NULL` and the
   retention window has elapsed.
 - Logs the count per table on each pass.
-
-#### Reconcile Unblock Sweeper
-- Runs every hour.
-- `UPDATE ... SET reconcile_blocked = false WHERE reconcile_blocked = true
-  AND reconcile_retry_at < now() - interval '1 hour'`.
-- Transient platform breakage self-heals without operator action.
 
 ### Alerting
 
