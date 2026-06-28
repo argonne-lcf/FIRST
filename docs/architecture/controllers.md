@@ -98,7 +98,6 @@ async def advance_to_running(sess: AsyncSession, job_id: int) -> bool:
         )
         .values(
             phase=JobPhase.running.value,
-            time_started=sa.func.now(),
         )
     )
     if result.rowcount == 0:
@@ -385,6 +384,8 @@ Resolution path for a stuck resource:
 3. If the operator does nothing, the hourly retry eventually succeeds on
    its own once the underlying problem is gone.
 
+Separately, `PilotDeployment.consecutive_launch_failures` counts the number of `PilotReplicas` that timed out or failed in a row for each deployment. When counter crosses a limit, the `desired_count` is pinned to 0, preventing auto-scaling or new `PilotReplicas` from starting. This mechanism is deliberately separate from the `reconcile_failures` counter, because the error is external (not a true error in the controller) and it requires accumulating faults from replicas on the same parent resource. The counter is reset whenever a deployment succeeds or the `PilotDeployment` spec is updated.
+
 ### Reconcile function rules
 
 - **Level-triggered.** Re-read current state from Postgres; act on what *is*, not what *changed*. If a controller crashes mid-step, the next reconcile resumes from whatever state the DB reflects.
@@ -532,9 +533,6 @@ Observers should:
 
 ## Soft Delete and Retention
 
-We don't use finalizers. Every resource has exactly one controller
-responsible for its external cleanup, so the simpler model fits:
-
 ```sql
 ALTER TABLE pilot_job
     ADD COLUMN scheduled_deletion boolean      NOT NULL DEFAULT false,
@@ -564,9 +562,6 @@ Defaults:
   `retention_days = 0` — hard-deleted as soon as cleanup is done.
 - `PilotJob`, `PilotReplica`: `retention_days = 7` — keep for postmortem
   visibility into recent compute activity.
-
-Operators can override `retention_days` per resource at delete time
-(`alcf-ai admin delete --retention-days 30 ...`) for forensic cases.
 
 ## Hybrid Postgres+Redis Status
 
@@ -608,12 +603,22 @@ class PilotJobStatusStore(StatusStore[PilotJobStatus]):
 T = TypeVar("T", bound=BaseModel)
 
 
+class StatusCASFailed(RuntimeError):
+    """Raised when SET ... IFEQ keeps losing the race past max_cas_attempts."""
+
+
 class StatusStore(Generic[T]):
-    """Typed access to one resource type's Redis-backed status."""
+    """Typed access to one resource type's Redis-backed status.
+
+    Status models must define a default value for every field — the store
+    materializes an empty `T()` when Redis is cold, and patches are passed
+    as partially-populated `T` instances.
+    """
 
     resource: ClassVar[str]
     model: ClassVar[type[BaseModel]]
     ttl_seconds: ClassVar[int]
+    max_cas_attempts: ClassVar[int] = 5
 
     def __init__(self, redis: Redis) -> None:
         self._redis = redis
@@ -637,24 +642,69 @@ class StatusStore(Generic[T]):
         }
 
     async def set(self, name: str, status: T) -> None:
+        """Unconditional write. Only safe when one writer owns the whole
+        status blob; otherwise use update()."""
         await self._redis.set(
             self._key(name),
             status.model_dump_json(),
             ex=self.ttl_seconds,
         )
 
-    async def update(self, name: str, **changes: Any) -> T:
-        """Read-modify-write helper for the common case."""
-        cur = await self.get(name)
-        new = cur.model_copy(update=changes)
-        await self.set(name, new)
-        return new
+    async def update(self, name: str, patch: T) -> T:
+        """Atomic compare-and-swap merge of the fields explicitly set on
+        `patch` onto the current value.
+        """
+        key = self._key(name)
+        explicit = {k: getattr(patch, k) for k in patch.model_fields_set}
+        for attempt in range(self.max_cas_attempts):
+            raw = await self._redis.get(key)
+            current = (
+                self.model.model_validate_json(raw)
+                if raw is not None
+                else self.model()
+            )
+            new = self.model.model_validate(current.model_dump() | explicit)
+            new_raw = new.model_dump_json()
+            if raw is None:
+                # NX is CAS-for-create: succeeds only if no key exists.
+                ok = await self._redis.set(
+                    key, new_raw, ex=self.ttl_seconds, nx=True,
+                )
+            else:
+                # ifeq=<expected> swaps only if the stored bytes still equal
+                # <expected>.
+                ok = await self._redis.set(
+                    key, new_raw, ex=self.ttl_seconds, ifeq=raw,
+                )
+            if ok:
+                return new
+            # Jittered backoff: 5ms, 10ms, 20ms, 40ms, ... ±50%
+            base = 0.005 * (2 ** attempt)
+            await asyncio.sleep(base * random.uniform(0.5, 1.5))
+        raise StatusCASFailed(
+            f"{key}: lost CAS race {self.max_cas_attempts}x"
+        )
+
+
+# Typical call site — only the fields you name are merged onto current
+# state; other fields fall back to whatever is in Redis:
+await statuses.update(
+    name,
+    PilotJobStatus(
+        last_status_check=now,
+        manager_health=HealthEndpointStatus.healthy,
+    ),
+)
 ```
 
 All Redis keys for status follow `status:<resource>:<name>`. Stores are
 the only code that reaches into that namespace; controllers and API routes
 get and set typed Pydantic models. `mypy` does not have to chase Redis
-return types — `get()` returns `T`, full stop.
+return types — `get()` returns `T`, full stop. Several controllers and
+observers write disjoint fields of the same status blob (health observer
+sets `last_health_check`, manager observer sets `manager_health`); the
+`IFEQ` CAS inside `update()` is what keeps those concurrent writes from
+losing each other.
 
 ### 2. Composed read schemas
 
@@ -726,31 +776,25 @@ The manager process exposes a small FastAPI on a local port (e.g.
 - `GET /healthz` — returns 200 iff every registered `Worker` has a fresh
   heartbeat across all its named beats. Used as the docker healthcheck.
 - `GET /metrics` — Prometheus exposition format, emitted by `prometheus_client`.
-
-The same FastAPI also exposes a JSON view of controller state for the admin
-dashboard to surface alongside the resource list:
-
 - `GET /api/controllers` — for each worker: name, status (running/restarting),
   named heartbeats with seconds-since-last-beat, last error, restart count.
 - `GET /api/controllers/<name>/recent` — recent reconcile log lines for one
-  controller (last N records, in-memory ring buffer).
+   controller (last N records, in-memory ring buffer).
 
 Standard metrics exported by the `Controller` base class for every subclass:
 
 | Metric | Type | Labels |
 |---|---|---|
-| `first_reconcile_total` | counter | controller, outcome (`success`/`failure`/`stale`) |
-| `first_reconcile_duration_seconds` | histogram | controller |
-| `first_resync_interval_used_fraction` | gauge | controller |
-| `first_actionable_rows` | gauge | controller |
-| `first_worker_restarts_total` | counter | worker |
-| `first_seconds_since_last_resync` | gauge | controller |
-| `first_premised_update_stale_total` | counter | controller, table |
+| `controller_reconcile_total` | counter | controller, outcome (`success`/`failure`/`stale`) |
+| `controller_reconcile_duration_seconds` | histogram | controller |
+| `controller_resync_interval_used_fraction` | gauge | controller |
+| `controller_actionable_rows` | gauge | controller |
+| `controller_worker_restarts_total` | counter | worker |
+| `controller_seconds_since_last_resync` | gauge | controller |
+| `controller_premised_update_stale_total` | counter | controller, table |
 
 Logging is the primary debugging surface: structured JSONL via the existing
-`first_gateway.log_config`. The tail-of-docker-logs + `jq` workflow stays the
-primary day-2 tool. Metrics exist for trends and paging; logs for "what
-exactly happened to this resource".
+`first_gateway.log_config`.
 
 The admin dashboard polls `/api/controllers` and renders a status pane next
 to the resource list. Prometheus (run separately in our deployment) scrapes
@@ -805,8 +849,41 @@ These read external systems and write to Postgres/Redis.
 - Redis write: `last_health_check`.
 
 #### StaticDeployment Load Observer
-- Samples in-flight counts (see [Load Average utility](#load-average-utility)).
+- Samples in-flight counts for each `StaticDeployment` (see
+  [Load Average utility](#load-average-utility)).
+- `poll_interval = 10.0` — the 1m/5m averages assume 10s samples.
 - All writes to Redis only.
+
+#### PilotDeployment Load Observer
+- Samples in-flight counts for each `PilotDeployment` (see
+  [Load Average utility](#load-average-utility)).
+- `poll_interval = 10.0` — same cadence as the static observer; the
+  Autoscaler reads the resulting 1m/5m averages from Redis.
+- All writes to Redis only.
+
+#### Router Config Observer
+- Watches all of: `pilot_deployment`, `static_deployment`,
+  `pilot_replica`, `model`, `access_group`, and `cluster`
+  (`maintenance_notice`).
+- Modeled as an `Observer`, not a `Controller`: there is one global
+  router config, not a per-resource reconcile, and the work is
+  "read Postgres, write Redis". The Controller base class
+  (per-resource `list_actionable` + `reconcile(uid)`) doesn't fit and
+  shouldn't be shoehorned in.
+- On wake (any watched table changes, or every poll interval),
+  rebuild the router config end-to-end from current Postgres state
+  and write the result to a single Redis key.
+- API servers `SUBSCRIBE` (or simply poll) that key and hot-swap their
+  in-memory LiteLLM router on change.
+- The rebuilt config excludes:
+  - Deployments whose cluster has `maintenance_notice` set.
+  - Replicas in `pending`, `terminated`, or with `scheduled_deletion`.
+  - Replicas whose parent `PilotJob.manager_health != healthy`.
+- The router config is keyed on `Model.name` and provides the full map of:
+    - Model aliases: models may declare multiple non-overlapping alias names
+    that resolve to the canonical name in the router.
+    - Live deployment endpoints and corresponding routing parameters
+    - Access Group information for pre-flight authorization
 
 #### HPC Scheduler Observer
 - Polls `qstat` per cluster's pilot system.
@@ -826,14 +903,16 @@ These read external systems and write to Postgres/Redis.
 - LISTEN wakes on both `pilot_job` and `pilot_replica`.
 - Per job: calls `GET /status` on the pilot manager.
   - Postgres writes (premised, only on change): `PilotJob.resources`,
+    `PilotJob.manager_health`, `PilotJob.manager_unhealthy_since` (set
+    to `now()` on first unhealthy observation, NULL on healthy),
     `PilotJob.idle_since` (set to `now()` iff currently NULL and zero
     replicas running; set to NULL iff any replica running), per-replica
     `model_url`, `observed_served_name`, `phase`, `status_info`,
     `started_at`.
-  - Redis writes: `PilotJob.last_status_check`, `manager_health`, per-replica
+  - Redis writes: `PilotJob.last_status_check`, per-replica
     `last_health_check`. None of these fire triggers.
 - Groups successful startups and failures by PilotDeployment.  For each PilotDeployment,
-update `consecutive_launch_failures` (incrementing per failed replica and resetting to 0 on success)
+update `consecutive_launch_failures` (incrementing per failed or timed-out replica and resetting to 0 on success)
 
 ### Lifecycle controllers
 
@@ -856,10 +935,12 @@ update `consecutive_launch_failures` (incrementing per failed replica and resett
   ```
 - `reconcile`:
   1. If `scheduled_deletion`: terminate via scheduler, set
-     `phase = terminated`, set `scheduled_deletion` on every assigned
-     replica (sorted-by-uid bulk UPDATE), set `deleted_at = now()`.
-  2. If phase is terminal: ensure `scheduled_deletion` propagated to
-     replicas, then return.
+     `phase = terminated`, set `deleted_at = now()`. (Cascading
+     `scheduled_deletion` to assigned replicas is the Replica
+     Reconciler's job — it picks up replicas whose parent job is in a
+     terminal or deleting state.)
+  2. If phase is terminal: nothing to do — Replica Reconciler handles
+     replica cleanup. Return.
   3. If `idle_since` exceeds the cluster's threshold: set
      `scheduled_deletion = true` and return — the next reconcile handles
      teardown.
@@ -870,6 +951,9 @@ update `consecutive_launch_failures` (incrementing per failed replica and resett
      record `scheduler_job_id`, advance phase. (Cap counted via
      `SELECT count(*) FROM pilot_job WHERE cluster_name=... AND phase IN
      ('submitted','running')`.)
+- Owns: `PilotJob.phase`, `PilotJob.scheduler_job_id`,
+  `PilotJob.scheduled_deletion` (self-set on idle/unhealthy timeout),
+  `PilotJob.deleted_at`.
 
 #### PilotJob Endpoint Discovery Controller (`table_name = "pilot_job"`)
 - `list_actionable`: `PilotJob` where `phase = running` AND
@@ -881,37 +965,56 @@ update `consecutive_launch_failures` (incrementing per failed replica and resett
   write that field.
 
 #### PilotDeployment Controller (`table_name = "pilot_deployment"`)
-- `list_actionable`: all `PilotDeployment` rows (small N; cheap to do
-  unconditionally).
+- `list_actionable`: `PilotDeployment` rows where
+  `(reconcile_retry_at IS NULL OR reconcile_retry_at < now())`. N is
+  small but the backoff filter still applies — a persistently broken
+  deployment must stay cold like any other resource.
 - `reconcile`:
   1. Aggregate health from current `PilotReplica.phase` for owned replicas;
-     write `PilotDeployment.health` (premised, only on transition).
-  2. Updates `consecutive_launch_failures` only by resetting it. The Replica
-     Reconciler increments on failed launch; this controller resets to 0
-     when at least one launch in the last hour succeeded. Reset is also
-     triggered by:
-     - `launch_spec` changing (spec-apply path).
-     - Admin command: `alcf-ai admin reset-failures <deployment>`.
-  3. Samples in-flight counts (see [Load Average Utility](#load-average-utility)).
-- Owns: `PilotDeployment.health`, `PilotDeployment.consecutive_launch_failures`
-  (resets only).
+     write `PilotDeployment.health` (premised, only on transition). When
+     `consecutive_launch_failures` exceeds threshold, aggregate state is
+     `deployments_failing` (the Autoscaler separately pins
+     `desired_replicas = 0` on this signal).
+  2. When `scheduled_deletion = true` and every owned replica has
+     `deleted_at IS NOT NULL`, set `PilotDeployment.deleted_at = now()`.
+     (The Autoscaler is responsible for driving `desired_replicas` to 0
+     once `scheduled_deletion` flips; the Replica Reconciler then drains.)
+- Owns: `PilotDeployment.health`, `PilotDeployment.deleted_at`.
 
 #### PilotReplica controllers
 
 Split into three focused controllers, all on `table_name = "pilot_replica"`:
 
 ##### Replica Reconciler
+- **Sole writer of `PilotReplica.scheduled_deletion`.** All conditions
+  that should drain a replica funnel through this controller — excess
+  count, parent job terminal/deleting, parent deployment deleting,
+  stuck-in-`launching` past timeout, unhealthy past timeout. Other
+  controllers signal intent through their own fields
+  (`PilotJob.phase`/`scheduled_deletion`,
+  `PilotDeployment.scheduled_deletion`); the Replica Reconciler reads
+  those and writes `scheduled_deletion` on the replicas.
 - Drives observed count toward `desired_replicas`.
-- `list_actionable`: rows where `pilot_deployment.desired_replicas` differs
-  from `count(replicas where deleted_at IS NULL)`, plus any individual replica
-  in a non-terminal state with `scheduled_deletion = true`.
-- `reconcile`: per deployment:
-  - If too few replicas: INSERT new `PilotReplica` rows in `phase=pending`
-    with `pilot_job_name=NULL`. The Replica Placement controller will pick
-    them up.
-  - If too many: pick replicas to drain (prefer `pending` over `running`;
-    among `running`, oldest first), set `scheduled_deletion = true`. The
-    Drainer handles the rest.
+- `list_actionable`:
+  - Any deployment where `desired_replicas` differs from
+    `count(replicas where deleted_at IS NULL)`.
+  - Any non-terminal replica whose parent `PilotJob` is in a terminal
+    state or has `scheduled_deletion = true`.
+  - Any non-terminal replica whose parent `PilotDeployment` has
+    `scheduled_deletion = true`.
+  - Any non-terminal replica with `phase = launching` AND
+    `placed_at < now() - launching_timeout`.
+  - Any non-terminal replica observed unhealthy past its debounce
+    window (read from the per-replica status the observer maintains).
+- `reconcile`:
+  - Per deployment with count mismatch:
+    - Too few: INSERT new `PilotReplica` rows in `phase=pending` with
+      `pilot_job_name=NULL`. The Replica Placement controller will pick
+      them up.
+    - Too many: pick replicas to drain (prefer `pending` over `running`;
+      among `running`, oldest first), set `scheduled_deletion = true`.
+  - Per individual replica matching one of the drain predicates above:
+    set `scheduled_deletion = true`. The Drainer handles the rest.
 
 ##### Replica Placement Controller
 - `list_actionable`: `PilotReplica` where `phase = pending` AND
@@ -924,6 +1027,8 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
   - If nothing fits: INSERT a new `PilotJob` in `phase = pending_submit`
     (subject to per-cluster max). Replica stays `pending`; on the next
     pass, once the new job is `running` with capacity, it gets placed.
+    Careful not to submit if the cluster's pilot job count is at `max_concurrent_jobs`
+    or there is already a Pilot that's queued/starting/ready-but-waiting-to-discover-resources.
   - If no clusters can accommodate the replica at all: write
     `status_info = 'AT_CAPACITY'`, leave pending. The full-resync loop
     picks it up periodically until capacity opens.
@@ -936,6 +1041,8 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
   the FK to the pilot job can be written.
 
 ##### Replica Drainer/Reaper
+- Does not write `scheduled_deletion` — only consumes it. The Replica
+  Reconciler is the sole writer of that field; see above.
 - Two related jobs:
   - **Drain**: replicas with `scheduled_deletion = true` and
     `phase != terminated`. Reconcile: ensure removed from router (router
@@ -943,18 +1050,16 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
     `deleted_at_router IS NOT NULL`), then after a 30s drain window call
     `POST /stop-replica`, set `phase = terminated`, `deleted_at = now()`.
   - **Reap orphans**: replicas appearing in pilot manager `/status` with
-    no matching `PilotReplica` row, with a row that has
-    `scheduled_deletion = true`, or with row that has a non-matching Pilot Job FK.
-    Issue `stop-replica` immediately.  (Consider a replica that is placed on Pilot Job 1,
-    then a transient DB error occurs so the placement is never recorded, and finally the replica
-    is placed again on Pilot Job 2.  Now the same replica name exists in two pilot jobs. The first
-    replica on Pilot Job 1 is unregistered and should be reaped.)
-- Also marks replicas unhealthy or "stuck in launching > N min" with
-  `scheduled_deletion = true`, which routes them through the same drain
-  path.
-- Also marks replicas of stopped/failed PilotJobs for deletion. (The
-  `list_actionable` includes any replica whose parent job is in a terminal
-  state.)
+    no matching `PilotReplica` row, or with a row that has a non-matching
+    Pilot Job FK. Issue `stop-replica` immediately. (Consider a replica
+    that is placed on PilotJob 1, then a transient DB error occurs so
+    the placement is never recorded, and finally the replica is placed
+    again on PilotJob 2. Now the same replica name exists in two pilot
+    jobs. The first replica on Pilot Job 1 is unregistered and should
+    be reaped.) Replicas with `scheduled_deletion = true` go through
+    the normal Drain path above, not the reap path.
+- Owns: `PilotReplica.phase` transitions to `terminated`,
+  `PilotReplica.deleted_at`.
 
 #### Replica pipeline summary
 
@@ -978,30 +1083,27 @@ Each arrow is exactly one controller hand-off via Postgres state. Failures
 at any stage are recovered by the level-triggered loop.
 
 #### Pilot Autoscaler Controller (`table_name = "pilot_deployment"`)
-- Reads load averages from Redis (1m/5m).
-- Computes target `desired_replicas` per the deployment's `scaling_strategy`.
-- Writes back `desired_replicas`, subject to a minimum interval between
-  scale-up/scale-down events stored in Redis
-  (`scaling:last_change:<deployment>`). Stops scale-up if the deployment's
-  `consecutive_launch_failures` exceeds a threshold.
-
-#### Router Config Controller (`table_name = "pilot_deployment", "static_deployment", "pilot_replica"`)
-- Listens for changes to any of: deployments, replicas, models, access
-  groups, cluster `maintenance_notice`.
-- `list_actionable`: returns a sentinel (e.g. always `[0]`) — there's one
-  global router config, not per-resource. Reconcile rebuilds it
-  end-to-end from current Postgres state and writes the result to Redis.
-- API servers `SUBSCRIBE` (or simply poll) the Redis key and hot-swap their
-  in-memory LiteLLM router on change.
-- The rebuilt config excludes:
-  - Deployments whose cluster has `maintenance_notice` set.
-  - Replicas in `pending`, `terminated`, or with `scheduled_deletion`.
-  - Replicas whose parent `PilotJob.manager_health != healthy`.
-- The router config is keyed on `Model.name` and provides the full map of:
-    - Model aliases: models may declare multiple non-overlapping alias names
-    that resolve to the canonical name in the router.
-    - Live deployment endpoints and corresponding routing parameters
-    - Access Group information for pre-flight authorization
+- **Sole writer of `PilotDeployment.desired_replicas`.** This is true
+  even when autoscaling is technically "disabled" for the deployment —
+  the Autoscaler still runs and is the only place that pins
+  `desired_replicas` for unhealthy or terminating deployments. Other
+  controllers signal intent via separate fields (`scheduled_deletion`,
+  `consecutive_launch_failures`); the Autoscaler is what reads those
+  and writes `desired_replicas`.
+- Reconcile order:
+  1. If `scheduled_deletion = true`, set `desired_replicas = 0`. Done.
+  2. If `consecutive_launch_failures` exceeds threshold, set
+     `desired_replicas = 0`. Done.
+  3. Otherwise, if autoscaling is enabled, read 1m/5m load averages
+     from Redis and compute target `desired_replicas` per the
+     deployment's `scaling_strategy`. Subject to a minimum interval
+     between scale-up/scale-down events stored in Redis
+     (`scaling:last_change:<deployment>`).
+  4. Otherwise (autoscaling disabled, healthy, not deleting), leave
+     `desired_replicas` at the operator-set value.
+- All writes are premised on the inputs above (`scheduled_deletion`,
+  `consecutive_launch_failures`, prior `desired_replicas`) so a
+  concurrent operator edit through the API can't be silently clobbered.
 
 #### Retention Sweeper
 - One small `Worker`, runs every ~5 minutes.
