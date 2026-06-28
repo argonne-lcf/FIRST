@@ -41,7 +41,7 @@ layer above the adapter. Per pilot-job submission it:
 
 | Adapter | Status |
 |---|---|
-| `GlobusComputePBSAdapter` (`platforms/schedulers/globus_compute_pbs.py`) | Implemented. Just-in-time registers `_qsub`/`_qstat`/`_qdel`/`_put_file`/`_list_files`/`_read_file` as Globus Compute functions at `build()` time and dispatches each adapter call via Globus Compute. Polls for results with a `TaskPending`/asyncio sleep loop. |
+| `GlobusComputePBSAdapter` (`platforms/schedulers/globus_compute_pbs.py`) | Implemented. Just-in-time registers `_qsub`/`_qstat`/`_qdel`/`_put_file`/`_list_files`/`_read_file` as Globus Compute functions at `build()` time and dispatches each adapter call via Globus Compute. Polls for results with a `TaskPending`/asyncio sleep loop (to sidestep AMQP issues). |
 | IRI / Direct PBS / others | Future adapters; the abstraction is in place. |
 
 The adapter's only job is to **get the pilot job submitted and report
@@ -62,7 +62,9 @@ This matters for two reasons:
 - **Latency.** Replica start/stop calls are sub-second round trips, not
   scheduler-mediated tasks.
 - **Blast radius.** Adapter outages do not affect already-running pilots
-  — they only prevent *new* pilots from being launched.
+  — they only prevent *new* pilots from being launched.  A pilot may run for
+  40 days and serve many changing model replicas over its lifespan, without
+  having to involve the login node.
 
 
 ## 3. On-node architecture
@@ -127,4 +129,5 @@ A few non-obvious design choices fall out of this architecture:
 - **Certs are per-job.** The gateway's
   [certificate manager](../packages/certmanager.md) mints fresh server
   certs at submission time, so each pilot's cert lifetime tracks the
-  job's max walltime.
+  job's max walltime. Only the intended audience, the gateway itself, can
+  authenticate.

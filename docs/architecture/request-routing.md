@@ -50,39 +50,27 @@ replica — can do so with a request header or alternative path.
 Every inference view, regardless of model family, performs the same
 preamble:
 
-1. Look up the `ModelDefinition` for the requested model name.
-2. Authorize user access via `access_groups`.
+1. Look up the `Model` for the requested model name.
+2. Authorize user access.
 3. Check per-user request limits.
 4. Verify that this view is in the model's `supported_endpoints`.
-5. Update the model's [rolling usage level](https://oneuptime.com/blog/post/2026-03-31-redis-rolling-window-rate-counter/view).
+5. Update the model's current load level.
 
-After the preamble, the view branches by family.
+After the preamble, dispatch to the router:
 
-### LLM inference views
-
-1. Check per-user token limits.
-2. Check the model's presence in the current LiteLLM Router instance.
+1. Check per-user / per-model token limits (if LLM inference).
+2. Check the model's presence in the current Router instance.
     - If a router entry is present, dispatch to the router and proxy the
       result back.
     - Otherwise, fall through to step 3.
 3. Iterate the model's deployment specs:
-    - If any deployment is active, return `503` with `Retry-After` — the
+    - If any deployment is pending, return `503` with `Retry-After` — the
       client should auto-retry (the deployment should be in the router
       shortly).
-    - If no deployment is active but one has the capacity to scale up,
+    - If no deployment is pending but one has the capacity to scale up,
       trigger it and return `503` with `Retry-After`.
     - Otherwise, return `503` *without* `Retry-After`: this model is not
       running and we have no way to make it run.
-
-### Non-LLM inference views
-
-1. Iterate the model's deployment specs:
-    - If a healthy deployment exists, proxy the request and return.
-    - If none are healthy but one is pending, return `503` with
-      `Retry-After`.
-    - If none are active but one can scale up, trigger it and return
-      `503` with `Retry-After`.
-    - Otherwise, return `503` *without* `Retry-After`.
 
 ## Router rebuild semantics
 
@@ -91,7 +79,7 @@ multiple Uvicorn workers **each worker has its own Router**. High-touch
 counters — both LiteLLM's own rate/cooldown state and our load-metric
 in-flight set — live in **Redis**, so the per-worker routers behave
 coherently. The routers themselves are **per-worker, stateless, and
-rebuilt from the DB**:
+rebuilt from the Router config in Redis**:
 
 - Each worker rebuilds its Router from the current configuration on every
   relevant change — not only on admin apply, but also on **replica
@@ -99,10 +87,8 @@ rebuilt from the DB**:
 - The rebuild trigger is the **single global config version**. Workers
   and control loops compare "the generation I built against" vs. "the
   current generation" and re-read when stale. Because the version lives
-  in one place (the monotonic counter / history table) rather than
-  scattered across resource rows, a single integer comparison is a
-  sufficient and consistent staleness check across all the tables the
-  router draws from.
+  in one place, a single integer comparison is a
+  sufficient and consistent staleness check.
 
 The Router Config Controller (see
 [Controller Framework](controllers.md#first-controllers)) is responsible

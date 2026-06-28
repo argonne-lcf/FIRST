@@ -152,20 +152,13 @@ A single running replica of a model inside a pilot job.
   `phase: ReplicaPhase`, `status_info`, `last_health_check`,
   `started_at`.
 
+Similarly, there is no Spec for `PilotReplica`; Replicas are created/destroyed
+by controllers in response to the desired scaling level of each model
+deployment.
+
 ### `ConfigVersion` — non-resource, audit-only
 
 One row per successful `apply`, with the previous version's `uid + 1`
 as PK (used for optimistic concurrency, see
 [Declarative Configuration](declarative-config.md)). Records
 `applied_by` and a JSONB `changes` snapshot for audit.
-
-## How the relationships drive controllers
-
-- The placement controller watches `PilotReplica.pilot_job_id IS NULL`
-  rows and binds them to suitable `PilotJob`s.
-- The pilot autoscaling controller compares `PilotDeployment.desired_replicas`
-  to live `PilotReplica` counts to decide whether to submit more
-  `PilotJob`s.
-- The router config controller rolls up the `(Model, PilotDeployment,
-  PilotReplica)` triple into the Redis-cached router map the data plane
-  reads from.

@@ -15,19 +15,19 @@ lifecycle management.
 
 ## What it provides
 
-- **Standard APIs.** [OpenAI](https://platform.openai.com/docs/overview)-
-  and Anthropic-compatible endpoints with streaming, so existing client
+- **Standard APIs.** [OpenAI](https://developers.openai.com/api/reference/overview)-
+  and [Anthropic](https://platform.claude.com/docs/en/api/messages)-compatible endpoints with streaming, so existing client
   code and agent frameworks work unmodified regardless of the backend
   model.
 - **Federated, multi-cluster serving.** A single logical model can be
   backed by deployments on several clusters at once; the gateway routes
   and load-balances across them, spanning heterogeneous accelerators
   behind one uniform API.
+- **Rapid A/B Test and Experimental Deployments.** The routing system also facilitates rapid experimentation through parallel rollouts of model variants.
+Inference engine settings are easy to change and roll back with declarative configuration.
 - **Always-on and on-demand models.** A set of "hot" models for immediate,
   low-latency inference, plus a large catalog of on-demand models that are
   cold-started transparently on first request.
-- **Batch inference.** A batch submission API for queuing and running
-  high-throughput workloads.
 - **Arbitrary AI models.** Beyond LLMs, any model that can be served
   behind an HTTP interface can be registered and deployed — e.g., SAM3
   for promptable image segmentation.
@@ -44,11 +44,7 @@ manages placement across pluggable deployment backends:
   testbed systems (e.g., SambaNova) that already expose their own HTTP
   endpoint.
 - **Pilot-job deployments** — models dynamically hosted and auto-scaled on
-  HPC resources via traditional schedulers (e.g., PBS Pro), using
-  [Globus Compute](https://www.globus.org/compute) on the control plane
-  for scheduler RPCs.
-- **Future backends** — the deployment interface is extensible (e.g.,
-  NVIDIA Dynamo).
+  HPC resources via traditional schedulers (e.g., PBS Pro).
 
 A central design goal is **declarative, gateway-side configuration**:
 admins define, deploy, and load-balance models across clusters from the
@@ -58,65 +54,9 @@ how we got here from v1.
 
 ## System Architecture
 
-```mermaid
-flowchart TB
-    classDef user fill:#fff5e6,stroke:#d49a3a,stroke-width:2px,color:#3a2a10
-    classDef gw fill:#e8f0ff,stroke:#3b6ea8,stroke-width:2px,color:#1a2a3a
-    classDef dash fill:#f0e8ff,stroke:#6a3ba8,stroke-width:2px,color:#2a1a3a
-    classDef pilot fill:#e6f7ec,stroke:#2e8b57,stroke-width:2px,color:#10331f
-    classDef static fill:#fde8e8,stroke:#b03a3a,stroke-width:2px,color:#3a1010
-    classDef store fill:#ffffff,stroke:#888,stroke-width:1px,color:#222
+Participants in the path of an inference request are shown in green:
 
-    subgraph Laptop["Client Machine"]
-        CLI["alcf-ai<br/><i>Python SDK / CLI</i>"]:::user
-    end
-
-    subgraph GVM["🖥️  Gateway VM"]
-        direction TB
-        API["apiserver"]:::gw
-        CM["controller-manager"]:::gw
-        PG[("PostgreSQL")]:::store
-        RD[("Redis")]:::store
-        API -.- PG
-        API -.- RD
-        CM -.- PG
-        CM -.- RD
-    end
-
-    subgraph Clusters[" "]
-        direction LR
-        subgraph HPC["🧮 HPC Cluster &nbsp;<i>(Pilot-managed)</i>"]
-            direction TB
-            subgraph Node["Compute Node"]
-                direction LR
-                PJ["first-pilot<br/>PilotJob"]:::pilot
-                MDL["LLM Replica"]:::store
-                PJ --> MDL
-            end
-        end
-        subgraph MIN["🏛️  Minerva Cluster &nbsp;<i>(Static Deployment)</i>"]
-            STATIC["Statically-deployed<br/>LLM Endpoint"]:::static
-        end
-    end
-
-    subgraph DVM["📊 Dashboard VM"]
-        direction LR
-        PROM["Prometheus"]:::dash
-        GRAF["Grafana"]:::dash
-        DUCK[("DuckDB")]:::dash
-        PROM --- GRAF --- DUCK
-    end
-
-    CLI -->|"HTTPS"| API
-
-    CM -->|"control plane<br/>launch / manage models"| PJ
-    API ==>|"data plane<br/>inference proxy"| PJ
-    API ==>|"data plane<br/>inference proxy"| STATIC
-
-    GVM -.->|"log replication"| DVM
-
-    style Clusters fill:none,stroke:none
-```
+![System Architecture](images/Diagrams-System.drawio.svg)
 
 ## Components
 

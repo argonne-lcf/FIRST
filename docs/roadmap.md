@@ -27,10 +27,6 @@ Foundations and the gateway-side building blocks are in place:
 
 ## What's left until MVP
 
-- Improve consistency of time units across schemas (`_min` suffix for
-  minutes everywhere?)
-- Soft delete semantics with finalizers
-- Pilot weight-cacheing / auto-downloading component
 - Rest of the controller framework
 - Controllers (per [Controller Framework](architecture/controllers.md))
 - Hot-swapping routers (LiteLLM, generic, Prometheus
@@ -44,17 +40,24 @@ Foundations and the gateway-side building blocks are in place:
 
 ## Toward production
 
+- Soft delete semantics with finalizers
+- Pilot weight-cacheing / auto-downloading component
 - Read-only web UI: follow resource status more easily
-- Port all fixtures to the new declarative config, under git version
-  control
 - DB indexing
-- Docs
-- Deploy in Dev; load testing
-- Test the health alert controller
 - Logging: revisit logged events; use LiteLLM hooks to log metrics
 - Prometheus + Grafana integration
+
+---
+
+- Port all fixtures to the new declarative config, under git version
+  control
+- Deploy in Dev; load testing
+- Test the health alert controller
 - Log export pipeline to DuckDB + archival
+
+---
+
 - Batch system
-- Consider merging Riccardo and Hari's batch inference tools with the
+    - Consider merging Riccardo and Hari's batch inference tools with the
   `alcf-ai` client, enabling users to customize and submit batch jobs
   on their own allocations

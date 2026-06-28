@@ -141,7 +141,7 @@ launched would remain reachable.
    microframework is the more honest fit, and the Django ORM's lack of
    connection pooling and explicit transaction control is a poor match
    for our async, high-cadence access patterns. The gateway runs on
-   FastAPI + async SQLAlchemy (asyncpg) with explicit pooling and
+   FastAPI + async SQLAlchemy with explicit pooling and
    transaction scoping.
 1. **Container-native deployment.** Move off the current systemd +
    bare-metal venv deployment to a streamlined, reproducible container

@@ -16,8 +16,9 @@
       that the controllers below will drive.
 
     Not yet implemented: the `Controller` reconcile-loop subclass, the
-    `WorkQueue`, the per-controller lease, column-level OCC helper,
-    LISTEN/NOTIFY plumbing, and every controller listed under
+    manager-level lease, the shared LISTEN dispatcher, the
+    Redis-backed status helpers, the retention sweeper, the manager
+    `/metrics` server, and every controller listed under
     [FIRST Controllers](#first-controllers).
 
 FIRST allows admins to declaratively configure models with access controls,
@@ -25,845 +26,1037 @@ routing policies, and multi-cluster HPC deployments.  The controllers work
 continuously in the background to ensure that these deployments are enacted and
 healthy.
 
-Each controller is a logically-independent process that owns a specific set of
-fields on one resource type or cross-resource relationship. The controller
-observes the declared spec and current status, performs external side effects,
-and makes database updates to synchronize the status and drive the system
-towards the desired state.
+The controller manager is a single asyncio process that hosts every controller
+as one or more coroutines. There is no controller-side scaling: one process is
+plenty for thousands of resources, and the data plane (API servers) is
+completely independent — a wholly-down controller manager does not drop user
+traffic, it just means new resources aren't reconciled until it comes back.
 
-The next sections describe the design for the core controller framework.  The actual requirements for FIRST controllers are set out in [FIRST Controllers](#first-controllers).
+Each controller owns a specific set of fields on one resource type or
+cross-resource relationship. It observes the declared spec and current status,
+performs external side effects, and writes back status to drive the system
+toward the desired state.
+
+The next sections describe the controller framework. The actual list of
+controllers FIRST will ship lives in [FIRST Controllers](#first-controllers).
 
 ## Concurrency Control
 
-### Controller Leases
+### Manager Lease
 
-In the initial design, we avoid scaling out the controllers.  Transient outages in controllers do not impact the data plane, by design, and one asyncio controller process is likely more than sufficient to keep up with ~1000s of model deployments.
+Because the controller manager is the only writer for controller-owned fields,
+we just need to make sure no two manager processes ever run at once (e.g. a
+botched deployment, an admin starting a second instance by accident).
 
-Since there is no work-construct, controllers must take out leases to prevent bugs arising from accidental duplicate instances in the infrastructure.
+The manager grabs a single lease at startup:
 
 ```sql
-CREATE TABLE controller_leases (
-    controller_name  text PRIMARY KEY,
-    holder_id        text NOT NULL,      -- UUID generated at startup
-    renewed_at       timestamptz NOT NULL,
-    lease_duration   interval NOT NULL DEFAULT '30 seconds'
+CREATE TABLE controller_manager_lease (
+    singleton       boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    holder_id       text NOT NULL,      -- UUID generated at startup
+    renewed_at      timestamptz NOT NULL,
+    lease_duration  interval NOT NULL DEFAULT '30 seconds'
 );
 ```
 
-Each controller generates a random UUID at startup, tries to claim the lease,
-and renews it periodically. Before each reconcile, it checks it still holds the
-lease.
+One row, ever. The manager:
+
+1. On startup, attempts to claim the lease (insert or take over an expired one).
+   If it can't, refuses to start any controllers and exits — supervisor (e.g.
+   docker) will restart and retry.
+2. Runs a single renewal coroutine that refreshes `renewed_at` every 10s.
+3. If two consecutive renewals fail (network blip, contention, db down), the
+   manager *kills the process* (`os._exit(1)`). Don't try to "drain" — the
+   safe assumption is that another instance may have taken over.
+
+Controllers never know the lease exists. There's no per-reconcile check, no
+per-controller lease, no holder identity threaded through call sites.
+
+### Premised Updates
+
+Multiple controllers (and the manager itself) may write to disjoint fields of
+the same row. A single `version` column is too coarse — every reconcile would
+trip every other reconciler's optimistic check, even when the changes are
+unrelated.
+
+Our rule, applied uniformly across the codebase:
+
+> **Every UPDATE must include in its `WHERE` clause the premises the decision
+> was based on.** If a premise is no longer true, the UPDATE affects zero rows
+> and the reconciler logs which premise failed and returns. The next reconcile
+> reads fresh state and tries again.
+
+This is just SQLAlchemy core/ORM — no helper class needed.
 
 ```python
-async def try_acquire_lease(conn, controller_name, holder_id):
-    """Claim the lease if it's expired or we already hold it."""
-    async with conn.cursor() as cur:
-        await cur.execute(
-            """
-            INSERT INTO controller_leases
-                   (controller_name, holder_id, renewed_at)
-            VALUES (%(name)s, %(holder)s, now())
-            ON CONFLICT (controller_name) DO UPDATE
-               SET holder_id = %(holder)s,
-                   renewed_at = now()
-             WHERE controller_leases.holder_id = %(holder)s
-                OR controller_leases.renewed_at
-                   + controller_leases.lease_duration < now()
-            RETURNING holder_id
-            """,
-            {"name": controller_name, "holder": holder_id},
+# Pattern A: ORM update with premise check
+async def advance_to_running(sess: AsyncSession, job_id: int) -> bool:
+    result = await sess.execute(
+        sa.update(PilotJob)
+        .where(
+            PilotJob.uid == job_id,
+            # premises read earlier in this reconcile:
+            PilotJob.phase == JobPhase.submitted.value,
+            PilotJob.scheduler_job_id.is_not(None),
         )
-        row = await cur.fetchone()
-        return row is not None and row[0] == holder_id
-```
-
-**QUESTION:** Do we really need a lease _per-controller_? If they all run as coroutines in one Python manager process, wouldn't it be simpler and cleaner for the manager to grab and maintain the lease at startup?
-
-### Column-level OCC
-
-Both row locking and [traditional optimistic concurrency
-control](https://docs.sqlalchemy.org/en/21/orm/versioning.html) approaches were
-considered in this design.
-
-A single version column per row is too coarse when multiple controllers write to
-the same row, even if they write disjoint fields. Instead, we perform OCC at the
-column level. Each update's WHERE clause includes the _premises_ of the
-decision, not just the identity of the resource. If any premise is
-no longer true, the update affects zero rows and you know to re-read and
-re-evaluate.  This is extracted into a small helper:
-
-```python
-# Just a sketch.  Will use SQLAlchemy.
-async def guarded_update(
-    conn: psycopg.AsyncConnection,
-    table: str,
-    resource_id: str,
-    *,
-    set_fields: dict[str, Any],
-    preconditions: dict[str, Any],
-) -> None:
-    """
-    Update set_fields only if preconditions still hold.
-    Raises StaleVersionError if stale.
-    """
-    set_clause = ", ".join(f"{k} = %({k})s" for k in set_fields)
-    where_clause = " AND ".join(
-        f"{k} = %(pre_{k})s" for k in preconditions
+        .values(
+            phase=JobPhase.running.value,
+            time_started=sa.func.now(),
+        )
     )
-    params = {
-        **set_fields,
-        **{f"pre_{k}": v for k, v in preconditions.items()},
-        "id": resource_id,
-    }
-    # TODO: we don't expect controllers to act on untrusted input, but we should probably
-    # avoid string interpolating queries nonetheless.  If this update can't be fully parameterized without
-    # string interpolation, this function needs to provide stronger guarantees against SQL injection.
-    async with conn.cursor() as cur:
-        await cur.execute(
-            f"""
-            UPDATE {table}
-               SET {set_clause}
-             WHERE id = %(id)s AND {where_clause}
-            """,
-            params,
+    if result.rowcount == 0:
+        # Re-read so the log line names *which* premise failed.
+        current = await sess.get(PilotJob, job_id)
+        logger.info(
+            "advance_to_running stale for job %d: "
+            "phase=%r scheduler_job_id=%r (expected submitted/not-null)",
+            job_id, current and current.phase,
+            current and current.scheduler_job_id,
         )
-        if cur.rowcount == 0:
-            raise StaleVersionError
+        return False
+    return True
 ```
 
-Then reconcilers read cleanly:
-
 ```python
-try:
-    await guarded_update(
-        conn, "jobs", resource_id,
-        set_fields={"phase": "running"},
-        preconditions={
-            "phase": "submitted",
-            "hpc_state": "running",
-        },
+# Pattern B: bulk UPDATE in an observer, only writes rows that actually changed.
+# IS DISTINCT FROM keeps the trigger from firing for unchanged rows, which
+# matters for LISTEN/NOTIFY traffic.
+await sess.execute(
+    sa.update(PilotJob)
+    .where(
+        PilotJob.uid == sa.bindparam("uid"),
+        PilotJob.scheduler_phase.is_distinct_from(sa.bindparam("phase")),
     )
-except StaleVersionError:
-    queue.done(resource_id, retry=True)
-    return  # stale — next reconcile gets fresh state
+    .values(scheduler_phase=sa.bindparam("phase")),
+    updates,  # list[dict[str, Any]] — executemany
+)
 ```
 
-To summarize the layered defense: the lease prevents two instances of the same
-controller from running concurrently. The precondition guards prevent a single
-controller from acting on stale cross-controller data. And the level-triggered
-reconcile means that any time a guard trips, the recovery is just "re-read and
-try again".
+Notes on premised updates:
 
-If a reconcile updates multiple rows in one transaction, sort by ID first to
-avoid deadlocks arising from updates in different orders.
+- **Log what failed, don't raise.** A stale update is a normal, expected event
+  (the whole design assumes it). Treating it as an exception loses the most
+  useful piece of diagnostic information — which premise was wrong.
+- **One writer per field.** If two controllers need to contribute info to the
+  same logical concept, give them distinct columns (or a relation table they
+  each own exclusively). Premised updates are a safety net, not a license for
+  shared writers.
+- **Don't write back unchanged values.** The bulk-update pattern above is
+  generalizable: include `IS DISTINCT FROM` checks for every field you're
+  updating so an unchanged row doesn't fire the notify trigger and re-wake the
+  loop. (See [Notification feedback loops](#notification-feedback-loops).)
 
-## Observer Controllers
+### Mutual exclusion within the manager
 
-Write dedicated observer controllers for polling external systems. It runs on a
-timer, queries the external system, and updates the status of the relevant
-Postgres rows. Other controllers then react to those status changes through the
-normal notification pathway.
+Inside a single manager process, two coroutines belonging to the same
+controller may not act on the same resource concurrently. We enforce this
+structurally, not with locks:
 
-These controllers don't necessarily need to reconcile one row at a time.  For
-example, `qstat` may return the status of 400 HPC-scheduled jobs.  Observer
-controllers can update all rows in a single network round trip.
+- Every controller runs **one** reconcile coroutine. If you need parallelism
+  later, partition by resource ID, never overlap.
+- Cross-controller concurrency *is* allowed (different controllers own
+  different fields). Premised updates catch any genuine conflict.
 
+This gives the "qsub idempotency" pattern (run `qstat` to check, then `qsub`
+only if absent) a single-threaded execution context for free — no extra
+locking needed.
+
+### Sort by ID before multi-row writes
+
+> Any time you take row locks **or** issue multiple UPDATEs in one
+> transaction, sort the target IDs first. Postgres won't deadlock on locks
+> taken in a consistent order.
+
+This applies to:
+
+- `SELECT ... FOR UPDATE` over multiple rows.
+- Bulk UPDATEs touching N rows in the same table.
+- Multi-table updates inside one transaction (sort within each table; if
+  multiple tables, also pick a stable cross-table order).
+
+## Reconcile Loop
+
+The whole design is **level-triggered**: every reconcile reads fresh state
+from Postgres, decides what one step to take, takes it, writes back. Crashes,
+duplicate events, missed events, and stale caches are all recovered by "the
+next reconcile sees the truth and does the right thing." Edge-triggered
+designs (act-on-event-X) are forbidden.
+
+### Poll from Postgres; LISTEN/NOTIFY is just a wake hint
+
+Each controller's reconcile loop is straightforward:
+
+```text
+loop forever:
+    beat()
+    ids = SELECT uid FROM <table> WHERE <list_actionable predicate>
+    for id in ids:
+        reconcile(id)
+        beat()
+    wait up to resync_interval seconds OR until LISTEN notification
+```
+
+That's it. There is **no** in-memory work queue, no dirty set, no per-key
+backoff data structure. The DB is the source of truth for what needs work,
+and "needs work" is encoded as the `list_actionable` SQL predicate.
+
+- **Full resync** every `resync_interval` (default 30s) is mandatory for
+  correctness.
+- **LISTEN/NOTIFY** just shortens the resync wait when a relevant row
+  changes. If notifications were 100% lost, resync would still drive the
+  system correctly within `resync_interval`.
+- **Deduplication is free**: if a resource is updated 10 times between
+  resyncs, the loop still does one reconcile per resync iteration.
+
+If a controller is overwhelmed (its `for` loop takes longer than
+`resync_interval`), no harm done — it just runs back-to-back without
+sleeping. Add a metric for "% of resync interval spent reconciling" so we
+notice before it matters.
+
+### Shared LISTEN dispatcher
+
+Every controller wants to be notified when its table changes. Rather than
+each controller opening its own LISTEN connection, the manager owns a single
+LISTEN connection and fans out to per-controller `asyncio.Event` objects,
+keyed by table name:
 
 ```python
-"""
-ObserverController: a Worker that polls an external system and syncs
-state back into Postgres.
+class WakeupDispatcher:
+    """Single LISTEN connection in the manager; fans out per-table wakes."""
 
-Use this for things like:
-  - Polling an HPC scheduler for job status
-  - Checking a cloud provider for instance state
-  - Syncing data from an external API
+    def __init__(self) -> None:
+        self._events: dict[str, asyncio.Event] = {}
 
-The observer's job is strictly: read external state, write it to Postgres.
-Other controllers then react to those Postgres changes through the normal
-notification/reconcile pathway. This keeps the polling concern isolated
-from the business logic.
+    def event_for(self, table: str) -> asyncio.Event:
+        return self._events.setdefault(table, asyncio.Event())
 
-Subclasses implement:
-  - poll(): query the external system, update Postgres rows
-  - poll_interval: how often to poll (seconds)
-"""
-
-import asyncio
-import logging
-from abc import abstractmethod
-
-from ..settings import ClientState
-from .worker import Worker
-
-logger = logging.getLogger(__name__)
-
-
-class ObserverController(Worker):
-    """
-    Base class for controllers that poll external systems.
-    """
-
-    poll_interval: float = 30.0  # seconds between polls
-
-    def __init__(
-        self,
-        name: str,
-        client_state: ClientState,
-        *,
-        heartbeat_timeout: float = 120.0,
-    ) -> None:
-        super().__init__(
-            name, client_state, heartbeat_timeout=heartbeat_timeout
-        )
-
-    @abstractmethod
-    async def poll(self) -> None:
-        """
-        Query the external system and update Postgres with current state.
-
-        For example, an HPC job observer might:
-          1. Call the scheduler API to list all active jobs
-          2. For each job, update the corresponding Postgres row's
-             status fields (state, exit_code, etc.) via OCC
-          3. Any status changes trigger LISTEN/NOTIFY automatically,
-             which wakes up the relevant reconciling controllers
-
-        This method should be idempotent — polling twice with no
-        external change should be a no-op.
-        """
-        updates = await self._query_external_system()
-        if not updates:
-            return
-
-        # sends all 400 statements to Postgres in a single network round trip,
-        # executes them server-side, and commits once. The `IS DISTINCT FROM` clause means
-        # rows where nothing changed don't fire triggers, so you might get 400 updates
-        # sent but only 12 notifications — whichever jobs actually changed state.
-        async with self.client_state.db_pool.connection() as conn:
-            async with conn.transaction():
-                async with conn.cursor() as cur:
-                    await cur.executemany(
-                        """
-                        UPDATE jobs
-                        SET hpc_state = %(state)s,
-                            exit_code = %(exit_code)s,
-                            last_status_check = now()
-                        WHERE id = %(id)s
-                        AND hpc_state IS DISTINCT FROM %(state)s
-                        """,
-                        updates,
-                    )
-
-    async def run(self) -> None:
-        """
-        Simple poll loop. Worker.supervise() handles crash recovery.
-        """
-        while True:
-            self.update_heartbeat()
-            try:
-                await self.poll()
-            except Exception:
-                logger.exception("%s: poll failed", self.name)
-            await asyncio.sleep(self.poll_interval)
+    async def run(self, conninfo: str) -> None:
+        aconn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
+        try:
+            await aconn.execute("LISTEN resource_changes")
+            async for notify in aconn.notifies():
+                try:
+                    payload = json.loads(notify.payload)
+                    ev = self._events.get(payload["table"])
+                    if ev is not None:
+                        ev.set()
+                except (json.JSONDecodeError, KeyError):
+                    logger.warning("bad notify payload: %r", notify.payload)
+        finally:
+            await aconn.close()
 ```
 
-## Reconciling Controllers
-
-### Integrated polling and notification-driven loop
-
-- Use a **full resync** loop to periodically list all resources, compute which
-ones need work, and enqueue them.  This is mandatory for correctness;
-LISTEN/NOTIFY by itself is unreliable.  Notifications provide sub-second
-responsiveness most of the time; full resync occurs every ~30 seconds to catch
-anything that was missed.
-- Use a LISTEN/NOTIFY trigger for event-driven processing on every resource row.
-Postgres automatically notifies consumers when ResourceRows change. The
-notification payload is minimal: just "resource type + resource ID changed."
-This is merely an optimization over re-reading the full table.  Both resync and
-notification-driven resources funnel into the same deduplicating work queue.
-- To avoid infinite feedback loops (change->notification->queue reconcile->change->...) reconcile functions MUST not update records unless there is a true and necessary state change. See [Column-level OCC](#column-level-occ) above for generic update strategy.
+The trigger:
 
 ```sql
---- Install this once per table via a migration:
 CREATE OR REPLACE FUNCTION notify_resource_change()
 RETURNS trigger AS $$
 BEGIN
   PERFORM pg_notify(
     'resource_changes',
-    json_build_object(
-      'table', TG_TABLE_NAME,
-      'id', COALESCE(NEW.id, OLD.id)
-    )::text
+    json_build_object('table', TG_TABLE_NAME)::text
   );
   RETURN COALESCE(NEW, OLD);
 END;
 $$ LANGUAGE plpgsql;
 
--- For each resource table:
 CREATE TRIGGER pilot_job_notify
   AFTER INSERT OR UPDATE OR DELETE ON pilot_job
-  FOR EACH ROW EXECUTE FUNCTION notify_resource_change();
+  FOR EACH ROW
+  WHEN (
+    -- Only fire for columns that drive controller behavior. This is the
+    -- main lever against the notification feedback loop.
+    NEW.phase IS DISTINCT FROM OLD.phase
+    OR NEW.scheduled_deletion IS DISTINCT FROM OLD.scheduled_deletion
+    OR NEW.manager_url IS DISTINCT FROM OLD.manager_url
+    OR (TG_OP != 'UPDATE')  -- insert/delete always notify
+  )
+  EXECUTE FUNCTION notify_resource_change();
 ```
 
-On the listener side:
+Notifications carry only the table name. That's enough: the receiving
+controller's reconcile loop knows what predicate to apply.
+
+### Notification feedback loops
+
+Two layers of defense:
+
+1. **Don't store high-churn observational fields in Postgres at all.** Things
+   like `last_health_check`, `last_status_check`, and per-poll
+   `manager_health` go to Redis (see
+   [Hybrid Postgres+Redis Status](#hybrid-postgresredis-status)). Postgres
+   only learns about state when an *aggregated, semantically meaningful*
+   transition occurs (e.g. degraded -> healthy).
+2. **Triggers only fire on watched columns.** The `WHEN` clause above
+   names the columns that should wake controllers. Editing the trigger when
+   you add a new such column is a forcing function — it makes you think
+   about wake semantics every time.
+
+### Heartbeats per loop
+
+A controller may have several concurrent coroutines (the reconcile loop, the
+resync polling sub-task, etc). A single shared `update_heartbeat()` would
+mask a wedged sub-task. Instead, each spawned loop registers its own named
+heartbeat token:
 
 ```python
-# autocommit=True is required
-# The listener should use its own connection.
-async def listen_for_notifications(
-    conninfo: str,
-    queue: asyncio.Queue[ResourceChange],
-) -> None:
-    """Listen on a PostgreSQL channel and forward notifications to a queue."""
-    aconn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-    try:
-        await aconn.execute(f"LISTEN resource_changes")
-        async for notify in aconn.notifies():
-            try:
-                payload = json.loads(notify.payload)
-                await queue.put(ResourceChange(table=payload["table"], id=payload["id"]))
-            except (json.JSONDecodeError, KeyError):
-                logger.warning("Malformed notification payload: %r", notify.payload)
-    finally:
-        await aconn.close()
+class Worker(ABC):
+    def register_heartbeat(self, name: str) -> Heartbeat:
+        """Return a Heartbeat instance for one loop within this worker."""
+        hb = Heartbeat(name=f"{self.name}.{name}", timeout=self._hb_timeout)
+        self._heartbeats.append(hb)
+        return hb
+
+    def check_heartbeat(self) -> HeartbeatStatus:
+        """Worker is healthy iff every registered heartbeat is fresh."""
+        stale = [h for h in self._heartbeats if h.timed_out()]
+        return HeartbeatStatus(timed_out=bool(stale), stale=stale)
 ```
 
-### Work Queue
-
-Use a workqueue with deduplication and backoff.  Don't just fire reconcile on
-every Postgres notification. Maintain a queue where the key is the resource
-identifier and duplicates are collapsed — if a resource changes three times
-while you're already reconciling it, you just process it once more afterward
-with the latest state. Add exponential backoff for resources that keep failing.
+Inside the controller:
 
 ```python
-@dataclass
-class _BackoffState:
-    attempts: int = 0
-    ready_at: float = 0.0
-
-
-class WorkQueue:
-    def __init__(
-        self,
-        *,
-        base_backoff: float = 1.0,
-        max_backoff: float = 300.0,
-        jitter: float = 0.2,
-    ) -> None:
-        self._base_backoff = base_backoff
-        self._max_backoff = max_backoff
-        self._jitter = jitter
-
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
-        # Keys that are queued. Includes keys temporarily out of the physical
-        # queue while deferred for backoff (see get()); they stay "dirty" so
-        # duplicates remain suppressed until they return.
-        self._dirty: set[str] = set()
-        # Keys currently being processed.
-        self._processing: set[str] = set()
-        # Re-add requested while the key was in flight; re-queued in done().
-        self._requeue: set[str] = set()
-        # Per-key backoff tracking.
-        self._backoff: dict[str, _BackoffState] = {}
-
-    def _enqueue(self, key: str) -> None:
-        # Precondition: key not already dirty/queued.
-        self._dirty.add(key)
-        self._queue.put_nowait(key)
-
-    async def add(self, key: str) -> None:
-        if key in self._dirty:
-            return  # already queued
-        if key in self._processing:
-            self._requeue.add(key)  # re-process after done()
-            return
-        self._enqueue(key)
-
-    async def add_many(self, keys: list[str]) -> None:
-        """Bulk enqueue, e.g. from the periodic resync poller."""
-        for key in keys:
-            if key in self._dirty:
-                continue
-            if key in self._processing:
-                self._requeue.add(key)
-                continue
-            self._enqueue(key)
-
-    async def get(self) -> str:
-        """
-        Block until an item is available and its backoff has elapsed, then
-        return the resource key to process.
-        """
-        while True:
-            key = await self._queue.get()  # only suspension point
-            state = self._backoff.get(key)
-            if state is not None:
-                now = time.monotonic()
-                if now < state.ready_at:
-                    # Not ready. Leave it dirty (dups stay suppressed) and put
-                    # it back after the remaining delay. Exactly one deferral
-                    # can be outstanding per key: it's out of the queue and
-                    # add() won't re-enqueue a dirty key
-                    asyncio.get_running_loop().call_later(
-                        state.ready_at - now, self._queue.put_nowait, key
-                    )
-                    continue
-
-            self._dirty.discard(key)
-            self._processing.add(key)
-            return key
-
-    async def done(self, key: str, *, retry: bool = False) -> None:
-        """
-        Mark processing complete.
-
-        retry=True schedules the key for another attempt after an exponential backoff.
-        """
-        self._processing.discard(key)
-
-        requeued = key in self._requeue
-        self._requeue.discard(key)
-
-        if retry:
-            state = self._backoff.setdefault(key, _BackoffState())
-            state.attempts += 1
-            delay = min(
-                self._base_backoff * (2 ** (state.attempts - 1)),
-                self._max_backoff,
-            )
-            if self._jitter:
-                delay += random.uniform(0.0, self._jitter * delay)
-            state.ready_at = time.monotonic() + delay
-            logger.debug(
-                "backoff for %s: attempt %d, retry in %.1fs",
-                key, state.attempts, delay,
-            )
-        else:
-            # Success clears any prior backoff.
-            self._backoff.pop(key, None)
-
-        # Re-enqueue once for whichever reason applies
-        if (retry or requeued) and key not in self._dirty:
-            self._enqueue(key)
+async def _reconcile_loop(self) -> None:
+    hb = self.register_heartbeat("reconcile")
+    wake = self.manager.dispatcher.event_for(self.table_name)
+    while True:
+        hb.beat()  # unconditional — including on empty resync ticks
+        try:
+            ids = await self.list_actionable()
+            for uid in ids:
+                try:
+                    await self.reconcile(uid)
+                except Exception:
+                    logger.exception("%s reconcile %d failed",
+                                     self.name, uid)
+                    await self._record_failure(uid)
+                hb.beat()
+        except Exception:
+            logger.exception("%s resync failed", self.name)
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=self.resync_interval)
+        finally:
+            wake.clear()
 ```
 
-### Reconcile Function Requirements
+The heartbeat monitor in `manager.py` already cancels a worker whose
+heartbeat times out; that logic stays the same, it just consults the union
+across registered beats.
 
-- Reconcile functions must be level-triggered, not edge-triggered.  In practice:
-each reconcile function takes a resource ID, reads the current state from
-Postgres, computes the todo, and acts on it. This means if a controller crashes
-mid-operation, restarts, gets a duplicate event, or runs twice for no reason, it
-just re-reads the current state and does the right thing.
-- All side effects must be idempotent.  Design every reconciler so that calling
-it an extra time is always safe. For example, to make `qsub` to an HPC scheduler (that doesn't provide any idempotency support natively) idempotent:
-  1. Use a unique and deterministic Job_Name for every submitted job.
-  2. First run `qstat` to verify that the job wasn’t already submitted.
-  3. Finally, run `qsub` only after confirming that the job doesn't exist.
-  4. (Ensure steps 2&3 are run with mutual exclusion, preventing concurrency)
-- Only one writer per field (or per resource).  If you need multiple actors to
-contribute information to a resource, give them distinct sub-fields or use
-separate relation tables they each own exclusively.
-- Use [column-level OCC](#column-level-occ) and incisive UPDATES to prevent lost updates
-- Treat Postgres as the sole source of truth. Controllers should never cache
-state locally and trust it across reconcile calls.
-- Design for re-entrancy by splitting work into small state transitions. If a
-reconcile needs to do three external side effects (say, provision a VM,
-configure DNS, issue a TLS cert), don't do all three in one pass. Do the first,
-write the intermediate status back to Postgres (e.g., phase: vm_provisioned),
-and return. The next reconcile sees the new status and does step two. This way,
-a crash between steps loses at most one step of work, and the reconciler picks
-up cleanly. Each step is individually idempotent.  If you're just updating
-Postgres fields with no external calls, you can do multiple things in one
-reconcile — it's a single transaction anyway.
-- Use finalizers for cleanup.
-    - Finalizers is a list of strings:  when a controller touches a resource in
-    a way that will require cleaning up, it adds its finalizer to the resource.
-    For example `finalizers = array_append(finalizers, 'vm-controller')`.
-    - When someone requests deletion, you don't `DELETE` the row: You set `deleted_at = now()` ("soft delete")
-    - Every controller, on reconcile, checks: "is `deleted_at` set AND is my finalizer present?" If yes, do cleanup (delete the VM), then remove your finalizer: `finalizers = array_remove(finalizers, 'vm-controller')`.
-    - A separate process checks: "is deleted_at set AND finalizers is empty?" If yes, actually DELETE the row.
+### Per-resource backoff and giving up
 
-### Controller Sketch
+We don't keep retry state in memory. Instead, we track it on the resource
+itself:
 
-Here is a rough outline of the `Controller` parent class. It subclasses
-`first_gateway.controllers.worker.Worker` to inherit supervision, heartbeat
-monitoring, and auto-restart with backoff.
+```sql
+ALTER TABLE pilot_job
+    ADD COLUMN reconcile_failures   integer    NOT NULL DEFAULT 0,
+    ADD COLUMN reconcile_last_error text,
+    ADD COLUMN reconcile_blocked    boolean    NOT NULL DEFAULT false,
+    ADD COLUMN reconcile_retry_at   timestamptz;
+-- (same columns on every controller-managed table)
+```
+
+After each reconcile, the controller writes back:
+
+- success: `reconcile_failures=0, reconcile_blocked=false, retry_at=NULL`
+- failure: `reconcile_failures+=1, last_error=str(exc),
+  retry_at = now() + backoff(failures)` (capped at `max_backoff`)
+- After `MAX_RECONCILE_FAILURES` (default 8) consecutive failures: set
+  `reconcile_blocked=true`. The `list_actionable` predicate filters out
+  blocked rows from the fast loop.
+
+A separate hourly **unblock sweeper** clears `reconcile_blocked=true` rows
+that have been parked for >1h, giving them another chance. Transient
+platform breakage self-heals; persistent breakage stays out of the hot loop
+but is never permanently abandoned.
+
+Resolution path for a stuck resource:
+
+1. Operator sees the resource in the dashboard with `reconcile_blocked=true`
+   and `reconcile_last_error` shown verbatim.
+2. They either:
+   - **Fix in place**: edit the spec (e.g. correct `launch_spec`). The
+     spec-apply path resets `reconcile_failures=0, reconcile_blocked=false`
+     atomically with the spec change.
+   - **Manually unblock**: `alcf-ai admin reconcile-reset <resource>` —
+     same reset, no spec change. Useful when the fix was external (cluster
+     filesystem permissions, etc).
+   - **Tear down**: `alcf-ai admin delete <resource>`. The owning controller
+     handles cleanup as usual.
+3. The hourly sweeper handles the case where the operator did nothing.
+
+### Reconcile function rules
+
+- **Level-triggered.** Read current state; act on what *is*, not what
+  *changed*. If a controller crashes mid-step, the next reconcile resumes
+  from whatever state the DB reflects.
+- **Each external side effect must be idempotent.** Build it in. For
+  schedulers without idempotency keys (PBS): use a deterministic job name
+  (`__FIRST_PILOT_<resource-name>`), `qstat` to check, then `qsub` only on
+  absence. Mutual exclusion is provided by the manager's single-coroutine
+  rule above.
+- **One step per reconcile.** If a job goes through `pending_submit ->
+  submitted -> running`, do one transition per reconcile. Write back state,
+  return. Next reconcile picks up the next step. Each step is independently
+  recoverable.
+- **Updates are premised.** Always. See [Premised Updates](#premised-updates).
+- **Postgres is the only state.** Controllers may cache nothing across
+  reconcile invocations. (Redis is fine as a separate source of truth for
+  high-churn fields — see below.)
+
+### Controller sketch
 
 ```python
 """
-Controller: a Worker subclass that implements the reconcile-loop pattern.
-
-Each Controller:
-  - Watches a specific resource table via LISTEN/NOTIFY
-  - Maintains a deduplicating work queue
-  - Periodically does a full resync (listing all resources that need work)
-  - Calls self.reconcile(resource_id) for each item, one at a time
-  - Handles OCC retries transparently
-  - Obtains a controller lease at startup; refusing to start on failure.
-  - Continously refreshes the controller lease in the background
-  - Verifies that it continues to hold a valid lease before each reconcile invocation.
+Controller: a Worker subclass that polls Postgres for actionable rows,
+calls reconcile() on each, and sleeps until either the resync interval
+elapses or the table fires a notification.
 
 Subclasses implement:
-  - reconcile(resource_id): the level-triggered reconcile function
-  - list_actionable(): returns IDs of all resources that might need work
-    (used by periodic resync)
-
-Optionally override:
-  - table_name: which table's notifications to watch
-  - resync_interval: how often to do a full resync (seconds)
+  - reconcile(uid)
+  - list_actionable() -> list[int]
 """
 
-import asyncio
-import logging
-from abc import abstractmethod
-
-from ..settings import ClientState
-from .worker import Worker
-from .workqueue import WorkQueue
-
-logger = logging.getLogger(__name__)
-
-
 class Controller(Worker):
-    """Base class for resource-reconciling controllers."""
+    table_name: ClassVar[str]
+    resync_interval: ClassVar[float] = 30.0
+    max_reconcile_failures: ClassVar[int] = 8
 
-    # Subclasses set these.
-    table_name: str  # e.g. "clusters", "jobs", etc.
-    resync_interval: float = 60.0  # seconds between full resyncs
-
-    def __init__(
-        self,
-        name: str,
-        client_state: ClientState,
-        *,
-        heartbeat_timeout: float = 120.0,
-        max_concurrent: int = 1,
-    ) -> None:
-        super().__init__(
-            name, client_state, heartbeat_timeout=heartbeat_timeout
-        )
-        self.queue = WorkQueue()
-        self._max_concurrent = max_concurrent
+    def __init__(self, name: str, client_state: ClientState) -> None:
+        super().__init__(name, client_state)
 
     @abstractmethod
-    async def reconcile(self, resource_id: str) -> None:
-        """
-        Level-triggered reconcile. Read the current state from Postgres,
-        compare spec to status, perform at most one external side effect,
-        write back updated status via OCC.
-
-        Raise any Exception to trigger backoff for this resource.
-        A clean return means success — backoff is cleared.
-        """
-        ...
+    async def reconcile(self, sess: AsyncSession, uid: int) -> None: ...
 
     @abstractmethod
-    async def list_actionable(self) -> list[str]:
-        """
-        Return IDs of all resources that may need reconciliation.
-        Called periodically by the resync loop. Can be as simple as
-        "SELECT id FROM my_table" or can filter by status.
-
-        This is the safety net — even if every notification is lost,
-        the resync will eventually enqueue everything.
-        """
-        ...
-
-    # ----- Internal machinery (Worker.run implementation) -----
+    async def list_actionable(self, sess: AsyncSession) -> list[int]: ...
 
     async def run(self) -> None:
-        """
-        Main loop: run the listener, resync, and reconcile workers
-        concurrently. If any crashes, the Worker.supervise() logic
-        restarts the whole thing.
-        """
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._listen_loop())
-            tg.create_task(self._resync_loop())
-            # Start N concurrent reconcile workers draining the queue.
-            for i in range(self._max_concurrent):
-                tg.create_task(self._reconcile_loop(worker_id=i))
-
-    async def _listen_loop(self) -> None:
-        """
-        Subscribe to LISTEN/NOTIFY and feed resource IDs into the queue.
-        """
-        aconn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-        try:
-            await aconn.execute(f"LISTEN resource_changes")
-            async for notify in aconn.notifies():
-                try:
-                    payload = json.loads(notify.payload)
-                    if payload["table"] == self.table_name:
-                        await self.queue.add(payload["resource_id"])
-                except (json.JSONDecodeError, KeyError):
-                    logger.warning("Malformed notification payload: %r", notify.payload)
-        finally:
-            await aconn.close()
-
-    async def _resync_loop(self) -> None:
-        """
-        Periodically list all resources and enqueue them.
-        This catches anything missed by notifications.
-        """
+        hb = self.register_heartbeat("reconcile")
+        wake = self.client_state.dispatcher.event_for(self.table_name)
         while True:
+            hb.beat()
+            await self._tick(hb)
             try:
-                self.update_heartbeat()
-                ids = await self.list_actionable()
-                await self.queue.add_many(ids)
-                logger.debug(
-                    "%s: resync enqueued %d resources", self.name, len(ids)
-                )
-            except Exception:
-                logger.exception("%s: resync failed", self.name)
-            await asyncio.sleep(self.resync_interval)
-
-    async def _reconcile_loop(self, worker_id: int = 0) -> None:
-        """
-        Drain the work queue and reconcile one resource at a time.
-        """
-        while True:
-            resource_id = await self.queue.get()
-            self.update_heartbeat()
-
-            failed = False
-            try:
-                await self.reconcile(resource_id)
-            except Exception:
-                logger.exception(
-                    "%s: reconcile failed for %s",
-                    self.name, resource_id,
-                )
-                failed = True
+                await asyncio.wait_for(wake.wait(),
+                                       timeout=self.resync_interval)
+            except asyncio.TimeoutError:
+                pass
             finally:
-                await self.queue.done(resource_id, retry=failed)
+                wake.clear()
+
+    async def _tick(self, hb: Heartbeat) -> None:
+        async with self.client_state.session() as sess:
+            try:
+                ids = await self.list_actionable(sess)
+            except Exception:
+                logger.exception("%s: list_actionable failed", self.name)
+                return
+        for uid in ids:
+            hb.beat()
+            await self._reconcile_one(uid)
+
+    async def _reconcile_one(self, uid: int) -> None:
+        try:
+            async with self.client_state.session() as sess:
+                await self.reconcile(sess, uid)
+                await sess.commit()
+            await self._record_success(uid)
+        except Exception as exc:
+            logger.exception("%s: reconcile %d failed", self.name, uid)
+            await self._record_failure(uid, exc)
 ```
 
-This is how a `Controller` subclass might look.  Note that this example is
-totally fake/not related to the actual controllers in first_gateway, but it
-serves to illustrate the general design patterns for Controllers:
+A toy subclass (illustrative; not one of the real FIRST controllers):
 
 ```python
-class ClusterController(Controller):
-    table_name = "clusters"
-    resync_interval = 60.0
+class PilotJobController(Controller):
+    table_name = "pilot_job"
 
-    def __init__(self, client_state: ClientState) -> None:
-        super().__init__("cluster-controller", client_state)
+    async def list_actionable(self, sess: AsyncSession) -> list[int]:
+        # See FIRST Controllers / PilotJob for the real predicate.
+        stmt = sa.select(PilotJob.uid).where(
+            PilotJob.reconcile_blocked.is_(False),
+            sa.or_(
+                PilotJob.reconcile_retry_at.is_(None),
+                PilotJob.reconcile_retry_at < sa.func.now(),
+            ),
+            PilotJob.phase.in_([
+                JobPhase.pending_submit.value,
+                JobPhase.submitted.value,
+                JobPhase.running.value,
+            ]),
+        )
+        return list(await sess.scalars(stmt))
 
-    async def list_actionable(self) -> list[str]:
-        """Return IDs of clusters that might need work."""
-        async with self.client_state.db_pool.connection() as conn:
-            async with conn.cursor() as cur:
-                # Only bother with clusters that aren't fully reconciled.
-                # Or just return everything — reconcile will no-op if
-                # nothing needs doing.
-                await cur.execute(
-                    "SELECT id FROM clusters WHERE status != 'ready'"
-                )
-                return [row[0] async for row in cur]
-
-    async def reconcile(self, resource_id: str) -> None:
-        """
-        Level-triggered reconcile for a single cluster.
-
-        Read current state, decide what one step to take, do it,
-        write back status. If nothing to do, return immediately.
-        """
-        async with self.client_state.db_pool.connection() as conn:
-            resource = await get_resource(conn, "clusters", resource_id)
-
-            if resource is None:
-                return  # deleted out from under us, nothing to do
-
-            spec = resource.data
-            phase = spec.get("phase", "pending")
-
-            # -- Level-triggered state machine: check what IS, not what changed --
-
-            if spec.get("deleted_at") and "cluster-controller" in (
-                spec.get("finalizers") or []
-            ):
-                # Deletion requested and our finalizer is present.
-                # Do cleanup, then remove our finalizer.
-                await self._cleanup_external_resources(resource_id)
-                await update_resource(conn, resource, {
-                    "finalizers": [
-                        f for f in spec["finalizers"]
-                        if f != "cluster-controller"
-                    ],
-                })
-                return
-
-            if phase == "pending":
-                # Step 1: provision the underlying infrastructure.
-                external_id = await self._provision_infra(resource_id)
-                await update_resource(conn, resource, {
-                    "phase": "provisioning",
-                    "external_id": external_id,
-                })
-                # Return here. Next reconcile picks up "provisioning".
-                return
-
-            if phase == "provisioning":
-                # Step 2: check if provisioning finished
-                # (or the observer controller already updated the status)
-                if spec.get("infra_ready"):
-                    await self._configure_cluster(resource_id)
-                    await update_resource(conn, resource, {
-                        "phase": "configuring",
-                    })
-                # else: nothing to do, wait for observer to update infra_ready
-                return
-
-            if phase == "configuring":
-                # Step 3: finalize
-                await update_resource(conn, resource, {
-                    "phase": "ready",
-                })
-                return
-
-            if phase == "ready":
-                # Nothing to do — fully reconciled.
-                return
-
-    # -- External side effects (each individually idempotent) --
-
-    async def _provision_infra(self, resource_id: str) -> str:
-        # Idempotency: check if infra already exists with our tag
-        # before creating. Return the external ID either way.
-        ...
-
-    async def _configure_cluster(self, resource_id: str) -> None:
-        ...
-
-    async def _cleanup_external_resources(self, resource_id: str) -> None:
-        ...
+    async def reconcile(self, sess: AsyncSession, uid: int) -> None:
+        job = await sess.get(PilotJob, uid)
+        if job is None:
+            return  # deleted out from under us
+        if job.scheduled_deletion:
+            await self._terminate(sess, job)
+            return
+        if job.phase == JobPhase.pending_submit.value:
+            await self._submit(sess, job)
+            return
+        # ... etc, one transition per call
 ```
+
+## Observers
+
+An "observer" is just a `Worker` with `while True: poll(); sleep()`. There's
+no special base class — that wasn't pulling its weight. The polling pattern is
+small enough to write inline:
+
+```python
+class HpcSchedulerObserver(Worker):
+    """Polls qstat for every cluster's pilot system and updates pilot_job rows."""
+
+    poll_interval = 30.0
+
+    async def run(self) -> None:
+        hb = self.register_heartbeat("poll")
+        while True:
+            hb.beat()
+            try:
+                await self._poll_all_clusters()
+            except Exception:
+                logger.exception("%s: poll failed", self.name)
+            await asyncio.sleep(self.poll_interval)
+```
+
+Observers should:
+
+- Read external state, write to Postgres via bulk premised UPDATE
+  (`IS DISTINCT FROM` on every field).
+- Be idempotent: polling twice with no external change is a no-op.
+- Update many rows in one DB round trip when the external API returns a
+  batch (e.g. `qstat` returns all jobs).
+- Use Redis for per-poll timestamps/counters that would otherwise churn
+  Postgres rows.
+
+## Soft Delete and Retention
+
+We don't use finalizers. Every resource has exactly one controller
+responsible for its external cleanup, so the simpler model fits:
+
+```sql
+ALTER TABLE pilot_job
+    ADD COLUMN scheduled_deletion boolean      NOT NULL DEFAULT false,
+    ADD COLUMN deleted_at         timestamptz,
+    ADD COLUMN retention_days     integer      NOT NULL DEFAULT 0;
+```
+
+Flow:
+
+1. API receives delete request -> `UPDATE ... SET scheduled_deletion = true`.
+2. The owning controller's `list_actionable` includes `scheduled_deletion =
+   true` rows. On reconcile, it performs cleanup (terminate qsub, send
+   stop signal, free certs) and then sets `deleted_at = now()`.
+3. A **retention sweeper** (a small `Worker`, one per table) runs every
+   ~5 minutes:
+   ```sql
+   DELETE FROM pilot_job
+    WHERE deleted_at IS NOT NULL
+      AND deleted_at + (retention_days || ' days')::interval < now();
+   ```
+4. API views filter out `deleted_at IS NOT NULL` rows by default; admin
+   commands can opt in for postmortem.
+
+Defaults:
+
+- `Cluster`, `Model`, `AccessGroup`, `PilotDeployment`, `StaticDeployment`:
+  `retention_days = 0` — hard-deleted as soon as cleanup is done.
+- `PilotJob`, `PilotReplica`: `retention_days = 7` — keep for postmortem
+  visibility into recent compute activity.
+
+Operators can override `retention_days` per resource at delete time
+(`alcf-ai admin delete --retention-days 30 ...`) for forensic cases.
+
+## Hybrid Postgres+Redis Status
+
+We split state across two stores:
+
+- **Postgres** holds the spec, semantically meaningful aggregated status
+  (e.g. `health`, `phase`), and anything controllers gate decisions on.
+- **Redis** holds high-churn observational facts (`last_health_check`,
+  `manager_health`, in-flight counts, load averages) that would otherwise
+  spam triggers and balloon WAL.
+
+The danger is Redis access scattered ad-hoc throughout the codebase. We
+contain it with two abstractions:
+
+### 1. Per-resource `StatusStore` classes
+
+A `StatusStore` is a small typed class that owns the Redis key namespace
+for one resource type and exposes Pydantic models for the read and write
+paths:
+
+```python
+# packages/gateway/first_gateway/status/pilot_job.py
+
+class PilotJobStatus(BaseModel):
+    """High-churn status for a PilotJob. Lives in Redis, expires on TTL."""
+    last_status_check: datetime | None = None
+    manager_health: HealthEndpointStatus = HealthEndpointStatus.unknown
+    last_manager_error: str | None = None
+
+
+class PilotJobStatusStore(StatusStore[PilotJobStatus]):
+    resource = "pilot_job"
+    model = PilotJobStatus
+    ttl_seconds = 3600  # rebuilt by observers within seconds
+
+
+# packages/gateway/first_gateway/status/_base.py
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class StatusStore(Generic[T]):
+    """Typed access to one resource type's Redis-backed status."""
+
+    resource: ClassVar[str]
+    model: ClassVar[type[BaseModel]]
+    ttl_seconds: ClassVar[int]
+
+    def __init__(self, redis: Redis) -> None:
+        self._redis = redis
+
+    def _key(self, name: str) -> str:
+        return f"status:{self.resource}:{name}"
+
+    async def get(self, name: str) -> T:
+        raw = await self._redis.get(self._key(name))
+        if raw is None:
+            return self.model()  # default-valued instance
+        return self.model.model_validate_json(raw)
+
+    async def get_many(self, names: list[str]) -> dict[str, T]:
+        if not names:
+            return {}
+        raws = await self._redis.mget([self._key(n) for n in names])
+        return {
+            n: (self.model.model_validate_json(r) if r else self.model())
+            for n, r in zip(names, raws)
+        }
+
+    async def set(self, name: str, status: T) -> None:
+        await self._redis.set(
+            self._key(name),
+            status.model_dump_json(),
+            ex=self.ttl_seconds,
+        )
+
+    async def update(self, name: str, **changes: Any) -> T:
+        """Read-modify-write helper for the common case."""
+        cur = await self.get(name)
+        new = cur.model_copy(update=changes)
+        await self.set(name, new)
+        return new
+```
+
+All Redis keys for status follow `status:<resource>:<name>`. Stores are
+the only code that reaches into that namespace; controllers and API routes
+get and set typed Pydantic models. `mypy` does not have to chase Redis
+return types — `get()` returns `T`, full stop.
+
+### 2. Composed read schemas
+
+API read schemas pull from both stores and present a unified view:
+
+```python
+# packages/common/first_common/schema/resources/read.py
+
+class PilotJobRead(BaseModel):
+    # --- From Postgres (spec + aggregated status) ---
+    name: ResourceName
+    cluster_name: ResourceName
+    phase: JobPhase
+    scheduler_job_id: str | None
+    manager_url: str | None
+    time_started: datetime | None
+    idle_since: datetime | None
+    # ...
+
+    # --- From Redis (observational, may be stale/missing) ---
+    status: PilotJobStatus = Field(default_factory=PilotJobStatus)
+
+
+async def load_pilot_job(
+    sess: AsyncSession,
+    statuses: PilotJobStatusStore,
+    name: str,
+) -> PilotJobRead:
+    job = await PilotJob.get_by_name(sess, name)
+    status = await statuses.get(name)
+    return PilotJobRead.model_validate({
+        **{c.name: getattr(job, c.name) for c in job.__table__.columns},
+        "status": status,
+    })
+
+
+async def list_pilot_jobs(
+    sess: AsyncSession,
+    statuses: PilotJobStatusStore,
+) -> list[PilotJobRead]:
+    jobs = await PilotJob.list(sess)
+    status_map = await statuses.get_many([j.name for j in jobs])
+    return [
+        PilotJobRead.model_validate({
+            **{c.name: getattr(j, c.name) for c in j.__table__.columns},
+            "status": status_map[j.name],
+        })
+        for j in jobs
+    ]
+```
+
+Properties this gets us:
+
+- All Redis access is in `first_gateway/status/`. Nothing else touches keys.
+- `PilotJobRead.status` is a strongly-typed nested model. No `dict[str,
+  Any]`, no `# type: ignore`.
+- Status default-values when Redis is cold, so the API stays available.
+- Promoting a field from Redis to Postgres (or vice versa) is a localized
+  refactor: move it between the two model classes and adjust the writer.
+
+The load-average utility in the appendix is one specific `StatusStore`-style
+helper; treat it as the worked example.
+
+## Observability
+
+The manager process exposes a small FastAPI on a local port (e.g.
+`127.0.0.1:9100`) with two routes:
+
+- `GET /healthz` — returns 200 iff every registered `Worker` has a fresh
+  heartbeat across all its named beats. Used as the docker healthcheck.
+- `GET /metrics` — Prometheus exposition format, emitted by `prometheus_client`.
+
+The same FastAPI also exposes a JSON view of controller state for the admin
+dashboard to surface alongside the resource list:
+
+- `GET /api/controllers` — for each worker: name, status (running/restarting),
+  named heartbeats with seconds-since-last-beat, last error, restart count.
+- `GET /api/controllers/<name>/recent` — recent reconcile log lines for one
+  controller (last N records, in-memory ring buffer).
+
+Standard metrics exported by the `Controller` base class for every subclass:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `first_reconcile_total` | counter | controller, outcome (`success`/`failure`/`stale`) |
+| `first_reconcile_duration_seconds` | histogram | controller |
+| `first_resync_interval_used_fraction` | gauge | controller |
+| `first_actionable_rows` | gauge | controller |
+| `first_reconcile_blocked_rows` | gauge | controller |
+| `first_worker_restarts_total` | counter | worker |
+| `first_seconds_since_last_resync` | gauge | controller |
+| `first_premised_update_stale_total` | counter | controller, table |
+
+Logging is the primary debugging surface: structured JSONL via the existing
+`first_gateway.log_config`. The tail-of-docker-logs + `jq` workflow stays the
+primary day-2 tool. Metrics exist for trends and paging; logs for "what
+exactly happened to this resource".
+
+The admin dashboard polls `/api/controllers` and renders a status pane next
+to the resource list. Prometheus (run separately in our deployment) scrapes
+`/metrics`, alongside the vLLM `/metrics` endpoints exposed via dynamic
+service discovery from the router config.
+
+The metrics port is bound to localhost only; in production we run behind a
+reverse proxy that mediates access. No external auth needed on the metrics
+endpoint itself.
+
+## Pause and Drain
+
+Two existing knobs cover the maintenance story:
+
+- **Drain a deployment**: set `desired_replicas = 0` on a `PilotDeployment`.
+  Replica Drainer marks replicas for deletion, router config controller
+  removes them from rotation, replicas terminate in order.
+- **Disable a whole cluster**: set `maintenance_notice` on the `Cluster`.
+  The router config controller drops all deployments tied to that cluster
+  from the data plane, so user traffic immediately routes to other clusters
+  (or 503s if none remain).
+
+Neither requires a special "controllers paused" mode. Restarting the manager
+is also safe at any time — premised updates + level-triggered reconcile
+mean an interrupted reconcile is just resumed by the next one.
 
 # FIRST Controllers
 
-**Cluster Status Observer:** polls cluster health endpoint and updates status/last_status_check
+The list below uses the conventions established above. Each entry names the
+table it owns (`table_name`), what its `list_actionable` predicate returns,
+and what its `reconcile` does. Per-resource backoff, premised updates,
+heartbeats, and LISTEN wakeups are implied — they're framework concerns.
 
----
-**StaticDeployment Health Observer:** polls health endpoint and updates health / last_health_check
+Many small controllers beat few big ones in this design. With
+poll-from-Postgres there's no per-controller queue overhead — each
+controller adds one asyncio task and one SQL predicate. Splitting a fat
+controller into focused ones makes each easier to test, reason about, and
+restart on failure without disturbing the others.
 
----
-**StaticDeployment Load Observer:** tracks load averages in Redis (see [Load Average utility](#load-average-utility) below)
+## Observer controllers
 
----
-**Health Alert Controller:** tracks alert state (last alerted status and time per
-resource) and sends debounced Slack alerts on health changes (degradations or
-recovery).  We want to track the health/status of:
-   - Clusters
-   - Static Deployments
-   - Pilot Job Managers
-   - Pilot Deployment Replicas
-   - Aggregated pilot deployment health
-   - The Gateway APIServer itself (/health endpoint)
-   - Liveness of each `SchedulerAdapter`: (for GlobusComputePBSAdapter, verifying that the endpoint is online)
-   - Liveness of Postgres and Redis
-   - Failure in any controller (written by worker manager when a worker has unexpected exit/exception/heartbeat timeout)
+These read external systems and write to Postgres/Redis.
 
-The `ResourceRow`s managed by the system already have health/status as part of their state.
-A separate DB table should be created specfically to track last-alerted status/timestamp per-resource, so
-that the monitor only messages on health degradations/recoveries.
+### Cluster Status Observer
+- Polls each `Cluster`'s configured health endpoint.
+- Postgres write: `Cluster.status` (only on transition).
+- Redis write: `last_status_check` via `ClusterStatusStore`.
 
----
-**HPC Scheduler Observer:**
-- Polls `qstat` for each cluster's PilotSystem.
-- For all matching jobs in the database, updates `phase`, `time_started`.
-- Jobs that don't exist in the database but have a name matching the system
-prefix (`__FIRST_PILOT_`) are inserted into the database in the **zombie**
-phase with tombstone and finalizers set, so they can be reaped and deleted on the next pass.
+### StaticDeployment Health Observer
+- Polls health endpoint for each `StaticDeployment`.
+- Postgres write: `StaticDeployment.health` (only on transition).
+- Redis write: `last_health_check`.
 
----
-**Pilot Endpoint Discovery Controller:**
-- Listens for PilotJob changes
-- `list_actionable` uses `PilotSubmitter.list_ready_endpoints` and takes the intersection with PilotJobs that are `running` without a set `manager_url`.
-- Reconcile function: if the pilot is running and has no manager URL, then try `PilotSubmitter.get_endpoint()` and update `manager_url`.
+### StaticDeployment Load Observer
+- Samples in-flight counts (see [Load Average utility](#load-average-utility)).
+- All writes to Redis only.
 
----
-**Pilot Replica Status Observer:**
-- `list_actionable` returns PilotJobs that are running and have a manager URL.
-- Listener: queue changes to `PilotJob` AND `PilotReplica`.  For PilotReplicas popped off the queue, simply lookup the parent `PilotJob` and queue it.
-- Reconcile function: if the pilot is running and has a manager URL, hit the `get_status` endpoint of the pilot manager.
-  - Update PilotJob.`resources`, `manager_health`, `idle_since`
-    - `idle_since` should be updated to None if any replica is running.
-    - `idle_since` should be set to the current timestamp **if and only if** it is None and zero replicas are running ([OCC](#column-level-occ))
-  - For each replica in the status response, update PilotReplica.`model_url`, `observed_served_name`, `phase`, `status_info`, `last_health_check`, `started_at`.
+### HPC Scheduler Observer
+- Polls `qstat` per cluster's pilot system.
+- For each known `PilotJob`: bulk premised UPDATE of
+  `scheduler_phase`, `time_started` (`IS DISTINCT FROM` per field).
+- For each **orphan** — a scheduler job whose name starts with
+  `__FIRST_PILOT_` but has no matching `PilotJob` row — issues `qdel`
+  directly. The observer owns the `__FIRST_PILOT_` namespace; cleaning up
+  inside it is part of being an observer of that namespace. No DB rows are
+  inserted, no zombie phase exists.
+- Logs every orphan reap at INFO so operators can see it in
+  `docker compose logs`.
 
-**QUESTION:** Updating `last_health_check` on every check will create an infininte feedback loop as feared in [framework discussion above](#integrated-polling-and-notification-driven-loop).  How do we best tackle this issue?
+### Pilot Replica Status Observer
+- `list_actionable` (Postgres): `PilotJob` where `phase = running` AND
+  `manager_url IS NOT NULL`.
+- LISTEN wakes on both `pilot_job` and `pilot_replica`.
+- Per job: calls `GET /status` on the pilot manager.
+  - Postgres writes (premised, only on change): `PilotJob.resources`,
+    `PilotJob.idle_since` (set to `now()` iff currently NULL and zero
+    replicas running; set to NULL iff any replica running), per-replica
+    `model_url`, `observed_served_name`, `phase`, `status_info`,
+    `started_at`.
+  - Redis writes: `PilotJob.last_status_check`, `manager_health`, per-replica
+    `last_health_check`. None of these fire triggers.
 
----
-**PilotJob controller:**
-- Listens for PilotJob changes
-- `list_actionable`: ???
+## Lifecycle controllers
 
-**PilotJob Reconcile:**
-- If the Pilot has the tombstone and submit finalizer, terminate the job and mark it terminated.
-  - Set the tombstone on the replicas (sorted UPDATEs) at this time as well.
-- If the Pilot has been idle for longer than `pilot_max_idle_time_min`, mark it for removal and return.
-    - When we reap/cleanup Pilots and Replicas, we actually want to ensure their resources are fully cleaned up/freed, but keep them around for postmortem/visibility into recent activity (only once `now() > deleted_at + '7 days'` it gets the hard `DELETE`)
-    - Consider a ClassVar `DELETE_AFTER` that controls the earliest that
-    resource may be deleted after tombstone is set and finalizers all cleared
-- If the job is in a terminal state, set the tombstone on the job and its replicas.
-- If the job has a tombstone, return.
-- If the resource is pending-submit, perform `PilotSubmitter.submit()`, record the submitted job id, and advance the phase.
-    - Track total num queued+running jobs. Only submit up to a max depth, configured on the cluster pilot_system.
-- If the manager has been consistently unhealthy for a debounce period (control plane not responding with 200s), set the tombstone.
+### PilotJob Controller (`table_name = "pilot_job"`)
+- `list_actionable`:
+  ```sql
+  SELECT uid FROM pilot_job
+   WHERE reconcile_blocked = false
+     AND (reconcile_retry_at IS NULL OR reconcile_retry_at < now())
+     AND phase NOT IN ('terminated', 'failed')
+     AND (
+            scheduled_deletion = true
+         OR phase = 'pending_submit'
+         OR (idle_since IS NOT NULL
+             AND idle_since < now() - (
+                pilot_max_idle_time_min || ' minutes')::interval)
+         OR (manager_health = 'unhealthy'
+             AND manager_unhealthy_since
+                 < now() - manager_unhealthy_debounce)
+     );
+  ```
+- `reconcile`:
+  1. If `scheduled_deletion`: terminate via scheduler, set
+     `phase = terminated`, set `scheduled_deletion` on every assigned
+     replica (sorted-by-uid bulk UPDATE), set `deleted_at = now()`.
+  2. If phase is terminal: ensure `scheduled_deletion` propagated to
+     replicas, then return.
+  3. If `idle_since` exceeds the cluster's threshold: set
+     `scheduled_deletion = true` and return — the next reconcile handles
+     teardown.
+  4. If manager has been unhealthy past debounce: set
+     `scheduled_deletion = true` and return.
+  5. If `phase = pending_submit`: check cluster's pilot_system
+     `max_concurrent_jobs`. If under cap, `PilotSubmitter.submit()`,
+     record `scheduler_job_id`, advance phase. (Cap counted via
+     `SELECT count(*) FROM pilot_job WHERE cluster_name=... AND phase IN
+     ('submitted','running')`.)
 
----
-**Pilot Deployment Controller:**
-- Health aggregation (roll up from replica statuses)
-- Load Average Tracking (see [Load Average utility](#load-average-utility))
+### PilotJob Endpoint Discovery Controller (`table_name = "pilot_job"`)
+- `list_actionable`: `PilotJob` where `phase = running` AND
+  `manager_url IS NULL`. Optionally intersected with
+  `PilotSubmitter.list_ready_endpoints()` if you want to skip ones the
+  filesystem says aren't ready yet.
+- `reconcile`: `PilotSubmitter.get_endpoint()`, set `manager_url`.
+- Owns only `manager_url` on `PilotJob`. PilotJob Controller does not
+  write that field.
 
----
-**Pilot Autoscaling controller:**
-- Follow load averages and set desired num replicas
-- Responsible for scaling at a controlled rate (e.g. respect minimum intervals between scale-up/scale-down)
+### PilotDeployment Controller (`table_name = "pilot_deployment"`)
+- `list_actionable`: all `PilotDeployment` rows not in
+  `reconcile_blocked` (small N; cheap to do unconditionally).
+- `reconcile`:
+  1. Aggregate health from current `PilotReplica.phase` for owned replicas;
+     write `PilotDeployment.health` (premised, only on transition).
+  2. Updates `consecutive_launch_failures` only by resetting it. The Replica
+     Reconciler increments on failed launch; this controller resets to 0
+     when at least one launch in the last hour succeeded. Reset is also
+     triggered by:
+     - `launch_spec` changing (spec-apply path).
+     - Admin command: `alcf-ai admin reset-failures <deployment>`.
+- Owns: `PilotDeployment.health`, `PilotDeployment.consecutive_launch_failures`
+  (resets only).
 
----
-**Pilot Replica Controller:**
-- Reaper: Identifies replicas running in pilot jobs that no longer have a counterpart in the DB. Sends stop signal ASAP to free up resources.
-- Create new replicas when less than desired count (not placed on a job yet)
-- Drain/mark for removal replicas when greater than desired count
-- Drain: immediately set 0 weight in router; remove from rotation; mark as deleting state.
-- Terminate after drained for ~30 sec, then delete
-- Check replica health; Slack alerts when needed
-- Drain/mark for removal unhealthy replicas or "stuck" in launching
-- Drain/remove replicas whose pilot jobs have stopped/failed
-- Watches `consecutive_launch_failures` on PilotDeployment: if a deployment has several launch failures in a row, stop hammering the scheduler with a doomed spec; backoff and eventually halt new launches.  (Question: when the problem is fixed; how do we signal it to reset and try again? Sometimes the fix is in the internal spec, sometimes it may be opaque; e.g. incorrect filesystem permissions fixed on the cluster)
+### PilotReplica controllers
 
----
-**Pilot Replica Placement Controller:**
--  Start replicas onto pilot jobs
--  Stop replicas that are ready to terminate
--  Create/enqueue pilot jobs if a replica cannot be placed
--  If cluster is at capacity and replica cannot be placed, mark AT_CAPACITY status on
+Split into three focused controllers, all on `table_name = "pilot_replica"`:
 
----
-**Router Config Controller:**
+#### Replica Reconciler
+- Drives observed count toward `desired_replicas`.
+- `list_actionable`: rows where `pilot_deployment.desired_replicas` differs
+  from `count(replicas where deleted_at IS NULL)`, plus any individual replica
+  in a non-terminal state with `scheduled_deletion = true`.
+- `reconcile`: per deployment:
+  - If too few replicas: INSERT new `PilotReplica` rows in `phase=pending`
+    with `pilot_job_name=NULL`. The Replica Placement controller will pick
+    them up.
+  - If too many: pick replicas to drain (prefer `pending` over `running`;
+    among `running`, oldest first), set `scheduled_deletion = true`. The
+    Drainer handles the rest.
 
-The gateway's model routers rebuild themselves from a centralized router
-configuration. The router config lists the models, endpoints, router parameters,
-and access group information in a single reconstructable Redis-cached data
-structure.  The controller rebuilds this data structure by listening to changes in deployment status.  It ensures that routers do not see deployments that are down, and it can assist in draining replicas before scale-down.
+#### Replica Placement Controller
+- `list_actionable`: `PilotReplica` where `phase = pending` AND
+  `pilot_job_name IS NULL` AND `scheduled_deletion = false`.
+- `reconcile`: bin-pack onto an existing `PilotJob` that has free resources.
+  - If a job fits: call `POST /start-replica` on the pilot manager and
+    set `pilot_job_name = <job>` in the same transaction. If the API call
+    fails, leave `pilot_job_name = NULL` — next reconcile retries (it's
+    idempotent because the pilot manager keys replicas by name).
+  - If nothing fits: INSERT a new `PilotJob` in `phase = pending_submit`
+    (subject to per-cluster max). Replica stays `pending`; on the next
+    pass, once the new job is `running` with capacity, it gets placed.
+  - If no clusters can accommodate the replica at all: write
+    `status_info = 'AT_CAPACITY'`, leave pending. The full-resync loop
+    picks it up periodically until capacity opens.
 
-This enables the apiservers to simply listen for changes and rebuild their
-LiteLLM routers from this Redis structure alone.  Database queries are kept out
-of the hot path in the data plane.  The API servers will use this data structure
-to:
+  *Recovery from partial failure:* If `start-replica` succeeded but the
+  DB write failed, the next reconcile sees a running pilot-side replica
+  with no FK. The reconciler chooses to either set the FK (treating the
+  pilot-side state as ground truth, since it's keyed by replica name) or
+  call `stop-replica` and start fresh. Both are idempotent; the simpler
+  rule is "if the replica appears in the target pilot's status, set the
+  FK; else retry start-replica."
 
-- Update the singleton LiteLLM Router instance on the application
-- Update the generic Router instance (non-LLM)
-- Update in-memory Prometheus scraping configuration; exposed via API route to local Prometheus.
-- Hot swap the above routing structures to reflect the model instances that are currently live. Routers are completely unaware of deployment mechanics; they are just a passive map of what http endpoints are currently live.
-- Support "aliases" (as long as aliases are non-overlapping, a model may have
-multiple alternate unique aliases) that transparently resolve to the unique
-model name
+#### Replica Drainer/Reaper
+- Two related jobs:
+  - **Drain**: replicas with `scheduled_deletion = true` and
+    `phase != terminated`. Reconcile: ensure removed from router (router
+    config controller does this on its own loop; here we just verify
+    `deleted_at_router IS NOT NULL`), then after a 30s drain window call
+    `POST /stop-replica`, set `phase = terminated`, `deleted_at = now()`.
+  - **Reap orphans**: replicas appearing in pilot manager `/status` with
+    no matching `PilotReplica` row (or with a row that has
+    `scheduled_deletion = true`). Issue `stop-replica` immediately.
+- Also marks replicas unhealthy or "stuck in launching > N min" with
+  `scheduled_deletion = true`, which routes them through the same drain
+  path.
+- Also marks replicas of stopped/failed PilotJobs for deletion. (The
+  `list_actionable` includes any replica whose parent job is in a terminal
+  state.)
+
+### Replica pipeline summary
+
+```
+Autoscaler (writes PilotDeployment.desired_replicas)
+        |
+        v
+Replica Reconciler (inserts pending replicas / marks excess for drain)
+        |
+        v
+Replica Placement (calls start-replica + sets pilot_job_name FK, or creates new PilotJob)
+        |
+        v
+Replica Drainer (handles scheduled_deletion: drain from router, stop-replica, mark terminated)
+        |
+        v
+Retention Sweeper (hard-deletes after retention_days)
+```
+
+Each arrow is exactly one controller hand-off via Postgres state. Failures
+at any stage are recovered by the level-triggered loop.
+
+### Pilot Autoscaler Controller (`table_name = "pilot_deployment"`)
+- Reads load averages from Redis (1m/5m).
+- Computes target `desired_replicas` per the deployment's `scaling_strategy`.
+- Writes back `desired_replicas`, subject to a minimum interval between
+  scale-up/scale-down events stored in Redis
+  (`scaling:last_change:<deployment>`). Stops scale-up if the deployment's
+  `consecutive_launch_failures` exceeds a threshold.
+
+### Router Config Controller (`table_name = "pilot_deployment", "static_deployment", "pilot_replica"`)
+- Listens for changes to any of: deployments, replicas, models, access
+  groups, cluster `maintenance_notice`.
+- `list_actionable`: returns a sentinel (e.g. always `[0]`) — there's one
+  global router config, not per-resource. Reconcile rebuilds it
+  end-to-end from current Postgres state and writes the result to Redis.
+- API servers `SUBSCRIBE` (or simply poll) the Redis key and hot-swap their
+  in-memory LiteLLM router on change.
+- The rebuilt config excludes:
+  - Deployments whose cluster has `maintenance_notice` set.
+  - Replicas in `pending`, `terminated`, or with `scheduled_deletion`.
+  - Replicas whose parent `PilotJob.manager_health != healthy`.
+- Supports aliases: a model may declare multiple non-overlapping alias names
+  that resolve to the canonical name in the router.
+
+### Retention Sweeper
+- One small `Worker`, runs every ~5 minutes.
+- `DELETE FROM <each table>` where `deleted_at IS NOT NULL` and the
+  retention window has elapsed.
+- Logs the count per table on each pass.
+
+### Reconcile Unblock Sweeper
+- Runs every hour.
+- `UPDATE ... SET reconcile_blocked = false WHERE reconcile_blocked = true
+  AND reconcile_retry_at < now() - interval '1 hour'`.
+- Transient platform breakage self-heals without operator action.
+
+## Alerting
+
+### Health Alert Controller
+- Watches table changes to `Cluster`, `PilotJob`, `StaticDeployment`,
+  `PilotReplica`, `PilotDeployment`, plus periodic checks for things not
+  represented as `ResourceRow`s:
+  - The Gateway API server `/health` endpoint.
+  - Liveness of each `SchedulerAdapter` (for `GlobusComputePBSAdapter`,
+    verifying the endpoint is online).
+  - Postgres and Redis liveness.
+  - Worker liveness: a failed worker (terminal crash or heartbeat
+    timeout) is recorded by the manager into a small `worker_failures`
+    table that the Alert controller watches.
+- Owns its own table `alert_state(resource_table, resource_id,
+  last_alerted_status, last_alerted_at)`.
+
+### Debouncing and flap suppression
+
+Two windows interact:
+
+1. **Per-resource debounce (60s default)**: after a resource changes
+   status, we wait this long before considering it stable. Only after the
+   status has held steady for the debounce window do we treat it as a
+   real transition worth alerting on.
+2. **Per-batch flush window (30s default)**: once at least one real
+   transition is staged, wait up to this much longer to coalesce more
+   transitions into one Slack message.
+
+Concretely, the staging dict keys by `(table, resource_id)` and stores
+`{first_seen_status, first_seen_at, latest_status, latest_seen_at}`. On
+flush:
+
+- If `latest_status == last_alerted_status` for that resource, **drop**
+  the entry — the resource flapped and returned. No alert sent.
+- Else if `latest_seen_at - first_seen_at >= debounce`, include in the
+  alert batch and update `last_alerted_status = latest_status`.
+- Else (status hasn't held long enough), keep in the staging dict and
+  re-evaluate on the next flush tick.
+
+A degraded->healthy flap shorter than the debounce sends nothing. A
+genuine degradation that holds for the debounce window sends one Slack
+message; if recovery happens before the next batch flush, the recovery
+piggy-backs into the same message; if after, it sends a separate one.
 
 # Appendix
 
@@ -882,7 +1075,10 @@ A controller samples the noisy signal every 10 sec and buffers the last 30 sampl
 
 Finally, we don't want to store this data that changes every 10 seconds in Postgres. It's fine for it to be blown away when Redis restarts; it re-populates quickly.
 
-API views of model deployments should read this load information out of Redis, combine it with the Postgres data, and return the combined view objects to clients.
+API views of model deployments should read this load information out of Redis
+via the deployment's `StatusStore` (see
+[Hybrid Postgres+Redis Status](#hybrid-postgresredis-status)), combine it with
+the Postgres data, and return the combined Pydantic Read objects to clients.
 
 ```python
 import contextlib
@@ -943,96 +1139,3 @@ async with counter.track(f"GET:/items:{api_key}") as n_inflight:
         raise TooManyInflightError()
     return await do_work()
 ```
-
-## Health Alert Pseudocode
-```python
-# Inaccurate pseudocode; just sketching structure and patterns to borrow from:
-class AlertController(Worker):
-    WATCHED_TABLES = {"cluster", "pilot_job", "static_deployment", "pilot_replica", "pilot_deployment"}
-
-    def __init__(
-        self,
-        client_state: ClientState,
-        *,
-        debounce_seconds: float = 30.0,
-        slack_webhook_url: str,
-    ) -> None:
-        super().__init__("alert-controller", client_state)
-        self._debounce = debounce_seconds
-        self._webhook_url = slack_webhook_url
-        self._pending: dict[tuple[str, str], dict] = {}
-        self._flush_event = asyncio.Event()
-
-    async def _listen_loop(self) -> None:
-        conninfo = self.client_state.db_conninfo
-        async for change in listen_for_changes(conninfo):
-            if change.table in self.WATCHED_TABLES:
-                await self._check_and_stage(
-                    change.table, change.resource_id
-                )
-
-    async def _resync_loop(self) -> None:
-        """Periodic sweep for anything missed."""
-
-    async def _check_and_stage(self) -> None:
-        """
-        Read current vs last-alerted state. If there's a
-        meaningful transition, stage it for the next flush.
-        """
-        if current == last_alerted:
-            return
-
-        self._pending[(table, resource_id)] = {
-            "table": row["resource_table"],
-            "id": row["resource_id"],
-            "previous": last_alerted,
-            "current": current,
-            "message": row["health_message"],
-            "changed_at": row["health_changed_at"],
-        }
-        self._flush_event.set()
-
-    async def _flush_loop(self) -> None:
-        """
-        Wait for at least one pending alert, then wait the debounce
-        window for more to accumulate, then flush everything in one
-        Slack message.
-        """
-        while True:
-            # Block until there's something to send.
-            await self._flush_event.wait()
-            self._flush_event.clear()
-
-            # Debounce: wait for more changes to accumulate.
-            await asyncio.sleep(self._debounce)
-
-            if not self._pending:
-                continue
-
-            # Snapshot and clear.
-            batch = dict(self._pending)
-            self._pending.clear()
-            self.update_heartbeat()
-
-            # Separate degradations from recoveries.
-            degradations = {...}
-            recoveries = {...}
-            await self._send_slack(degradations, recoveries)
-
-            # Mark these as alerted so we don't re-alert.
-            await db.executemany(
-                """
-                UPDATE alert_state
-                    SET last_alerted_status = %(status)s,
-                        last_alerted_at = now()
-                    WHERE resource_table = %(table)s
-                    AND resource_id = %(id)s
-                """,
-                [
-                    {"table": k[0], "id": k[1],
-                        "status": v["current"]}
-                    for k, v in batch.items()
-                ],
-            )
-```
-

@@ -10,8 +10,8 @@ Every resource is split into two halves:
 
 | Half | Owner | Lives in |
 |---|---|---|
-| **Spec** | Admin-authored | YAML manifests checked into git |
-| **Status** | Control-loop-authored | Postgres (written only by controllers) |
+| **Spec** | Admin-authored | YAML manifests checked into git and applied to Postgres |
+| **Status** | Control-loop-authored | Postgres and Redis |
 
 The split gives us a clean separation of concerns:
 
@@ -37,6 +37,7 @@ alcf-ai admin apply tests/resource_specs/baseline/
 
 # Inspect what's currently configured (Spec) vs. what's live (Status):
 alcf-ai admin audit
+alcf-ai clusters get sophia
 ```
 
 ## Apply mechanics
@@ -105,6 +106,7 @@ login-node edits, no endpoint restarts, no opaque per-cluster state. This
 is the headline demonstration of what v2's declarative configuration buys
 over v1.
 
+
 ## Why declarative
 
 - **Reproducibility.** The whole production config lives in version
@@ -119,3 +121,89 @@ over v1.
 See the [Controller Framework](controllers.md) for the reconcile-loop
 mechanics that make this work, and the [Data Model](data-model.md) for
 the resource types that get Spec/Status pairs.
+
+## Sample Resource
+
+```yaml
+kind: PilotDeployment
+name: sophia/pilot/google/gemma-4-31B-it
+
+spec:
+  model_name: google/gemma-4-31B-it
+  cluster_name: sophia
+
+  router_params:
+    weight: 1
+    max_parallel_requests: 50
+
+  min_replicas: 1
+  max_replicas: 3
+
+  scaling_strategy:
+    strategy: LoadThresholdStrategy
+    scale_up_interval_min: 120
+    scale_down_age_min: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+      - [10.0, 2]
+      - [20.0, 3]
+
+  health_check_method: first_gateway.platforms.health.check_health_endpoint
+  health_check_kwargs:
+    timeout: 10
+    health_path: "/health"
+
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 30
+
+  launch_spec:
+    served_model_name: google/gemma-4-31B-it
+    num_nodes: 1
+    gpus_per_node: 8
+
+    venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+    weights_path: /eagle/inference_service/model_weights/google/gemma-4-31B-it
+    weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it
+
+    log_dir: /eagle/inference-service/logs/
+    max_startup_time: 500
+    health_path: /health
+
+    env:
+      HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+      HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+      http_proxy: "http://proxy.alcf.anl.gov:3128"
+      https_proxy: "http://proxy.alcf.anl.gov:3128"
+      ftp_proxy: "http://proxy.alcf.anl.gov:3128"
+      TRANSFORMERS_OFFLINE: "1"
+      OMP_NUM_THREADS: "4"
+      VLLM_LOG_LEVEL: "WARN"
+      USE_FASTSAFETENSOR: "true"
+      VLLM_IMAGE_FETCH_TIMEOUT: "60"
+      VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
+      TORCHINDUCTOR_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/torch_inductor"
+      VLLM_CACHE_ROOT: "/raid/scratch/inference_service/model_weights/.cache/vllm"
+      TRITON_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/triton"
+
+    serve_script_template: |
+      #!/bin/bash
+      set -euo pipefail
+
+      ulimit -c unlimited
+      mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR"
+
+      source {{ quote(venv_path) }}/bin/activate
+
+      exec vllm serve {{ quote(weights_cache_path) }} \
+        --served-model-name {{ quote(served_model_name) }} \
+        --host 127.0.0.1 \
+        --port {{ port }} \
+        --enable-auto-tool-choice \
+        --tool-call-parser gemma4 \
+        --reasoning-parser gemma4 \
+        --async-scheduling \
+        --tensor-parallel-size {{ gpus_per_node }} \
+        --max-model-len 262144 \
+        --trust-remote-code \
+        --gpu-memory-utilization 0.9
+```

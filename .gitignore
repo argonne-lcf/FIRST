@@ -2,6 +2,7 @@ __pycache__/
 .DS_Store
 .env
 .env.secret
+docs/images/.$Diagrams.drawio.bkp
 update_batch_status_error.log
 update_batch_status_output.log
 create_pg_backup_log.log
