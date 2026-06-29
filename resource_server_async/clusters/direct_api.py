@@ -14,6 +14,11 @@ log = logging.getLogger(__name__)
 class ClusterConfig(BaseModel):
     status_url: str
     api_request_timeout: int = 10
+    ca_cert_path: str | None = None
+    client_cert_path: str | None = None
+    client_key_path: str | None = None
+    check_hostname: bool = True
+    trust_env: bool = True
 
 
 # Direct API implementation of a BaseCluster
@@ -38,6 +43,11 @@ class DirectAPICluster(BaseCluster):
         # Create HTTPx async client
         self.__httpx_client = AsyncHttpClient(
             timeout=self.__config.api_request_timeout,
+            ca_cert_path=self.__config.ca_cert_path,
+            client_cert_path=self.__config.client_cert_path,
+            client_key_path=self.__config.client_key_path,
+            check_hostname=self.__config.check_hostname,
+            trust_env=self.__config.trust_env,
         )
 
         # Initialize the rest of the common attributes

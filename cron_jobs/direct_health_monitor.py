@@ -65,8 +65,9 @@ from resource_server_async import globus_utils
 from resource_server_async.clusters import (
     BaseCluster,  # noqa: E402
     MetisCluster,
+    MinervaCluster,
 )
-from resource_server_async.endpoints import MetisEndpoint
+from resource_server_async.endpoints import MetisEndpoint, MinervaEndpoint
 from resource_server_async.errors import BaseError
 from resource_server_async.models import (
     AuthService,
@@ -126,6 +127,7 @@ QSTAT_TIMEOUT_SECONDS = int(os.getenv("HEALTH_MONITOR_QSTAT_TIMEOUT", 60))
 GATEWAY_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GATEWAY_TIMEOUT", 5))
 GLOBUS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GLOBUS_TIMEOUT", 30))
 METIS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_METIS_TIMEOUT", 15))
+MINERVA_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_MINERVA_TIMEOUT", 15))
 
 FULL_REPORT_FREQUENCY_HOURS = int(os.getenv("HEALTH_MONITOR_FULL_REPORT_HOURS", 24))
 
@@ -632,6 +634,141 @@ async def check_metis_models() -> list[HealthRecord]:
     return records
 
 
+async def extract_minerva_models() -> list[str]:
+    """Flatten Minerva status structure into a list of live model names."""
+
+    minerva = await MinervaCluster.load_adapter("minerva")
+    jobs = await minerva.get_jobs(None)
+
+    return [model.strip() for j in jobs.running for model in j.Models.split(",")]
+
+
+async def check_minerva_models() -> list[HealthRecord]:
+    """Run mTLS route checks for active Minerva models."""
+
+    records: list[HealthRecord] = []
+
+    try:
+        models = await extract_minerva_models()
+    except Exception as e:
+        records.append(
+            HealthRecord(
+                component="Minerva",
+                cluster="minerva",
+                status=HealthStatus.FAILED,
+                detail=str(e),
+            )
+        )
+        return records
+
+    if not models:
+        records.append(
+            HealthRecord(
+                component="Minerva",
+                cluster="minerva",
+                status=HealthStatus.IDLE,
+                detail="No live models returned by Minerva status",
+            )
+        )
+        return records
+
+    for model_name in models:
+        try:
+            endpoint = await MinervaEndpoint.load_adapter("minerva", "api", model_name)
+        except Exception as e:
+            records.append(
+                HealthRecord(
+                    component=model_name,
+                    cluster="minerva",
+                    status=HealthStatus.FAILED,
+                    detail=f"Failed to load endpoint: {e}",
+                )
+            )
+            continue
+
+        url = f"{endpoint.config.api_url.rstrip('/')}/models"
+        log.info("Calling Minerva route check: model=%s url=%s", model_name, url)
+
+        start = time.monotonic()
+        try:
+            payload = await asyncio.wait_for(
+                endpoint.httpx_client.get(url), timeout=MINERVA_HEALTH_TIMEOUT
+            )
+        except httpx.TimeoutException:
+            elapsed = time.monotonic() - start
+            records.append(
+                HealthRecord(
+                    component=model_name,
+                    cluster="minerva",
+                    status=HealthStatus.FAILED,
+                    detail=f"Timeout calling {url}",
+                    elapsed=elapsed,
+                )
+            )
+            continue
+        except httpx.HTTPStatusError as e:
+            elapsed = time.monotonic() - start
+            records.append(
+                HealthRecord(
+                    component=model_name,
+                    cluster="minerva",
+                    status=HealthStatus.FAILED,
+                    detail=f"HTTP {e.response.status_code}: {e.response.text[:256]}",
+                    elapsed=elapsed,
+                )
+            )
+            continue
+        except (httpx.HTTPError, asyncio.TimeoutError) as e:
+            elapsed = time.monotonic() - start
+            records.append(
+                HealthRecord(
+                    component=model_name,
+                    cluster="minerva",
+                    status=HealthStatus.FAILED,
+                    detail=str(e),
+                    elapsed=elapsed,
+                )
+            )
+            continue
+        except Exception as e:
+            elapsed = time.monotonic() - start
+            records.append(
+                HealthRecord(
+                    component=model_name,
+                    cluster="minerva",
+                    status=HealthStatus.FAILED,
+                    detail=f"Unexpected error: {e}",
+                    elapsed=elapsed,
+                )
+            )
+            continue
+
+        elapsed = time.monotonic() - start
+        status = HealthStatus.HEALTHY
+        detail = "ok"
+        if elapsed > SLOW_THRESHOLD_SECONDS:
+            status = HealthStatus.SLOW
+            detail = f"slow: elapsed={format_duration(elapsed)}"
+        else:
+            detail = f"ok (elapsed={format_duration(elapsed)})"
+
+        if not isinstance(payload, dict) or "data" not in payload:
+            status = HealthStatus.FAILED
+            detail = f"Unexpected /models payload: {payload!r}"
+
+        records.append(
+            HealthRecord(
+                component=model_name,
+                cluster="minerva",
+                status=status,
+                detail=detail,
+                elapsed=elapsed,
+            )
+        )
+
+    return records
+
+
 async def check_gateway_health() -> HealthRecord:
     """Check resource_server /health"""
 
@@ -841,6 +978,7 @@ async def run_monitor() -> list[HealthRecord]:
     results = await asyncio.gather(
         check_sophia_models(),
         check_metis_models(),
+        check_minerva_models(),
         asyncio.gather(
             check_gateway_health(),
             check_redis_health(),
@@ -850,7 +988,7 @@ async def run_monitor() -> list[HealthRecord]:
         return_exceptions=True,
     )
 
-    cluster_labels = ["sophia", "metis", "vm"]
+    cluster_labels = ["sophia", "metis", "minerva", "vm"]
     records: list[HealthRecord] = []
     for cluster_name, result in zip(cluster_labels, results):
         if isinstance(result, Exception):

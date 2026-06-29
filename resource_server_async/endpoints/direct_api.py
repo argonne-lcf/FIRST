@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from resource_server_async.endpoints.endpoint import (
     BaseEndpoint,
 )
-from resource_server_async.httpx_client import AsyncHttpClient
+from resource_server_async.httpx_client import AsyncHttpClient, create_ssl_context
 from resource_server_async.streaming import create_streaming_response_headers
 
 from ..errors import EndpointError
@@ -29,6 +29,11 @@ class DirectAPIEndpointConfig(BaseModel):
     api_url: str
     api_key_env_name: str
     api_request_timeout: int = 120
+    ca_cert_path: str | None = None
+    client_cert_path: str | None = None
+    client_key_path: str | None = None
+    check_hostname: bool = True
+    trust_env: bool = True
 
 
 class StreamingState(TypedDict):
@@ -68,6 +73,11 @@ class DirectAPIEndpoint(BaseEndpoint):
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {os.environ.get(self.__config.api_key_env_name, None)}",
             },
+            ca_cert_path=self.__config.ca_cert_path,
+            client_cert_path=self.__config.client_cert_path,
+            client_key_path=self.__config.client_key_path,
+            check_hostname=self.__config.check_hostname,
+            trust_env=self.__config.trust_env,
         )
 
         # Initialize the rest of the common attributes
@@ -204,7 +214,14 @@ class DirectAPIEndpoint(BaseEndpoint):
         # Create an async HTTPx client
         try:
             async with httpx.AsyncClient(
-                timeout=self.config.api_request_timeout
+                timeout=self.config.api_request_timeout,
+                verify=create_ssl_context(
+                    ca_cert_path=self.config.ca_cert_path,
+                    client_cert_path=self.config.client_cert_path,
+                    client_key_path=self.config.client_key_path,
+                    check_hostname=self.config.check_hostname,
+                ),
+                trust_env=self.config.trust_env,
             ) as client:
                 # Create a streaming client
                 async with client.stream(
