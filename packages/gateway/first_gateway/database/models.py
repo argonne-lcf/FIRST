@@ -305,7 +305,9 @@ class PilotDeployment(ResourceRow):
 class PilotJob(ResourceRow):
     __tablename__ = "pilot_job"
 
-    cluster_name: Mapped[str] = mapped_column(sa.ForeignKey("cluster.name"), index=True)
+    cluster_name: Mapped[str] = mapped_column(
+        sa.ForeignKey("cluster.name", ondelete="CASCADE"), index=True
+    )
     scheduler_job_id: Mapped[str | None]
     phase: Mapped[str] = mapped_column(default=JobPhase.pending_submit.value)
     manager_url: Mapped[str | None]
@@ -328,10 +330,10 @@ class PilotJob(ResourceRow):
 class PilotReplica(ResourceRow):
     __tablename__ = "pilot_replica"
     pilot_deployment_name: Mapped[str] = mapped_column(
-        sa.ForeignKey("pilot_deployment.name"), index=True
+        sa.ForeignKey("pilot_deployment.name", ondelete="CASCADE"), index=True
     )
     pilot_job_name: Mapped[str | None] = mapped_column(
-        sa.ForeignKey("pilot_job.name"), index=True
+        sa.ForeignKey("pilot_job.name", ondelete="SET NULL"), index=True
     )
     used_resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     model_url: Mapped[str | None]

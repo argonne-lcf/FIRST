@@ -912,6 +912,15 @@ These read external systems and write to Postgres/Redis.
     `started_at`.
   - Redis writes: `PilotJob.last_status_check`, per-replica
     `last_health_check`. None of these fire triggers.
+  - **Reap orphans**: replicas appearing in pilot manager `/status` with
+    no matching `PilotReplica` row, or with a row that has a non-matching
+    Pilot Job FK. Re-verify replica does not exist in DB and issue `stop-replica`
+    immediately. (Consider a replica
+    that is placed on PilotJob 1, then a transient DB error occurs so
+    the placement is never recorded, and finally the replica is placed
+    again on PilotJob 2. Now the same replica name exists in two pilot
+    jobs. The first replica on Pilot Job 1 is unregistered and should
+    be reaped.)
 - Groups successful startups and failures by PilotDeployment.  For each PilotDeployment,
 update `consecutive_launch_failures` (incrementing per failed or timed-out replica and resetting to 0 on success)
 
@@ -1044,24 +1053,14 @@ Job Resources becoming available/ready unblocks placing replicas.
   If placed on the same pilot job, the Control API will raise a `409 CONFLICT` and
   the FK to the pilot job can be written.
 
-##### Replica Drainer/Reaper
+##### Replica Drainer
 - Does not write `scheduled_deletion` — only consumes it. The Replica
   Reconciler is the sole writer of that field; see above.
-- Two related jobs:
-  - **Drain**: replicas with `scheduled_deletion = true` and
-    `phase != terminated`. Reconcile: ensure removed from router (router
-    config controller does this on its own loop; here we just verify
-    `deleted_at_router IS NOT NULL`), then after a 30s drain window call
-    `POST /stop-replica`, set `phase = terminated`, `deleted_at = now()`.
-  - **Reap orphans**: replicas appearing in pilot manager `/status` with
-    no matching `PilotReplica` row, or with a row that has a non-matching
-    Pilot Job FK. Issue `stop-replica` immediately. (Consider a replica
-    that is placed on PilotJob 1, then a transient DB error occurs so
-    the placement is never recorded, and finally the replica is placed
-    again on PilotJob 2. Now the same replica name exists in two pilot
-    jobs. The first replica on Pilot Job 1 is unregistered and should
-    be reaped.) Replicas with `scheduled_deletion = true` go through
-    the normal Drain path above, not the reap path.
+- **Drain**: replicas with `scheduled_deletion = true` and
+  `phase != terminated`. Reconcile: ensure removed from router (router
+  config controller does this on its own loop; here we just verify
+  `deleted_at_router IS NOT NULL`), then after a 30s drain window call
+  `POST /stop-replica`, set `phase = terminated`, `deleted_at = now()`.
 - Owns: `PilotReplica.phase` transitions to `terminated`,
   `PilotReplica.deleted_at`.
 
