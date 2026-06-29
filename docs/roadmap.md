@@ -27,21 +27,9 @@ Foundations and the gateway-side building blocks are in place:
 
 ## TODO: MVP
 
-### Soft delete semantics
-
-Implement the [soft delete data model](./docs/architecture/controllers.md#soft-delete-and-retention).
-
-During spec plan/apply, hard deletes take place immediately:
-
-- Deleting a Cluster cascades to its child PilotJobs.  Any pilots that were running will have to be manually freed.
-- Deleting a PilotDeployment cascades to its child PilotReplicas. Any orphaned replicas will be reaped from the pilot job.
-
-Pilot-system managed resources (`PilotJob` and `PilotReplica`) are soft-deleted
-to allow for cleanup and a postmortem retention period.
-
 ### Controllers
 
-Build out the controllers architecture as described in [controllers.md](docs/architecture/controllers.md)
+Build out the controllers architecture as described in [controllers.md](architecture/controllers.md)
 
 ### Hot-swapping Routers (LiteLLM, Generic, Prometheus http_sd_config endpoint)
 

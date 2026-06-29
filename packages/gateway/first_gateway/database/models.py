@@ -46,6 +46,24 @@ class Base(DeclarativeBase):
     uid: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True)
 
 
+controller_manager_lease = sa.Table(
+    "controller_manager_lease",
+    Base.metadata,
+    sa.Column(
+        "singleton", sa.Boolean, primary_key=True, server_default=sa.text("true")
+    ),
+    sa.Column("holder_id", sa.Text, nullable=False),
+    sa.Column("renewed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column(
+        "lease_duration",
+        sa.Interval,
+        nullable=False,
+        server_default=sa.text("'30 seconds'"),
+    ),
+    sa.CheckConstraint("singleton", name="single_row"),
+)
+
+
 class ResourceRow(Base):
     __abstract__ = True
 
@@ -54,7 +72,6 @@ class ResourceRow(Base):
         sa.DateTime(timezone=True),
         server_default=sa.func.now(),
     )
-    scheduled_deletion: Mapped[bool] = mapped_column(default=False)
 
     def __init_subclass__(cls, **kw: Any) -> None:
         super().__init_subclass__(**kw)
@@ -302,7 +319,39 @@ class PilotDeployment(ResourceRow):
         return res
 
 
-class PilotJob(ResourceRow):
+class SoftDeletable:
+    """
+    Mixin class to support soft-deletion:
+
+    - Flip scheduled_deletion to trigger controller cleanup
+    - Controller sets `deleted_at` when the resource has cleaned up.
+    - sweep_expired() hard-deletes rows where the retention_days has past.
+    """
+
+    scheduled_deletion: Mapped[bool] = mapped_column(default=False)
+    deleted_at: Mapped[DateTimeOrNone]
+    retention_days: Mapped[int] = mapped_column(default=7)
+
+    @classmethod
+    async def sweep_expired(cls, sess: AsyncSession) -> int:
+        """
+        Hard-delete all table resources where deleted_at is set and now() >
+        deleted_at + retention_days.  Returns the number of rows deleted.
+        """
+        stmt = sa.delete(cls).where(
+            cls.deleted_at.is_not(None),
+            cls.deleted_at
+            + sa.cast(
+                sa.func.concat(cls.retention_days, " days"),
+                sa.Interval(),
+            )
+            < sa.func.now(),
+        )
+        cursor = await sess.execute(stmt)
+        return int(cursor.rowcount)  # type: ignore[attr-defined]
+
+
+class PilotJob(ResourceRow, SoftDeletable):
     __tablename__ = "pilot_job"
 
     cluster_name: Mapped[str] = mapped_column(
@@ -327,7 +376,7 @@ class PilotJob(ResourceRow):
     )
 
 
-class PilotReplica(ResourceRow):
+class PilotReplica(ResourceRow, SoftDeletable):
     __tablename__ = "pilot_replica"
     pilot_deployment_name: Mapped[str] = mapped_column(
         sa.ForeignKey("pilot_deployment.name", ondelete="CASCADE"), index=True

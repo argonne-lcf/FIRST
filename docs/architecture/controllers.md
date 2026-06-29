@@ -374,14 +374,12 @@ Resolution path for a stuck resource:
 1. Operator sees the resource in the dashboard with a high
    `reconcile_failures` and `reconcile_last_error` shown verbatim.
 2. They either:
-   - **Fix in place**: edit the spec (e.g. correct `launch_spec`). The
+    - **Fix in place**: edit the spec (e.g. correct `launch_spec`). The
      spec-apply path resets `reconcile_failures=0, retry_at=NULL`
      atomically with the spec change.
-   - **Manually retry now**: `alcf-ai admin reconcile-reset <resource>` —
+    - **Manually retry now**: `alcf-ai admin reconcile-reset <resource>` —
      same reset, no spec change. Useful when the fix was external (cluster
      filesystem permissions, etc).
-   - **Tear down**: `alcf-ai admin delete <resource>`. The owning controller
-     handles cleanup as usual.
 3. If the operator does nothing, the hourly retry eventually succeeds on
    its own once the underlying problem is gone.
 
@@ -534,35 +532,33 @@ Observers should:
 
 ## Soft Delete and Retention
 
-```sql
-ALTER TABLE pilot_job
-    ADD COLUMN scheduled_deletion boolean      NOT NULL DEFAULT false,
-    ADD COLUMN deleted_at         timestamptz,
-    ADD COLUMN retention_days     integer      NOT NULL DEFAULT 0;
-```
+`Cluster`, `Model`, `AccessGroup`, `PilotDeployment`, `StaticDeployment`: no
+soft deletes or retention: these resources are fully-declarative and
+hard-deleted as soon as the admin requests deletion. Cluster deletes cascade to
+`PilotJob`.  PilotDeployment deletes cascade to `PilotReplica`.  The replica
+reaper handles freeing up resources from orphaned replicas.
+
+`PilotJob` and `PilotReplica` are controller-managed resources being continously
+created and destroyed.  We utilize a soft-delete pattern with cleanup and
+retention to ensure that resources are gracefully garbage-collected while
+providing an operational view into the past for postmortem visibility.  For
+example, we always want to be to log into the system dashboard and see why a
+replica crashed yesterday.
+
+We use a `SoftDeletable` mixin class in models.py to facilitate the same
+soft-delete+sweep pattern across resources that are soft-deletable.
 
 Flow:
 
-1. API receives delete request -> `UPDATE ... SET scheduled_deletion = true`.
+1. Controller decides to `UPDATE ... SET scheduled_deletion = true`.
 2. The owning controller's `list_actionable` includes `scheduled_deletion =
-   true` rows. On reconcile, it performs cleanup (terminate qsub, send
-   stop signal, free certs) and then sets `deleted_at = now()`.
-3. A **retention sweeper** (a small `Worker`, one per table) runs every
-   ~5 minutes:
-   ```sql
-   DELETE FROM pilot_job
-    WHERE deleted_at IS NOT NULL
-      AND deleted_at + (retention_days || ' days')::interval < now();
-   ```
-4. API views filter out `deleted_at IS NOT NULL` rows by default; admin
-   commands can opt in for postmortem.
+   true` rows. On reconcile, it performs cleanup (terminate job, send
+   stop signal to replica) and then sets `deleted_at = now()`.
+3. A **retention sweeper** (a small `Worker`) runs every
+   ~5 minutes and invokes the `sweep_expired()` method defined on the
+   `SoftDeletable` mixin.
+4. API views do not filter out `deleted_at`, so that a window of historical resources remains visible by default.
 
-Defaults:
-
-- `Cluster`, `Model`, `AccessGroup`, `PilotDeployment`, `StaticDeployment`:
-  `retention_days = 0` — hard-deleted as soon as cleanup is done.
-- `PilotJob`, `PilotReplica`: `retention_days = 7` — keep for postmortem
-  visibility into recent compute activity.
 
 ## Hybrid Postgres+Redis Status
 
@@ -835,6 +831,24 @@ controller adds one asyncio task and one SQL predicate. Splitting a fat
 controller into focused ones makes each easier to test, reason about, and
 restart on failure without disturbing the others.
 
+### Tracing model start lifecycle
+
+Before diving into the controller details, let's trace through the stages involved from "cold power-on" to "model is live":
+
+1. An AutoScaler sets desired_replicas=1 on a PilotDeployment
+2. The Replica Reconciler inserts a new PilotReplica
+3. The Replica Placement Controller sees no PilotJobs and creates one
+4. The Pilot Job Controller enqueues the job that’s pending submit
+5. The HPC Scheduler Observer discovers the job has started running
+6. The PilotJob Endpoint Discovery Controller discovers and sets the running manager URL
+7. The Pilot Replica Status Observer discovers the available GPU resources on the Pilot, which now has non-empty resources.
+8. The Replica Placement Controller finally sees that the resources are available and the Replica is placed onto the Pilot Job
+9. The Pilot Replica Status Observer discovers that the replica has started successfully and populates the model_url
+10. The Router Config Controller sees the deployment with a live replica and updates the global router configuration.
+11. The APIServer reacts to the router change notification and updates its in-memory LiteLLM Router structure to proxy inference traffic to the new Replica.
+
+The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
+
 ### Observer controllers
 
 These read external systems and write to Postgres/Redis.
@@ -1026,6 +1040,13 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
       among `running`, oldest first), set `scheduled_deletion = true`.
   - Per individual replica matching one of the drain predicates above:
     set `scheduled_deletion = true`. The Drainer handles the rest.
+
+This controller naturally supports rollouts of updated `PilotDeployments`: when
+admins apply a spec, the running replicas will be stale but continue unaffected.
+Admins can then temporarily use the `set-desired-replicas` API to spin up new
+replicas over the current capacity.  Then, decreasing the desired count back to
+the baseline causes the older stale replicas to get drained.  This enables a
+zero-downtime rollout.
 
 ##### Replica Placement Controller
 - `list_actionable`: `PilotReplica` where `phase = pending` AND

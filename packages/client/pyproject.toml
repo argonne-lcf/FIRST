@@ -4,7 +4,6 @@ version = "0.5.0"
 description = "ALCF Inference Gateway SDK"
 authors = [{ name = "Misha Salim", email = "msalim@anl.gov" }]
 requires-python = ">=3.12"
-readme = "README.md"
 dependencies = [
     "first-common",
     "httpx",

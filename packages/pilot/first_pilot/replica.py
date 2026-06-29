@@ -316,7 +316,7 @@ class Replica:
         try:
             os.killpg(self._pgid, 0)  # signal 0 == existence probe
             return True
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return False
 
     def _wait_for_group_exit(self, timeout: float) -> bool:

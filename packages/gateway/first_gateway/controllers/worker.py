@@ -9,9 +9,26 @@ from ..settings import ClientState
 logger = logging.getLogger(__name__)
 
 
+class Heartbeat:
+    def __init__(self, name: str, timeout: float) -> None:
+        self.name = name
+        self.timeout = timeout
+        self._last_beat = monotonic()
+
+    def beat(self) -> None:
+        self._last_beat = monotonic()
+
+    def timed_out(self) -> bool:
+        return monotonic() - self._last_beat >= self.timeout
+
+    @property
+    def since_last(self) -> float:
+        return monotonic() - self._last_beat
+
+
 class HeartbeatStatus(NamedTuple):
     timed_out: bool
-    since_last: float
+    stale: list[Heartbeat]
 
 
 class Worker(ABC):
@@ -30,25 +47,24 @@ class Worker(ABC):
         self._max_backoff = max_backoff
         self._heartbeat_timeout = heartbeat_timeout
 
-        self._last_heartbeat: float | None = None
+        self._heartbeats: list[Heartbeat] = []
         self.run_task: asyncio.Task[None] | None = None
 
-    def update_heartbeat(self) -> None:
-        self._last_heartbeat = monotonic()
+    def register_heartbeat(self, name: str) -> Heartbeat:
+        hb = Heartbeat(name=f"{self.name}.{name}", timeout=self._heartbeat_timeout)
+        self._heartbeats.append(hb)
+        return hb
 
     def check_heartbeat(self) -> HeartbeatStatus:
-        if self._last_heartbeat is None:
-            return HeartbeatStatus(False, since_last=0.0)
-
-        since_last = monotonic() - self._last_heartbeat
-        return HeartbeatStatus(since_last >= self._heartbeat_timeout, since_last)
+        stale = [h for h in self._heartbeats if h.timed_out()]
+        return HeartbeatStatus(timed_out=bool(stale), stale=stale)
 
     async def supervise(self, shutdown: asyncio.Event) -> None:
         logger.info(f"Starting worker {self.name!r}")
         backoff = self._restart_backoff
 
         while not shutdown.is_set():
-            self.update_heartbeat()
+            self._heartbeats = []
             self.run_task = asyncio.create_task(self.run())
 
             try:
@@ -76,8 +92,4 @@ class Worker(ABC):
 
     @abstractmethod
     async def run(self) -> None:
-        """
-        Implement worker loop here. Worker must periodically call
-        self.update_heartbeat() when making progress.
-        """
         raise NotImplementedError("All Worker subclasses must implement run()")

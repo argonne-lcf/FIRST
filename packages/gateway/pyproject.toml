@@ -4,7 +4,6 @@ version = "0.2.0"
 description = ""
 authors = [{ name = "Benoit Cote", email = "bcote@anl.gov" }, { name = "Misha Salim", email = "msalim@anl.gov"}, {name = "Ethan Wong", email="ewong@anl.gov"}]
 requires-python = ">=3.12"
-readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
