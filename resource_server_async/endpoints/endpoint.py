@@ -7,13 +7,14 @@ from cachetools import TTLCache
 from django.forms.models import model_to_dict
 from django.utils.text import slugify
 
-from inference_gateway.settings import MODEL_DETAILS_KEYS
+from inference_gateway.settings import LEGACY_ENDPOINT_SLUG_MAPPING, MODEL_DETAILS_KEYS
 from resource_server_async.cache import get_redis_client
 from resource_server_async.rate_limiters import TokenLimiterCheck, TokenRateLimiter
 
 from ..auth import check_permission as auth_utils_check_permission
 from ..errors import (
     BatchUnavailable,
+    EndpointError,
     EndpointNotFound,
     Unauthorized,
 )
@@ -196,6 +197,8 @@ class BaseEndpoint(ABC):
     async def load_adapter(cls, cluster: str, framework: str, model: str) -> Self:
         """Extract the endpoint from the database and return its underlying adapter object."""
         endpoint_slug = slugify(f"{cluster} {framework} {model.lower()}")
+        if endpoint_slug in LEGACY_ENDPOINT_SLUG_MAPPING:
+            endpoint_slug = LEGACY_ENDPOINT_SLUG_MAPPING[endpoint_slug]
 
         if (adapter := _adapter_cache.get(endpoint_slug)) is not None:
             assert isinstance(adapter, cls)
@@ -228,6 +231,10 @@ class BaseEndpoint(ABC):
         if not isinstance(endpoint, cls):
             raise AssertionError(
                 f"Endpoint adapter {db_endpoint.endpoint_adapter} is not an instance of {cls.__name__}"
+            )
+        if endpoint.cluster != cluster or endpoint.framework != framework:
+            raise EndpointError(
+                "Endpoint mapping cannot alter 'cluster' or 'framework'."
             )
         _adapter_cache[endpoint_slug] = endpoint
         return endpoint
