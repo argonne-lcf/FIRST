@@ -127,6 +127,11 @@ MODEL_DETAILS_KEYS = json.loads(os.getenv("MODEL_DETAILS_KEYS", "[]"))
 # Load maintenance notices to be displayed for individual clusters
 MAINTENANCE_ERROR_NOTICES = json.loads(os.getenv("MAINTENANCE_ERROR_NOTICES", "{}"))
 
+# Endpoint slug mapping to reroute legacy slugs to their latest value
+LEGACY_ENDPOINT_SLUG_MAPPING = json.loads(os.getenv("LEGACY_ENDPOINT_SLUG_MAPPING", "{}"))
+for key, value in LEGACY_ENDPOINT_SLUG_MAPPING.items():
+    LEGACY_ENDPOINT_SLUG_MAPPING[key] = str(value).strip()
+
 # Allowed hosts
 ALLOWED_HOSTS = textfield_to_strlist(os.getenv("ALLOWED_HOSTS", "*"))
 
