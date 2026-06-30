@@ -288,6 +288,9 @@ async def submit_openai_inference_request(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
     )
 
+    # Overwrite variables in case it has been updated
+    payload.model = endpoint.model
+
     # Block access if the user is not allowed to use the endpoint
     endpoint.check_permission(context.user)
 
