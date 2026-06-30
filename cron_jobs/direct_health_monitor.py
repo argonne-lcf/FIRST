@@ -633,6 +633,7 @@ async def check_metis_models() -> list[HealthRecord]:
 
     return records
 
+
 async def extract_minerva_models() -> list[str]:
     """Flatten Minerva status structure into a list of live model names."""
 
@@ -767,6 +768,7 @@ async def check_minerva_models() -> list[HealthRecord]:
 
     return records
 
+
 async def check_gateway_health() -> HealthRecord:
     """Check resource_server /health"""
 
@@ -885,7 +887,8 @@ async def check_disk_usage() -> list[HealthRecord]:
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "df", "-h",
+            "df",
+            "-h",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -916,7 +919,14 @@ async def check_disk_usage() -> list[HealthRecord]:
         parts = line.split()
         if len(parts) < 6:
             continue
-        filesystem, size, used, avail, use_pct, mount = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+        filesystem, size, used, avail, use_pct, mount = (
+            parts[0],
+            parts[1],
+            parts[2],
+            parts[3],
+            parts[4],
+            parts[5],
+        )
         try:
             pct = int(use_pct.rstrip("%"))
         except ValueError:
