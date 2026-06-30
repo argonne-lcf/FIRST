@@ -288,7 +288,7 @@ async def submit_openai_inference_request(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
     )
 
-    # Overwrite variables in case it has been updated
+    # Overwrite model name in case it has been updated via endpoint slug mapping
     payload.model = endpoint.model
 
     # Block access if the user is not allowed to use the endpoint
