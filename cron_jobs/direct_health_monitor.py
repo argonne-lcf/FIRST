@@ -877,6 +877,76 @@ async def check_postgres_health() -> HealthRecord:
         )
 
 
+DISK_USAGE_THRESHOLD_PCT = int(os.getenv("HEALTH_MONITOR_DISK_THRESHOLD", 80))
+
+
+async def check_disk_usage() -> list[HealthRecord]:
+    """Check VM disk usage via `df -h` and flag filesystems above the threshold."""
+
+    log.info("Checking disk usage...")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "df", "-h",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        return [
+            HealthRecord(
+                component="Disk Usage",
+                cluster="vm",
+                status=HealthStatus.FAILED,
+                detail="df -h timed out",
+            )
+        ]
+    except Exception as e:
+        return [
+            HealthRecord(
+                component="Disk Usage",
+                cluster="vm",
+                status=HealthStatus.FAILED,
+                detail=f"Failed to run df: {e}",
+            )
+        ]
+
+    records: list[HealthRecord] = []
+    lines = stdout.decode().splitlines()
+
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        filesystem, size, used, avail, use_pct, mount = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+        try:
+            pct = int(use_pct.rstrip("%"))
+        except ValueError:
+            continue
+
+        if pct > DISK_USAGE_THRESHOLD_PCT:
+            records.append(
+                HealthRecord(
+                    component=f"Disk {mount} ({filesystem})",
+                    cluster="vm",
+                    status=HealthStatus.FAILED,
+                    detail=f"{use_pct} used — {used} of {size} (avail: {avail})",
+                )
+            )
+
+    if not records:
+        records.append(
+            HealthRecord(
+                component="Disk Usage",
+                cluster="vm",
+                status=HealthStatus.HEALTHY,
+                detail=f"All filesystems below {DISK_USAGE_THRESHOLD_PCT}%",
+            )
+        )
+
+    return records
+
+
 async def check_globus_compute() -> HealthRecord:
     """Check Globus Compute connectivity"""
 
@@ -984,6 +1054,7 @@ async def run_monitor() -> list[HealthRecord]:
             check_redis_health(),
             check_postgres_health(),
             check_globus_compute(),
+            check_disk_usage(),
         ),
         return_exceptions=True,
     )
@@ -1002,7 +1073,13 @@ async def run_monitor() -> list[HealthRecord]:
                 )
             )
         elif isinstance(result, list):
-            records.extend(result)
+            for item in result:
+                if isinstance(item, list):
+                    records.extend(item)
+                elif isinstance(item, HealthRecord):
+                    records.append(item)
+                else:
+                    log.error("Unexpected item in %s results: %r", cluster_name, item)
         else:
             log.error("Unexpected result for %s monitor: %r", cluster_name, result)
             records.append(
