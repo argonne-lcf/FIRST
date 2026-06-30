@@ -633,7 +633,6 @@ async def check_metis_models() -> list[HealthRecord]:
 
     return records
 
-
 async def extract_minerva_models() -> list[str]:
     """Flatten Minerva status structure into a list of live model names."""
 
@@ -767,7 +766,6 @@ async def check_minerva_models() -> list[HealthRecord]:
         )
 
     return records
-
 
 async def check_gateway_health() -> HealthRecord:
     """Check resource_server /health"""
