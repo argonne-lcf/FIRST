@@ -128,7 +128,9 @@ MODEL_DETAILS_KEYS = json.loads(os.getenv("MODEL_DETAILS_KEYS", "[]"))
 MAINTENANCE_ERROR_NOTICES = json.loads(os.getenv("MAINTENANCE_ERROR_NOTICES", "{}"))
 
 # Endpoint slug mapping to reroute legacy slugs to their latest value
-LEGACY_ENDPOINT_SLUG_MAPPING = json.loads(os.getenv("LEGACY_ENDPOINT_SLUG_MAPPING", "{}"))
+LEGACY_ENDPOINT_SLUG_MAPPING = json.loads(
+    os.getenv("LEGACY_ENDPOINT_SLUG_MAPPING", "{}")
+)
 for key, value in LEGACY_ENDPOINT_SLUG_MAPPING.items():
     LEGACY_ENDPOINT_SLUG_MAPPING[key] = str(value).strip()
 
