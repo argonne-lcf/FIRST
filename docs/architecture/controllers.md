@@ -16,8 +16,7 @@
       that the controllers below will drive.
 
     Not yet implemented: the `Controller` reconcile-loop subclass, the
-    manager-level lease, the shared LISTEN dispatcher, the
-    Redis-backed status helpers, the retention sweeper, the manager
+    the Redis-backed status helpers, the retention sweeper, the manager
     `/metrics` server, and every controller listed under
     [FIRST Controllers](#first-controllers).
 
