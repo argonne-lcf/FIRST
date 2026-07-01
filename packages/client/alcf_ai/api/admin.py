@@ -54,6 +54,13 @@ class AdminAPI:
         raise_for_status(resp)
         return ConfigVersion.model_validate(resp.json())
 
+    def reconcile_reset(self, resource: str) -> None:
+        resp = self._client.post(
+            "/resources/reconcile-reset",
+            json={"resource": resource},
+        )
+        raise_for_status(resp)
+
     def set_desired_pilot_deployment_replicas(
         self, name: str, num_replicas: int
     ) -> PilotDeploymentSummary:

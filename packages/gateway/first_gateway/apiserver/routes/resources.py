@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Body
 
-from first_common.errors import AccessDenied
+from first_common.errors import AccessDenied, InvalidSpecError
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
@@ -18,7 +18,7 @@ from first_common.schema.resources.read import (
 )
 
 from ...database import models as db
-from ...services.plan_apply import apply_plan, create_plan
+from ...services.plan_apply import apply_plan, create_plan, reset_reconcile_state
 from ..auth import user_can_access_group
 from ..dependencies import AdminUser, AuthUser, DbSession, IsUserAdmin
 
@@ -178,6 +178,25 @@ async def set_desired_pilot_replicas(
         deployment = await db.PilotDeployment.get_by_name(sess, name)
         deployment.set_desired_replicas(num_replicas)
     return deployment
+
+
+@admin_router.post("/reconcile-reset")
+async def reconcile_reset(
+    sess: DbSession,
+    resource: str = Body(embed=True),
+) -> dict[str, str]:
+    """Reset reconcile backoff state for a resource and its children."""
+    dot = resource.find(".")
+    if dot < 1:
+        raise InvalidSpecError(
+            f"Invalid resource identifier {resource!r}: expected 'Kind.name'"
+        )
+    kind, name = resource[:dot], resource[dot + 1 :]
+    if kind not in db.resource_registry:
+        raise InvalidSpecError(f"Unknown resource kind {kind!r}")
+    async with sess.begin():
+        await reset_reconcile_state(sess, kind, name)
+    return {"status": "ok", "resource": resource}
 
 
 @admin_router.get("/pilot-replicas/{name:path}/logs")
