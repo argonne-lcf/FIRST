@@ -62,7 +62,7 @@ class InferenceClient(Client):
     @property
     def d3_triton(self) -> "D3TritonResource":
         return self._resources.setdefault(  # type: ignore[return-value]
-            "d3_triton", D3TritonResource("sophia/amsc-d3-triton", self)
+            "d3_triton", D3TritonResource("sophia/triton/amsc-d3", self)
         )
 
     def list_endpoints(self) -> dict[str, Any]:
