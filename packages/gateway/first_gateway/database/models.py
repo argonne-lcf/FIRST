@@ -73,6 +73,10 @@ class ResourceRow(Base):
         server_default=sa.func.now(),
     )
 
+    reconcile_failures: Mapped[int] = mapped_column(default=0)
+    reconcile_last_error: Mapped[str | None] = mapped_column(sa.Text(), default=None)
+    reconcile_retry_at: Mapped[DateTimeOrNone]
+
     def __init_subclass__(cls, **kw: Any) -> None:
         super().__init_subclass__(**kw)
         resource_registry[cls.__name__] = cls
@@ -80,6 +84,11 @@ class ResourceRow(Base):
     @property
     def kind(self) -> str:
         return self.__class__.__name__
+
+    def reset_reconcile_state(self) -> None:
+        self.reconcile_failures = 0
+        self.reconcile_last_error = None
+        self.reconcile_retry_at = None
 
     @classmethod
     async def list(cls, sess: AsyncSession) -> list[Self]:

@@ -1,5 +1,6 @@
 from collections import Counter, defaultdict
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.errors import InvalidSpecError, SpecApplyError
@@ -19,6 +20,34 @@ from first_common.schema.resources.spec import (
     StaticDeploymentSpec,
 )
 from first_gateway.database import models
+
+_RECONCILE_CASCADES: dict[str, list[tuple[type[models.ResourceRow], str]]] = {
+    "Cluster": [(models.PilotJob, "cluster_name")],
+    "PilotDeployment": [(models.PilotReplica, "pilot_deployment_name")],
+}
+
+
+async def _reset_children_reconcile_state(
+    sess: AsyncSession, kind: str, name: str
+) -> None:
+    for child_cls, fk_col in _RECONCILE_CASCADES.get(kind, []):
+        await sess.execute(
+            sa.update(child_cls)
+            .where(getattr(child_cls, fk_col) == name)
+            .values(
+                reconcile_failures=0,
+                reconcile_last_error=None,
+                reconcile_retry_at=None,
+            )
+        )
+
+
+async def reset_reconcile_state(sess: AsyncSession, kind: str, name: str) -> None:
+    """Reset reconcile backoff on a resource and its controller-managed children."""
+    cls = models.resource_registry[kind]
+    obj = await cls.get_by_name(sess, name)
+    obj.reset_reconcile_state()
+    await _reset_children_reconcile_state(sess, kind, name)
 
 
 def validate_resources(
@@ -164,5 +193,9 @@ async def apply_plan(
             cls = models.resource_registry[patch_resource.kind]
             obj = await cls.get_by_name(sess, patch_resource.name)
             obj.apply_patch(patch_resource.patch)
+            obj.reset_reconcile_state()
+            await _reset_children_reconcile_state(
+                sess, patch_resource.kind, patch_resource.name
+            )
 
     return config_version

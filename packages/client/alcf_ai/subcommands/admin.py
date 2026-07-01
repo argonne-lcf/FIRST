@@ -278,6 +278,14 @@ def get_config_version(ctx: typer.Context, uid: int) -> None:
     print_config_version(version)
 
 
+@cli.command(name="reconcile-reset")
+def reconcile_reset(ctx: typer.Context, resource: str) -> None:
+    """Reset reconcile backoff state for a resource (e.g. 'PilotJob.my-job')"""
+    client = get_client(ctx)
+    client.admin.reconcile_reset(resource)
+    Console().print(f"[bold green]Reconcile state reset for {resource}.[/]")
+
+
 @cli.command()
 def set_desired_replicas(
     ctx: typer.Context, deployment_name: str, num_replicas: int
