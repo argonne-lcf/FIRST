@@ -15,7 +15,7 @@ router = Router()
 log = logging.getLogger(__name__)
 
 
-@router.post("/sophia/amsc-d3-triton/process", response=SubmitTaskAsyncResponse)
+@router.post("/sophia/triton/amsc-d3/process", response=SubmitTaskAsyncResponse)
 async def d3_triton_infer(
     request: AuthedRequest, payload: D3TritonRequest
 ) -> SubmitTaskAsyncResponse:
@@ -26,7 +26,7 @@ async def d3_triton_infer(
     (await cluster.check_maintenance()).raise_if_down()
 
     endpoint = await BaseEndpoint.load_adapter(
-        cluster.cluster_name, "amsc-d3-triton", "amsc-d3-triton"
+        cluster.cluster_name, "triton", "amsc-d3"
     )
     assert isinstance(endpoint, GlobusComputeEndpoint)
     log.info(f"endpoint_slug: {endpoint.endpoint_slug} - user: {request.auth.username}")
@@ -38,7 +38,7 @@ async def d3_triton_infer(
     return task_response
 
 
-@router.get("/sophia/amsc-d3-triton/tasks/{task_id}", response=SubmitTaskResult)
+@router.get("/sophia/triton/amsc-d3/tasks/{task_id}", response=SubmitTaskResult)
 async def d3_triton_get_task_result(
     request: AuthedRequest, task_id: str
 ) -> SubmitTaskResult:
@@ -46,7 +46,7 @@ async def d3_triton_get_task_result(
     (await cluster.check_maintenance()).raise_if_down()
 
     endpoint = await BaseEndpoint.load_adapter(
-        cluster.cluster_name, "amsc-d3-triton", "amsc-d3-triton"
+        cluster.cluster_name, "triton", "amsc-d3"
     )
     assert isinstance(endpoint, GlobusComputeEndpoint)
     log.info(f"endpoint_slug: {endpoint.endpoint_slug} - user: {request.auth.username}")
