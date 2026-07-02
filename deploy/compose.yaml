@@ -39,6 +39,8 @@ services:
       dockerfile: deploy/Dockerfile
     env_file: *env-files
     command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
+    ports:
+      - "9100:9100"
     depends_on:
       postgres:
         condition: service_healthy

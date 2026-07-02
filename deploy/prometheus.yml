@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: controller-manager
+    static_configs:
+      - targets: ["controller-manager:9100"]

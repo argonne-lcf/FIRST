@@ -15,7 +15,7 @@ class RetentionSweeper(Worker):
     Runs sweep_expired() on every SoftDeletable table every poll_interval seconds.
     """
 
-    poll_interval: float = 300.0
+    poll_interval: float = 60.0
 
     async def run(self) -> None:
         hb = self.register_heartbeat("sweep")

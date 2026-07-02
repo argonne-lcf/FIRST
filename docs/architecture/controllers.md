@@ -537,8 +537,6 @@ The manager process exposes a small FastAPI on a local port (e.g.
 - `GET /metrics` — Prometheus exposition format, emitted by `prometheus_client`.
 - `GET /api/controllers` — for each worker: name, status (running/restarting),
   named heartbeats with seconds-since-last-beat, last error, restart count.
-- `GET /api/controllers/<name>/recent` — recent reconcile log lines for one
-   controller (last N records, in-memory ring buffer).
 
 The following metrics are defined in `first_gateway.controllers.controller`
 and `first_gateway.controllers.worker`:

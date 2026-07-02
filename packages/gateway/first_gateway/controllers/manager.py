@@ -12,6 +12,7 @@ from first_gateway.log_config import config_logging
 from ..settings import ClientState, Settings
 from .cluster.health import ClusterHealthController
 from .lease import ManagerLease
+from .metrics_server import serve as serve_metrics
 from .retention import RetentionSweeper
 from .worker import Worker
 
@@ -94,6 +95,7 @@ class ControllerManager:
         tasks.append(
             asyncio.create_task(self.dispatcher.run(conninfo), name="wakeup-dispatcher")
         )
+        tasks.append(asyncio.create_task(serve_metrics(workers), name="metrics-server"))
 
         await self._shutdown.wait()
         logger.info("shutdown requested; cancelling tasks")
