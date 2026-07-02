@@ -3,6 +3,7 @@ import logging
 from collections import defaultdict, deque
 
 import sqlalchemy as sa
+from prometheus_client import Gauge
 
 from first_common.schema.resources.status import DeploymentStatus
 
@@ -21,6 +22,12 @@ STATIC_DEPLOYMENT_PREFIX = "static_deployment"
 
 _SAMPLES_1M = 6
 _SAMPLES_5M = 30
+
+INFLIGHT_GAUGE = Gauge(
+    "deployment_inflight_requests",
+    "Number of requests currently outstanding per model deployment",
+    ["kind", "name"],
+)
 
 
 class DeploymentLoadObserver(Worker):
@@ -60,19 +67,19 @@ class DeploymentLoadObserver(Worker):
             pilot_names = list(await sess.scalars(sa.select(PilotDeployment.name)))
             static_names = list(await sess.scalars(sa.select(StaticDeployment.name)))
 
-        for name in pilot_names:
-            inflight_key = f"{PILOT_DEPLOYMENT_PREFIX}:{name}"
-            count = await counter.count(inflight_key)
-            buf = samples[inflight_key]
-            buf.append(float(count))
-            await pilot_store.update(name, _compute_status(buf))
+        todo = [
+            (PILOT_DEPLOYMENT_PREFIX, pilot_names, pilot_store),
+            (STATIC_DEPLOYMENT_PREFIX, static_names, static_store),
+        ]
 
-        for name in static_names:
-            inflight_key = f"{STATIC_DEPLOYMENT_PREFIX}:{name}"
-            count = await counter.count(inflight_key)
-            buf = samples[inflight_key]
-            buf.append(float(count))
-            await static_store.update(name, _compute_status(buf))
+        for prefix, names, store in todo:
+            for name in names:
+                key = f"{prefix}:{name}"
+                count = await counter.count(key)
+                INFLIGHT_GAUGE.labels(prefix, name).set(count)
+                buf = samples[key]
+                buf.append(float(count))
+                await store.update(name, _compute_status(buf))
 
         stale = (
             set(samples)
