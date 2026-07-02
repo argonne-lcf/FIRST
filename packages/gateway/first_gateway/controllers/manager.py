@@ -12,6 +12,7 @@ from first_gateway.log_config import config_logging
 from ..settings import ClientState, Settings
 from .cluster.health import ClusterHealthController
 from .lease import ManagerLease
+from .retention import RetentionSweeper
 from .worker import Worker
 
 logger = logging.getLogger("first_gateway.controllers.manager")
@@ -53,7 +54,8 @@ class ControllerManager:
         return [
             ClusterHealthController(
                 "cluster-health", self.client_state, heartbeat_timeout=20
-            )
+            ),
+            RetentionSweeper("retention-sweeper", self.client_state),
         ]
 
     async def run(self) -> None:
