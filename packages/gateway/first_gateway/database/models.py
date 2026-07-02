@@ -1,6 +1,6 @@
 from datetime import datetime
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Annotated, Any, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Self
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
@@ -66,6 +66,8 @@ controller_manager_lease = sa.Table(
 
 class ResourceRow(Base):
     __abstract__ = True
+    _BACKOFF_BASE: ClassVar[float] = 10.0
+    _MAX_BACKOFF_SEC: ClassVar[float] = 3600.0
 
     name: Mapped[ResourceName] = mapped_column(sa.Text(), unique=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -85,10 +87,50 @@ class ResourceRow(Base):
     def kind(self) -> str:
         return self.__class__.__name__
 
-    def reset_reconcile_state(self) -> None:
-        self.reconcile_failures = 0
-        self.reconcile_last_error = None
-        self.reconcile_retry_at = None
+    @classmethod
+    async def reset_reconcile_state(
+        cls, sess: AsyncSession, uid: int, cascade: bool = False
+    ) -> None:
+        """Reset reconcile backoff, optionally cascading to children."""
+        await sess.execute(
+            sa.update(cls)
+            .where(cls.uid == uid, cls.reconcile_failures != 0)
+            .values(
+                reconcile_failures=0,
+                reconcile_last_error=None,
+                reconcile_retry_at=None,
+            )
+        )
+        if cascade:
+            name_subq = sa.select(cls.name).where(cls.uid == uid).scalar_subquery()
+            for child_cls, fk_col in _RECONCILE_CASCADES.get(cls.__name__, []):
+                await sess.execute(
+                    sa.update(child_cls)
+                    .where(getattr(child_cls, fk_col) == name_subq)
+                    .values(
+                        reconcile_failures=0,
+                        reconcile_last_error=None,
+                        reconcile_retry_at=None,
+                    )
+                )
+
+    @classmethod
+    async def record_failure(cls, sess: AsyncSession, uid: int, exc: Exception) -> None:
+        await sess.execute(
+            sa.update(cls)
+            .where(cls.uid == uid)
+            .values(
+                reconcile_failures=cls.reconcile_failures + 1,
+                reconcile_last_error=str(exc),
+                reconcile_retry_at=sa.func.now()
+                + sa.func.make_interval(
+                    secs=sa.func.least(
+                        cls._BACKOFF_BASE * sa.func.power(2, cls.reconcile_failures),
+                        cls._MAX_BACKOFF_SEC,
+                    )
+                ),
+            )
+        )
 
     @classmethod
     async def list(cls, sess: AsyncSession) -> list[Self]:
@@ -408,3 +450,9 @@ class PilotReplica(ResourceRow, SoftDeletable):
     pilot_job: Mapped[PilotJob] = relationship(
         back_populates="assigned_replicas", lazy="raise"
     )
+
+
+_RECONCILE_CASCADES: dict[str, list[tuple[type[ResourceRow], str]]] = {
+    "Cluster": [(PilotJob, "cluster_name")],
+    "PilotDeployment": [(PilotReplica, "pilot_deployment_name")],
+}

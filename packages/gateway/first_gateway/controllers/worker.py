@@ -4,9 +4,17 @@ from abc import ABC, abstractmethod
 from time import monotonic
 from typing import NamedTuple
 
+from prometheus_client import Counter
+
 from ..settings import ClientState
 
 logger = logging.getLogger(__name__)
+
+WORKER_RESTARTS = Counter(
+    name="controller_worker_restarts_total",
+    documentation="Total worker restarts",
+    labelnames=["worker"],
+)
 
 
 class Heartbeat:
@@ -66,6 +74,7 @@ class Worker(ABC):
         while not shutdown.is_set():
             self._heartbeats = []
             self.run_task = asyncio.create_task(self.run())
+            WORKER_RESTARTS.labels(self.name).inc()
 
             try:
                 await self.run_task

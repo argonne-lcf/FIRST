@@ -35,9 +35,8 @@ class ManagerLease:
                 where=(t.c.renewed_at + t.c.lease_duration < sa.func.now()),
             )
         )
-        async with self._sessionmaker() as sess:
+        async with self._sessionmaker.begin() as sess:
             result = await sess.execute(stmt)
-            await sess.commit()
             return bool(result.rowcount)  # type: ignore[attr-defined]
 
     async def renew(self) -> bool:
@@ -48,18 +47,16 @@ class ManagerLease:
             .where(t.c.singleton.is_(True), t.c.holder_id == self.holder_id)
             .values(renewed_at=sa.func.now())
         )
-        async with self._sessionmaker() as sess:
+        async with self._sessionmaker.begin() as sess:
             result = await sess.execute(stmt)
-            await sess.commit()
             return bool(result.rowcount)  # type: ignore[attr-defined]
 
     async def release(self) -> None:
         """Delete the lease row on clean shutdown."""
         t = controller_manager_lease
         stmt = sa.delete(t).where(t.c.holder_id == self.holder_id)
-        async with self._sessionmaker() as sess:
+        async with self._sessionmaker.begin() as sess:
             await sess.execute(stmt)
-            await sess.commit()
 
     async def run_renewal(self) -> None:
         """Renew every RENEW_INTERVAL seconds. Kill process after 2 consecutive failures."""

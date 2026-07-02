@@ -1,24 +1,8 @@
 # Controller Framework
 
-!!! info "Aspirational design document"
-    This page is the **design** for the FIRST controller stack. Treat it
-    as the spec the next iteration of `first_gateway.controllers/` will
-    be built against.
-
-    What exists today:
-
-    - The `Worker` base class and the supervising
-      `first_gateway.controllers.manager.main` process (backoff,
-      crash recovery, heartbeat monitor).
-    - A stub `ClusterHealthController` that sleeps in a loop — registered
-      so the wiring is exercised end-to-end.
-    - `PilotSubmitter` and `GlobusComputePBSAdapter` — the platform layer
-      that the controllers below will drive.
-
-    Not yet implemented: the `Controller` reconcile-loop subclass, the
-    the Redis-backed status helpers, the retention sweeper, the manager
-    `/metrics` server, and every controller listed under
-    [FIRST Controllers](#first-controllers).
+!!! info "Implementation status"
+    Not yet implemented: the retention sweeper, the manager `/metrics` server,
+    and every controller listed under [FIRST Controllers](#first-controllers).
 
 FIRST allows admins to declaratively configure models with access controls,
 routing policies, and multi-cluster HPC deployments.  The controllers work
@@ -47,7 +31,8 @@ Because the controller manager is the only writer for controller-owned fields,
 we just need to make sure no two manager processes ever run at once (e.g. a
 botched deployment, an admin starting a second instance by accident).
 
-The manager grabs a single lease at startup:
+The manager grabs a single lease at startup (see `ManagerLease` in
+`first_gateway.controllers.lease`):
 
 ```sql
 CREATE TABLE controller_manager_lease (
@@ -205,72 +190,25 @@ and "needs work" is encoded as the `list_actionable` SQL predicate.
 
 If a controller is overwhelmed (its `for` loop takes longer than
 `resync_interval`), no harm done — it just runs back-to-back without
-sleeping. Add a metric for "% of resync interval spent reconciling" so we
-notice before it matters.
+sleeping. The `controller_resync_interval_used_fraction` gauge tracks this
+so we notice before it matters.
 
 ### Shared LISTEN dispatcher
 
 Every controller wants to be notified when its table changes. Rather than
 each controller opening its own LISTEN connection, the manager owns a single
 LISTEN connection and fans out to per-controller `asyncio.Event` objects,
-keyed by table name:
+keyed by table name.
 
-```python
-class WakeupDispatcher:
-    """Single LISTEN connection in the manager; fans out per-table wakes."""
+See `WakeupDispatcher` in `first_gateway.controllers.manager`. The
+`Controller` base class accepts an optional `dispatcher` kwarg; when
+provided, the reconcile loop calls `dispatcher.event_for(table_name)` to
+get an `asyncio.Event` that shortens the resync wait.
 
-    def __init__(self) -> None:
-        self._events: dict[str, asyncio.Event] = {}
-
-    def event_for(self, table: str) -> asyncio.Event:
-        return self._events.setdefault(table, asyncio.Event())
-
-    async def run(self, conninfo: str) -> None:
-        aconn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-        try:
-            await aconn.execute("LISTEN resource_changes")
-            async for notify in aconn.notifies():
-                try:
-                    payload = json.loads(notify.payload)
-                    ev = self._events.get(payload["table"])
-                    if ev is not None:
-                        ev.set()
-                except (json.JSONDecodeError, KeyError):
-                    logger.warning("bad notify payload: %r", notify.payload)
-        finally:
-            await aconn.close()
-```
-
-The trigger:
-
-```sql
-CREATE OR REPLACE FUNCTION notify_resource_change()
-RETURNS trigger AS $$
-BEGIN
-  PERFORM pg_notify(
-    'resource_changes',
-    json_build_object('table', TG_TABLE_NAME)::text
-  );
-  RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER pilot_job_notify
-  AFTER INSERT OR UPDATE OR DELETE ON pilot_job
-  FOR EACH ROW
-  WHEN (
-    -- Only fire for columns that drive controller behavior.
-    NEW.phase IS DISTINCT FROM OLD.phase
-    OR NEW.scheduled_deletion IS DISTINCT FROM OLD.scheduled_deletion
-    OR NEW.manager_url IS DISTINCT FROM OLD.manager_url
-    OR NEW.resources IS DISTINCT FROM OLD.resources
-    OR (TG_OP != 'UPDATE')  -- insert/delete always notify
-  )
-  EXECUTE FUNCTION notify_resource_change();
-```
-
-Notifications carry only the table name. That's enough: the receiving
-controller's reconcile loop knows what predicate to apply.
+The triggers are implemented as Alembic migrations in
+`first_gateway/database/migrations/`.  Notifications carry only the table name.
+That's enough: the receiving controller's reconcile loop knows what predicate to
+apply.
 
 ### Notification feedback loops
 
@@ -290,66 +228,29 @@ Two layers of defense:
 A controller may have several concurrent coroutines (the reconcile loop, the
 resync polling sub-task, etc). A single shared `update_heartbeat()` would
 mask a wedged sub-task. Instead, each spawned loop registers its own named
-heartbeat token:
+heartbeat token via `Worker.register_heartbeat()`, and the heartbeat
+monitor in `ControllerManager._heartbeat_monitor()` cancels a worker if
+any of its registered beats go stale.
 
-```python
-class Worker(ABC):
-    def register_heartbeat(self, name: str) -> Heartbeat:
-        """Return a Heartbeat instance for one loop within this worker."""
-        hb = Heartbeat(name=f"{self.name}.{name}", timeout=self._hb_timeout)
-        self._heartbeats.append(hb)
-        return hb
-
-    def check_heartbeat(self) -> HeartbeatStatus:
-        """Worker is healthy iff every registered heartbeat is fresh."""
-        stale = [h for h in self._heartbeats if h.timed_out()]
-        return HeartbeatStatus(timed_out=bool(stale), stale=stale)
-```
-
-Inside the controller:
-
-```python
-async def _reconcile_loop(self) -> None:
-    hb = self.register_heartbeat("reconcile")
-    wake = self.manager.dispatcher.event_for(self.table_name)
-    while True:
-        hb.beat()  # unconditional — including on empty resync ticks
-        try:
-            ids = await self.list_actionable()
-            for uid in ids:
-                try:
-                    await self.reconcile(uid)
-                except Exception:
-                    logger.exception("%s reconcile %d failed",
-                                     self.name, uid)
-                    await self._record_failure(uid)
-                hb.beat()
-        except Exception:
-            logger.exception("%s resync failed", self.name)
-        try:
-            await asyncio.wait_for(wake.wait(), timeout=self.resync_interval)
-        finally:
-            wake.clear()
-```
-
-The heartbeat monitor in `manager.py` already cancels a worker whose
-heartbeat times out; that logic stays the same, it just consults the union
-across registered beats.
+See `Heartbeat`, `HeartbeatStatus`, and `Worker` in
+`first_gateway.controllers.worker`. The `Controller` reconcile loop
+registers a `"reconcile"` beat and calls `hb.beat()` before each tick
+and between each per-resource reconcile.
 
 ### Per-resource backoff and giving up
 
 We don't keep retry state in memory. Instead, we track it on the resource
-itself:
+itself. These columns are defined on the `ResourceRow` base class in
+`first_gateway.database.models` and inherited by every controller-managed
+table:
 
-```sql
-ALTER TABLE pilot_job
-    ADD COLUMN reconcile_failures   integer    NOT NULL DEFAULT 0,
-    ADD COLUMN reconcile_last_error text,
-    ADD COLUMN reconcile_retry_at   timestamptz;
--- (same columns on every controller-managed table)
-```
+| Column | Type |
+|---|---|
+| `reconcile_failures` | `integer NOT NULL DEFAULT 0` |
+| `reconcile_last_error` | `text` |
+| `reconcile_retry_at` | `timestamptz` |
 
-After each reconcile, the controller writes back:
+After each reconcile, the `Controller` base class writes back:
 
 - success: `reconcile_failures=0, retry_at=NULL`
 - failure: `reconcile_failures+=1, last_error=str(exc),
@@ -401,74 +302,32 @@ Separately, `PilotDeployment.consecutive_launch_failures` counts the number of `
   reconcile invocations. (Redis is fine as a separate source of truth for
   high-churn fields — see below.)
 
-### Controller sketch
+### Controller base class
 
-```python
-"""
-Controller: a Worker subclass that polls Postgres for actionable rows,
-calls reconcile() on each, and sleeps until either the resync interval
-elapses or the table fires a notification.
+The `Controller` class lives in `first_gateway.controllers.controller`.
 
-Subclasses implement:
-  - reconcile(uid)
-  - list_actionable() -> list[int]
-"""
+Subclasses set `resource_type` (the `ResourceRow` model class) and implement
+two abstract methods:
 
-class Controller(Worker):
-    table_name: ClassVar[str]
-    resync_interval: ClassVar[float] = 30.0
-    max_reconcile_failures: ClassVar[int] = 8
+- `list_actionable(sess) -> list[int]` — SQL query returning UIDs that need work.
+- `reconcile(sess, uid)` — one step of work on a single resource.
 
-    def __init__(self, name: str, client_state: ClientState) -> None:
-        super().__init__(name, client_state)
+The reconcile loop (`Controller.run`) registers a heartbeat, then loops:
+query actionable rows, reconcile each one, sleep until the `resync_interval`
+elapses or a `WakeupDispatcher` notification arrives. `_record_success`
+resets the backoff columns; `_record_failure` increments them with a
+single self-referential UPDATE. Prometheus
+metrics are emitted for every reconcile attempt (see
+[Observability](#observability)).
 
-    @abstractmethod
-    async def reconcile(self, sess: AsyncSession, uid: int) -> None: ...
-
-    @abstractmethod
-    async def list_actionable(self, sess: AsyncSession) -> list[int]: ...
-
-    async def run(self) -> None:
-        hb = self.register_heartbeat("reconcile")
-        wake = self.client_state.dispatcher.event_for(self.table_name)
-        while True:
-            hb.beat()
-            await self._tick(hb)
-            try:
-                await asyncio.wait_for(wake.wait(),
-                                       timeout=self.resync_interval)
-            except asyncio.TimeoutError:
-                pass
-            finally:
-                wake.clear()
-
-    async def _tick(self, hb: Heartbeat) -> None:
-        async with self.client_state.session() as sess:
-            try:
-                ids = await self.list_actionable(sess)
-            except Exception:
-                logger.exception("%s: list_actionable failed", self.name)
-                return
-        for uid in ids:
-            hb.beat()
-            await self._reconcile_one(uid)
-
-    async def _reconcile_one(self, uid: int) -> None:
-        try:
-            async with self.client_state.session() as sess:
-                await self.reconcile(sess, uid)
-                await sess.commit()
-            await self._record_success(uid)
-        except Exception as exc:
-            logger.exception("%s: reconcile %d failed", self.name, uid)
-            await self._record_failure(uid, exc)
-```
+If a reconcile detects a stale premised update, it should raise `StaleReconcile`
+to signal a non-failing stale outcome.
 
 A toy subclass (illustrative; not one of the real FIRST controllers):
 
 ```python
 class PilotJobController(Controller):
-    table_name = "pilot_job"
+    resource_type = PilotJob
 
     async def list_actionable(self, sess: AsyncSession) -> list[int]:
         # See FIRST Controllers / PilotJob for the real predicate.
@@ -574,116 +433,20 @@ contain it with two abstractions:
 
 ### 1. Per-resource `StatusStore` classes
 
-A `StatusStore` is a small typed class that owns the Redis key namespace
-for one resource type and exposes Pydantic models for the read and write
-paths:
+A `StatusStore` is a small typed generic class that owns the Redis key
+namespace for one resource type and exposes Pydantic models for the read
+and write paths. The base class lives in
+`first_gateway.database.status_store`.
+
+Subclasses set three ClassVars — `resource`, `model`, `ttl_seconds` — and
+inherit `get`, `get_many`, and `update` (CAS merge of explicitly-set
+fields). Per-resource stores (e.g. `PilotJobStatusStore`) are defined
+alongside their status models.
+
+Typical call site — only the fields you name are merged onto current
+state; other fields fall back to whatever is in Redis:
 
 ```python
-# packages/gateway/first_gateway/status/pilot_job.py
-
-class PilotJobStatus(BaseModel):
-    """High-churn status for a PilotJob. Lives in Redis, expires on TTL."""
-    last_status_check: datetime | None = None
-    manager_health: HealthEndpointStatus = HealthEndpointStatus.unknown
-    last_manager_error: str | None = None
-
-
-class PilotJobStatusStore(StatusStore[PilotJobStatus]):
-    resource = "pilot_job"
-    model = PilotJobStatus
-    ttl_seconds = 3600  # rebuilt by observers within seconds
-
-
-# packages/gateway/first_gateway/status/_base.py
-
-T = TypeVar("T", bound=BaseModel)
-
-
-class StatusCASFailed(RuntimeError):
-    """Raised when SET ... IFEQ keeps losing the race past max_cas_attempts."""
-
-
-class StatusStore(Generic[T]):
-    """Typed access to one resource type's Redis-backed status.
-
-    Status models must define a default value for every field — the store
-    materializes an empty `T()` when Redis is cold, and patches are passed
-    as partially-populated `T` instances.
-    """
-
-    resource: ClassVar[str]
-    model: ClassVar[type[BaseModel]]
-    ttl_seconds: ClassVar[int]
-    max_cas_attempts: ClassVar[int] = 5
-
-    def __init__(self, redis: Redis) -> None:
-        self._redis = redis
-
-    def _key(self, name: str) -> str:
-        return f"status:{self.resource}:{name}"
-
-    async def get(self, name: str) -> T:
-        raw = await self._redis.get(self._key(name))
-        if raw is None:
-            return self.model()  # default-valued instance
-        return self.model.model_validate_json(raw)
-
-    async def get_many(self, names: list[str]) -> dict[str, T]:
-        if not names:
-            return {}
-        raws = await self._redis.mget([self._key(n) for n in names])
-        return {
-            n: (self.model.model_validate_json(r) if r else self.model())
-            for n, r in zip(names, raws)
-        }
-
-    async def set(self, name: str, status: T) -> None:
-        """Unconditional write. Only safe when one writer owns the whole
-        status blob; otherwise use update()."""
-        await self._redis.set(
-            self._key(name),
-            status.model_dump_json(),
-            ex=self.ttl_seconds,
-        )
-
-    async def update(self, name: str, patch: T) -> T:
-        """Atomic compare-and-swap merge of the fields explicitly set on
-        `patch` onto the current value.
-        """
-        key = self._key(name)
-        explicit = {k: getattr(patch, k) for k in patch.model_fields_set}
-        for attempt in range(self.max_cas_attempts):
-            raw = await self._redis.get(key)
-            current = (
-                self.model.model_validate_json(raw)
-                if raw is not None
-                else self.model()
-            )
-            new = self.model.model_validate(current.model_dump() | explicit)
-            new_raw = new.model_dump_json()
-            if raw is None:
-                # NX is CAS-for-create: succeeds only if no key exists.
-                ok = await self._redis.set(
-                    key, new_raw, ex=self.ttl_seconds, nx=True,
-                )
-            else:
-                # ifeq=<expected> swaps only if the stored bytes still equal
-                # <expected>.
-                ok = await self._redis.set(
-                    key, new_raw, ex=self.ttl_seconds, ifeq=raw,
-                )
-            if ok:
-                return new
-            # Jittered backoff: 5ms, 10ms, 20ms, 40ms, ... ±50%
-            base = 0.005 * (2 ** attempt)
-            await asyncio.sleep(base * random.uniform(0.5, 1.5))
-        raise StatusCASFailed(
-            f"{key}: lost CAS race {self.max_cas_attempts}x"
-        )
-
-
-# Typical call site — only the fields you name are merged onto current
-# state; other fields fall back to whatever is in Redis:
 await statuses.update(
     name,
     PilotJobStatus(
@@ -754,7 +517,7 @@ async def list_pilot_jobs(
 
 Properties this gets us:
 
-- All Redis access is in `first_gateway/status/`. Nothing else touches keys.
+- All Redis status access goes through `StatusStore` subclasses. Nothing else touches `status:*` keys.
 - `PilotJobRead.status` is a strongly-typed nested model. No `dict[str,
   Any]`, no `# type: ignore`.
 - Status default-values when Redis is cold, so the API stays available.
@@ -777,7 +540,8 @@ The manager process exposes a small FastAPI on a local port (e.g.
 - `GET /api/controllers/<name>/recent` — recent reconcile log lines for one
    controller (last N records, in-memory ring buffer).
 
-Standard metrics exported by the `Controller` base class for every subclass:
+The following metrics are defined in `first_gateway.controllers.controller`
+and `first_gateway.controllers.worker`:
 
 | Metric | Type | Labels |
 |---|---|---|

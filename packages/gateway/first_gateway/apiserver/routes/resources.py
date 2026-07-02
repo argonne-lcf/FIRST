@@ -18,7 +18,7 @@ from first_common.schema.resources.read import (
 )
 
 from ...database import models as db
-from ...services.plan_apply import apply_plan, create_plan, reset_reconcile_state
+from ...services.plan_apply import apply_plan, create_plan
 from ..auth import user_can_access_group
 from ..dependencies import AdminUser, AuthUser, DbSession, IsUserAdmin
 
@@ -186,16 +186,19 @@ async def reconcile_reset(
     resource: str = Body(embed=True),
 ) -> dict[str, str]:
     """Reset reconcile backoff state for a resource and its children."""
-    dot = resource.find(".")
-    if dot < 1:
+    kind, _dot, name = resource.partition(".")
+    if not name:
         raise InvalidSpecError(
             f"Invalid resource identifier {resource!r}: expected 'Kind.name'"
         )
-    kind, name = resource[:dot], resource[dot + 1 :]
-    if kind not in db.resource_registry:
+
+    if not (ResourceClass := db.resource_registry.get(kind)):
         raise InvalidSpecError(f"Unknown resource kind {kind!r}")
+
     async with sess.begin():
-        await reset_reconcile_state(sess, kind, name)
+        row = await ResourceClass.get_by_name(sess, name)
+        await ResourceClass.reset_reconcile_state(sess, row.uid, cascade=True)
+
     return {"status": "ok", "resource": resource}
 
 
