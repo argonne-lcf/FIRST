@@ -1,8 +1,5 @@
 # Controller Framework
 
-!!! info "Implementation status"
-    Not yet implemented: the retention sweeper, the manager `/metrics` server,
-    and every controller listed under [FIRST Controllers](#first-controllers).
 
 FIRST allows admins to declaratively configure models with access controls,
 routing policies, and multi-cluster HPC deployments.  The controllers work
@@ -567,6 +564,9 @@ Before diving into the controller details, let's trace through the stages involv
 11. The APIServer reacts to the router change notification and updates its in-memory LiteLLM Router structure to proxy inference traffic to the new Replica.
 
 The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
+
+!!! info "Implementation status"
+    The Deployment Load Observer is written.
 
 ### Observer controllers
 

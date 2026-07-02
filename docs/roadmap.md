@@ -23,13 +23,16 @@ Foundations and the gateway-side building blocks are in place:
   lifecycle management.
 - Proof-of-concept with LiteLLM router forwarding direct-to-Sophia,
   including streaming and translation.
+- Controller framework as described in
+[controllers.md](architecture/controllers.md) including deployment load
+observers.
 
 
 ## TODO: MVP
 
 ### Controllers
 
-Build out the controllers architecture as described in [controllers.md](architecture/controllers.md)
+Implement the remaining controllers described in [controllers.md](architecture/controllers.md)
 
 ### Hot-swapping Routers (LiteLLM, Generic, Prometheus http_sd_config endpoint)
 
