@@ -12,6 +12,7 @@ classifiers = [
 # Directly imported dependencies for production:
 dependencies = [
     "first-common",
+    "alembic",
     "globus-compute-sdk",
     "globus-sdk",
     "fastapi",

@@ -86,4 +86,5 @@ nav:
       - Certificate Manager: packages/certmanager.md
   - Deployment:
       - Docker: deployment/docker.md
+      - Database Migrations: deployment/database.md
   - Roadmap: roadmap.md

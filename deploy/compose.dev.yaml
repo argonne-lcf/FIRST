@@ -20,8 +20,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ../tests/:/app/tests:ro
-    command: .venv/bin/python /app/tests/bootstrap_db.py
+    command: .venv/bin/alembic -c packages/gateway/first_gateway/database/alembic.ini upgrade head
     networks:
       - gateway

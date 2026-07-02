@@ -1,17 +1,20 @@
 import uuid
+from pathlib import Path
 from typing import AsyncGenerator, Generator
 
 import pytest
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.schema import CreateSchema
 
+import first_gateway.database
 from first_gateway import Settings
-from first_gateway.database.models import Base
 
 SCHEMA = "first"
+ALEMBIC_INI = Path(first_gateway.database.__file__).parent / "alembic.ini"
 
 
 def _drop_database(admin: Engine, name: str) -> None:
@@ -83,14 +86,13 @@ def template_db(_db_base_url: URL, _admin_engine: Engine) -> Generator[str, None
     with _admin_engine.connect() as conn:
         conn.execute(text(f'CREATE DATABASE "{template_name}"'))
 
-    # Build the schema inside the (not-yet-template) database.
-    builder = create_engine(_db_base_url.set(database=template_name))
-    try:
-        with builder.begin() as conn:
-            conn.execute(CreateSchema(SCHEMA, if_not_exists=True))
-            Base.metadata.create_all(conn)
-    finally:
-        builder.dispose()
+    # Run alembic migrations to build schema + triggers.
+    template_url = _db_base_url.set(database=template_name)
+    alembic_cfg = AlembicConfig(str(ALEMBIC_INI))
+    alembic_cfg.attributes["connection_url"] = template_url.render_as_string(
+        hide_password=False
+    )
+    alembic_command.upgrade(alembic_cfg, "head")
 
     # Mark as template only after the schema is in place and connections closed.
     with _admin_engine.connect() as conn:
