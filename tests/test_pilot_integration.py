@@ -33,8 +33,8 @@ from first_common.schema.types import (
     PilotLaunchSpec,
     ReplicaPhase,
 )
-from first_gateway.certmanager import gen_ca_pem, generate_client_cert
-from first_gateway.platforms.pilot_submitter import PilotSubmitter
+from first_gateway.services.certmanager import gen_ca_pem, generate_client_cert
+from first_gateway.services.pilot_submitter import PilotSubmitter
 from tests.fixtures.local_scheduler import (
     LocalSchedulerAdapter,
     make_mock_pilot_env,

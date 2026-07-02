@@ -34,11 +34,10 @@ one object that every downstream layer is given.
 | Subpackage | What it does |
 |---|---|
 | `apiserver` | FastAPI app, auth, dependency wiring, route definitions. Lives in `apiserver/routes/`. |
-| `certmanager` | Library + CLI for the mTLS PKI. The library functions (`generate_server_cert`, `gen_ca_pem`, …) are what `PilotSubmitter` calls per pilot job. See [Certificate Manager](certmanager.md). |
 | `controllers` | `Worker` base class + supervising `manager.main`. The framework is implemented; today only a stub `ClusterHealthController` is registered (see [Controller Framework](../architecture/controllers.md) for the design). |
-| `database` | SQLAlchemy ORM (`models.py`). Each `ResourceRow` subclass auto-registers into `resource_registry` so `plan_apply` can dispatch by `kind`. All relationships are `lazy="raise"`; callers must explicitly eager-load. See [Data Model](../architecture/data-model.md). |
-| `platforms` | `health.py` (cluster + endpoint health probes), `pilot_submitter.py` (renders pilot config + cert + submit script, then calls the scheduler adapter), `schedulers/globus_compute_pbs.py` (the only adapter shipped today). |
-| `services` | Cross-cutting business logic kept out of API views — currently only the declarative `plan_apply` implementation. |
+| `database` | SQLAlchemy ORM (`models.py`), Alembic migrations, and `StatusStore` (Redis-backed status cache). Each `ResourceRow` subclass auto-registers into `resource_registry` so `plan_apply` can dispatch by `kind`. All relationships are `lazy="raise"`; callers must explicitly eager-load. See [Data Model](../architecture/data-model.md). |
+| `platforms` | Adapters to specific HPC environments. `health.py` (cluster + endpoint health probes), `schedulers/globus_compute_pbs.py` (the only adapter shipped today). |
+| `services` | Cross-cutting business logic kept out of API views — `plan_apply` (declarative config), `pilot_submitter` (renders pilot config + cert + submit script, then calls the scheduler adapter), and `certmanager` (library + CLI for the mTLS PKI; see [Certificate Manager](certmanager.md)). |
 | `settings.py` | Pydantic-based settings validation; loads from env vars (and `.env.*` files in dev). Defines `ClientState`. |
 
 ## Request lifecycle (apiserver)

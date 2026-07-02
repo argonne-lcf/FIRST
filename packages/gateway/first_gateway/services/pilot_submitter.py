@@ -12,7 +12,7 @@ from first_common.schema.pilot import AddressInfo, PilotRuntimeConfig
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import PilotConfig
 
-from ..certmanager import generate_server_cert
+from .certmanager import generate_server_cert
 
 PILOT_NAME_PREFIX = "__FIRST_PILOT_"
 _READY_SUFFIX = ".ready.json"

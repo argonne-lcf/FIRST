@@ -15,8 +15,8 @@ from first_common.schema.base_scheduler import (
 from first_common.schema.pilot import AddressInfo, PilotResources
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import HealthEndpointStatus, PilotConfig
-from first_gateway.certmanager import gen_ca_pem
-from first_gateway.platforms.pilot_submitter import (
+from first_gateway.services.certmanager import gen_ca_pem
+from first_gateway.services.pilot_submitter import (
     PILOT_NAME_PREFIX,
     PilotSubmitter,
 )

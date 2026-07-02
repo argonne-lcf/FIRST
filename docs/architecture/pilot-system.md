@@ -25,7 +25,7 @@ surface is small — `submit_job`, `get_job_statuses`, `terminate_job`,
 plus `put_file`/`list_files`/`read_file` for staging the pilot's config
 + submit script onto the cluster filesystem.
 
-`PilotSubmitter` (in `first_gateway.platforms.pilot_submitter`) is the
+`PilotSubmitter` (in `first_gateway.services.pilot_submitter`) is the
 layer above the adapter. Per pilot-job submission it:
 
 1. Generates a fresh per-job server cert via `certmanager.generate_server_cert`.

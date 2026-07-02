@@ -67,7 +67,7 @@ into the allocation's working directory:
 Because everything except the **root CA** is rendered per-job, admins do
 not need to maintain pilot config files on the HPC cluster. Server certs
 are ephemeral and re-issued for every submission via
-`first_gateway.certmanager.generate_server_cert` (called from
+`first_gateway.services.certmanager.generate_server_cert` (called from
 `PilotSubmitter.submit`); see the [Certificate Manager](certmanager.md) docs.
 
 

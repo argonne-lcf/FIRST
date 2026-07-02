@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pilot-certmanager = "first_gateway.certmanager.cli:app"
+pilot-certmanager = "first_gateway.services.certmanager.cli:app"
 
 [tool.uv.sources]
 first-common = { workspace = true }

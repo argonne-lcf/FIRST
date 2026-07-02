@@ -6,7 +6,7 @@ from redis.asyncio import Redis
 
 from first_common.errors import StatusCASFailed
 from first_gateway import Settings
-from first_gateway.status_store import StatusStore
+from first_gateway.database.status_store import StatusStore
 
 
 class FakeStatus(BaseModel):

@@ -56,8 +56,8 @@ are derived from the CN argument (`ca.{key,crt}`, `<slug(cn)>.{key,crt}`).
 ### Programmatic use
 
 The gateway itself does **not** invoke this CLI in production. Instead,
-`first_gateway.platforms.pilot_submitter.PilotSubmitter` calls
-`first_gateway.certmanager.generate_server_cert(...)` directly at job submit
+`first_gateway.services.pilot_submitter.PilotSubmitter` calls
+`first_gateway.services.certmanager.generate_server_cert(...)` directly at job submit
 time, issuing a fresh server cert per pilot job that is rendered into the
 pilot's `PilotRuntimeConfig` YAML and staged onto the cluster. The CLI is
 the operator-facing wrapper for one-time CA bootstrap and client-cert
