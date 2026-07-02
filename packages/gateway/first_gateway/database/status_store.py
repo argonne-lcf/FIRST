@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 
 from first_common.errors import StatusCASFailed
+from first_common.schema.resources.status import DeploymentStatus
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -71,3 +72,15 @@ class StatusStore(Generic[T]):
 
     async def delete(self, name: str) -> None:
         await self._redis.delete(self._key(name))
+
+
+class PilotDeploymentStatusStore(StatusStore[DeploymentStatus]):
+    resource = "pilot_deployment"
+    model = DeploymentStatus
+    ttl_seconds = 120
+
+
+class StaticDeploymentStatusStore(StatusStore[DeploymentStatus]):
+    resource = "static_deployment"
+    model = DeploymentStatus
+    ttl_seconds = 120

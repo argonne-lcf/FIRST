@@ -18,9 +18,19 @@ from first_common.schema.resources.read import (
 )
 
 from ...database import models as db
+from ...database.status_store import (
+    PilotDeploymentStatusStore,
+    StaticDeploymentStatusStore,
+)
 from ...services.plan_apply import apply_plan, create_plan
 from ..auth import user_can_access_group
-from ..dependencies import AdminUser, AuthUser, DbSession, IsUserAdmin
+from ..dependencies import (
+    AdminUser,
+    AsyncRedis,
+    AuthUser,
+    DbSession,
+    IsUserAdmin,
+)
 
 admin_router = APIRouter(prefix="/resources")
 user_router = APIRouter(prefix="/resources")
@@ -75,32 +85,45 @@ async def list_pilot_deployments(
 
 @user_router.get("/pilot-deployments/{name:path}", response_model=PilotDeploymentDetail)
 async def get_pilot_deployment(
-    sess: DbSession, user: AuthUser, name: str, is_admin: IsUserAdmin
-) -> db.PilotDeployment:
+    sess: DbSession,
+    user: AuthUser,
+    name: str,
+    is_admin: IsUserAdmin,
+    redis: AsyncRedis,
+) -> PilotDeploymentDetail:
     """Get a single PilotDeployment with its replicas."""
     deployment = await db.PilotDeployment.get_detail(sess, name)
     if not (is_admin or user_can_access_group(user, deployment.model.access_group)):
         raise AccessDenied(f"Permission denied for PilotDeployment {name!r}.")
-    return deployment
+
+    status = await PilotDeploymentStatusStore(redis).get(name)
+    return PilotDeploymentDetail.merge(deployment, status=status)
 
 
 @user_router.get("/static-deployments", response_model=list[StaticDeployment])
 async def list_static_deployments(
-    sess: DbSession, user: AuthUser, is_admin: IsUserAdmin
-) -> list[db.StaticDeployment]:
+    sess: DbSession,
+    user: AuthUser,
+    is_admin: IsUserAdmin,
+    redis: AsyncRedis,
+) -> list[StaticDeployment]:
     """
     List StaticDeployments.  Admins see all; ordinary users see only deployments
     whose parent Model authorizes them.
     """
     if is_admin:
-        return await db.StaticDeployment.list(sess)
-
-    return [
-        dep
-        for model in await db.Model.list(sess)
-        for dep in model.static_deployments
-        if user_can_access_group(user, model.access_group)
-    ]
+        rows = await db.StaticDeployment.list(sess)
+    else:
+        rows = [
+            dep
+            for model in await db.Model.list(sess)
+            for dep in model.static_deployments
+            if user_can_access_group(user, model.access_group)
+        ]
+    status_map = await StaticDeploymentStatusStore(redis).get_many(
+        [r.name for r in rows]
+    )
+    return [StaticDeployment.merge(r, status=status_map[r.name]) for r in rows]
 
 
 @user_router.get("/clusters", response_model=list[ClusterSummary])

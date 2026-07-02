@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +15,23 @@ from ..types import (
     RouterParams,
 )
 from . import spec
+from .status import DeploymentStatus
+
+
+class _Overlay:
+    """Attribute view: overrides first, then delegate to the wrapped object."""
+
+    __slots__ = ("_obj", "_overrides")
+
+    def __init__(self, obj: Any, **overrides: Any) -> None:
+        self._obj = obj
+        self._overrides = overrides
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._overrides[name]
+        except KeyError:
+            return getattr(self._obj, name)
 
 
 class ResourceMeta(BaseModel):
@@ -33,6 +50,13 @@ class ResourceMeta(BaseModel):
     name: str = Field(min_length=2, max_length=128)
     uid: int
     created_at: datetime
+
+    @classmethod
+    def merge(cls, obj: Any, **overrides: BaseModel) -> Self:
+        """
+        Validate `obj` with additional attributes defined in overrides.
+        """
+        return cls.model_validate(_Overlay(obj, **overrides), from_attributes=True)
 
 
 class AccessGroup(ResourceMeta, spec.AccessGroupSpec):
@@ -73,7 +97,7 @@ class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
 
     health: DeploymentHealth
     last_health_check: datetime | None = None
-    # TODO: add load averages from redis
+    status: DeploymentStatus = DeploymentStatus()
 
 
 class PilotReplica(ResourceMeta):
@@ -104,7 +128,7 @@ class PilotDeploymentDetail(PilotDeploymentSummary, spec.PilotDeploymentSpec):
     """
 
     replicas: list[PilotReplica]
-    # TODO: add load averages from redis
+    status: DeploymentStatus = DeploymentStatus()
 
 
 class ModelSummary(ResourceMeta, spec.ModelSpec):

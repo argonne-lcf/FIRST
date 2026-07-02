@@ -12,6 +12,7 @@ from first_gateway.log_config import config_logging
 from ..settings import ClientState, Settings
 from .cluster.health import ClusterHealthController
 from .lease import ManagerLease
+from .load_observer import DeploymentLoadObserver
 from .metrics_server import serve as serve_metrics
 from .retention import RetentionSweeper
 from .worker import Worker
@@ -57,6 +58,7 @@ class ControllerManager:
                 "cluster-health", self.client_state, heartbeat_timeout=20
             ),
             RetentionSweeper("retention-sweeper", self.client_state),
+            DeploymentLoadObserver("deployment-load", self.client_state),
         ]
 
     async def run(self) -> None:

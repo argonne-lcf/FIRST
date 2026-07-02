@@ -467,53 +467,9 @@ losing each other.
 
 ### 2. Composed read schemas
 
-API read schemas pull from both stores and present a unified view:
-
-```python
-# packages/common/first_common/schema/resources/read.py
-
-class PilotJobRead(BaseModel):
-    # --- From Postgres (spec + aggregated status) ---
-    name: ResourceName
-    cluster_name: ResourceName
-    phase: JobPhase
-    scheduler_job_id: str | None
-    manager_url: str | None
-    time_started: datetime | None
-    idle_since: datetime | None
-    # ...
-
-    # --- From Redis (observational, may be stale/missing) ---
-    status: PilotJobStatus = Field(default_factory=PilotJobStatus)
-
-
-async def load_pilot_job(
-    sess: AsyncSession,
-    statuses: PilotJobStatusStore,
-    name: str,
-) -> PilotJobRead:
-    job = await PilotJob.get_by_name(sess, name)
-    status = await statuses.get(name)
-    return PilotJobRead.model_validate({
-        **{c.name: getattr(job, c.name) for c in job.__table__.columns},
-        "status": status,
-    })
-
-
-async def list_pilot_jobs(
-    sess: AsyncSession,
-    statuses: PilotJobStatusStore,
-) -> list[PilotJobRead]:
-    jobs = await PilotJob.list(sess)
-    status_map = await statuses.get_many([j.name for j in jobs])
-    return [
-        PilotJobRead.model_validate({
-            **{c.name: getattr(j, c.name) for c in j.__table__.columns},
-            "status": status_map[j.name],
-        })
-        for j in jobs
-    ]
-```
+API read schemas pull from both stores and present a unified view, using the
+`ResourceMeta.merge` constructor (see for example
+`first_gateway.apiserver.routes.resources`).
 
 Properties this gets us:
 
@@ -524,8 +480,10 @@ Properties this gets us:
 - Promoting a field from Redis to Postgres (or vice versa) is a localized
   refactor: move it between the two model classes and adjust the writer.
 
-The load-average utility in the appendix is one specific `StatusStore`-style
-helper; treat it as the worked example.
+The [Load Average utility](#load-average-utility) is a worked example of
+this pattern — see `first_gateway.database.status_store` for the
+`StatusStore` subclasses and `first_common.schema.resources.status` for
+the `DeploymentStatus` model.
 
 ## Observability
 
@@ -624,18 +582,16 @@ These read external systems and write to Postgres/Redis.
 - Postgres write: `StaticDeployment.health` (only on transition).
 - Redis write: `last_health_check`.
 
-#### StaticDeployment Load Observer
-- Samples in-flight counts for each `StaticDeployment` (see
+#### Deployment Load Observer
+- A single `DeploymentLoadObserver` worker
+  (`first_gateway.controllers.load_observer`) visits both
+  `PilotDeployment` and `StaticDeployment` tables.
+- Samples in-flight counts from `AsyncInflightCounter`
+  (`first_gateway.database.inflight`) for each deployment (see
   [Load Average utility](#load-average-utility)).
 - `poll_interval = 10.0` — the 1m/5m averages assume 10s samples.
-- All writes to Redis only.
-
-#### PilotDeployment Load Observer
-- Samples in-flight counts for each `PilotDeployment` (see
-  [Load Average utility](#load-average-utility)).
-- `poll_interval = 10.0` — same cadence as the static observer; the
-  Autoscaler reads the resulting 1m/5m averages from Redis.
-- All writes to Redis only.
+- Writes load averages to Redis via `PilotDeploymentStatusStore` and
+  `StaticDeploymentStatusStore`.
 
 #### Router Config Observer
 - Watches all of: `pilot_deployment`, `static_deployment`,
@@ -944,80 +900,41 @@ piggy-backs into the same message; if after, it sends a separate one.
 
 ### Load Average Utility
 
-We measure **concurrent in-flight requests** using a Redis sorted set. Briefly,
-`ZADD key score member` is like creating a Python dictionary identified as the top-level redis `key`, and setting `dict[member] = score` with the bonus that Redis keeps the entries sorted by score under the hood, making score-range queries cheap.
-`ZCARD` gives you a quick O(1) count of members in the set. `ZREMRANGEBYSCORE` lets you evict members within a score range.
+The system measures **concurrent in-flight requests** per deployment
+using `AsyncInflightCounter`, a Redis sorted-set wrapper.  Each tracked
+request is a `ZADD` member whose score is a future expiry timestamp
+(≈ now + TTL).  Cleanup is self-healing: every read prunes entries past
+their expiry via `ZREMRANGEBYSCORE`, then returns `ZCARD` for the
+current count.
 
-- On request start: `ZADD` the request id with a score = the unix time after which a leaked entry should be pruned (≈ now + 2 min).
+- On request start: `ZADD` the request id.
 - On request completion: `ZREM` the request id.
-- On read: `ZREMRANGEBYSCORE` to evict anything past its expiry (self-cleaning against leaked/abandoned requests), then `ZCARD` for the current in-flight count.
-- **Cold-start demand counts too:** a request to an offline (scale-to-zero) model `503`s immediately, but we still `ZADD` it with the ~2-minute expiry, so demand for offline models registers and can drive a scale-up.
+- **Cold-start demand counts too:** a request to an offline
+  (scale-to-zero) model `503`s immediately, but a counter entry is still
+  added with the normal expiry, so demand registers and can drive a
+  scale-up.
 
-A controller samples the noisy signal every 10 sec and buffers the last 30 samples in memory. On each sample arrival, average the last 6 (1m) and last 30 (5m).  Write these averages back into redis keys. Then redis contains a smoothed average of 1m/5m load, live-updating every 10 seconds. We may also consider recording the peak load as the max() aggregate over the same last 1m/5m worth of samples.
+Inflight keys are namespaced by resource type to avoid collisions:
+`inflight:pilot_deployment:<name>` vs `inflight:static_deployment:<name>`.
 
-Finally, we don't want to store this data that changes every 10 seconds in Postgres. It's fine for it to be blown away when Redis restarts; it re-populates quickly.
+`DeploymentLoadObserver` samples the noisy per-deployment signal every
+10 seconds and buffers the last 30 samples in memory per deployment.  On
+each sample it computes:
 
-API views of model deployments should read this load information out of Redis
-via the deployment's `StatusStore` (see
-[Hybrid Postgres+Redis Status](#hybrid-postgresredis-status)), combine it with
-the Postgres data, and return the combined Pydantic Read objects to clients.
+| Metric | Window |
+|---|---|
+| `load_avg_1m` | mean of last 6 samples (≈ 1 min) |
+| `load_avg_5m` | mean of last 30 samples (≈ 5 min) |
+| `load_max_1m` | max of last 6 samples |
+| `load_max_5m` | max of last 30 samples |
 
-```python
-import contextlib
-import uuid
-from typing import AsyncIterator
+These are written to Redis via `PilotDeploymentStatusStore` /
+`StaticDeploymentStatusStore` (both `StatusStore[DeploymentStatus]`).
+None of this touches Postgres — it's fine for it to be blown away when
+Redis restarts; it re-populates within 5 minutes.
 
-import redis.asyncio as redis
-
-
-_START_SCRIPT = """
-local key = KEYS[1]
-local request_id = ARGV[1]
-local ttl = tonumber(ARGV[2])
-
-local now = tonumber(redis.call('TIME')[1])
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
-redis.call('ZADD', key, now + ttl, request_id)
-redis.call('EXPIRE', key, ttl * 2)
-return redis.call('ZCARD', key)
-"""
-
-_READ_SCRIPT = """
-local key = KEYS[1]
-local now = tonumber(redis.call('TIME')[1])
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
-return redis.call('ZCARD', key)
-"""
-
-
-class AsyncInflightCounter:
-    def __init__(self, client: redis.Redis, max_request_seconds: int = 60):
-        self.client = client
-        self.ttl = max_request_seconds
-        self._start = client.register_script(_START_SCRIPT)
-        self._read = client.register_script(_READ_SCRIPT)
-
-    def _zkey(self, key: str) -> str:
-        return f"inflight:{key}"
-
-    @contextlib.asynccontextmanager
-    async def track(self, key: str) -> AsyncIterator[int]:
-        request_id = uuid.uuid4().hex
-        zkey = self._zkey(key)
-        count = await self._start(keys=[zkey], args=[request_id, self.ttl])
-        try:
-            yield int(count)
-        finally:
-            await self.client.zrem(zkey, request_id)
-
-    async def count(self, key: str) -> int:
-        return int(await self._read(keys=[self._zkey(key)]))
-
-counter = AsyncInflightCounter(r, max_request_seconds=30)
-
-# In an async handler:
-async with counter.track(f"GET:/items:{api_key}") as n_inflight:
-    if n_inflight > 100:
-        raise TooManyInflightError()
-    return await do_work()
-```
+API routes read load averages from the deployment `StatusStore` and
+merge them onto the Pydantic read model via the `ResourceMeta.merge` helper.
+`first_gateway.apiserver.routes.resources`.
+[Hybrid Postgres+Redis Status](#hybrid-postgresredis-status) for the
+general pattern.
