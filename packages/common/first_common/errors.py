@@ -84,3 +84,9 @@ class BadPilotRequest(FirstError):
 class ReplicaAlreadyPlaced(FirstError):
     status_code = HTTPStatus.CONFLICT
     code: str = "replica_already_placed"
+
+
+class StatusCASFailed(FirstError):
+    """Raised when CAS keeps losing the race past max_cas_attempts."""
+
+    code: str = "status_cas_failed"
