@@ -9,7 +9,9 @@ from first_common.schema.endpoints.openai import (
     OpenAIResponsesPayload,
 )
 
-from ...dependencies import AuthUser
+from ....services.orchestration import get_backend
+from ....services.submit_inference import submit_inference
+from ...dependencies import AdmissionControllerDep, AuthUser
 from .dependencies import AuthorizedModel
 
 router = APIRouter(prefix="/federated/v1")
@@ -17,20 +19,32 @@ router = APIRouter(prefix="/federated/v1")
 
 @router.post("/chat/completions", response_model=None)
 async def chat_completions(
-    user: AuthUser, payload: OpenAIChatCompletionsPayload, model: AuthorizedModel
+    user: AuthUser,
+    payload: OpenAIChatCompletionsPayload,
+    model: AuthorizedModel,
+    admission_controler: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    raise NotImplementedError("Not implemented yet.")
+    backend = await get_backend(user, model, admission_controler)
+    return await submit_inference(backend, payload)
 
 
 @router.post("/responses", response_model=None)
 async def responses(
-    user: AuthUser, payload: OpenAIResponsesPayload, model: AuthorizedModel
+    user: AuthUser,
+    payload: OpenAIResponsesPayload,
+    model: AuthorizedModel,
+    admission_controler: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    raise NotImplementedError("Not implemented yet.")
+    backend = await get_backend(user, model, admission_controler)
+    return await submit_inference(backend, payload)
 
 
 @router.post("/embeddings", response_model=None)
 async def embeddings(
-    user: AuthUser, payload: OpenAIEmbeddingsPayload, model: AuthorizedModel
+    user: AuthUser,
+    payload: OpenAIEmbeddingsPayload,
+    model: AuthorizedModel,
+    admission_controler: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    raise NotImplementedError("Not implemented yet.")
+    backend = await get_backend(user, model, admission_controler)
+    return await submit_inference(backend, payload)

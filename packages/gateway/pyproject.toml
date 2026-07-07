@@ -29,6 +29,7 @@ dependencies = [
     "uvicorn[standard]",
     "pyzstd",
     "SQLAlchemy[asyncio]",
+    "numpy",
 ]
 
 [project.scripts]
