@@ -1,0 +1,89 @@
+from functools import cached_property
+from typing import AsyncIterator, Literal, Self
+
+from pydantic import BaseModel
+from redis.asyncio import Redis
+
+from first_common.schema.types import OverloadPolicy, RouterParams, UsagePolicy
+
+from .keys import CONFIG_CHANNEL, Keys
+
+
+class ReplicaConfig(BaseModel):
+    uid: int
+    model_url: str
+    backend_model_name: str
+    api_key: str | None
+
+
+class DeploymentConfig(BaseModel):
+    kind: Literal["pilot", "static"]
+    name: str
+    router_params: RouterParams
+    prometheus_metrics_path: str | None
+    prometheus_scrape_interval_sec: int
+    replicas: list[ReplicaConfig]
+
+
+class ModelConfig(BaseModel):
+    name: str
+    aliases: list[str]
+    allowed_groups: list[str]
+    allowed_domains: list[str]
+    supported_endpoints: list[str]
+    usage_limits: UsagePolicy
+    overload: OverloadPolicy
+    deployments: list[DeploymentConfig]
+
+
+class RouterConfig(BaseModel):
+    """
+    The contract between the control plane and data plane.
+
+    The Control Plane is the sole writer of the RouterConfig: it coalesces
+    information about all model instances that are running and routeable.
+
+    The apiserver is the sole reader of the RouterConfig: it uses this
+    live-updating configuration snapshot to route incoming traffic to model backends.
+    """
+
+    version: int = 0
+    models: list[ModelConfig] = []
+
+    @cached_property
+    def models_by_name(self) -> dict[str, ModelConfig]:
+        return {model.name: model for model in self.models}
+
+    @cached_property
+    def models_by_alias(self) -> dict[str, ModelConfig]:
+        return {alias: model for model in self.models for alias in model.aliases}
+
+    @classmethod
+    async def load(cls, client: Redis) -> Self:
+        raw = await client.get(Keys.config())
+        return cls.model_validate_json(raw) if raw else cls()
+
+    async def publish(self, client: Redis) -> int:
+        """Atomically swap the blob (version bumped) and notify subscribers.
+
+        A plain SET of the whole document is the atomicity mechanism: readers
+        can never observe a torn config.  Callers should coalesce membership
+        churn (1-2 s debounce) rather than publish per event.
+        """
+        self.version += 1
+        await client.set(Keys.config(), self.model_dump_json())
+        await client.publish(CONFIG_CHANNEL, str(self.version))
+        return self.version
+
+    @classmethod
+    async def subscribe(cls, client: Redis) -> AsyncIterator[Self]:
+        """Yield fresh configs as versions are announced (poll fallback is the
+        caller's job).  Convenience for the snapshot manager."""
+        pubsub = client.pubsub()
+        await pubsub.subscribe(CONFIG_CHANNEL)
+        async for msg in pubsub.listen():
+            if msg.get("type") != "message":
+                continue
+            cfg = await cls.load(client)
+            if cfg is not None:
+                yield cfg
