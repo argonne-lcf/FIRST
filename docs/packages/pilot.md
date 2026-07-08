@@ -99,7 +99,7 @@ the same GPUs or port.
 
 Each `Replica` owns the model subprocess (launched as a process group
 via `start_new_session=True`) and a daemon thread that polls
-`http://127.0.0.1:<port><health_path>` every 0.4 s. Phase transitions:
+`http://127.0.0.1:<port>/<health_check.health_url path>` every 0.4 s. State transitions:
 `launching → ready` on first healthy hit (or `start_timeout` after
 `max_startup_sec`), `ready → unhealthy` after 10 consecutive failed
 checks, recovery back to `ready` on success, and `error` if the process

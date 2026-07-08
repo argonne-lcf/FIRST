@@ -428,24 +428,8 @@ We split state across two stores:
 The danger is Redis access scattered ad-hoc throughout the codebase. We
 contain it with two abstractions:
 
-### 1. Per-resource `StatusStore` classes
-
-TODO: Rewrite (removed StatusStore; was too restricting in Redis access patterns)
-
-### 2. Composed read schemas
-
-API read schemas pull from both stores and present a unified view, using the
-`ResourceMeta.merge` constructor (see for example
-`first_gateway.apiserver.routes.resources`).
-
-Properties this gets us:
-
-- All Redis status access goes through `StatusStore` subclasses. Nothing else touches `status:*` keys.
-- `PilotJobRead.status` is a strongly-typed nested model. No `dict[str,
-  Any]`, no `# type: ignore`.
-- Status default-values when Redis is cold, so the API stays available.
-- Promoting a field from Redis to Postgres (or vice versa) is a localized
-  refactor: move it between the two model classes and adjust the writer.
+All health and state fields are stored directly in Postgres. API read
+schemas map directly from the ORM models.
 
 ## Observability
 
@@ -531,32 +515,21 @@ Before diving into the controller details, let's trace through the stages involv
 The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
 
 !!! info "Implementation status"
-    The Deployment Load Observer is written.
+    The Cluster Health Observer and Static Health Observer are written.
 
 ### Observer controllers
 
-These read external systems and write to Postgres/Redis.
+These read external systems and write to Postgres.
 
-#### Cluster Status Observer
-- Polls each `Cluster`'s configured health endpoint.
-- Postgres write: `Cluster.status` (only on transition).
-- Redis write: `last_status_check` via `ClusterStatusStore`.
+#### Cluster Health Observer
+- Polls each `Cluster`'s configured `health_check` endpoint via
+  `perform_health_check`.
+- Postgres write: `Cluster.health` (only on transition).
 
 #### StaticDeployment Health Observer
-- Polls health endpoint for each `StaticDeployment`.
+- Polls `health_check` endpoint for each `StaticDeployment` via
+  `perform_health_check`.
 - Postgres write: `StaticDeployment.health` (only on transition).
-- Redis write: `last_health_check`.
-
-#### Deployment Load Observer
-- A single `DeploymentLoadObserver` worker
-  (`first_gateway.controllers.load_observer`) visits both
-  `PilotDeployment` and `StaticDeployment` tables.
-- Samples in-flight counts from `AsyncInflightCounter`
-  (`first_gateway.database.inflight`) for each deployment (see
-  [Load Average utility](#load-average-utility)).
-- `poll_interval = 10.0` — the 1m/5m averages assume 10s samples.
-- Writes load averages to Redis via `PilotDeploymentStatusStore` and
-  `StaticDeploymentStatusStore`.
 
 #### Router Config Observer
 - Interface to [data plane](request-routing.md): the router config is

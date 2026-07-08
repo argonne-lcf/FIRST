@@ -41,15 +41,14 @@ def upgrade() -> None:
     )
     op.create_table(
         "cluster",
-        sa.Column("status_method", sa.String(), nullable=False),
         sa.Column(
-            "status_kwargs", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+            "health_check", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
         sa.Column("maintenance_notice", sa.String(), nullable=True),
         sa.Column(
             "pilot_system", postgresql.JSONB(astext_type=sa.Text()), nullable=True
         ),
-        sa.Column("status", sa.String(), nullable=False),
+        sa.Column("health", sa.String(), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
@@ -172,12 +171,6 @@ def upgrade() -> None:
         sa.Column(
             "router_params", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
-        sa.Column("health_check_method", sa.String(), nullable=False),
-        sa.Column(
-            "health_check_kwargs",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-        ),
         sa.Column("prometheus_metrics_path", sa.String(), nullable=True),
         sa.Column("prometheus_scrape_interval_sec", sa.Integer(), nullable=False),
         sa.Column(
@@ -189,8 +182,7 @@ def upgrade() -> None:
             "launch_spec", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
         sa.Column("desired_replicas", sa.Integer(), nullable=False),
-        sa.Column("health", sa.String(), nullable=False),
-        sa.Column("last_health_check", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("state", sa.String(), nullable=False),
         sa.Column("consecutive_launch_failures", sa.Integer(), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
@@ -239,11 +231,8 @@ def upgrade() -> None:
         sa.Column(
             "router_params", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
-        sa.Column("health_check_method", sa.String(), nullable=False),
         sa.Column(
-            "health_check_kwargs",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
+            "health_check", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
         sa.Column("prometheus_metrics_path", sa.String(), nullable=True),
         sa.Column("prometheus_scrape_interval_sec", sa.Integer(), nullable=False),
@@ -296,7 +285,6 @@ def upgrade() -> None:
         sa.Column("observed_served_name", sa.String(), nullable=True),
         sa.Column("state", sa.String(), nullable=False),
         sa.Column("state_message", sa.String(), nullable=False),
-        sa.Column("last_health_check", sa.DateTime(timezone=True), nullable=True),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(

@@ -23,15 +23,16 @@ from tempfile import TemporaryDirectory
 import httpx
 import pytest
 
-from first_common.schema.base_scheduler import JobPhase
+from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.pilot import AddressInfo, PilotJobStatus, PilotResources
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import (
     GpuClaim,
-    HealthEndpointStatus,
+    HealthCheckParams,
+    HealthCheckResult,
     PilotConfig,
     PilotLaunchSpec,
-    ReplicaPhase,
+    ReplicaState,
 )
 from first_gateway.services.certmanager import gen_ca_pem, generate_client_cert
 from first_gateway.services.pilot_submitter import PilotSubmitter
@@ -172,9 +173,9 @@ def _make_pilot_job(name: str) -> PilotJob:
         created_at=datetime.now(timezone.utc),
         scheduler_job_id="",
         cluster_name="testcluster",
-        phase=JobPhase.pending_submit,
+        scheduler_state=SchedulerJobState.pending_submit,
         manager_url="",
-        manager_health=HealthEndpointStatus.unknown,
+        manager_health=HealthCheckResult.unknown,
         resources=PilotResources(hosts=[]),
         assigned_replicas=[],
         walltime_min=60,
@@ -217,9 +218,9 @@ async def _submit_and_wait_ready(
 
     # Sees QUEUED before the pilot writes its readyfile, RUNNING after.
     statuses = await submitter.get_statuses()
-    assert [s.state for s in statuses] == [JobPhase.queued] or [
+    assert [s.state for s in statuses] == [SchedulerJobState.queued] or [
         s.state for s in statuses
-    ] == [JobPhase.running]
+    ] == [SchedulerJobState.running]
 
     async def _ready() -> bool:
         return name in await submitter.list_ready_endpoints()
@@ -233,7 +234,7 @@ async def _submit_and_wait_ready(
         raise AssertionError(f"pilot {name} never wrote its readyfile")
 
     statuses = await submitter.get_statuses()
-    assert statuses[0].state == JobPhase.running
+    assert statuses[0].state == SchedulerJobState.running
 
     return await submitter.get_endpoint(name)
 
@@ -289,7 +290,7 @@ async def test_replica_lifecycle(
                 env={},
                 serve_script_template=_MOCK_REPLICA_SCRIPT,
                 max_startup_sec=20,
-                health_path="/health",
+                health_check=HealthCheckParams(health_url="http://localhost/health"),
             ).model_dump(mode="json"),
             "resources": [
                 GpuClaim(
@@ -303,7 +304,7 @@ async def test_replica_lifecycle(
         async def _ready() -> bool:
             s = PilotJobStatus.model_validate((await client.get("/status")).json())
             return any(
-                rep.name == "r0" and rep.phase == ReplicaPhase.ready
+                rep.name == "r0" and rep.state == ReplicaState.ready
                 for rep in s.replicas
             )
 
@@ -322,7 +323,7 @@ async def test_replica_lifecycle(
 
         r = await client.get("/status")
         assert r.status_code == 200, r.text
-        assert "Replica r0 ready" in r.json()["replicas"][0]["status_info"]
+        assert "Replica r0 ready" in r.json()["replicas"][0]["state_message"]
 
         stop = await client.post("/stop-replica/r0")
         assert stop.status_code == 200

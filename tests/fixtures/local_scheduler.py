@@ -18,11 +18,11 @@ from typing import IO, Any, Self
 import yaml
 
 from first_common.schema.base_scheduler import (
-    JobPhase,
     JobStatusInfo,
     JobSubmitPayload,
     JobSubmitResult,
     SchedulerAdapter,
+    SchedulerJobState,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,12 +41,12 @@ class _TrackedJob:
     readyfile: Path
     submitted_at: datetime
 
-    def phase(self) -> JobPhase:
+    def state(self) -> SchedulerJobState:
         if self.proc.poll() is not None:
-            return JobPhase.gone
+            return SchedulerJobState.gone
         if self.readyfile.exists():
-            return JobPhase.running
-        return JobPhase.queued
+            return SchedulerJobState.running
+        return SchedulerJobState.queued
 
     def terminate(self) -> None:
         if self.proc.poll() is None:
@@ -113,7 +113,7 @@ class LocalSchedulerAdapter(SchedulerAdapter):
             JobStatusInfo(
                 id=str(t.proc.pid),
                 name=name,
-                state=t.phase(),
+                state=t.state(),
                 created_at=t.submitted_at,
                 started_at=t.submitted_at,
                 walltime_minutes=t.payload.walltime_min,

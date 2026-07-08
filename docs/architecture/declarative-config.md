@@ -148,11 +148,6 @@ spec:
       - [10.0, 2]
       - [20.0, 3]
 
-  health_check_method: first_gateway.platforms.health.check_health_endpoint
-  health_check_kwargs:
-    timeout: 10
-    health_path: "/health"
-
   prometheus_metrics_path: "/metrics"
   prometheus_scrape_interval_sec: 30
 
@@ -165,9 +160,9 @@ spec:
     weights_path: /eagle/inference_service/model_weights/google/gemma-4-31B-it
     weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it
 
-    log_dir: /eagle/inference-service/logs/
     max_startup_sec: 500
-    health_path: /health
+    health_check:
+      health_url: "http://localhost/health"
 
     env:
       HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"

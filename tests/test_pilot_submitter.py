@@ -6,15 +6,15 @@ import pytest
 import yaml
 
 from first_common.schema.base_scheduler import (
-    JobPhase,
     JobStatusInfo,
     JobSubmitPayload,
     JobSubmitResult,
     SchedulerAdapter,
+    SchedulerJobState,
 )
 from first_common.schema.pilot import AddressInfo, PilotResources
 from first_common.schema.resources.read import PilotJob
-from first_common.schema.types import HealthEndpointStatus, PilotConfig
+from first_common.schema.types import HealthCheckResult, PilotConfig
 from first_gateway.services.certmanager import gen_ca_pem
 from first_gateway.services.pilot_submitter import (
     PILOT_NAME_PREFIX,
@@ -91,9 +91,9 @@ def _make_pilot_job(name: str) -> PilotJob:
         created_at=datetime.now(timezone.utc),
         scheduler_job_id="",
         cluster_name="testcluster",
-        phase=JobPhase.pending_submit,
+        scheduler_state=SchedulerJobState.pending_submit,
         manager_url="",
-        manager_health=HealthEndpointStatus.unknown,
+        manager_health=HealthCheckResult.unknown,
         resources=PilotResources(hosts=[]),
         assigned_replicas=[],
         walltime_min=120,
@@ -156,7 +156,7 @@ async def test_get_statuses_filters_by_prefix(
         JobStatusInfo(
             id="1",
             name=f"{PILOT_NAME_PREFIX}mine",
-            state=JobPhase.running,
+            state=SchedulerJobState.running,
             created_at=now,
             started_at=now,
             walltime_minutes=60,
@@ -164,7 +164,7 @@ async def test_get_statuses_filters_by_prefix(
         JobStatusInfo(
             id="2",
             name="someone-else",
-            state=JobPhase.running,
+            state=SchedulerJobState.running,
             created_at=now,
             started_at=now,
             walltime_minutes=60,

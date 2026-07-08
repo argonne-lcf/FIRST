@@ -1,7 +1,7 @@
-"""Tests for the ClusterStatusObserver worker."""
+"""Tests for the ClusterHealthObserver worker."""
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -9,31 +9,10 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from first_common.schema.types import ClusterStatus
+from first_common.schema.types import HealthCheckResult
 from first_gateway import Settings
-from first_gateway.controllers.cluster_status_observer import ClusterStatusObserver
+from first_gateway.controllers.cluster_health_observer import ClusterHealthObserver
 from first_gateway.database.models import Cluster
-from first_gateway.database.status_store import ClusterStatusStore
-
-# --- Importable status_method callables used by the seeded specs -------------
-
-_CALLS: list[dict[str, object]] = []
-
-
-async def _status_up(client: AsyncClient, **kwargs: object) -> ClusterStatus:
-    _CALLS.append({"client": client, **kwargs})
-    return ClusterStatus.up
-
-
-async def _status_down(client: AsyncClient, **kwargs: object) -> ClusterStatus:
-    return ClusterStatus.down
-
-
-async def _status_boom(client: AsyncClient, **kwargs: object) -> ClusterStatus:
-    raise RuntimeError("status endpoint unreachable")
-
-
-_HERE = "tests.test_cluster_status_observer"
 
 
 @pytest.fixture
@@ -50,51 +29,46 @@ async def redis():  # type: ignore[no-untyped-def]
 def _make_client_state(
     db: async_sessionmaker[AsyncSession],
     redis: Redis,
-) -> MagicMock:
-    cs = MagicMock()
+) -> AsyncMock:
+    cs = AsyncMock()
     cs.db_sessionmaker = db
     cs.redis = redis
-    cs.httpx_client = MagicMock(spec=AsyncClient)
+    cs.httpx_client = AsyncMock(spec=AsyncClient)
     return cs
 
 
-async def _run_once(observer: ClusterStatusObserver, store: ClusterStatusStore) -> None:
-    await observer._poll(store)
+async def _run_once(observer: ClusterHealthObserver) -> None:
+    await observer._poll()
 
 
-async def test_writes_status_transition_and_timestamp(
+async def test_writes_health_transition(
     db: async_sessionmaker[AsyncSession],
     redis: Redis,
 ) -> None:
-    _CALLS.clear()
     async with db.begin() as sess:
         sess.add(
             Cluster(
                 name="cl-up",
-                status_method=f"{_HERE}._status_up",
-                status_kwargs={"status_url": "http://x", "timeout": 5},
-                status=ClusterStatus.unknown.value,
+                health_check={"health_url": "http://x/health"},
+                health=HealthCheckResult.unknown.value,
             )
         )
 
     cs = _make_client_state(db, redis)
-    observer = ClusterStatusObserver("cluster-status", cs)
-    store = ClusterStatusStore(redis)
-    await _run_once(observer, store)
+    observer = ClusterHealthObserver("cluster-health", cs)
+    with patch(
+        "first_gateway.controllers.cluster_health_observer.perform_health_check",
+        new_callable=AsyncMock,
+        return_value=HealthCheckResult.healthy,
+    ):
+        await _run_once(observer)
 
     async with db() as sess:
         cluster = (await sess.scalars(select(Cluster))).one()
-    assert cluster.status == ClusterStatus.up.value
-
-    info = await store.get("cl-up")
-    assert info.last_status_check is not None
-
-    # httpx client is injected into the status method.
-    assert _CALLS and _CALLS[0]["client"] is cs.httpx_client
-    assert _CALLS[0]["status_url"] == "http://x"
+    assert cluster.health == HealthCheckResult.healthy.value
 
 
-async def test_no_write_when_status_unchanged(
+async def test_no_write_when_health_unchanged(
     db: async_sessionmaker[AsyncSession],
     redis: Redis,
 ) -> None:
@@ -102,25 +76,25 @@ async def test_no_write_when_status_unchanged(
         sess.add(
             Cluster(
                 name="cl-steady",
-                status_method=f"{_HERE}._status_down",
-                status_kwargs={},
-                status=ClusterStatus.down.value,
+                health_check={"health_url": "http://x/health"},
+                health=HealthCheckResult.unhealthy.value,
             )
         )
 
-    observer = ClusterStatusObserver("cluster-status", _make_client_state(db, redis))
-    store = ClusterStatusStore(redis)
-    await _run_once(observer, store)
+    observer = ClusterHealthObserver("cluster-health", _make_client_state(db, redis))
+    with patch(
+        "first_gateway.controllers.cluster_health_observer.perform_health_check",
+        new_callable=AsyncMock,
+        return_value=HealthCheckResult.unhealthy,
+    ):
+        await _run_once(observer)
 
     async with db() as sess:
         cluster = (await sess.scalars(select(Cluster))).one()
-    # Already down; stays down and the premised update touches nothing.
-    assert cluster.status == ClusterStatus.down.value
-    # last_status_check is still written even without a transition.
-    assert (await store.get("cl-steady")).last_status_check is not None
+    assert cluster.health == HealthCheckResult.unhealthy.value
 
 
-async def test_failed_check_leaves_status_and_skips_timestamp(
+async def test_unhealthy_check_transitions_health(
     db: async_sessionmaker[AsyncSession],
     redis: Redis,
 ) -> None:
@@ -128,28 +102,30 @@ async def test_failed_check_leaves_status_and_skips_timestamp(
         sess.add(
             Cluster(
                 name="cl-boom",
-                status_method=f"{_HERE}._status_boom",
-                status_kwargs={},
-                status=ClusterStatus.up.value,
+                health_check={"health_url": "http://x/health"},
+                health=HealthCheckResult.healthy.value,
             )
         )
 
-    observer = ClusterStatusObserver("cluster-status", _make_client_state(db, redis))
-    store = ClusterStatusStore(redis)
-    await _run_once(observer, store)
+    observer = ClusterHealthObserver("cluster-health", _make_client_state(db, redis))
+    with patch(
+        "first_gateway.controllers.cluster_health_observer.perform_health_check",
+        new_callable=AsyncMock,
+        return_value=HealthCheckResult.unhealthy,
+    ):
+        await _run_once(observer)
 
     async with db() as sess:
         cluster = (await sess.scalars(select(Cluster))).one()
-    assert cluster.status == ClusterStatus.up.value
-    assert (await store.get("cl-boom")).last_status_check is None
+    assert cluster.health == HealthCheckResult.unhealthy.value
 
 
 async def test_heartbeat_beats(
     db: async_sessionmaker[AsyncSession],
     redis: Redis,
 ) -> None:
-    observer = ClusterStatusObserver(
-        "cluster-status", _make_client_state(db, redis), heartbeat_timeout=10
+    observer = ClusterHealthObserver(
+        "cluster-health", _make_client_state(db, redis), heartbeat_timeout=10
     )
     observer.poll_interval = 0.05
 

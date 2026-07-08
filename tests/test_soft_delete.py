@@ -24,8 +24,7 @@ async def _seed_cluster(sess: AsyncSession) -> str:
     sess.add(
         Cluster(
             name="cl",
-            status_method="none",
-            status_kwargs={},
+            health_check={"health_url": ""},
         )
     )
     await sess.flush()
@@ -37,8 +36,6 @@ async def _seed_cluster(sess: AsyncSession) -> str:
             cluster_name="cl",
             model_name="mdl",
             router_params={},
-            health_check_method="none",
-            health_check_kwargs={},
             prometheus_scrape_interval_sec=30,
             min_replicas=0,
             max_replicas=1,

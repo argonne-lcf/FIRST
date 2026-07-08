@@ -31,7 +31,7 @@ def _make_client_state(
 
 async def _seed(sess: AsyncSession) -> None:
     sess.add(AccessGroup(name="ag", allowed_groups=[], allowed_domains=[]))
-    sess.add(Cluster(name="cl", status_method="none", status_kwargs={}))
+    sess.add(Cluster(name="cl", health_check={"health_url": ""}))
     await sess.flush()
     sess.add(Model(name="mdl", access_group_name="ag", supported_endpoints=["chat"]))
     await sess.flush()
@@ -41,8 +41,6 @@ async def _seed(sess: AsyncSession) -> None:
             cluster_name="cl",
             model_name="mdl",
             router_params={},
-            health_check_method="none",
-            health_check_kwargs={},
             prometheus_scrape_interval_sec=30,
             min_replicas=0,
             max_replicas=1,

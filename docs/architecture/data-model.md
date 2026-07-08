@@ -84,10 +84,9 @@ A physical grouping for deployments — a single HPC site or a logical
 group of nodes — with shared status and (optionally) a `pilot_system`
 configuration.
 
-- `status_method` (an `ImportString` pointing at a callable like
-  `first_gateway.platforms.health.get_alcf_cluster_status`) +
-  `status_kwargs`. A controller dispatches by name to refresh
-  `status` / `last_status_check`.
+- `health_check: HealthCheckParams` — URL, timeouts, expected status
+  range, and optional body/pattern for the cluster's health endpoint.
+  A controller dispatches this to refresh `health`.
 - `pilot_system: PilotConfig | None` — if set, the cluster supports
   pilot-job submissions. The `PilotConfig` carries the scheduler
   adapter import path, queue/account, workdir, NGINX path, pilot
@@ -103,12 +102,12 @@ An HPC-managed deployment of a model, hosted via the
   + env that the pilot uses to start each replica subprocess. The
   template is validated at apply time against
   `SCRIPT_TEMPLATE_VARIABLES`.
-- `router_params`, `health_check_method`, `prometheus_metrics_path` —
+- `router_params`, `prometheus_metrics_path` —
   how the deployment integrates with the router + observability.
 - Autoscaler controls: `scaling_strategy: DemandThresholdStrategy | None`,
   `min_replicas`, `max_replicas`.
-- Controller-owned Status: `desired_replicas`, `health`,
-  `last_health_check`, `consecutive_launch_failures`.
+- Controller-owned Status: `desired_replicas`, `state: DeploymentState`,
+  `consecutive_launch_failures`.
 
 ### `StaticDeployment` — admin Spec, controller Status
 
