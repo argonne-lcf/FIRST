@@ -94,13 +94,14 @@ ChatMessage = Annotated[
 ]
 
 
-class ChatCompletionRequest(BaseModelNoExtra):
+# https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+class OpenAIChatCompletionsPayload(BaseModelNoExtra):
     """
     OpenAI chat/completions spec.
     """
 
     messages: list[ChatMessage]
-    model: str
+    model: str = Field(..., min_length=1)
     audio: Any | None = None
     frequency_penalty: float | None = Field(default=None, ge=-2, le=2)
     logit_bias: Any | None = None
