@@ -105,7 +105,7 @@ An HPC-managed deployment of a model, hosted via the
   `SCRIPT_TEMPLATE_VARIABLES`.
 - `router_params`, `health_check_method`, `prometheus_metrics_path` —
   how the deployment integrates with the router + observability.
-- Autoscaler controls: `scaling_strategy: LoadThresholdStrategy | None`,
+- Autoscaler controls: `scaling_strategy: DemandThresholdStrategy | None`,
   `min_replicas`, `max_replicas`.
 - Controller-owned Status: `desired_replicas`, `health`,
   `last_health_check`, `consecutive_launch_failures`.

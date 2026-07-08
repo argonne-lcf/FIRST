@@ -140,7 +140,7 @@ spec:
   max_replicas: 3
 
   scaling_strategy:
-    strategy: LoadThresholdStrategy
+    strategy: DemandThresholdStrategy
     scale_up_interval_min: 120
     scale_down_age_min: 7200
     scaling_thresholds:

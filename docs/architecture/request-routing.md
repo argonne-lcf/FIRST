@@ -29,7 +29,8 @@ available models without backend preferences:
 /api/federated/v1/models              # OpenAI-format list (SDK compat)
 ```
 
-Users seeking to target specific deployments can provide the slug in the URL:
+Users seeking to target specific deployments can provide the deployment slug in
+the URL:
 
 ```
 /api/deployments/{slug}/v1/chat/completions

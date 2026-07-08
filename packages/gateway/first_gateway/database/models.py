@@ -234,8 +234,8 @@ class Model(ResourceRow):
     supported_endpoints: Mapped[StrArray]
 
     aliases: Mapped[StrArray] = mapped_column(default=list)
-    default_quotas: Mapped[DictJsonb] = mapped_column(default=dict)
-    quota_overrides: Mapped[DictJsonb] = mapped_column(default=dict)
+    usage_limits: Mapped[DictJsonb] = mapped_column(default=dict)
+    overload: Mapped[DictJsonb] = mapped_column(default=dict)
 
     access_group: Mapped[AccessGroup] = relationship(lazy="raise")
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(

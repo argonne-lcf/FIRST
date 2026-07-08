@@ -8,14 +8,15 @@ from pydantic import (
 
 from ..types import (
     ClusterStatus,
+    DemandThresholdStrategy,
     HealthEndpointStatus,
-    LoadThresholdStrategy,
+    OverloadPolicy,
     PilotConfig,
     PilotLaunchSpec,
-    QuotaLimits,
     ResourceName,
     RouterParams,
     SecretRef,
+    UsagePolicy,
 )
 
 
@@ -62,8 +63,8 @@ class ModelSpec(ResourceSpec):
     access_group_name: ResourceName
     supported_endpoints: list[str]
     aliases: list[str] = []
-    default_quotas: QuotaLimits = QuotaLimits()
-    quota_overrides: dict[str, QuotaLimits] = {}
+    usage_limits: UsagePolicy = UsagePolicy()
+    overload: OverloadPolicy = OverloadPolicy()
 
 
 class ClusterSpec(ResourceSpec):
@@ -130,7 +131,7 @@ class PilotDeploymentSpec(ResourceSpec):
     prometheus_metrics_path: str | None = "/metrics"
     prometheus_scrape_interval_sec: int = 15
 
-    scaling_strategy: LoadThresholdStrategy | None = None
+    scaling_strategy: DemandThresholdStrategy | None = None
     min_replicas: int = 0
     max_replicas: int = 1
 

@@ -102,11 +102,9 @@ def upgrade() -> None:
         sa.Column("supported_endpoints", sa.ARRAY(sa.Text()), nullable=False),
         sa.Column("aliases", sa.ARRAY(sa.Text()), nullable=False),
         sa.Column(
-            "default_quotas", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+            "usage_limits", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
-        sa.Column(
-            "quota_overrides", postgresql.JSONB(astext_type=sa.Text()), nullable=False
-        ),
+        sa.Column("overload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",

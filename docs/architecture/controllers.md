@@ -833,20 +833,40 @@ at any stage are recovered by the level-triggered loop.
   controllers signal intent via separate fields (`scheduled_deletion`,
   `consecutive_launch_failures`); the Autoscaler is what reads those
   and writes `desired_replicas`.
+
 - Reconcile order:
   1. If `scheduled_deletion = true`, set `desired_replicas = 0`. Done.
   2. If `consecutive_launch_failures` exceeds threshold, set
      `desired_replicas = 0`. Done.
-  3. Otherwise, if autoscaling is enabled, read 1m/5m load averages
+  3. Otherwise, if autoscaling is enabled, sample demand
      from Redis and compute target `desired_replicas` per the
-     deployment's `scaling_strategy`. Subject to a minimum interval
-     between scale-up/scale-down events stored in Redis
-     (`scaling:last_change:<deployment>`).
+     deployment's `scaling_strategy`.
   4. Otherwise (autoscaling disabled, healthy, not deleting), leave
      `desired_replicas` at the operator-set value.
 - All writes are premised on the inputs above (`scheduled_deletion`,
   `consecutive_launch_failures`, prior `desired_replicas`) so a
   concurrent operator edit through the API can't be silently clobbered.
+
+The demand threshold strategy pseudocode:
+
+```
+every 10s:
+    sample demand
+    if cold (0 replicas) and sample > 0 and immediate_cold_start:
+        scale to ladder(sample)
+        return
+
+    ewma = α * sample + (1-α) * ewma    # signal conditioning
+
+    target = ladder(ewma)
+
+    if target > current_replicas:
+        if cooldown has elapsed:
+            scale up                     # EWMA is the only gate
+    elif target < current_replicas:
+        if ewma has been below threshold for scale_down_sustain_sec:
+              scale down
+```
 
 #### Retention Sweeper
 - One small `Worker`, runs every ~5 minutes.

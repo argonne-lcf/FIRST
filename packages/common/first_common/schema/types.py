@@ -7,6 +7,7 @@ from jinja2 import Environment, TemplateSyntaxError, meta
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     GetCoreSchemaHandler,
     ImportString,
     SecretStr,
@@ -74,11 +75,22 @@ class ReplicaPhase(str, Enum):
     terminated = "terminated"  # finished tear down
 
 
-class QuotaLimits(BaseModel):
+class UsageLimits(BaseModel):
+    """
+    Usage rate limits.
+
+    Tokens and requests are metered using a GCRA (leaky bucket) algorithm to
+    enable immediate bursts with smooth refill:
+    - tpm: tokens/minute steady state usage
+    - burst_tokens: Token bucket depth (max burst usage)
+    - rpm: requests/minute steady state usage
+    - burst_requests: Request bucket depth
+    """
+
     tpm: int = 100_000
-    burst_tokens: int = 50_000
+    burst_tokens: int = 200_000
     rpm: int = 120
-    burst_requests: int = 20
+    burst_requests: int = 10
     max_user_concurrency: int = 8
 
     @property
@@ -90,14 +102,31 @@ class QuotaLimits(BaseModel):
         return self.rpm / 60.0
 
 
+class UsagePolicy(BaseModel):
+    """
+    Default usage rate limits, applied per-model x per-user.
+    Allows overriding usage limits for specific user or group IDs.
+    """
+
+    default: UsageLimits = UsageLimits()
+    overrides: dict[str, UsageLimits] = {}
+
+
+class OverloadPolicy(BaseModel):
+    short_retry_sec: int = 15  # micro-contention Retry-After base
+    retry_jitter_percent: int = 30  # server-side jitter to break retry herds
+
+
 class RouterParams(BaseModel):
     """
     Desired deployment routing configuration.
     """
 
     weight: int = 1
-    max_parallel_requests: int | None = None
-    order: int | None = None
+    max_replica_concurrency: int = 16
+    cooldown_threshold: int = 3
+    cooldown_window_sec: int = 30
+    cooldown_bench_sec: int = 60
 
 
 class PilotConfig(BaseModel):
@@ -125,22 +154,53 @@ class PilotConfig(BaseModel):
     pilot_version: str
 
 
-class LoadThresholdStrategy(BaseModel):
+class DemandEstimate(BaseModel):
+    """
+    Combines in-flight request count with an estimate of
+    rejected-but-would-be-inflight demand to produce a single demand metric.
+
+    - `reject_window_sec`: rejection rate is obtained from the rise in total
+    model rejections over this window
+    - `avg_request_duration_sec`: rejections/sec is multiplied by this duration
+    to obtain the expected number of requests that would be running if the
+    rejected traffic had been admitted.
+    """
+
+    reject_window_sec: int = 60
+    avg_request_duration_sec: int = 30
+
+    def calculate_demand(self, inflight: float, reject_rate: float) -> float:
+        return inflight + reject_rate * self.avg_request_duration_sec
+
+
+class DemandThresholdStrategy(BaseModel):
     """
     A method for automatically scaling a PilotDeployment by tracking the average
-    load (defined as number of concurrent requests) and setting the desired
-    number of replicas by a ladder of thresholds.
+    demand (in-flight requests and rejections of would-be inflight requests) and
+    setting the desired number of replicas by a ladder of thresholds.
     """
 
-    strategy: Literal["LoadThresholdStrategy"] = "LoadThresholdStrategy"
-    scale_up_interval_min: int = 2  # scale up at most once / 2 min
-    scale_down_age_min: int = 120  # a started replica lives 2 hr before scale-down
+    strategy: Literal["DemandThresholdStrategy"] = "DemandThresholdStrategy"
+    demand: DemandEstimate = DemandEstimate()
 
-    # Ordered (load_lower_bound_exclusive, num_replicas). At/below the lowest
-    # threshold, scale to min_replicas.
+    # --- Scale-up policy ---
+    # Autoscaler samples demand every ~10s.
+    # Exponentially weighted moving average demand must exceed the threshold
+    # before scaling up (ewma = alpha*sample + (1-alpha)*ewma)
+    ewma_alpha: float = Field(0.5, ge=0.01, le=1.0)
+
+    # Act immediately on first nonzero sample:
+    immediate_cold_start: bool = True
+
+    # --- Scale-down policy ---
+    # EWMA demand must be at or below the threshold for this duration before
+    # scaling down.
+    scale_down_sustain_sec: int = 2 * 60 * 60
+
+    # Ordered (demand_lower_bound_exclusive, num_replicas)
     scaling_thresholds: list[tuple[float, int]] = [
-        (0.0, 1),  # load > 0 (not idle) → 1 replica
-        (10.0, 2),  # load > 120          → 2 replicas
+        (0.0, 1),
+        (10.0, 2),
     ]
 
 
