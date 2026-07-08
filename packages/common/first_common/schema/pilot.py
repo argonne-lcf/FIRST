@@ -12,7 +12,7 @@ from typing import Self
 import yaml
 from pydantic import BaseModel, computed_field
 
-from .types import GpuClaim, PilotLaunchSpec, ReplicaPhase
+from .types import GpuClaim, PilotLaunchSpec, ReplicaState
 
 
 class ReplicaStartRequest(BaseModel):
@@ -33,9 +33,9 @@ class ReplicaInfo(BaseModel):
 
     name: str
     url: str
-    phase: ReplicaPhase
+    state: ReplicaState
     started_at: datetime
-    status_info: str
+    state_message: str
     served_model_name: str
 
 

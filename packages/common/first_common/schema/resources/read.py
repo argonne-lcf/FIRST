@@ -3,19 +3,17 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from ..base_scheduler import JobPhase
+from ..base_scheduler import SchedulerJobState
 from ..pilot import PilotResources
 from ..types import (
-    ClusterStatus,
-    DeploymentHealth,
+    DeploymentState,
     GpuClaim,
-    HealthEndpointStatus,
-    ReplicaPhase,
+    HealthCheckResult,
+    ReplicaState,
     ResourceName,
     RouterParams,
 )
 from . import spec
-from .status import ClusterStatusInfo, DeploymentStatus
 
 
 class _Overlay:
@@ -98,8 +96,7 @@ class PilotDeploymentSummary(ResourceMeta):
     router_params: RouterParams
 
     desired_replicas: int
-    health: DeploymentHealth
-    last_health_check: datetime | None = None
+    state: DeploymentState
     consecutive_launch_failures: int
 
 
@@ -110,9 +107,7 @@ class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
     """
 
     kind: Literal["StaticDeployment"] = "StaticDeployment"
-
-    health: DeploymentHealth
-    status: DeploymentStatus = DeploymentStatus()
+    health: HealthCheckResult
 
 
 class PilotReplica(ResourceMeta):
@@ -131,9 +126,8 @@ class PilotReplica(ResourceMeta):
     model_url: str | None
     observed_served_name: str
 
-    phase: ReplicaPhase
-    status_info: str
-    last_health_check: datetime | None = None
+    state: ReplicaState
+    state_message: str
     started_at: datetime | None = None
 
 
@@ -143,7 +137,6 @@ class PilotDeploymentDetail(PilotDeploymentSummary, spec.PilotDeploymentSpec):
     """
 
     replicas: list[PilotReplica]
-    status: DeploymentStatus = DeploymentStatus()
 
 
 class ModelSummary(ResourceMeta, spec.ModelSpec):
@@ -167,16 +160,16 @@ class PilotJob(ResourceMeta):
 
     Submitted using the parent cluster's `pilot_system`.
 
-    Eventually, when phase="running", the job exposes a `manager_url` which
+    Eventually, when scheduler_state="running", the job exposes a `manager_url` which
     provides the control API to place and manage Replicas.
     """
 
     kind: Literal["PilotJob"] = "PilotJob"
     scheduler_job_id: str
     cluster_name: str
-    phase: JobPhase
+    scheduler_state: SchedulerJobState
     manager_url: str | None
-    manager_health: HealthEndpointStatus
+    manager_health: HealthCheckResult
     resources: PilotResources
     assigned_replicas: list[PilotReplica]
     time_started: datetime | None = None
@@ -193,8 +186,7 @@ class ClusterSummary(ResourceMeta, spec.ClusterSpec):
     """
 
     kind: Literal["Cluster"] = "Cluster"
-    status: ClusterStatus
-    status_info: ClusterStatusInfo = ClusterStatusInfo()
+    health: HealthCheckResult
 
 
 class ClusterDetail(ClusterSummary):

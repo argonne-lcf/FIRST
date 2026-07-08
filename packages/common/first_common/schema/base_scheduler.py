@@ -39,7 +39,7 @@ class JobSubmitResult:
     scheduler_id: str
 
 
-class JobPhase(str, Enum):
+class SchedulerJobState(str, Enum):
     """
     Normalized Job State, from the HPC scheduler's point of view
     """
@@ -60,7 +60,7 @@ class JobStatusInfo:
 
     id: str
     name: str
-    state: JobPhase
+    state: SchedulerJobState
     created_at: datetime
     started_at: datetime
     walltime_minutes: int

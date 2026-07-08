@@ -18,19 +18,13 @@ def ls(ctx: typer.Context) -> None:
     table = Table(title="Clusters")
     table.add_column("Name", style="bold")
     table.add_column("UID", justify="right")
-    table.add_column("Status")
-    table.add_column("Last status check")
+    table.add_column("Health")
 
     for c in client.clusters.list():
         table.add_row(
             c.name,
             str(c.uid),
-            c.status.value,
-            (
-                c.status_info.last_status_check.isoformat()
-                if c.status_info.last_status_check
-                else "-"
-            ),
+            c.health.value,
         )
 
     console.print(table)

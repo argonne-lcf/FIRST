@@ -1,15 +1,13 @@
-from typing import Any, Awaitable, Callable, ClassVar
+from typing import Any, ClassVar
 
 from pydantic import (
     BaseModel,
     ConfigDict,
-    ImportString,
 )
 
 from ..types import (
-    ClusterStatus,
     DemandThresholdStrategy,
-    HealthEndpointStatus,
+    HealthCheckParams,
     OverloadPolicy,
     PilotConfig,
     PilotLaunchSpec,
@@ -76,9 +74,7 @@ class ClusterSpec(ResourceSpec):
     StaticDeployments where model launching is handled externally.
     """
 
-    status_method: ImportString[Callable[..., Awaitable[ClusterStatus]]]
-    status_kwargs: dict[str, Any]
-
+    health_check: HealthCheckParams
     maintenance_notice: str | None = None
     pilot_system: PilotConfig | None = None
 
@@ -101,8 +97,7 @@ class StaticDeploymentSpec(ResourceSpec):
 
     router_params: RouterParams = RouterParams()
 
-    health_check_method: ImportString[Callable[..., Awaitable[HealthEndpointStatus]]]
-    health_check_kwargs: dict[str, Any]
+    health_check: HealthCheckParams
 
     prometheus_metrics_path: str | None = "/metrics"
     prometheus_scrape_interval_sec: int = 15
@@ -124,9 +119,6 @@ class PilotDeploymentSpec(ResourceSpec):
     model_name: ResourceName
 
     router_params: RouterParams = RouterParams()
-
-    health_check_method: ImportString[Callable[..., Awaitable[HealthEndpointStatus]]]
-    health_check_kwargs: dict[str, Any]
 
     prometheus_metrics_path: str | None = "/metrics"
     prometheus_scrape_interval_sec: int = 15

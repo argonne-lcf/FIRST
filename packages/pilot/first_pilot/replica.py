@@ -5,18 +5,19 @@ import signal
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
+from httpx import Client
 from jinja2 import Environment, StrictUndefined
 
+from first_common.health import perform_health_check_sync
 from first_common.schema.types import (
     GpuClaim,
-    HealthEndpointStatus,
+    HealthCheckResult,
     PilotLaunchSpec,
-    ReplicaPhase,
+    ReplicaState,
     ScriptTemplateContext,
 )
 
@@ -109,14 +110,15 @@ class Replica:
         # start_new_session=True makes the child its own session/group leader
         self._pgid = self.proc.pid
 
-        self.phase = ReplicaPhase.launching
-        self.status_info = "Model startup script has begun."
+        self.state = ReplicaState.launching
+        self.state_message = "Model startup script has begun."
         self.started_at = datetime.now(timezone.utc)
         self._startup_deadline = time.monotonic() + self.launch_spec.max_startup_sec
 
         self.consecutive_health_ok = 0
         self.consecutive_health_fail = 0
         self._unhealthy_since: float | None = None
+        self._health_client = Client()
 
         self._teardown_lock = threading.Lock()
         self._torn_down = False
@@ -152,23 +154,24 @@ class Replica:
         env = Environment(undefined=StrictUndefined)
         return env.from_string(spec.serve_script_template).render(**context)
 
-    def _check_health(self) -> HealthEndpointStatus:
-        health_path = self.launch_spec.health_path
-        if not health_path:
+    def _check_health(self) -> HealthCheckResult:
+        health_check = self.launch_spec.health_check
+
+        if not health_check.health_url:
             # No health endpoint -> trust the process: alive == healthy.
-            return HealthEndpointStatus.healthy
+            return HealthCheckResult.healthy
 
-        url = f"http://127.0.0.1:{self.port}{health_path}"
-        try:
-            with urllib.request.urlopen(url, timeout=2) as resp:
-                if 200 <= resp.status < 300:
-                    return HealthEndpointStatus.healthy
-                return HealthEndpointStatus.unhealthy
-        except (urllib.error.URLError, OSError, TimeoutError):
-            return HealthEndpointStatus.unknown
+        health_path = urlparse(health_check.health_url).path
+        health_url = f"http://127.0.0.1:{self.port}/{health_path.lstrip('/')}"
 
-    def _record_health(self, health: HealthEndpointStatus) -> None:
-        if health == HealthEndpointStatus.healthy:
+        return perform_health_check_sync(
+            self._health_client,
+            health_url,
+            **health_check.model_dump(exclude={"health_url"}),
+        )
+
+    def _record_health(self, health: HealthCheckResult) -> None:
+        if health == HealthCheckResult.healthy:
             self.consecutive_health_ok += 1
             self.consecutive_health_fail = 0
         else:
@@ -189,7 +192,7 @@ class Replica:
                 logger.exception(
                     "uncaught exception in monitor thread for %s", self.name
                 )
-                self.phase = ReplicaPhase.error
+                self.state = ReplicaState.error
                 self._shutdown()
                 return
 
@@ -201,78 +204,78 @@ class Replica:
 
         health = self._check_health()
         self._record_health(health)
-        self._advance_phase(health)
+        self._advance_state(health)
 
     def _handle_process_exit(self, rc: int) -> None:
-        if self.phase in (ReplicaPhase.terminating, ReplicaPhase.terminated):
-            self.phase = ReplicaPhase.terminated
-            self.status_info = "Model replica has terminated."
+        if self.state in (ReplicaState.terminating, ReplicaState.terminated):
+            self.state = ReplicaState.terminated
+            self.state_message = "Model replica has terminated."
         else:
             log = self.get_logs(num_lines=10)
             msg = (
                 f"Model replica {self.name} exited unexpectedly with code {rc}:\n{log}"
             )
             logger.error(msg)
-            self.phase = ReplicaPhase.error
-            self.status_info = msg
+            self.state = ReplicaState.error
+            self.state_message = msg
 
         # The leader is gone but may have left GPU-pinned children behind:
         self._shutdown()
 
-    def _advance_phase(self, health: HealthEndpointStatus) -> None:
-        healthy = health == HealthEndpointStatus.healthy
+    def _advance_state(self, health: HealthCheckResult) -> None:
+        healthy = health == HealthCheckResult.healthy
 
-        if self.phase == ReplicaPhase.launching:
+        if self.state == ReplicaState.launching:
             if healthy:
                 elapsed = (datetime.now(timezone.utc) - self.started_at).total_seconds()
                 logger.info(
                     msg := f"Replica {self.name} ready after {elapsed:.1f} seconds"
                 )
-                self.status_info = msg
-                self.phase = ReplicaPhase.ready
+                self.state_message = msg
+                self.state = ReplicaState.ready
             elif time.monotonic() > self._startup_deadline:
                 log = self.get_logs(num_lines=10)
                 msg = f"Replica {self.name} did not become healthy within spec max_startup_sec; tearing down:\n{log}"
                 logger.error(msg)
-                self.status_info = msg
-                self.phase = ReplicaPhase.start_timeout
+                self.state_message = msg
+                self.state = ReplicaState.start_timeout
                 self._shutdown()
 
-        elif self.phase == ReplicaPhase.ready:
+        elif self.state == ReplicaState.ready:
             if not healthy and self.consecutive_health_fail >= self._HEALTH_DEBOUNCE:
                 logger.warning(msg := f"replica {self.name} became unhealthy")
-                self.status_info = msg
-                self.phase = ReplicaPhase.unhealthy
+                self.state_message = msg
+                self.state = ReplicaState.unhealthy
                 self._unhealthy_since = time.monotonic()
 
-        elif self.phase == ReplicaPhase.unhealthy:
+        elif self.state == ReplicaState.unhealthy:
             if healthy and self.consecutive_health_ok >= self._HEALTH_DEBOUNCE:
                 logger.info(msg := f"replica {self.name} recovered")
-                self.status_info = msg
-                self.phase = ReplicaPhase.ready
+                self.state_message = msg
+                self.state = ReplicaState.ready
                 self._unhealthy_since = None
             elif self._unhealthy_for_too_long():
                 log = self.get_logs(num_lines=10)
                 msg = f"replica {self.name} unhealthy for over max_startup_sec; tearing down:\n{log}"
                 logger.error(msg)
-                self.status_info = msg
-                self.phase = ReplicaPhase.error
+                self.state_message = msg
+                self.state = ReplicaState.error
                 self._shutdown()
 
     def stop(self, timeout: float = 10.0) -> None:
         """
         Terminate the process group, wait for the monitor to exit, then record
-        the terminal phase.
+        the terminal state.
         """
         logger.info("stopping replica %s", self.name)
-        self.phase = ReplicaPhase.terminating
+        self.state = ReplicaState.terminating
         self._shutdown()
 
-        # Join the monitor so nothing writes self.phase after this point
+        # Join the monitor so nothing writes self.state after this point
         if self._monitor.is_alive() and threading.current_thread() is not self._monitor:
             self._monitor.join(timeout=timeout + 5)
 
-        self.phase = ReplicaPhase.terminated
+        self.state = ReplicaState.terminated
 
     def _shutdown(self) -> None:
         """

@@ -19,12 +19,11 @@ from sqlalchemy.orm import (
 
 from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
-from first_common.schema.base_scheduler import JobPhase
+from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.types import (
-    ClusterStatus,
-    DeploymentHealth,
-    HealthEndpointStatus,
-    ReplicaPhase,
+    DeploymentState,
+    HealthCheckResult,
+    ReplicaState,
     ResourceName,
 )
 
@@ -258,12 +257,11 @@ class Model(ResourceRow):
 class Cluster(ResourceRow):
     __tablename__ = "cluster"
 
-    status_method: Mapped[str]
-    status_kwargs: Mapped[DictJsonb]
+    health_check: Mapped[DictJsonb]
     maintenance_notice: Mapped[str | None]
     pilot_system: Mapped[DictJsonbOrNone]
 
-    status: Mapped[str] = mapped_column(default=ClusterStatus.unknown.value)
+    health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
 
     pilot_jobs: Mapped[list["PilotJob"]] = relationship(
         back_populates="cluster", cascade="all, delete-orphan", lazy="raise"
@@ -302,12 +300,11 @@ class StaticDeployment(ResourceRow):
 
     router_params: Mapped[DictJsonb]
 
-    health_check_method: Mapped[str]
-    health_check_kwargs: Mapped[DictJsonb]
+    health_check: Mapped[DictJsonb]
+    health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
 
     prometheus_metrics_path: Mapped[str | None]
     prometheus_scrape_interval_sec: Mapped[int]
-    health: Mapped[str] = mapped_column(default=DeploymentHealth.offline.value)
 
     cluster: Mapped[Cluster] = relationship(
         back_populates="static_deployments", lazy="raise"
@@ -324,9 +321,6 @@ class PilotDeployment(ResourceRow):
     model_name: Mapped[str] = mapped_column(sa.ForeignKey("model.name"), index=True)
     router_params: Mapped[DictJsonb]
 
-    health_check_method: Mapped[str]
-    health_check_kwargs: Mapped[DictJsonb]
-
     prometheus_metrics_path: Mapped[str | None]
     prometheus_scrape_interval_sec: Mapped[int]
 
@@ -337,8 +331,7 @@ class PilotDeployment(ResourceRow):
     launch_spec: Mapped[DictJsonb]
 
     desired_replicas: Mapped[int] = mapped_column(default=0)
-    health: Mapped[str] = mapped_column(default=DeploymentHealth.offline.value)
-    last_health_check: Mapped[DateTimeOrNone]
+    state: Mapped[str] = mapped_column(default=DeploymentState.offline.value)
     consecutive_launch_failures: Mapped[int] = mapped_column(default=0)
 
     replicas: Mapped[list["PilotReplica"]] = relationship(
@@ -411,11 +404,11 @@ class PilotJob(ResourceRow, SoftDeletable):
         sa.ForeignKey("cluster.name", ondelete="CASCADE"), index=True
     )
     scheduler_job_id: Mapped[str | None]
-    phase: Mapped[str] = mapped_column(default=JobPhase.pending_submit.value)
-    manager_url: Mapped[str | None]
-    manager_health: Mapped[str] = mapped_column(
-        default=HealthEndpointStatus.unknown.value
+    scheduler_state: Mapped[str] = mapped_column(
+        default=SchedulerJobState.pending_submit.value
     )
+    manager_url: Mapped[str | None]
+    manager_health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
     resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     time_started: Mapped[DateTimeOrNone]
     idle_since: Mapped[DateTimeOrNone]
@@ -441,9 +434,8 @@ class PilotReplica(ResourceRow, SoftDeletable):
     model_url: Mapped[str | None]
     observed_served_name: Mapped[str | None]
 
-    phase: Mapped[str] = mapped_column(default=ReplicaPhase.pending.value)
-    status_info: Mapped[str] = mapped_column(default="Replica created.")
-    last_health_check: Mapped[DateTimeOrNone]
+    state: Mapped[str] = mapped_column(default=ReplicaState.pending.value)
+    state_message: Mapped[str] = mapped_column(default="Replica created.")
     started_at: Mapped[DateTimeOrNone]
 
     pilot_deployment: Mapped[PilotDeployment] = relationship(

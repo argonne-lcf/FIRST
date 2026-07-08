@@ -11,29 +11,29 @@ from globus_compute_sdk import Client
 from globus_compute_sdk.errors import TaskPending
 
 from first_common.schema.base_scheduler import (
-    JobPhase,
     JobStatusInfo,
     JobSubmitPayload,
     JobSubmitResult,
     SchedulerAdapter,
+    SchedulerJobState,
 )
 from first_gateway.settings import ClientState
 
 logger = logging.getLogger(__name__)
 
-_STATE_MAP: dict[str, JobPhase] = {
-    "B": JobPhase.starting,  # Job array has begun execution
-    "E": JobPhase.exiting,  # Exiting / cleaning up post-execution
-    "F": JobPhase.gone,  # Finished (completed, failed, or deleted)
-    "H": JobPhase.queued,  # Held
-    "M": JobPhase.gone,  # Moved to another server
-    "Q": JobPhase.queued,  # Queued
-    "R": JobPhase.running,  # Running
-    "S": JobPhase.gone,  # Suspended
-    "T": JobPhase.starting,  # Transiting (being routed/moved)
-    "U": JobPhase.gone,  # User suspended
-    "W": JobPhase.queued,  # Waiting (future Execution_Time)
-    "X": JobPhase.gone,  # Expired (finished subjob)
+_STATE_MAP: dict[str, SchedulerJobState] = {
+    "B": SchedulerJobState.starting,  # Job array has begun execution
+    "E": SchedulerJobState.exiting,  # Exiting / cleaning up post-execution
+    "F": SchedulerJobState.gone,  # Finished (completed, failed, or deleted)
+    "H": SchedulerJobState.queued,  # Held
+    "M": SchedulerJobState.gone,  # Moved to another server
+    "Q": SchedulerJobState.queued,  # Queued
+    "R": SchedulerJobState.running,  # Running
+    "S": SchedulerJobState.gone,  # Suspended
+    "T": SchedulerJobState.starting,  # Transiting (being routed/moved)
+    "U": SchedulerJobState.gone,  # User suspended
+    "W": SchedulerJobState.queued,  # Waiting (future Execution_Time)
+    "X": SchedulerJobState.gone,  # Expired (finished subjob)
 }
 
 
@@ -131,17 +131,17 @@ def _parse_qstat(jobs: dict[str, Any]) -> list[JobStatusInfo]:
 
     for job_id, attrs in jobs.items():
         state_code = attrs["job_state"]
-        phase = _STATE_MAP.get(state_code)
+        state = _STATE_MAP.get(state_code)
 
-        if phase is None:
+        if state is None:
             logger.warning(f"Unknown job_state code {state_code!r} for job {job_id!r}")
-            phase = JobPhase.gone
+            state = SchedulerJobState.gone
 
         results.append(
             JobStatusInfo(
                 id=job_id,
                 name=attrs["Job_Name"],
-                state=phase,
+                state=state,
                 created_at=_parse_utc_timestamp(attrs["ctime"]),
                 started_at=_parse_utc_timestamp(attrs["stime"]),
                 walltime_minutes=_parse_walltime_minutes(

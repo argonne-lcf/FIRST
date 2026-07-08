@@ -18,16 +18,10 @@ from first_common.schema.resources.read import (
 )
 
 from ...database import models as db
-from ...database.status_store import (
-    ClusterStatusStore,
-    PilotDeploymentStatusStore,
-    StaticDeploymentStatusStore,
-)
 from ...services.plan_apply import apply_plan, create_plan
 from ..auth import user_can_access_group
 from ..dependencies import (
     AdminUser,
-    AsyncRedis,
     AuthUser,
     DbSession,
     IsUserAdmin,
@@ -90,15 +84,13 @@ async def get_pilot_deployment(
     user: AuthUser,
     name: str,
     is_admin: IsUserAdmin,
-    redis: AsyncRedis,
-) -> PilotDeploymentDetail:
+) -> db.PilotDeployment:
     """Get a single PilotDeployment with its replicas."""
     deployment = await db.PilotDeployment.get_detail(sess, name)
     if not (is_admin or user_can_access_group(user, deployment.model.access_group)):
         raise AccessDenied(f"Permission denied for PilotDeployment {name!r}.")
 
-    status = await PilotDeploymentStatusStore(redis).get(name)
-    return PilotDeploymentDetail.merge(deployment, status=status)
+    return deployment
 
 
 @user_router.get("/static-deployments", response_model=list[StaticDeployment])
@@ -106,8 +98,7 @@ async def list_static_deployments(
     sess: DbSession,
     user: AuthUser,
     is_admin: IsUserAdmin,
-    redis: AsyncRedis,
-) -> list[StaticDeployment]:
+) -> list[db.StaticDeployment]:
     """
     List StaticDeployments.  Admins see all; ordinary users see only deployments
     whose parent Model authorizes them.
@@ -121,29 +112,23 @@ async def list_static_deployments(
             for dep in model.static_deployments
             if user_can_access_group(user, model.access_group)
         ]
-    status_map = await StaticDeploymentStatusStore(redis).get_many(
-        [r.name for r in rows]
-    )
-    return [StaticDeployment.merge(r, status=status_map[r.name]) for r in rows]
+
+    return rows
 
 
 @user_router.get("/clusters", response_model=list[ClusterSummary])
-async def list_clusters(sess: DbSession, redis: AsyncRedis) -> list[ClusterSummary]:
+async def list_clusters(sess: DbSession) -> list[db.Cluster]:
     """List all configured Cluster resources.  Visible to all users."""
-    rows = await db.Cluster.list(sess)
-    status_map = await ClusterStatusStore(redis).get_many([r.name for r in rows])
-    return [ClusterSummary.merge(r, status_info=status_map[r.name]) for r in rows]
+    return await db.Cluster.list(sess)
 
 
 @admin_router.get("/clusters/{name:path}", response_model=ClusterDetail)
-async def get_cluster(sess: DbSession, name: str, redis: AsyncRedis) -> ClusterDetail:
+async def get_cluster(sess: DbSession, name: str) -> db.Cluster:
     """
     Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
     sensitive operational state.
     """
-    cluster = await db.Cluster.get_detail(sess, name)
-    status_info = await ClusterStatusStore(redis).get(name)
-    return ClusterDetail.merge(cluster, status_info=status_info)
+    return await db.Cluster.get_detail(sess, name)
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)

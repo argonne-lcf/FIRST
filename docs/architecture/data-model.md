@@ -129,7 +129,7 @@ pilot can host replicas of several different `PilotDeployment`s on the
 same node, so the FK to `Cluster` is intentionally singular and no FK
 to `PilotDeployment` exists.
 
-Notable fields: `scheduler_job_id`, `phase: JobPhase`, `manager_url`
+Notable fields: `scheduler_job_id`, `state: SchedulerJobState`, `manager_url`
 (set once the pilot's readyfile is discovered), `manager_health`,
 `resources: PilotResources` (mirrored from the pilot's `/status`),
 `idle_since` (drives idle-pilot reaping), `walltime_min`,
@@ -149,7 +149,7 @@ A single running replica of a model inside a pilot job.
   create replicas in a "pending placement" state and bind them to a job
   as capacity opens up.
 - `used_resources: list[GpuClaim]`, `model_url`, `observed_served_name`,
-  `phase: ReplicaPhase`, `status_info`, `last_health_check`,
+  `state: ReplicaState`, `state_message`, `last_health_check`,
   `started_at`.
 
 Similarly, there is no Spec for `PilotReplica`; Replicas are created/destroyed

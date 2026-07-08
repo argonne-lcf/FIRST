@@ -18,20 +18,18 @@ def ls(ctx: typer.Context) -> None:
     table.add_column("Name", style="bold")
     table.add_column("Cluster")
     table.add_column("Model")
-    table.add_column("Health")
+    table.add_column("State")
     table.add_column("Desired", justify="right")
     table.add_column("Launch fails", justify="right")
-    table.add_column("Last health check")
 
     for d in client.pilot_deployments.list():
         table.add_row(
             d.name,
             d.cluster_name,
             d.model_name,
-            d.health.value,
+            d.state.value,
             str(d.desired_replicas),
             str(d.consecutive_launch_failures),
-            d.last_health_check.isoformat() if d.last_health_check else "-",
         )
 
     console.print(table)

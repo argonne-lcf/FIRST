@@ -602,6 +602,7 @@ name = "first-common"
 version = "0.1.0"
 source = { editable = "packages/common" }
 dependencies = [
+    { name = "httpx" },
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -609,6 +610,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx" },
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },

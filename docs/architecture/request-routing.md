@@ -359,7 +359,7 @@ time, and whether or not there is capacity to cold-start the replica.
 ### Discovery, Catalog & Observability
 
 - `/api/{scope}/v1/models`: OpenAI-shaped, ACL-filtered, snapshot-served.
-- `/api/catalog/v1/*`: full metadata: deployments with replica counts/phases; snapshot + selected `rt:*`/`demand:*` reads.
+- `/api/catalog/v1/*`: full metadata: deployments with replica counts/states; snapshot + selected `rt:*`/`demand:*` reads.
 - Prometheus per worker: request counts/latency by model/deployment/task, TTFB, inter-chunk latency, token counters, **admission rejects by reason (capacity vs each quota type)**,  demand gauges, translation-path counter (should trend → 0), snapshot version/age.
 - `/readyz` = snapshot loaded ∧ Redis reachable.
 

@@ -38,7 +38,7 @@ $$ LANGUAGE plpgsql;
 # Add column-specific IS DISTINCT FROM checks as controllers are built out.
 # Example with column filtering:
 #   ("pilot_job", """
-#       NEW.phase IS DISTINCT FROM OLD.phase
+#       NEW.state IS DISTINCT FROM OLD.state
 #       OR NEW.scheduled_deletion IS DISTINCT FROM OLD.scheduled_deletion
 #       OR (TG_OP != 'UPDATE')
 #   """),

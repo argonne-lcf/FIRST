@@ -1,5 +1,6 @@
 import os
 from enum import Enum
+from http import HTTPMethod
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Literal, NewType, TypedDict
 
@@ -20,7 +21,23 @@ from .base_scheduler import SchedulerAdapter
 ResourceName = NewType("ResourceName", str)
 
 
-class HealthEndpointStatus(str, Enum):
+class HealthCheckParams(BaseModel):
+    """
+    Inputs to first_common.health.perform_health_check.
+
+    If health_url is an empty string, health check is disabled.
+    """
+
+    health_url: str
+    connect_timeout: float = 3.1
+    read_timeout: float = 12
+    http_method: HTTPMethod = HTTPMethod.GET
+    json_body: Any | None = None
+    status_range: tuple[int, int] = (200, 299)
+    match_pattern: str | None = None
+
+
+class HealthCheckResult(str, Enum):
     """
     Result from /health API check
     """
@@ -30,31 +47,19 @@ class HealthEndpointStatus(str, Enum):
     unknown = "unknown"
 
 
-class DeploymentHealth(str, Enum):
+class DeploymentState(str, Enum):
     """
-    Aggregated deployment health
+    Aggregated deployment state
     """
 
     offline = "offline"  # No replicas exist / all pending
-    starting = "starting"  # All replicas are placed or launching
-    healthy = "healthy"  # Up at full capacity
-    partial_capacity = "partial_capacity"  # Up at partial capacity
-    unhealthy = "unhealthy"  # Replicas exist, but none are ready
+    starting = "starting"  # At least one replica is placed or launching; none are healthy or unhealthy
+    healthy = "healthy"  # All are healthy
+    partial_capacity = "partial_capacity"  # At least one is healthy
+    unhealthy = "unhealthy"  # None are healthy, at least one is unhealthy
 
 
-class ClusterStatus(str, Enum):
-    """
-    Overall status of an HPC / Inference Cluster
-    """
-
-    up = "up"
-    down = "down"
-    degraded = "degraded"
-    maintenance = "maintenance"
-    unknown = "unknown"
-
-
-class ReplicaPhase(str, Enum):
+class ReplicaState(str, Enum):
     """
     Lifecycle of a single AI model instance (replica).
     """
@@ -113,6 +118,10 @@ class UsagePolicy(BaseModel):
 
 
 class OverloadPolicy(BaseModel):
+    """
+    Retry-After parameters for overloaded models.
+    """
+
     short_retry_sec: int = 15  # micro-contention Retry-After base
     retry_jitter_percent: int = 30  # server-side jitter to break retry herds
 
@@ -282,7 +291,7 @@ class PilotLaunchSpec(BaseModel):
     serve_script_template: str
 
     max_startup_sec: int
-    health_path: str | None = "/health"
+    health_check: HealthCheckParams
 
     @field_validator("serve_script_template")
     @classmethod

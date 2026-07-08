@@ -19,7 +19,6 @@ def ls(ctx: typer.Context) -> None:
     table.add_column("Model")
     table.add_column("Upstream")
     table.add_column("Health")
-    table.add_column("Last health check")
 
     for d in client.static_deployments.list():
         table.add_row(
@@ -28,11 +27,6 @@ def ls(ctx: typer.Context) -> None:
             d.model_name,
             d.upstream_model_name,
             d.health.value,
-            (
-                d.status.last_health_check.isoformat()
-                if d.status.last_health_check
-                else "-"
-            ),
         )
 
     console.print(table)

@@ -82,9 +82,9 @@ class _PilotManager:
             ReplicaInfo(
                 name=r.name,
                 url=self._replica_url(r.name),
-                phase=r.phase,
+                state=r.state,
                 started_at=r.started_at,
-                status_info=r.status_info,
+                state_message=r.state_message,
                 served_model_name=r.launch_spec.served_model_name,
             )
             for r in self.replica_manager.get_replicas()
