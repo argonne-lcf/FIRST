@@ -233,6 +233,10 @@ class Model(ResourceRow):
     access_group_name: Mapped[str] = mapped_column(sa.ForeignKey("access_group.name"))
     supported_endpoints: Mapped[StrArray]
 
+    aliases: Mapped[StrArray] = mapped_column(default=list)
+    default_quotas: Mapped[DictJsonb] = mapped_column(default=dict)
+    quota_overrides: Mapped[DictJsonb] = mapped_column(default=dict)
+
     access_group: Mapped[AccessGroup] = relationship(lazy="raise")
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(
         back_populates="model", lazy="raise"
@@ -260,7 +264,6 @@ class Cluster(ResourceRow):
     pilot_system: Mapped[DictJsonbOrNone]
 
     status: Mapped[str] = mapped_column(default=ClusterStatus.unknown.value)
-    last_status_check: Mapped[DateTimeOrNone]
 
     pilot_jobs: Mapped[list["PilotJob"]] = relationship(
         back_populates="cluster", cascade="all, delete-orphan", lazy="raise"
@@ -305,7 +308,6 @@ class StaticDeployment(ResourceRow):
     prometheus_metrics_path: Mapped[str | None]
     prometheus_scrape_interval_sec: Mapped[int]
     health: Mapped[str] = mapped_column(default=DeploymentHealth.offline.value)
-    last_health_check: Mapped[DateTimeOrNone]
 
     cluster: Mapped[Cluster] = relationship(
         back_populates="static_deployments", lazy="raise"

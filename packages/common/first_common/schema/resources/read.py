@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from ..base_scheduler import JobPhase
 from ..pilot import PilotResources
@@ -15,7 +15,7 @@ from ..types import (
     RouterParams,
 )
 from . import spec
-from .status import DeploymentStatus
+from .status import ClusterStatusInfo, DeploymentStatus
 
 
 class _Overlay:
@@ -47,9 +47,25 @@ class ResourceMeta(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     kind: str
-    name: str = Field(min_length=2, max_length=128)
+    name: str = Field(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[a-zA-Z0-9._\-/]+$",
+        examples=["meta-llama/Meta-Llama-3.1-8B"],
+    )
     uid: int
     created_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def slug(self) -> str:
+        """
+        Case-sensitive slug, safe for use in a URL path segment.
+
+        '/' is allowed in name but unsuitable for slugs; replace it by '~' to
+        obtain a bijective mapping (~ is disallowed in pattern but slug-safe).
+        """
+        return self.name.replace("/", "~")
 
     @classmethod
     def merge(cls, obj: Any, **overrides: BaseModel) -> Self:
@@ -96,7 +112,6 @@ class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
     kind: Literal["StaticDeployment"] = "StaticDeployment"
 
     health: DeploymentHealth
-    last_health_check: datetime | None = None
     status: DeploymentStatus = DeploymentStatus()
 
 
@@ -179,7 +194,7 @@ class ClusterSummary(ResourceMeta, spec.ClusterSpec):
 
     kind: Literal["Cluster"] = "Cluster"
     status: ClusterStatus
-    last_status_check: datetime | None
+    status_info: ClusterStatusInfo = ClusterStatusInfo()
 
 
 class ClusterDetail(ClusterSummary):

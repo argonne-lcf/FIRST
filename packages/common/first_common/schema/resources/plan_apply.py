@@ -3,6 +3,7 @@ from typing import Any, NamedTuple
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     SerializeAsAny,
     model_validator,
 )
@@ -19,11 +20,20 @@ class ResourceManifest(BaseModel):
 
     `kind` identifies a specific ResourceSpec subclass which is used to validate
     the content of `spec` dynamically.
+
+    `name` is the unique identifier of each resource.  Names may contain
+    alphanumerics (a-z, A-Z, 0-9) and ._-/.  The special characters are
+    deliberately chosen so that name:slug mapping is 1:1 (bijective).
     """
 
     model_config = ConfigDict(extra="forbid")
     kind: str
-    name: ResourceName
+    name: ResourceName = Field(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[a-zA-Z0-9._\-/]+$",
+        examples=["meta-llama/Meta-Llama-3.1-8B"],
+    )
     spec: SerializeAsAny[ResourceSpec]
 
     @model_validator(mode="before")

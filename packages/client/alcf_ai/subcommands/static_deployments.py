@@ -28,7 +28,11 @@ def ls(ctx: typer.Context) -> None:
             d.model_name,
             d.upstream_model_name,
             d.health.value,
-            d.last_health_check.isoformat() if d.last_health_check else "-",
+            (
+                d.status.last_health_check.isoformat()
+                if d.status.last_health_check
+                else "-"
+            ),
         )
 
     console.print(table)

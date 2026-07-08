@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 
 from first_common.errors import StatusCASFailed
-from first_common.schema.resources.status import DeploymentStatus
+from first_common.schema.resources.status import ClusterStatusInfo, DeploymentStatus
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -83,4 +83,10 @@ class PilotDeploymentStatusStore(StatusStore[DeploymentStatus]):
 class StaticDeploymentStatusStore(StatusStore[DeploymentStatus]):
     resource = "static_deployment"
     model = DeploymentStatus
+    ttl_seconds = 120
+
+
+class ClusterStatusStore(StatusStore[ClusterStatusInfo]):
+    resource = "cluster"
+    model = ClusterStatusInfo
     ttl_seconds = 120

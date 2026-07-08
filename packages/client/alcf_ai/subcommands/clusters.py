@@ -26,7 +26,11 @@ def ls(ctx: typer.Context) -> None:
             c.name,
             str(c.uid),
             c.status.value,
-            c.last_status_check.isoformat() if c.last_status_check else "-",
+            (
+                c.status_info.last_status_check.isoformat()
+                if c.status_info.last_status_check
+                else "-"
+            ),
         )
 
     console.print(table)

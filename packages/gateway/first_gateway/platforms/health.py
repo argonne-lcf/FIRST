@@ -72,7 +72,7 @@ async def get_metis_cluster_status(
 
 
 async def check_health_endpoint(
-    httpx_client: AsyncClient,
+    client: AsyncClient,
     base_url: str,
     health_path: str,
     timeout: int,
@@ -83,7 +83,7 @@ async def check_health_endpoint(
     Check http(s) health endpoint
     """
     try:
-        resp = await httpx_client.request(
+        resp = await client.request(
             method,
             f"{base_url}/{health_path.strip('/')}",
             timeout=timeout,

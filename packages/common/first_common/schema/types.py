@@ -74,16 +74,28 @@ class ReplicaPhase(str, Enum):
     terminated = "terminated"  # finished tear down
 
 
+class QuotaLimits(BaseModel):
+    tpm: int = 100_000
+    burst_tokens: int = 50_000
+    rpm: int = 120
+    burst_requests: int = 20
+    max_user_concurrency: int = 8
+
+    @property
+    def tokens_per_sec(self) -> float:
+        return self.tpm / 60.0
+
+    @property
+    def requests_per_sec(self) -> float:
+        return self.rpm / 60.0
+
+
 class RouterParams(BaseModel):
     """
     Desired deployment routing configuration.
-
-    Passes through to LiteLLM Router when applicable.
     """
 
     weight: int = 1
-    rpm: int | None = None
-    tpm: int | None = None
     max_parallel_requests: int | None = None
     order: int | None = None
 

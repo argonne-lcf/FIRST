@@ -19,6 +19,7 @@ from first_common.schema.resources.read import (
 
 from ...database import models as db
 from ...database.status_store import (
+    ClusterStatusStore,
     PilotDeploymentStatusStore,
     StaticDeploymentStatusStore,
 )
@@ -127,18 +128,22 @@ async def list_static_deployments(
 
 
 @user_router.get("/clusters", response_model=list[ClusterSummary])
-async def list_clusters(sess: DbSession) -> list[db.Cluster]:
+async def list_clusters(sess: DbSession, redis: AsyncRedis) -> list[ClusterSummary]:
     """List all configured Cluster resources.  Visible to all users."""
-    return await db.Cluster.list(sess)
+    rows = await db.Cluster.list(sess)
+    status_map = await ClusterStatusStore(redis).get_many([r.name for r in rows])
+    return [ClusterSummary.merge(r, status_info=status_map[r.name]) for r in rows]
 
 
 @admin_router.get("/clusters/{name:path}", response_model=ClusterDetail)
-async def get_cluster(sess: DbSession, name: str) -> db.Cluster:
+async def get_cluster(sess: DbSession, name: str, redis: AsyncRedis) -> ClusterDetail:
     """
     Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
     sensitive operational state.
     """
-    return await db.Cluster.get_detail(sess, name)
+    cluster = await db.Cluster.get_detail(sess, name)
+    status_info = await ClusterStatusStore(redis).get(name)
+    return ClusterDetail.merge(cluster, status_info=status_info)
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)

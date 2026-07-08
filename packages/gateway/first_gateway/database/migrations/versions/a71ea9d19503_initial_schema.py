@@ -50,7 +50,6 @@ def upgrade() -> None:
             "pilot_system", postgresql.JSONB(astext_type=sa.Text()), nullable=True
         ),
         sa.Column("status", sa.String(), nullable=False),
-        sa.Column("last_status_check", sa.DateTime(timezone=True), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
@@ -101,6 +100,13 @@ def upgrade() -> None:
         "model",
         sa.Column("access_group_name", sa.Text(), nullable=False),
         sa.Column("supported_endpoints", sa.ARRAY(sa.Text()), nullable=False),
+        sa.Column("aliases", sa.ARRAY(sa.Text()), nullable=False),
+        sa.Column(
+            "default_quotas", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+        ),
+        sa.Column(
+            "quota_overrides", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+        ),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
@@ -244,7 +250,6 @@ def upgrade() -> None:
         sa.Column("prometheus_metrics_path", sa.String(), nullable=True),
         sa.Column("prometheus_scrape_interval_sec", sa.Integer(), nullable=False),
         sa.Column("health", sa.String(), nullable=False),
-        sa.Column("last_health_check", sa.DateTime(timezone=True), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",

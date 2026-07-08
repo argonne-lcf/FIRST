@@ -1,4 +1,4 @@
-from typing import Any, Callable, ClassVar
+from typing import Any, Awaitable, Callable, ClassVar
 
 from pydantic import (
     BaseModel,
@@ -12,6 +12,7 @@ from ..types import (
     LoadThresholdStrategy,
     PilotConfig,
     PilotLaunchSpec,
+    QuotaLimits,
     ResourceName,
     RouterParams,
     SecretRef,
@@ -60,6 +61,9 @@ class ModelSpec(ResourceSpec):
 
     access_group_name: ResourceName
     supported_endpoints: list[str]
+    aliases: list[str] = []
+    default_quotas: QuotaLimits = QuotaLimits()
+    quota_overrides: dict[str, QuotaLimits] = {}
 
 
 class ClusterSpec(ResourceSpec):
@@ -71,7 +75,7 @@ class ClusterSpec(ResourceSpec):
     StaticDeployments where model launching is handled externally.
     """
 
-    status_method: ImportString[Callable[[dict[str, Any]], ClusterStatus]]
+    status_method: ImportString[Callable[..., Awaitable[ClusterStatus]]]
     status_kwargs: dict[str, Any]
 
     maintenance_notice: str | None = None
@@ -96,7 +100,7 @@ class StaticDeploymentSpec(ResourceSpec):
 
     router_params: RouterParams = RouterParams()
 
-    health_check_method: ImportString[Callable[[dict[str, Any]], HealthEndpointStatus]]
+    health_check_method: ImportString[Callable[..., Awaitable[HealthEndpointStatus]]]
     health_check_kwargs: dict[str, Any]
 
     prometheus_metrics_path: str | None = "/metrics"
@@ -120,7 +124,7 @@ class PilotDeploymentSpec(ResourceSpec):
 
     router_params: RouterParams = RouterParams()
 
-    health_check_method: ImportString[Callable[[dict[str, Any]], HealthEndpointStatus]]
+    health_check_method: ImportString[Callable[..., Awaitable[HealthEndpointStatus]]]
     health_check_kwargs: dict[str, Any]
 
     prometheus_metrics_path: str | None = "/metrics"
