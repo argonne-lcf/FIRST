@@ -1,5 +1,5 @@
 # Dev Tools
-- Use the Makefile shortcuts (mypy, format, lint/lint-fix, test, db-up) as needed.
+- Use the Makefile shortcuts (mypy, format, lint/lint-fix, test, db-up/db-down, compose-up/compose-down)
 - Verify changes with make mypy/format/lint/test
 
 # Project layout

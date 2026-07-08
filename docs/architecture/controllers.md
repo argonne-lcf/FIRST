@@ -594,6 +594,8 @@ These read external systems and write to Postgres/Redis.
   `StaticDeploymentStatusStore`.
 
 #### Router Config Observer
+- Interface to [data plane](request-routing.md): the router config is
+published by the control plane and consumed by the apiserver workers of the data plane.
 - Watches all of: `pilot_deployment`, `static_deployment`,
   `pilot_replica`, `model`, `access_group`, and `cluster`
   (`maintenance_notice`).
