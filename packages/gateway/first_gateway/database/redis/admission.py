@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import json
+import logging
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, NamedTuple, Optional, Sequence
 
 from pydantic import BaseModel
 from redis.asyncio import Redis
@@ -12,6 +11,8 @@ from redis.asyncio import Redis
 from first_common.schema.types import RouterParams, UsageLimits
 
 from .keys import Keys
+
+logger = logging.getLogger(__name__)
 
 LUA_DIR = Path(__file__).parent / "lua"
 _ADMIT_LUA = (LUA_DIR / "admit.lua").read_text()
@@ -49,7 +50,7 @@ class AdmitResult(BaseModel):
     replica_id: str | None = None
     quota_reason: QuotaReason | None = None
     capacity_reason: CapacityReason | None = None
-    retry_after_s: float | None = None
+    retry_after_sec: float | None = None
 
     @property
     def admitted(self) -> bool:
@@ -65,7 +66,7 @@ class AdmitResult(BaseModel):
             return cls(
                 status=AdmitStatus.REJECT_QUOTA,
                 quota_reason=QuotaReason(to_str(raw[1])),
-                retry_after_s=retry_after if retry_after >= 0 else None,
+                retry_after_sec=retry_after if retry_after >= 0 else None,
             )
         return cls(
             status=AdmitStatus.REJECT_CAPACITY,
@@ -81,31 +82,51 @@ class CandidateReplica(BaseModel):
     cooldown_threshold: int
 
 
+class InflightCounts(NamedTuple):
+    """
+    Inflight model-grouped utilization counts.
+
+    - by_replica provides a count for each active replica
+    - by_replica provides a count for each active user
+    """
+
+    by_replica: dict[str, dict[str, int]]
+    by_user: dict[str, dict[str, int]]
+
+
 class AdmissionController:
     """
-    Owns the Lua script inventory (admit, settle, renew, record_error) and
-    the sweep loop.  These four entry points are the only writers of
-    ledger-governed state; everything else in the process must go through them.
+    Controller for distributed request admission: performs quota bookkeeping
+    (RPM, TPM, Concurrency) per user/model and backend capacity bookkeeping (
+    cooldown state, per-replica concurrency).
+
+    Owns the Lua script inventory (admit, settle, renew, record_error) and the
+    sweep loop.
     """
 
     def __init__(
         self,
         client: Redis,
         *,
-        lease_s: int = 30,
-        max_stream_s: int = 3600,
+        lease_sec: int = 30,
+        max_request_sec: int = 3600,
         renew_chunk: int = 500,
     ) -> None:
+        """
+        - lease_sec: default reservation duration
+        - max_request_sec: lease can be renewed for up to this long (backstop
+          for stuck requests that never stop renewing the lease)
+        - renew_chunk: lease renewal batch size: how many requests at a time
+        """
         self.client = client
-        self.lease_s = lease_s
-        self.max_stream_s = max_stream_s
+        self.lease_sec = lease_sec
+        self.max_request_sec = max_request_sec
         self.renew_chunk = renew_chunk
         self._admit = client.register_script(_ADMIT_LUA)
         self._settle = client.register_script(_SETTLE_LUA)
         self._renew = client.register_script(_RENEW_LUA)
         self._record_error = client.register_script(_RECORD_ERROR_LUA)
 
-    # -- admission -----------------------------------------------------------
     async def admit(
         self,
         *,
@@ -117,8 +138,28 @@ class AdmissionController:
         quota: UsageLimits,
     ) -> AdmitResult:
         """
-        One atomic round trip: quota checks once, then walk `candidates` in the
-        random-sampled order the router chose.
+        Attempt to admit a request.  Performs one atomic round trip to Redis:
+        check all quotas once, then iterate candidates and assign the first one
+        with available capacity.
+
+        A reservation is created if admitted.
+
+        The reservation has an expiring lease (see `lease_sec` above) that must
+        be maintained during the lifetime of the request, using renew().
+
+        All reservations must be cleared used settle().  Reservations cannot use
+        a TTL, because several pieces of related state must be rolled back
+        atomically.
+
+        - `request_id`: unique per-request identifier
+        - `model_name`: unique model name
+        - `user_id`: unique user ID
+        - `candidates`: ordered list of replicas (uid, max_concurrency, max_errors).
+          The router must select healthy replicas in scope for the current request and sort them
+          into the desired weighted random sampling order.
+        - `estimated_tokens`:  estimated heuristic prompt_tokens+max_tokens for
+           this request to be reserved.  Set to 0 for non-LLM requests.
+        - `quota`: the configured usage rate limits for this model_name.
         """
         keys: list[str] = [
             Keys.quota(model_name, user_id, "tokens"),
@@ -142,7 +183,7 @@ class AdmissionController:
             quota.burst_tokens,
             quota.requests_per_sec,
             quota.burst_requests,
-            self.lease_s,
+            self.lease_sec,
         ]
         for c in candidates:
             args.extend([c.uid, c.max_replica_concurrency, c.cooldown_threshold])
@@ -150,7 +191,6 @@ class AdmissionController:
         raw = await self._admit(keys=keys, args=args)
         return AdmitResult.from_lua(raw)
 
-    # -- settlement (the idempotent compensator) ------------------------------
     async def settle(
         self,
         request_id: str,
@@ -159,13 +199,16 @@ class AdmissionController:
         model_name: str | None = None,
         user_id: str | None = None,
     ) -> bool:
-        """Reverse one reservation's effects.  Safe to call from the request
-        `finally`, the sweeper, and retries simultaneously; returns True iff
-        this call was the one that applied.
+        """
+        Reverse one reservation's effects idempotently.
+
+        Safe to call from the request `finally`, the sweeper, and retries
+        simultaneously; returns True iff this call was the one that applied.
 
         Pass model_name and user_id from the request context to skip the
         pre-read round trip on the hot path.  The sweeper omits them and
-        pays one extra GET to discover the reservation's identity."""
+        pays one extra GET to discover the reservation's identity.
+        """
         reservation_key = Keys.reservation(request_id)
 
         if model_name is None or user_id is None:
@@ -193,28 +236,35 @@ class AdmissionController:
         )
         return bool(int(raw[0]))
 
-    # -- leases ---------------------------------------------------------------
     async def renew(self, request_ids: Sequence[str]) -> int:
-        """Batched, chunked lease renewal for this worker's in-process registry.
-        Call every ~lease_s/3 seconds with ALL live request ids."""
+        """
+        Batched, chunked lease renewal.  Each apiserver worker MUST call this
+        method with all live request_ids every ~lease_sec/3 seconds to maintain
+        the lease on its requests.
+
+        Crashed workers stop renewing the lease, and another sweeper cleans up
+        the stale reservations within ~lease_sec.
+        """
         renewed = 0
         for i in range(0, len(request_ids), self.renew_chunk):
             chunk = list(request_ids[i : i + self.renew_chunk])
-            keys: list[str] = [Keys.deadlines()]
-            keys.extend(Keys.reservation(rid) for rid in chunk)
+            keys = [Keys.deadlines()] + [Keys.reservation(rid) for rid in chunk]
             renewed += int(
                 await self._renew(
                     keys=keys,
-                    args=[self.lease_s, self.max_stream_s, *chunk],
+                    args=[self.lease_sec, self.max_request_sec, *chunk],
                 )
             )
         return renewed
 
     async def sweep(self, batch: int = 100) -> int:
-        """Settle reservations whose lease lapsed (crashed worker, stuck
-        handler past max_stream_s).  Lock-free: settle's idempotency makes
-        concurrent sweeps merely wasteful, never wrong.  Any worker may run
-        this opportunistically on a timer."""
+        """
+        Settle reservations whose lease lapsed (crashed worker, stuck
+        handler past max_request_sec).
+
+        Lock-free: settle's idempotency makes concurrent sweeps merely wasteful,
+        never wrong.  Any worker may run this opportunistically on a timer.
+        """
         now = time.time()
         expired = await self.client.zrangebyscore(
             Keys.deadlines(), "-inf", now, start=0, num=batch
@@ -223,15 +273,27 @@ class AdmissionController:
         for rid in expired:
             if await self.settle(to_str(rid), actual_tokens=None):
                 settled += 1
+
+        if settled > 0:
+            logger.info(f"Reservation sweeper settled {settled} expired reservations")
+
         return settled
 
-    # -- reachability ----------------------------------------------------------
     async def record_error(
         self, replica_id: str, router_params: RouterParams
     ) -> tuple[int, bool]:
-        """Register an upstream failure; returns (count, benched).  The counter
-        IS the cooldown: admit treats count >= threshold as benched, and the
-        TTL (window, re-armed to bench_s at threshold) is the un-bench."""
+        """
+        Register an upstream failure.  Returns (error_count, is_benched).
+
+        admit() treats error_count >= router_params.cooldown_threshold as benched: the replica
+        is removed from the pool for router_params.cooldown_bench_sec.
+
+        For example: given cooldown threshold=2, window=30s, bench=120s: any
+        replica that experiences 2 errors within a 30second window is benched
+        for 2 minutes.
+
+        The Lua script correctly re-arms the TTL under concurrent failures.
+        """
         raw = await self._record_error(
             keys=[Keys.replica_errors(replica_id)],
             args=[
@@ -242,12 +304,14 @@ class AdmissionController:
         )
         return int(raw[0]), bool(int(raw[1]))
 
-    # -- reconciliation ----------------------------------------------------------
-    async def rebuild_inflight_from_ledger(self) -> dict[str, dict[str, int]]:
-        """Recompute per-model, per-replica inflight from the reservation
-        ledger (the base table).  Feed the result to
-        ModelStatus.reconcile_inflight per model.  Uses SCAN, never KEYS."""
-        counts: dict[str, dict[str, int]] = {}
+    async def rebuild_inflight_from_ledger(self) -> InflightCounts:
+        """
+        Recompute per-model, per-replica inflight from the reservation ledger
+        (the base table).  Feed the result to ModelStatus.reconcile_inflight per
+        model.  Uses SCAN, never KEYS.
+        """
+        by_replica: dict[str, dict[str, int]] = {}
+        by_user: dict[str, dict[str, int]] = {}
         async for key in self.client.scan_iter(
             match=Keys.reservation_scan_pattern(), count=200
         ):
@@ -258,8 +322,13 @@ class AdmissionController:
                 row = json.loads(raw)
                 model = row["model_name"]
                 replica = row["replica_id"]
-                counts.setdefault(model, {}).setdefault(replica, 0)
-                counts[model][replica] += 1
+                user_id = row["user_id"]
+                by_replica.setdefault(model, {}).setdefault(replica, 0)
+                by_user.setdefault(model, {}).setdefault(user_id, 0)
+                by_replica[model][replica] += 1
+                by_user[model][user_id] += 1
             except (ValueError, KeyError):
+                logger.warning(f"Reconcile cannot parse malformed reservation: {raw!r}")
                 continue
-        return counts
+
+        return InflightCounts(by_replica=by_replica, by_user=by_user)

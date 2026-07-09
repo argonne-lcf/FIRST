@@ -173,7 +173,7 @@ Each admitted request writes a **reservation** — a record of what resources it
 | Key | Type | Description |
 |---|---|---|
 | `rt:reserve:{request_id}` | JSON string | The reservation blob: `{request_id, model_name, user_id, replica_id, est_tokens, admit_ts, tokens_per_sec, burst_tokens}`.  Written by `admit`, read and deleted by `settle`.  Has **no TTL** — lifecycle is managed by the deadline index below. |
-| `rt:deadlines` | ZSET `request_id → deadline_ts` | Lease index for all live reservations. Workers renew their requests' deadlines every ~10s (bumping to `now + lease_s`, capped at `admit_ts + max_stream_s`).  The sweeper runs `ZRANGEBYSCORE` to find past-due entries — reservations whose worker crashed or whose stream exceeded the cap — and settles them. |
+| `rt:deadlines` | ZSET `request_id → deadline_ts` | Lease index for all live reservations. Workers renew their requests' deadlines every ~10s (bumping to `now + lease_sec`, capped at `admit_ts + max_request_sec`).  The sweeper runs `ZRANGEBYSCORE` to find past-due entries — reservations whose worker crashed or whose stream exceeded the cap — and settles them. |
 
 #### Quota state
 
@@ -237,8 +237,8 @@ capacity** — so that per-user rejections never inflate demand signals:
 ```
 quota checks (affect only the requesting user):
   user concurrency  ≥ max_user_concurrency        → REJECT_QUOTA(user_concurrency)
-  GCRA request rate  would exceed limit            → REJECT_QUOTA(user_rpm, retry_after_s)
-  GCRA token rate    would exceed limit            → REJECT_QUOTA(user_tpm, retry_after_s)
+  GCRA request rate  would exceed limit            → REJECT_QUOTA(user_rpm, retry_after_sec)
+  GCRA token rate    would exceed limit            → REJECT_QUOTA(user_tpm, retry_after_sec)
 
 capacity check (walks candidate replicas in router-chosen order):
   for each candidate:
@@ -261,7 +261,7 @@ Return values:
 
 ```lua
 {1, replica_id}                  -- ADMIT
-{2, reason, retry_after_s}       -- REJECT_QUOTA   (retry_after_s = -1 for concurrency)
+{2, reason, retry_after_sec}       -- REJECT_QUOTA   (retry_after_sec = -1 for concurrency)
 {3, reason}                      -- REJECT_CAPACITY
 ```
 

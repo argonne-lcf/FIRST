@@ -32,7 +32,7 @@ async def redis() -> AsyncGenerator[Redis, None]:
 
 @pytest.fixture
 def ac(redis: Redis) -> AdmissionController:
-    return AdmissionController(redis, lease_s=30, max_stream_s=900)
+    return AdmissionController(redis, lease_sec=30, max_request_sec=900)
 
 
 QUOTA = UsageLimits(
@@ -157,7 +157,7 @@ class TestQuotaRejects:
         result = await _admit(ac, "req-over")
         assert result.status is AdmitStatus.REJECT_QUOTA
         assert result.quota_reason is QuotaReason.USER_CONCURRENCY
-        assert result.retry_after_s is None
+        assert result.retry_after_sec is None
 
     async def test_rpm_reject(self, ac: AdmissionController) -> None:
         tight_quota = UsageLimits(
@@ -174,8 +174,8 @@ class TestQuotaRejects:
         result = await _admit(ac, "req-over", quota=tight_quota)
         assert result.status is AdmitStatus.REJECT_QUOTA
         assert result.quota_reason is QuotaReason.USER_RPM
-        assert result.retry_after_s is not None
-        assert result.retry_after_s >= 0
+        assert result.retry_after_sec is not None
+        assert result.retry_after_sec >= 0
 
     async def test_tpm_reject(self, ac: AdmissionController) -> None:
         tight_quota = UsageLimits(
@@ -191,8 +191,8 @@ class TestQuotaRejects:
         result = await _admit(ac, "req-2", estimated_tokens=100, quota=tight_quota)
         assert result.status is AdmitStatus.REJECT_QUOTA
         assert result.quota_reason is QuotaReason.USER_TPM
-        assert result.retry_after_s is not None
-        assert result.retry_after_s > 0
+        assert result.retry_after_sec is not None
+        assert result.retry_after_sec > 0
 
     async def test_quota_reject_does_not_increment_demand(
         self, ac: AdmissionController, redis: Redis
@@ -402,7 +402,7 @@ class TestLeaseRenewal:
         assert renewed == 5
 
     async def test_renew_respects_max_stream_cap(self, ac: AdmissionController) -> None:
-        short_ac = AdmissionController(ac.client, lease_s=30, max_stream_s=1)
+        short_ac = AdmissionController(ac.client, lease_sec=30, max_request_sec=1)
         await _admit(short_ac, "req-1")
 
         await asyncio.sleep(1.1)
@@ -427,7 +427,7 @@ class TestSweeper:
     async def test_sweeper_settles_expired_reservations(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
-        short_lease = AdmissionController(ac.client, lease_s=1, max_stream_s=900)
+        short_lease = AdmissionController(ac.client, lease_sec=1, max_request_sec=900)
         await _admit(short_lease, "req-stale")
 
         await asyncio.sleep(1.1)
@@ -437,7 +437,7 @@ class TestSweeper:
         assert await redis.get(Keys.reservation("req-stale")) is None
 
     async def test_sweeper_is_idempotent(self, ac: AdmissionController) -> None:
-        short_lease = AdmissionController(ac.client, lease_s=1, max_stream_s=900)
+        short_lease = AdmissionController(ac.client, lease_sec=1, max_request_sec=900)
         await _admit(short_lease, "req-stale")
 
         await asyncio.sleep(1.1)
@@ -450,7 +450,7 @@ class TestSweeper:
     async def test_sweeper_restores_counters(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
-        short_lease = AdmissionController(ac.client, lease_s=1, max_stream_s=900)
+        short_lease = AdmissionController(ac.client, lease_sec=1, max_request_sec=900)
         result = await _admit(short_lease, "req-stale")
         assert result.replica_id is not None
 
@@ -469,7 +469,7 @@ class TestSweeper:
 class TestRebuildInflight:
     async def test_empty_ledger(self, ac: AdmissionController) -> None:
         counts = await ac.rebuild_inflight_from_ledger()
-        assert counts == {}
+        assert counts.by_replica == {}
 
     async def test_counts_match_live_reservations(
         self, ac: AdmissionController
@@ -478,8 +478,8 @@ class TestRebuildInflight:
         await _admit(ac, "req-2")
 
         counts = await ac.rebuild_inflight_from_ledger()
-        assert MODEL in counts
-        total = sum(counts[MODEL].values())
+        assert MODEL in counts.by_replica
+        total = sum(counts.by_replica[MODEL].values())
         assert total == 2
 
     async def test_settled_not_counted(self, ac: AdmissionController) -> None:
@@ -488,7 +488,7 @@ class TestRebuildInflight:
         await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
 
         counts = await ac.rebuild_inflight_from_ledger()
-        total = sum(counts[MODEL].values())
+        total = sum(counts.by_replica[MODEL].values())
         assert total == 1
 
     async def test_multiple_models(self, ac: AdmissionController) -> None:
@@ -497,10 +497,10 @@ class TestRebuildInflight:
         await _admit(ac, "req-2", model_name="model-b", candidates=candidates)
 
         counts = await ac.rebuild_inflight_from_ledger()
-        assert "model-a" in counts
-        assert "model-b" in counts
-        assert sum(counts["model-a"].values()) == 1
-        assert sum(counts["model-b"].values()) == 1
+        assert "model-a" in counts.by_replica
+        assert "model-b" in counts.by_replica
+        assert sum(counts.by_replica["model-a"].values()) == 1
+        assert sum(counts.by_replica["model-b"].values()) == 1
 
     async def test_per_replica_breakdown(self, ac: AdmissionController) -> None:
         candidates_r1_only = _candidates("r1", concurrency=100)
@@ -510,5 +510,5 @@ class TestRebuildInflight:
         await _admit(ac, "req-3", candidates=candidates_r2_only)
 
         counts = await ac.rebuild_inflight_from_ledger()
-        assert counts[MODEL]["r1"] == 2
-        assert counts[MODEL]["r2"] == 1
+        assert counts.by_replica[MODEL]["r1"] == 2
+        assert counts.by_replica[MODEL]["r2"] == 1

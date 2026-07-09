@@ -8,13 +8,17 @@
 --
 -- Returns {count, benched(0|1)}
 
-local n = redis.call('INCR', KEYS[1])
-if n == 1 then
+local num_errors = redis.call('INCR', KEYS[1])
+
+if num_errors == 1 then
   redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
 end
-if n == tonumber(ARGV[2]) then
+
+if num_errors == tonumber(ARGV[2]) then
   redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
 end
+
 local benched = 0
-if n >= tonumber(ARGV[2]) then benched = 1 end
-return {n, benched}
+if num_errors >= tonumber(ARGV[2]) then benched = 1 end
+
+return {num_errors, benched}

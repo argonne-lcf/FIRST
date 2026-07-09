@@ -19,12 +19,12 @@
 -- ARGV[7]  burst_tokens
 -- ARGV[8]  requests_per_sec
 -- ARGV[9]  burst_requests
--- ARGV[10] lease_s
+-- ARGV[10] lease_sec
 -- ARGV[11..] candidate triples: replica_id, max_replica_concurrency, cooldown_threshold
 --
 -- Returns:
 --   {1, replica_id}                     ADMITTED
---   {2, reason, retry_after_s}          REJECT_QUOTA
+--   {2, reason, retry_after_sec}          REJECT_QUOTA
 --   {3, reason}                         REJECT_CAPACITY
 
 local quota_tokens_key    = KEYS[1]
@@ -47,7 +47,7 @@ local tokens_per_sec       = tonumber(ARGV[6])
 local burst_tokens         = tonumber(ARGV[7])
 local requests_per_sec     = tonumber(ARGV[8])
 local burst_requests       = tonumber(ARGV[9])
-local lease_s              = tonumber(ARGV[10])
+local lease_sec              = tonumber(ARGV[10])
 
 local time = redis.call('TIME')
 local now = tonumber(time[1]) + tonumber(time[2]) / 1e6
@@ -148,5 +148,5 @@ local row = cjson.encode({
   burst_tokens   = burst_tokens,
 })
 redis.call('SET', reservation_key, row)
-redis.call('ZADD', deadlines_key, now + lease_s, request_id)
+redis.call('ZADD', deadlines_key, now + lease_sec, request_id)
 return {1, chosen_replica_id}
