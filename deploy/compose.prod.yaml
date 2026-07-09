@@ -3,5 +3,10 @@ services:
     volumes:
       - postgres_data_prod:/var/lib/postgresql
 
+  redis:
+    volumes:
+      - redis_data_prod:/data
+
 volumes:
   postgres_data_prod:
+  redis_data_prod:

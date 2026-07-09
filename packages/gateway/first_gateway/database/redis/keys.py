@@ -1,40 +1,56 @@
 from typing import Literal
 
 CONFIG_CHANNEL = "cfg:changed"
-RT_PREFIX = "rt:"
-QUOTA_PREFIX = "quota:"
-RESERVE_PREFIX = "rt:reserve:"
 
 
 class Keys:
-    """Redis Key builders"""
+    """Redis key builders — the single source of truth for all key patterns.
+
+    Every Redis key used by the gateway MUST be constructed here.
+    Lua scripts receive pre-built keys via KEYS[] and never assemble keys
+    from prefix strings.
+    """
 
     @staticmethod
     def config() -> str:
         return "router-cfg"
 
-    @staticmethod
-    def inflight(model: str) -> str:
-        return f"{RT_PREFIX}{model}:inflight"
+    # -- router state (rt:*) -------------------------------------------------
 
     @staticmethod
-    def demand(model: str) -> str:
-        return f"{RT_PREFIX}{model}:demand"
+    def model_inflight(model: str) -> str:
+        """HASH keyed by replica_id → concurrent request count."""
+        return f"rt:model:{model}:inflight"
+
+    @staticmethod
+    def model_demand(model: str) -> str:
+        """HASH {inflight, capacity_rejects_total, last_reject_ts}."""
+        return f"rt:model:{model}:demand"
 
     @staticmethod
     def replica_errors(replica_id: str) -> str:
-        return f"{RT_PREFIX}replica:{replica_id}:errors"
+        """INT counter with TTL; count >= threshold IS the cooldown bench."""
+        return f"rt:replica:{replica_id}:errors"
 
     @staticmethod
     def reservation(request_id: str) -> str:
-        return f"{RESERVE_PREFIX}{request_id}"
+        """JSON blob written by admit, read/deleted by settle."""
+        return f"rt:reserve:{request_id}"
+
+    @staticmethod
+    def reservation_scan_pattern() -> str:
+        """SCAN match pattern that covers all reservation keys."""
+        return "rt:reserve:*"
 
     @staticmethod
     def deadlines() -> str:
-        return f"{RESERVE_PREFIX}deadlines"
+        """ZSET of request_ids scored by deadline timestamp."""
+        return "rt:deadlines"
+
+    # -- quota state (quota:*) -----------------------------------------------
 
     @staticmethod
     def quota(
         model: str, user: str, resource: Literal["tokens", "rpm", "inflight"]
     ) -> str:
-        return f"{QUOTA_PREFIX}{model}:{user}:{resource}"
+        return f"quota:{model}:{user}:{resource}"

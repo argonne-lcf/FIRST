@@ -112,7 +112,7 @@ class ReplicaStatus(BaseModel):
     ) -> RedisBatch.Handle:
         """Append this replica's 4 reads to the batch; parse from the slice."""
         p = batch.pipe
-        p.hget(Keys.inflight(model), replica_id)
+        p.hget(Keys.model_inflight(model), replica_id)
         p.get(Keys.replica_errors(replica_id))
         p.ttl(Keys.replica_errors(replica_id))
         return batch.register(
@@ -166,7 +166,7 @@ class ReplicaStatus(BaseModel):
         hoisted: one HGETALL of the model inflight hash replaces N HGETs —
         3 commands per replica + 1, in a single round trip."""
         pipe = client.pipeline(transaction=False)
-        pipe.hgetall(Keys.inflight(model))
+        pipe.hgetall(Keys.model_inflight(model))
         rids = list(cooldowns)
         for rid in rids:
             pipe.get(Keys.replica_errors(rid))
@@ -217,8 +217,8 @@ class ModelStatus(BaseModel):
     # -- stage/parse ---------------------------------------------------------
     @classmethod
     def stage(cls, batch: RedisBatch, model: str) -> RedisBatch.Handle:
-        batch.pipe.hgetall(Keys.inflight(model))
-        batch.pipe.hgetall(Keys.demand(model))
+        batch.pipe.hgetall(Keys.model_inflight(model))
+        batch.pipe.hgetall(Keys.model_demand(model))
         return batch.register(
             2, lambda rows: cls._from_rows(model, inflight=rows[0], demand=rows[1])
         )
@@ -263,13 +263,13 @@ class ModelStatus(BaseModel):
         pipe = client.pipeline(transaction=False)
         stale = [rid for rid in self.per_replica_inflight if rid not in true_counts]
         if stale:
-            pipe.hdel(Keys.inflight(self.model), *stale)
+            pipe.hdel(Keys.model_inflight(self.model), *stale)
         if true_counts:
             pipe.hset(
-                Keys.inflight(self.model),
+                Keys.model_inflight(self.model),
                 mapping={k: v for k, v in true_counts.items()},
             )
-        pipe.hset(Keys.demand(self.model), "inflight", sum(true_counts.values()))
+        pipe.hset(Keys.model_demand(self.model), "inflight", sum(true_counts.values()))
         await pipe.execute()
         self.per_replica_inflight = dict(true_counts)
         self.demand.inflight = sum(true_counts.values())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from enum import Enum
 from pathlib import Path
@@ -10,7 +11,7 @@ from redis.asyncio import Redis
 
 from first_common.schema.types import RouterParams, UsageLimits
 
-from .keys import QUOTA_PREFIX, RESERVE_PREFIX, RT_PREFIX, Keys
+from .keys import Keys
 
 LUA_DIR = Path(__file__).parent / "lua"
 _ADMIT_LUA = (LUA_DIR / "admit.lua").read_text()
@@ -42,7 +43,7 @@ class CapacityReason(str, Enum):
 
 
 class AdmitResult(BaseModel):
-    """Decoded return of the admit.lua script"""
+    """Decoded return of the admit.lua script."""
 
     status: AdmitStatus
     replica_id: str | None = None
@@ -55,16 +56,16 @@ class AdmitResult(BaseModel):
         return self.status is AdmitStatus.ADMITTED
 
     @classmethod
-    def from_lua(cls, raw: Sequence) -> "AdmitResult":
+    def from_lua(cls, raw: Sequence[Any]) -> "AdmitResult":
         code = int(raw[0])
         if code == AdmitStatus.ADMITTED:
             return cls(status=AdmitStatus.ADMITTED, replica_id=to_str(raw[1]))
         if code == AdmitStatus.REJECT_QUOTA:
-            ms = int(raw[2])
+            retry_after = float(raw[2])
             return cls(
                 status=AdmitStatus.REJECT_QUOTA,
                 quota_reason=QuotaReason(to_str(raw[1])),
-                retry_after_s=(ms / 1000.0) if ms >= 0 else None,
+                retry_after_s=retry_after if retry_after >= 0 else None,
             )
         return cls(
             status=AdmitStatus.REJECT_CAPACITY,
@@ -73,9 +74,7 @@ class AdmitResult(BaseModel):
 
 
 class CandidateReplica(BaseModel):
-    """
-    One entry of the ordered candidate list, to be checked for capacity.
-    """
+    """One entry of the ordered candidate list, to be checked for capacity."""
 
     uid: str
     max_replica_concurrency: int
@@ -119,9 +118,21 @@ class AdmissionController:
     ) -> AdmitResult:
         """
         One atomic round trip: quota checks once, then walk `candidates` in the
-        random-sampled order the router chose
+        random-sampled order the router chose.
         """
-        args: list = [
+        keys: list[str] = [
+            Keys.quota(model_name, user_id, "tokens"),
+            Keys.quota(model_name, user_id, "rpm"),
+            Keys.quota(model_name, user_id, "inflight"),
+            Keys.model_inflight(model_name),
+            Keys.model_demand(model_name),
+            Keys.deadlines(),
+            Keys.reservation(request_id),
+        ]
+        for c in candidates:
+            keys.append(Keys.replica_errors(c.uid))
+
+        args: list[str | int | float] = [
             request_id,
             model_name,
             user_id,
@@ -132,39 +143,52 @@ class AdmissionController:
             quota.requests_per_sec,
             quota.burst_requests,
             self.lease_s,
-            RESERVE_PREFIX,
-            RT_PREFIX,
         ]
         for c in candidates:
             args.extend([c.uid, c.max_replica_concurrency, c.cooldown_threshold])
-        raw = await self._admit(
-            keys=[
-                Keys.quota(model_name, user_id, "tokens"),
-                Keys.quota(model_name, user_id, "rpm"),
-                Keys.quota(model_name, user_id, "inflight"),
-                Keys.inflight(model_name),
-                Keys.demand(model_name),
-                Keys.deadlines(),
-            ],
-            args=args,
-        )
+
+        raw = await self._admit(keys=keys, args=args)
         return AdmitResult.from_lua(raw)
 
     # -- settlement (the idempotent compensator) ------------------------------
     async def settle(
-        self, request_id: str, actual_tokens: Optional[int] = None
+        self,
+        request_id: str,
+        actual_tokens: Optional[int] = None,
+        *,
+        model_name: str | None = None,
+        user_id: str | None = None,
     ) -> bool:
         """Reverse one reservation's effects.  Safe to call from the request
         `finally`, the sweeper, and retries simultaneously; returns True iff
-        this call was the one that applied."""
+        this call was the one that applied.
+
+        Pass model_name and user_id from the request context to skip the
+        pre-read round trip on the hot path.  The sweeper omits them and
+        pays one extra GET to discover the reservation's identity."""
+        reservation_key = Keys.reservation(request_id)
+
+        if model_name is None or user_id is None:
+            raw_reservation = await self.client.get(reservation_key)
+            if raw_reservation is None:
+                await self.client.zrem(Keys.deadlines(), request_id)
+                return False
+            row = json.loads(raw_reservation)
+            model_name = row["model_name"]
+            user_id = row["user_id"]
+
         raw = await self._settle(
-            keys=[Keys.deadlines()],
+            keys=[
+                reservation_key,
+                Keys.deadlines(),
+                Keys.model_inflight(model_name),
+                Keys.quota(model_name, user_id, "inflight"),
+                Keys.quota(model_name, user_id, "tokens"),
+                Keys.model_demand(model_name),
+            ],
             args=[
-                request_id,
                 "" if actual_tokens is None else int(actual_tokens),
-                RT_PREFIX,
-                QUOTA_PREFIX,
-                RESERVE_PREFIX,
+                request_id,
             ],
         )
         return bool(int(raw[0]))
@@ -176,10 +200,12 @@ class AdmissionController:
         renewed = 0
         for i in range(0, len(request_ids), self.renew_chunk):
             chunk = list(request_ids[i : i + self.renew_chunk])
+            keys: list[str] = [Keys.deadlines()]
+            keys.extend(Keys.reservation(rid) for rid in chunk)
             renewed += int(
                 await self._renew(
-                    keys=[Keys.deadlines()],
-                    args=[self.lease_s, self.max_stream_s, RESERVE_PREFIX, *chunk],
+                    keys=keys,
+                    args=[self.lease_s, self.max_stream_s, *chunk],
                 )
             )
         return renewed
@@ -189,9 +215,7 @@ class AdmissionController:
         handler past max_stream_s).  Lock-free: settle's idempotency makes
         concurrent sweeps merely wasteful, never wrong.  Any worker may run
         this opportunistically on a timer."""
-        now = (
-            time.time()
-        )  # cutoff only; per-row decisions use server TIME inside settle
+        now = time.time()
         expired = await self.client.zrangebyscore(
             Keys.deadlines(), "-inf", now, start=0, num=batch
         )
@@ -224,19 +248,18 @@ class AdmissionController:
         ledger (the base table).  Feed the result to
         ModelStatus.reconcile_inflight per model.  Uses SCAN, never KEYS."""
         counts: dict[str, dict[str, int]] = {}
-        async for key in self.client.scan_iter(match=f"{RESERVE_PREFIX}*", count=200):
-            k = to_str(key)
-            if k == Keys.deadlines():
-                continue
-            raw = await self.client.get(k)
+        async for key in self.client.scan_iter(
+            match=Keys.reservation_scan_pattern(), count=200
+        ):
+            raw = await self.client.get(key)
             if not raw:
                 continue
             try:
-                import json
-
                 row = json.loads(raw)
-                counts.setdefault(row["model"], {}).setdefault(row["replica_id"], 0)
-                counts[row["model"]][row["replica_id"]] += 1
+                model = row["model_name"]
+                replica = row["replica_id"]
+                counts.setdefault(model, {}).setdefault(replica, 0)
+                counts[model][replica] += 1
             except (ValueError, KeyError):
                 continue
         return counts

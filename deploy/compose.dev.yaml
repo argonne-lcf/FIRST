@@ -24,6 +24,11 @@ services:
     networks:
       - gateway
 
+  redis:
+    volumes:
+      - type: tmpfs
+        target: /data
+
   prometheus:
     image: prom/prometheus:latest
     volumes:

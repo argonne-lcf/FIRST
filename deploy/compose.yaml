@@ -66,6 +66,13 @@ services:
 
   redis:
     image: redis:8
+    command:
+      - redis-server
+      - --appendonly yes
+      - --appendfsync everysec
+      - --latency-monitor-threshold 10
+      - --slowlog-log-slower-than 10000
+      - --slowlog-max-len 128
     networks:
       - gateway
     restart: unless-stopped

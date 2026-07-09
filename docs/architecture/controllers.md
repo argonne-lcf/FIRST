@@ -855,24 +855,3 @@ A degraded->healthy flap shorter than the debounce sends nothing. A
 genuine degradation that holds for the debounce window sends one Slack
 message; if recovery happens before the next batch flush, the recovery
 piggy-backs into the same message; if after, it sends a separate one.
-
-## Appendix
-
-### Load Average Utility
-
-The system measures **concurrent in-flight requests** per deployment
-using `AsyncInflightCounter`, a Redis sorted-set wrapper.  Each tracked
-request is a `ZADD` member whose score is a future expiry timestamp
-(≈ now + TTL).  Cleanup is self-healing: every read prunes entries past
-their expiry via `ZREMRANGEBYSCORE`, then returns `ZCARD` for the
-current count.
-
-- On request start: `ZADD` the request id.
-- On request completion: `ZREM` the request id.
-- **Cold-start demand counts too:** a request to an offline
-  (scale-to-zero) model `503`s immediately, but a counter entry is still
-  added with the normal expiry, so demand registers and can drive a
-  scale-up.
-
-Inflight keys are namespaced by resource type to avoid collisions:
-`inflight:pilot_deployment:<name>` vs `inflight:static_deployment:<name>`.

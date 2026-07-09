@@ -95,111 +95,105 @@ The Control Plane APIs and operational APIs are restricted to admins:
   ┌─────────────────┴──────────────────┴───────────────────┐
   │        Data Plane — 4 × FastAPI/asyncio workers         │
   │                                                         │
-  │  Auth → Classifier → Tier Router → Admission ──┐        │
-  │                          │                     ▼        │
-  │                          │                  passthrough │
-  │                          │                     │        │
-  │                          ▼                  SSE tap     │
-  │               429/503 + Retry-After            │        │
-  │                                        metrics queue    │
-  └────────────────────────────────────────────────┬────────┘
+  │  Auth → Classifier →   Router   → Admission ──┐        │
+  │                          │                    ▼        │
+  │                          │                 passthrough │
+  │                          │                    │        │
+  │                          ▼                 SSE tap     │
+  │               429/503 + Retry-After           │        │
+  │                                        metrics queue   │
+  └───────────────────────────────────────────────┬────────┘
                                                    ▼
                                        vLLM / Model Servers
 ```
 
-##  Redis Contracts
+## Redis Contracts
+
+The data plane runs as multiple independent worker processes sharing a single
+Redis instance.  Admission decisions — "is this replica saturated?", "has this
+user exceeded their quota?" — require reading a counter, comparing it to a limit,
+and conditionally updating state.  If two workers execute these steps as
+separate Redis commands, both can pass the same check and both increment — a
+classic check-then-act race that admits more traffic than limits allow.
+
+Redis Lua scripts solve this: a script runs atomically on the server with no
+interleaving from other clients.  The gateway uses four Lua scripts (`admit`,
+`settle`, `renew`, `record_error`) as the **only writers** of admission state.
+Every check-and-update is a single indivisible operation.
+
+All Redis keys are constructed by the `Keys` class in Python
+(`first_gateway.database.redis.keys`) and passed into scripts via `KEYS[]`.
+Lua scripts never assemble key strings — the key schema lives in one place.
 
 ### Master config (control-plane-owned)
 
-A single blob of configuration written by the control plane; read-only to the data plane:
+`first_gateway.database.redis.router_config`: this defines the contract between
+the control plane, which publishes the configuration blob, and the data plane,
+where apiservers continuously reload an in-memory snapshot of the
+`RouterConfig`.
 
-```
-cfg:version                      → monotonically increasing int
-cfg:models                       → set of model names
-
-cfg:model:{name}                 → JSON {
-    name,
-    allowed_groups: [...],
-    supported_endpoints: [...],
-    deployments: [ {slug, tier} ],
-    quotas: {
-        default:   {tpm, burst_tokens, rpm, max_user_concurrency},
-        overrides: {group_or_user: {...}}
-    },
-    overload_policy: {
-        short_retry_s: 15,               # micro-contention Retry-After base
-        retry_jitter_pct: 30,            # server-side jitter to break retry herds
-    }
-}
-
-cfg:deployment:{slug}            → JSON {
-    slug, model, cluster,
-    weight,                              # weighted random selection of replicas
-    per_replica_concurrency,             # max replica internal queue/running depth
-    cold_start_duration_s,               # Estimated replica cold start duration (from created to running)
-    replica_launch_ts,                   # Timestamp of last launched replica (for calculating ETA)
-    cold_capacity_available,             # Flags whether a cold replica could be started
-    cooldown: {threshold, window_s, duration_s} | null,
-    replicas: [replica_id, ...]
-}
-
-cfg:replica:{id}                 → JSON {
-    id, deployment, url, api_key_ref,
-}
-```
-
-Rules:
-- Control plane advertises a replica as `healthy` **only when actually warm** (this requires passing /health check and perhaps a periodic small-prompt test)
-- `replica_id` and slug are unique/stable across reconciles so churn state survives config rewrites.
+- Control plane advertises a replica as `healthy` **only when actually warm**
+(this requires passing health check)
+- Replicas are identified by `uid`, which is a postgres autoincrementing primary
+key that is never recycled.  This ensures replicas identifiers are unique/stable
+across reconciles, and redis state remains valid across config rewrites.
+- Models are identified from the HTTP request body `model` parameter, which is
+matched to the unique preferred `name` or any number of optional legacy `aliases`.
+- Deployments are identified  by `name`.  Since users may target deployments in the URL
+path, and deployment names may contain `/`, the name is
+mapped to a slug (1:1 mapping by swapping `/` for `~`).
 - Config rewrite is atomic from the router's view: write keys → bump `cfg:version` → publish.
+
+Even though FIRST Gateway does not explicitly manage Replicas for static
+deployments, all deployment types converge to the uniform `RouterConfig` so that
+routing is decoupled from the mechanics of model deployment.  Pilot deployments
+will happen to have a truly dynamic list of replicas; Static deployments will
+always have just one hard-coded replica.
 
 ### Router-managed state
 
-Replica utilization and cooldown state is tracked by the data plane.  A
-reservation ledger is maintained for each request ID to maintain distributed
-consistency:
+The data plane tracks three categories of live state in Redis:
 
-```
-rt:replica:{id}:inflight            → int (Lua-managed; vs per_replica_concurrency)
-rt:replica:{id}:cooldown            → JSON {until_ts, reason, epoch}, TTL = duration
-rt:reserve:{request_id}             → JSON {replica_id, model, user, est_tokens, admit_ts}
+- **Replica utilization** — how busy is each backend right now?
+- **Demand signals** — how much unmet demand exists, for the autoscaler?
+- **Reservation ledger** — what has each in-flight request reserved, so settlement can undo it exactly?
 
-rt:demand:{model} → HASH {
-    inflight,               # gauge
-    capacity_rejects_total, # MONOTONIC counter
-    last_reject_ts          # timestamp of most recent capacity reject
-}
-```
+#### Replica and model counters
 
-Quota state is maintained per-user, per-model:
+| Key | Type | Description |
+|---|---|---|
+| `rt:model:{model}:inflight` | HASH `replica_id → int` | Per-replica concurrent request count, grouped into one hash per model so a single `HGETALL` retrieves all replica loads at once. Incremented atomically by `admit`, decremented by `settle`. |
+| `rt:model:{model}:demand` | HASH `{inflight, capacity_rejects_total, last_reject_ts}` | Autoscaler-facing signals. `inflight` is a gauge of total model load across all replicas. `capacity_rejects_total` is a monotonic counter the autoscaler diffs over a window to compute reject rate. `last_reject_ts` drives scale-from-zero (recent reject with zero replicas → cold start). |
+| `rt:replica:{id}:errors` | INT with TTL | Upstream error counter that doubles as the cooldown mechanism. The first error arms a TTL of `cooldown_window_sec`; if errors accumulate to `cooldown_threshold` within that window, the TTL is extended to `cooldown_bench_sec` and `admit` treats the replica as benched until the key expires. Incarnation-unique replica IDs (Postgres autoincrement, never recycled) guarantee a counter never haunts a relaunched replica. |
 
-```
-quota:{model}:{user}:tokens       → GCRA state (theoretical arrival time), single key
-quota:{model}:{user}:rpm          → GCRA state for request rate
-quota:{model}:{user}:inflight     → int (per-user concurrency, Lua-managed)
-```
+#### Reservation ledger
 
-#### Control Plane Feedback
+Each admitted request writes a **reservation** — a record of what resources it holds — so that `settle` can reverse its effects exactly, even if the worker crashes mid-stream.  The inflight counters and GCRA state are derived consequences; the reservation is the source of truth.
+
+| Key | Type | Description |
+|---|---|---|
+| `rt:reserve:{request_id}` | JSON string | The reservation blob: `{request_id, model_name, user_id, replica_id, est_tokens, admit_ts, tokens_per_sec, burst_tokens}`.  Written by `admit`, read and deleted by `settle`.  Has **no TTL** — lifecycle is managed by the deadline index below. |
+| `rt:deadlines` | ZSET `request_id → deadline_ts` | Lease index for all live reservations. Workers renew their requests' deadlines every ~10s (bumping to `now + lease_s`, capped at `admit_ts + max_stream_s`).  The sweeper runs `ZRANGEBYSCORE` to find past-due entries — reservations whose worker crashed or whose stream exceeded the cap — and settles them. |
+
+#### Quota state
+
+Per-user, per-model rate limiting uses the [GCRA algorithm](#gcra-quota-mechanics).  Each quota dimension gets its own key so they can be checked and advanced independently within the `admit` script.
+
+| Key | Type | Description |
+|---|---|---|
+| `quota:{model}:{user}:tokens` | STRING (float) | GCRA theoretical arrival time (TAT) for token usage.  Represents the earliest moment the next token could be admitted at the configured `tokens_per_sec` rate.  Missing key = no outstanding token debt.  TTL is set to the burst window + 1s so idle users' keys expire naturally. |
+| `quota:{model}:{user}:rpm` | STRING (float) | GCRA TAT for request rate.  Same mechanics as the token key but metered per-request at `requests_per_sec`. |
+| `quota:{model}:{user}:inflight` | INT | Per-user concurrent request count for this model.  Incremented by `admit`, decremented by `settle`, deleted when it reaches zero (absence = 0). |
+
+#### Feedback to Control Plane Autoscaler
 
 The Control Plane observes and aggregates replica counters to determine
 aggregate demand for the autoscaler.  Quota rejections never count as demand — a
 user over fair share is not a scaling reason.
 
-- Replica in-flights are summed to obtain model in-flights and track model-wide 1m/5m load averages.
 - Model capacity rejects are sampled and diffed over a window of time to obtain an _average rate_ of
   rejections per minute.
-- In flight load plus capacity rejects are combined and normalized using `demand = inflight + α × reject_rate × avg_request_duration`: inflight gives currently occupied slots and second term gives slots that _would be occupied_ if the rejected traffic had been admitted.  Leave the windowing and scaling factors to the autoscaler; the data plane just publishes the raw facts.
-
-Each deployment has a configured **demand threshold ladder** that maps units of
-demand to desired number of replicas.  This allows all deployments to scale
-based on the combined model-level demand metric.  The autoscaling strategy
-provides:
-
-- **Hysteresis bands**: scale-up rung at N, scale-down at ~0.7×N
-- **Sustain**: demand must exceed N for a minimum `scale_up_sustain_s` and must fall below 0.7N
-for a minimum `scale_down_sustain_s` to come back down. The scale down sustain should
-be significantly longer to prevent flapping and prematurely tearing down warm capacity.
-- **Cold start signal:** do not require sustain to scale up from zero
+- In flight load plus capacity rejects are combined and normalized using `demand = inflight + reject_rate × avg_request_duration`: inflight gives currently occupied slots and second term gives slots that _would be occupied_ if the rejected traffic had been admitted.  Refer to `DemandThresholdStrategy` for details on the autoscaling methodology.
 
 
 ## Detailed Component Design
@@ -223,77 +217,117 @@ require DB lookup.
 
 ### Admission Controller
 
-A pair of atomic Redis Lua scripts is used to manage high-churn Redis state with
-distributed consistency. The `admit()` function checks quotas/capacity and
-assigns each request to a replica. The `settle(request_id)` frees resources and
-performs idempotent cleanup.
+Four Lua scripts manage the admission lifecycle
+(`first_gateway.database.redis.admission`):
 
-The `admit()` function:
+| Script | Purpose |
+|---|---|
+| `admit` | Check quotas and capacity, assign a replica, write the reservation. |
+| `settle` | Reverse a reservation's effects: decrement counters, correct GCRA, delete the reservation. |
+| `renew` | Extend lease deadlines for in-flight requests (batched). |
+| `record_error` | Track upstream failures and trigger cooldown (see Cooldown above). |
 
-- Takes in `{model, user, replica_id, request_id, est_tokens, admit_ts}`
-- Records a reservation in `rt:reserve:{request_id}` containing the input data above.
-    - The reservation **must not have a TTL in Redis**!  Instead, the deadline is managed as a sorted set (`rt:reserve:deadlines`, key on `request_id`, score is `deadline_ts`).
-    - Deadline renewal is handled by workers in a small batch Lua script (for each id, if EXISTS rt:reserve:{id} then ZADD). Deadline is renewed every 10s: bump deadlines out to 30s in the future, up to a max limit of ~15minutes after `admit_ts` for one inference task.
-- The admit function performs the checks, updates counters, and returns the admit/reject state and metadata:
+#### admit()
+
+Takes the request identity (`request_id`, `model_name`, `user_id`), estimated
+token usage, quota limits, and an ordered list of candidate replicas chosen by
+the router.  Checks are evaluated in a fixed order — **quota first, then
+capacity** — so that per-user rejections never inflate demand signals:
+
+```
+quota checks (affect only the requesting user):
+  user concurrency  ≥ max_user_concurrency        → REJECT_QUOTA(user_concurrency)
+  GCRA request rate  would exceed limit            → REJECT_QUOTA(user_rpm, retry_after_s)
+  GCRA token rate    would exceed limit            → REJECT_QUOTA(user_tpm, retry_after_s)
+
+capacity check (walks candidate replicas in router-chosen order):
+  for each candidate:
+    error count ≥ cooldown_threshold               → skip (benched)
+    replica inflight ≥ max_replica_concurrency      → skip (saturated)
+    first replica with headroom                     → chosen
+
+  if no replica chosen → REJECT_CAPACITY(reason)
+    reason: "no_candidates" | "all_benched" | "saturated"
+
+commit:
+  advance GCRA states (reserve est_tokens)
+  increment user and replica inflight counters
+  increment demand inflight gauge
+  write reservation to rt:reserve:{request_id}
+  add lease deadline to rt:deadlines               → ADMIT(replica_id)
+```
+
+Return values:
 
 ```lua
--- ADMIT:            {1, replica_id}
--- REJECT_QUOTA:     {2, reason, retry_after_ms}   -- reason: "user_tpm"|"user_rpm"|"user_concurrency"
--- REJECT_CAPACITY:  {3, reason}                   -- reason: "cooldown"|"concurrency"
+{1, replica_id}                  -- ADMIT
+{2, reason, retry_after_s}       -- REJECT_QUOTA   (retry_after_s = -1 for concurrency)
+{3, reason}                      -- REJECT_CAPACITY
 ```
 
-Quota rejections return 429 with the reason and a `Retry-After` calculated based on the user's bucket refill timestamp.
-Capacity rejections also 429, but the `Retry-After` comes from the expected ETA or short-retry-jitter (see below) and
-the capacity rejection counter is incremented.
+Quota rejections return 429 with `Retry-After` computed from the GCRA refill
+timestamp.  Capacity rejections also return 429; the `Retry-After` comes from
+the configured short-retry interval ± jitter.  Only capacity rejects increment
+the demand counter — a user over fair share is not a scaling reason.
 
-Pseudo-code:
+#### settle()
 
-```
-admit():
-  # ---- quota
-  if quota:{model}:{user}:inflight >= max_user_concurrency   → REJECT(user_concurrency)
-  if GCRA(quota:{model}:{user}:rpm) would exceed              → REJECT(user_rpm, retry_after)
-  if GCRA(quota:{model}:{user}:tokens, est_tokens) exceeds    → REJECT(user_tpm, retry_after)
+Takes `request_id` and optionally `actual_tokens`.  Reads the reservation to
+discover what was reserved, then reverses it:
 
-  # ---- capacity
-  if rt:replica:{id}:cooldown active (epoch current)          → REJECT(cooldown)      [capacity]
-  if rt:replica:{id}:inflight >= per_replica_concurrency      → REJECT(concurrency)   [capacity]
+1. Decrement the replica's count in `rt:model:{model}:inflight`
+2. Decrement the user's count in `quota:{model}:{user}:inflight`
+3. If actual token usage is known, apply a GCRA correction: adjust the TAT by
+   `(actual − estimated) / tokens_per_sec`
+4. Decrement the demand `inflight` gauge
+5. Remove the request from `rt:deadlines` and delete the reservation
 
-  # ---- commit ----
-  INCR replica inflight
-  INCR user inflight
-  advance GCRA states (reserve est_tokens)
-  SET rt:reserve:{request_id}
-  → ADMIT
-```
+The script is **idempotent**: if the reservation is already gone, it no-ops.
+This makes concurrent settlement safe — the request `finally` block, the
+sweeper, and retries can all call `settle()` without coordination, and exactly
+one caller applies.
 
-The `settle()` function performs the inverse compensating transaction:
+For 99.9% of requests, settlement happens naturally in the request handler's
+`finally` block.  The hot path passes `model_name` and `user_id` from the
+request context to skip a pre-read round trip.  The sweeper, which only has
+`request_id`, reads the reservation first to discover the identity.
 
-- Takes `request_id` and `actual_tokens` as input
-- Read the reservation; if missing: no-op & return
-- Decrement replica inflight
-- Decrement `quota:{model}:{user}` inflight
-- Apply correction (`actual_tokens - est_tokens`) to GCRA
-- Delete `rt:reserve{request_id}`
-- Remove `request_id` from `rt:reserve:deadlines` index
+Crashed workers and leaked reservations are caught by the sweeper, which
+periodically runs `ZRANGEBYSCORE rt:deadlines -inf {now}` to surface
+reservations whose lease has lapsed.
 
-This cleanup is atomic/idempotent and occurs naturally, for 99.9% of requests,
-using `try/finally` semantics in the request path. Crashed workers and leaked
-reservations are caught using a sweeper that periodically checks `ZRANGEBYSCORE
-rt:reserve:deadlines {PAST-DUE}`: this surfaces reservations past the deadline
-that must have expired.
+#### Reserve-then-settle pattern
 
-Capacity rejects increment `demand:{model}:capacity_rejects_1m` and let the Tier Router try the next replica/tier; quota rejects return **429 + Retry-After computed from GCRA refill** and never touch demand.
-- **Reserve-then-settle:** `est_tokens` = prompt-size heuristic + `max_tokens`.  `settle()` applies (actual − reserved) to the GCRA state, decrements both inflight counters, decrements demand, deletes the reservation. Without reservation, N concurrent agentic requests admit before any reports usage and blow through quota.
-    - The token bucket depth is matched to the max context window for the model: in a single burst request, a user can fill the model's context.
-    - The refill rate dictates how frequently a user can perform such a request (e.g. 128k context per minute)
-- **Non-LLM tasks:** same script with `est_tokens = 0` (concurrency + RPM only) — equal-footing admission, LLM-only accounting skipped.
+`est_tokens` is a prompt-size heuristic plus `max_tokens` — an upper bound on
+what the request might consume.  `settle()` applies the correction
+`(actual − estimated)` to the GCRA state, so over-estimation doesn't permanently
+penalize the user.
+
+Without this reservation pattern, N concurrent agentic requests could all pass
+the token quota check before any of them reports usage, blowing through the limit.
+
+- The token bucket depth (`burst_tokens`) is matched to the model's max context
+  window: a single burst request can fill the entire context.
+- The refill rate (`tokens_per_sec`, derived from `tpm / 60`) dictates
+  sustainable throughput (e.g. 128k tokens per minute).
+- **Non-LLM tasks** use `est_tokens = 0`, giving them equal-footing admission
+  (concurrency + RPM) while skipping token accounting.
 
 ### GCRA quota mechanics
 
-- One Redis key per (model, user, resource) storing the theoretical-arrival-time; standard GCRA in a few Lua lines.
-- Parameters from model config: `tpm` → refill rate (tpm/60 per second); `burst_tokens` → bucket depth. Agentic pattern: idle "thinking" phases accrue credit; a large tool-result turn spends it; sustained rate stays capped at tpm.
-- On rejection the script returns seconds-until-conformant → `Retry-After`. Stock OpenAI/Anthropic SDKs back off automatically on 429 + Retry-After, so well-behaved agents self-pace with zero custom client code.
+[GCRA](https://en.wikipedia.org/wiki/Generic_cell_rate_algorithm) (Generic Cell
+Rate Algorithm) is a leaky-bucket variant that needs only one value per key — the
+theoretical arrival time (TAT) — instead of a counter and a timestamp.  The
+implementation is a few lines inside `admit.lua`'s `gcra_eval()` helper.
+
+- One Redis key per (model, user, resource) storing the TAT.
+- Parameters from model config: `tpm` → refill rate (`tpm / 60` = `tokens_per_sec`);
+  `burst_tokens` → bucket depth.
+- Agentic pattern: idle "thinking" phases accrue credit as the TAT drifts toward
+  `now`; a large tool-result turn spends it; sustained rate stays capped at tpm.
+- On rejection the script returns seconds-until-conformant → `Retry-After`.
+  Stock OpenAI/Anthropic SDKs back off automatically on 429 + Retry-After, so
+  well-behaved agents self-pace with zero custom client code.
 
 ### Router
 
