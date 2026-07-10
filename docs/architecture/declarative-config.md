@@ -68,10 +68,10 @@ exist.
 The CLI runs two HTTP calls so the user can review changes before
 committing them, and so that concurrent admins cannot stomp each other:
 
-1. `POST /resources/plan` with the manifests → returns a
+1. `POST /control/v1/plan` with the manifests → returns a
    `ResourceChangePlan` (`previous_version`, `to_add`, `to_update`,
    `to_delete`, `no_change`).
-2. `POST /resources/apply` with the manifests **and** the approved plan.
+2. `POST /control/v1/apply` with the manifests **and** the approved plan.
 
 `apply_plan` (in `first_gateway.services.plan_apply`) then:
 
@@ -88,7 +88,7 @@ committing them, and so that concurrent admins cannot stomp each other:
   `ResourceRow`).
 
 Every applied `ConfigVersion` keeps a JSONB snapshot of `changes` for
-audit; `GET /resources/config-versions/{uid}` returns one.
+audit; `GET /control/v1/config-versions/{uid}` returns one.
 
 ### Vignette: zero-downtime vLLM upgrade via canary
 

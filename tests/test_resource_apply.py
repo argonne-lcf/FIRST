@@ -1,5 +1,5 @@
 """
-Tests for the /resources/plan and /resources/apply resource management endpoints.
+Tests for the /control/v1/plan and /control/v1/apply resource management endpoints.
 """
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ def _load(spec_dir: str) -> list[ResourceManifest]:
 async def _plan(
     client: httpx.AsyncClient, resources: list[ResourceManifest]
 ) -> ResourceChangePlan:
-    """POST /plan and return the parsed JSON response."""
+    """POST /control/v1/plan and return the parsed JSON response."""
     resp = await client.post(
-        "/resources/plan",
+        "/control/v1/plan",
         json={"resources": [r.model_dump(mode="json") for r in resources]},
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -46,9 +46,9 @@ async def _apply(
     resources: list[ResourceManifest],
     plan: ResourceChangePlan,
 ) -> ConfigVersion | None:
-    """POST /apply with the given resources and approved plan."""
+    """POST /control/v1/apply with the given resources and approved plan."""
     resp = await client.post(
-        "/resources/apply",
+        "/control/v1/apply",
         json={
             "resources": [r.model_dump(mode="json") for r in resources],
             "approved_plan": plan.model_dump(mode="json"),
@@ -189,7 +189,7 @@ async def test_invalid_reference(client: httpx.AsyncClient) -> None:
     """A resource referencing a nonexistent parent returns 400."""
     resources = _load("invalid_ref")
     resp = await client.post(
-        "/resources/plan",
+        "/control/v1/plan",
         json={"resources": [r.model_dump(mode="json") for r in resources]},
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -203,7 +203,7 @@ async def test_duplicate_resources(client: httpx.AsyncClient) -> None:
     """Two resources with the same kind+name returns 400."""
     resources = _load("duplicates")
     resp = await client.post(
-        "/resources/plan",
+        "/control/v1/plan",
         json={"resources": [r.model_dump(mode="json") for r in resources]},
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -233,7 +233,7 @@ async def test_concurrent_update_diverged_plan(
     # Step 4: try to apply the stale plan_updates.
     # The actual plan (replanned from current DB) will differ from plan_updates.
     resp = await client.post(
-        "/resources/apply",
+        "/control/v1/apply",
         json={
             "resources": [r.model_dump(mode="json") for r in updates_resources],
             "approved_plan": plan_updates.model_dump(mode="json"),
@@ -251,10 +251,10 @@ async def test_list_access_groups_admin_and_user(
     """Admin sees the baseline AccessGroup; ordinary user fails its group +
     domain restrictions and sees nothing."""
     admin_resp = await client.get(
-        "/resources/access-groups", headers=auth_header(ADMIN_TOKEN)
+        "/catalog/v1/access-groups", headers=auth_header(ADMIN_TOKEN)
     )
     user_resp = await client.get(
-        "/resources/access-groups", headers=auth_header(USER_TOKEN)
+        "/catalog/v1/access-groups", headers=auth_header(USER_TOKEN)
     )
     assert admin_resp.status_code == 200
     assert user_resp.status_code == 200
@@ -265,7 +265,7 @@ async def test_list_access_groups_admin_and_user(
 async def test_list_models(
     client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
-    resp = await client.get("/resources/models", headers=auth_header(ADMIN_TOKEN))
+    resp = await client.get("/catalog/v1/models", headers=auth_header(ADMIN_TOKEN))
     assert resp.status_code == 200
     [model] = resp.json()
     assert model["name"] == "meta-llama/llama-3-8b"
@@ -278,7 +278,7 @@ async def test_list_static_deployments(
     client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     resp = await client.get(
-        "/resources/static-deployments", headers=auth_header(ADMIN_TOKEN)
+        "/catalog/v1/deployments/static", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 200
     [d] = resp.json()
@@ -290,7 +290,7 @@ async def test_list_and_get_pilot_deployment(
     client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     list_resp = await client.get(
-        "/resources/pilot-deployments", headers=auth_header(ADMIN_TOKEN)
+        "/catalog/v1/deployments/pilot", headers=auth_header(ADMIN_TOKEN)
     )
     assert list_resp.status_code == 200
     [summary] = list_resp.json()
@@ -298,7 +298,7 @@ async def test_list_and_get_pilot_deployment(
     assert "replicas" not in summary  # summary view defers replicas
 
     detail_resp = await client.get(
-        f"/resources/pilot-deployments/{summary['name']}",
+        f"/catalog/v1/deployments/pilot/{summary['name']}",
         headers=auth_header(ADMIN_TOKEN),
     )
     assert detail_resp.status_code == 200
@@ -312,7 +312,9 @@ async def test_list_and_get_cluster(
     client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     # List visible to ordinary users
-    user_list = await client.get("/resources/clusters", headers=auth_header(USER_TOKEN))
+    user_list = await client.get(
+        "/catalog/v1/clusters", headers=auth_header(USER_TOKEN)
+    )
     assert user_list.status_code == 200
     [summary] = user_list.json()
     assert summary["name"] == "sophia"
@@ -320,7 +322,7 @@ async def test_list_and_get_cluster(
 
     # Detail visible to admins
     admin_detail = await client.get(
-        "/resources/clusters/sophia", headers=auth_header(ADMIN_TOKEN)
+        "/catalog/v1/clusters/sophia", headers=auth_header(ADMIN_TOKEN)
     )
     assert admin_detail.status_code == 200
     detail = admin_detail.json()
@@ -329,7 +331,7 @@ async def test_list_and_get_cluster(
 
     # Ordinary users forbidden from cluster detail
     user_detail = await client.get(
-        "/resources/clusters/sophia", headers=auth_header(USER_TOKEN)
+        "/catalog/v1/clusters/sophia", headers=auth_header(USER_TOKEN)
     )
     assert user_detail.status_code == 403
     assert user_detail.json()["error"]["code"] == "access_denied"
@@ -346,18 +348,18 @@ async def test_user_filtered_out_when_no_access(
         assert resp.status_code == 200, resp.text
         return {o["name"] for o in resp.json()}
 
-    assert await names("/resources/models", USER_TOKEN) == set()
-    assert await names("/resources/pilot-deployments", USER_TOKEN) == set()
-    assert await names("/resources/static-deployments", USER_TOKEN) == set()
+    assert await names("/catalog/v1/models", USER_TOKEN) == set()
+    assert await names("/catalog/v1/deployments/pilot", USER_TOKEN) == set()
+    assert await names("/catalog/v1/deployments/static", USER_TOKEN) == set()
     # Admin still sees the underlying resources.
-    assert await names("/resources/models", ADMIN_TOKEN) == {"meta-llama/llama-3-8b"}
+    assert await names("/catalog/v1/models", ADMIN_TOKEN) == {"meta-llama/llama-3-8b"}
 
 
 async def test_get_pilot_deployment_forbidden_for_unauthorized_user(
     client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     resp = await client.get(
-        "/resources/pilot-deployments/sophia/pilot/llama-3-8b",
+        "/catalog/v1/deployments/pilot/sophia/pilot/llama-3-8b",
         headers=auth_header(USER_TOKEN),
     )
     assert resp.status_code == 403
@@ -462,7 +464,7 @@ async def test_apply_cascades_reconcile_reset_to_pilot_replicas(
     # and test the apply cascade via the Cluster path above.
     # Actually, let's directly test via the reconcile-reset endpoint.
     resp = await client.post(
-        "/resources/reconcile-reset",
+        "/control/v1/reconcile-reset",
         json={"resource": "PilotDeployment.sophia/pilot/llama-3-8b"},
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -478,7 +480,7 @@ async def test_reconcile_reset_endpoint(
     db_session: AsyncSession,
     baseline_plan: ResourceChangePlan,
 ) -> None:
-    """POST /resources/reconcile-reset clears backoff state for a named resource."""
+    """POST /control/v1/reconcile-reset clears backoff state for a named resource."""
     from first_gateway.database.models import Cluster
 
     cluster = await Cluster.get_by_name(db_session, "sophia")
@@ -487,7 +489,7 @@ async def test_reconcile_reset_endpoint(
     await db_session.commit()
 
     resp = await client.post(
-        "/resources/reconcile-reset",
+        "/control/v1/reconcile-reset",
         json={"resource": "Cluster.sophia"},
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -511,7 +513,7 @@ async def test_reconcile_reset_cascades_to_child_pilot_jobs(
     await db_session.commit()
 
     resp = await client.post(
-        "/resources/reconcile-reset",
+        "/control/v1/reconcile-reset",
         json={"resource": "Cluster.sophia"},
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -527,7 +529,7 @@ async def test_reconcile_reset_not_found(
 ) -> None:
     """Resetting a nonexistent resource returns 404."""
     resp = await client.post(
-        "/resources/reconcile-reset",
+        "/control/v1/reconcile-reset",
         json={"resource": "Cluster.nonexistent"},
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -537,14 +539,14 @@ async def test_reconcile_reset_not_found(
 async def test_reconcile_reset_bad_format(client: httpx.AsyncClient) -> None:
     """Malformed resource identifier returns 400."""
     resp = await client.post(
-        "/resources/reconcile-reset",
+        "/control/v1/reconcile-reset",
         json={"resource": "no-dot-here"},
         headers=auth_header(ADMIN_TOKEN),
     )
     assert resp.status_code == 400
 
     resp = await client.post(
-        "/resources/reconcile-reset",
+        "/control/v1/reconcile-reset",
         json={"resource": "FakeKind.name"},
         headers=auth_header(ADMIN_TOKEN),
     )

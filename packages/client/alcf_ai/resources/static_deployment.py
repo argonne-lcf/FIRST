@@ -13,6 +13,6 @@ class StaticDeploymentsResource:
         self._client = client
 
     def list(self) -> list[StaticDeploymentDetail]:
-        resp = self._client.get("/resources/static-deployments")
+        resp = self._client.get("/catalog/v1/deployments/static")
         raise_for_status(resp)
         return [StaticDeploymentDetail.model_validate(o) for o in resp.json()]

@@ -34,7 +34,7 @@ async def baseline(client: httpx.AsyncClient) -> None:
 
 
 async def _get_models(client: httpx.AsyncClient) -> list[dict[str, Any]]:
-    resp = await client.get("/resources/models", headers=auth_header(ADMIN_TOKEN))
+    resp = await client.get("/catalog/v1/models", headers=auth_header(ADMIN_TOKEN))
     assert resp.status_code == 200
     return resp.json()  # type: ignore[no-any-return]
 
@@ -64,7 +64,7 @@ async def test_list_static_deployments_runtime(
 ) -> None:
     """list_static_deployments populates BackendRuntime from Redis."""
     resp = await client.get(
-        "/resources/static-deployments", headers=auth_header(ADMIN_TOKEN)
+        "/catalog/v1/deployments/static", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 200
     sds = resp.json()
@@ -76,7 +76,7 @@ async def test_list_static_deployments_runtime(
     await redis.set(Keys.backend_errors(backend_id), "4")
 
     resp = await client.get(
-        "/resources/static-deployments", headers=auth_header(ADMIN_TOKEN)
+        "/catalog/v1/deployments/static", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 200
     sds = resp.json()
@@ -91,7 +91,7 @@ async def test_get_pilot_deployment_replica_runtime(
     """get_pilot_deployment populates BackendRuntime on each PilotReplica."""
     dep_name = "sophia/pilot/llama-3-8b"
     resp = await client.get(
-        f"/resources/pilot-deployments/{dep_name}",
+        f"/catalog/v1/deployments/pilot/{dep_name}",
         headers=auth_header(ADMIN_TOKEN),
     )
     assert resp.status_code == 200

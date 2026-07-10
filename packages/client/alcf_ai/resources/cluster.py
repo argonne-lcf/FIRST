@@ -43,11 +43,11 @@ class ClustersResource:
         return self._handles.setdefault(name, ClusterClient(name, self._client))
 
     def list(self) -> list[ClusterSummary]:
-        resp = self._client.get("/resources/clusters")
+        resp = self._client.get("/catalog/v1/clusters")
         raise_for_status(resp)
         return [ClusterSummary.model_validate(o) for o in resp.json()]
 
     def get(self, name: str) -> ClusterDetail:
-        resp = self._client.get(f"/resources/clusters/{name}")
+        resp = self._client.get(f"/catalog/v1/clusters/{name}")
         raise_for_status(resp)
         return ClusterDetail.model_validate(resp.json())

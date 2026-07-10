@@ -25,7 +25,7 @@ class AdminAPI:
 
     def plan(self, resources: list[ResourceManifest]) -> ResourceChangePlan:
         resp = self._client.post(
-            "/resources/plan",
+            "/control/v1/plan",
             json={"resources": [r.model_dump(mode="json") for r in resources]},
         )
         raise_for_status(resp)
@@ -35,7 +35,7 @@ class AdminAPI:
         self, resources: list[ResourceManifest], approved_plan: ResourceChangePlan
     ) -> ConfigVersion | None:
         resp = self._client.post(
-            "/resources/apply",
+            "/control/v1/apply",
             json={
                 "resources": [r.model_dump(mode="json") for r in resources],
                 "approved_plan": approved_plan.model_dump(mode="json"),
@@ -45,18 +45,18 @@ class AdminAPI:
         return ConfigVersion.model_validate(resp.json()) if resp.json() else None
 
     def list_config_versions(self) -> list[ConfigVersionSummary]:
-        resp = self._client.get("/resources/config-versions")
+        resp = self._client.get("/control/v1/config-versions")
         raise_for_status(resp)
         return [ConfigVersionSummary.model_validate(v) for v in resp.json()]
 
     def get_config_version(self, uid: int) -> ConfigVersion:
-        resp = self._client.get(f"/resources/config-versions/{uid}")
+        resp = self._client.get(f"/control/v1/config-versions/{uid}")
         raise_for_status(resp)
         return ConfigVersion.model_validate(resp.json())
 
     def reconcile_reset(self, resource: str) -> None:
         resp = self._client.post(
-            "/resources/reconcile-reset",
+            "/control/v1/reconcile-reset",
             json={"resource": resource},
         )
         raise_for_status(resp)
@@ -65,7 +65,7 @@ class AdminAPI:
         self, name: str, num_replicas: int
     ) -> PilotDeploymentSummary:
         resp = self._client.put(
-            f"/resources/pilot-deployments/{name}/desired-replicas",
+            f"/control/v1/deployments/pilot/{name}/desired-replicas",
             json={"num_replicas": num_replicas},
         )
         raise_for_status(resp)

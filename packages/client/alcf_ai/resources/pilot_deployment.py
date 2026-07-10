@@ -16,11 +16,11 @@ class PilotDeploymentsResource:
         self._client = client
 
     def list(self) -> list[PilotDeploymentSummary]:
-        resp = self._client.get("/resources/pilot-deployments")
+        resp = self._client.get("/catalog/v1/deployments/pilot")
         raise_for_status(resp)
         return [PilotDeploymentSummary.model_validate(o) for o in resp.json()]
 
     def get(self, name: str) -> PilotDeploymentDetail:
-        resp = self._client.get(f"/resources/pilot-deployments/{name}")
+        resp = self._client.get(f"/catalog/v1/deployments/pilot/{name}")
         raise_for_status(resp)
         return PilotDeploymentDetail.model_validate(resp.json())

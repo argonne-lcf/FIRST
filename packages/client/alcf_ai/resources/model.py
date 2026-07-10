@@ -13,6 +13,6 @@ class ModelsResource:
         self._client = client
 
     def list(self) -> list[ModelSummary]:
-        resp = self._client.get("/resources/models")
+        resp = self._client.get("/catalog/v1/models")
         raise_for_status(resp)
         return [ModelSummary.model_validate(o) for o in resp.json()]

@@ -36,10 +36,10 @@ Inference engine settings are easy to change and roll back with declarative conf
 
 ## Terminology
 
-- **Endpoint:** Task-specific HTTP method+URL exposed by the gateway API.
- `POST /chat/completions` is the API endpoint to create an OpenAI chat completion.
+- **Endpoint:** Task-specific HTTP method+path exposed by the gateway API.
+ `POST /api/federated/v1/chat/completions` is the API endpoint to create an OpenAI chat completion.
   Endpoints describe the task, _not_ the AI model.
-- **Model:**  The Model resource provides the canonical _name_ of the AI model that users select when calling an API Endpoint.  Users invoke the endpoint `POST /chat/completions` while selecting the model in the request body: `{"model": "openai/gpt-oss-120b"}`. Models advertise their supported endpoints; LLMs generally support the standard OpenAI and Anthropic endpoints. Models like SAM3 support promptable image segmentation tasks.  Models also encapsulate usage policy: what user groups can access the model?  What are the per-user quotas for the model?
+- **Model:**  The Model resource provides the canonical _name_ of the AI model that users select when calling an API Endpoint.  Users invoke the endpoint `POST /api/federated/v1/chat/completions` while selecting the model in the request body: `{"model": "openai/gpt-oss-120b"}`. Models advertise their supported endpoints; LLMs generally support the standard OpenAI and Anthropic endpoints. Models like SAM3 support promptable image segmentation tasks.  Models also encapsulate usage policy: what user groups can access the model?  What are the per-user quotas for the model?
 - **Deployment:** A model can have one or more Deployments, which describe how a live model backend is created.  Deployments are tied to _Clusters_, which group deployments sharing a common underlying platform (e.g. same HPC scheduler)
 - **Backend:** One routeable instance of a model deployment, possessing a live URL that the gateway can proxy endpoint traffic to.
 

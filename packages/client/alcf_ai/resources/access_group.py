@@ -13,6 +13,6 @@ class AccessGroupsResource:
         self._client = client
 
     def list(self) -> list[AccessGroup]:
-        resp = self._client.get("/resources/access-groups")
+        resp = self._client.get("/catalog/v1/access-groups")
         raise_for_status(resp)
         return [AccessGroup.model_validate(o) for o in resp.json()]
