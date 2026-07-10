@@ -108,8 +108,8 @@ class AdmissionController:
         self,
         client: Redis,
         *,
-        lease_sec: int = 30,
-        max_request_sec: int = 3600,
+        lease_sec: float = 30.0,
+        max_request_sec: float = 3600.0,
         renew_chunk: int = 500,
     ) -> None:
         """

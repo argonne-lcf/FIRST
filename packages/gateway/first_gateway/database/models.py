@@ -409,7 +409,7 @@ class PilotJob(ResourceRow, SoftDeletable):
     )
     manager_url: Mapped[str | None]
     manager_health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
-    resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    resources: Mapped[DictJsonb] = mapped_column(JSONB, default=dict)
     time_started: Mapped[DateTimeOrNone]
     idle_since: Mapped[DateTimeOrNone]
     walltime_min: Mapped[int]

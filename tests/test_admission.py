@@ -402,10 +402,10 @@ class TestLeaseRenewal:
         assert renewed == 5
 
     async def test_renew_respects_max_stream_cap(self, ac: AdmissionController) -> None:
-        short_ac = AdmissionController(ac.client, lease_sec=30, max_request_sec=1)
+        short_ac = AdmissionController(ac.client, lease_sec=30, max_request_sec=0.1)
         await _admit(short_ac, "req-1")
 
-        await asyncio.sleep(1.1)
+        await asyncio.sleep(0.2)
 
         renewed = await short_ac.renew(["req-1"])
         assert renewed == 0
@@ -427,20 +427,20 @@ class TestSweeper:
     async def test_sweeper_settles_expired_reservations(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
-        short_lease = AdmissionController(ac.client, lease_sec=1, max_request_sec=900)
+        short_lease = AdmissionController(ac.client, lease_sec=0.1, max_request_sec=900)
         await _admit(short_lease, "req-stale")
 
-        await asyncio.sleep(1.1)
+        await asyncio.sleep(0.2)
 
         settled = await short_lease.sweep()
         assert settled == 1
         assert await redis.get(Keys.reservation("req-stale")) is None
 
     async def test_sweeper_is_idempotent(self, ac: AdmissionController) -> None:
-        short_lease = AdmissionController(ac.client, lease_sec=1, max_request_sec=900)
+        short_lease = AdmissionController(ac.client, lease_sec=0.1, max_request_sec=900)
         await _admit(short_lease, "req-stale")
 
-        await asyncio.sleep(1.1)
+        await asyncio.sleep(0.2)
 
         first = await short_lease.sweep()
         second = await short_lease.sweep()
@@ -450,11 +450,11 @@ class TestSweeper:
     async def test_sweeper_restores_counters(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
-        short_lease = AdmissionController(ac.client, lease_sec=1, max_request_sec=900)
+        short_lease = AdmissionController(ac.client, lease_sec=0.1, max_request_sec=900)
         result = await _admit(short_lease, "req-stale")
         assert result.replica_id is not None
 
-        await asyncio.sleep(1.1)
+        await asyncio.sleep(0.2)
 
         await short_lease.sweep()
         inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.replica_id)

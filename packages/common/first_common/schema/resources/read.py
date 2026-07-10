@@ -14,6 +14,7 @@ from ..types import (
     RouterParams,
 )
 from . import spec
+from .runtime import ModelRuntime, ReplicaRuntime
 
 
 class _Overlay:
@@ -108,6 +109,7 @@ class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
 
     kind: Literal["StaticDeployment"] = "StaticDeployment"
     health: HealthCheckResult
+    runtime: ReplicaRuntime = ReplicaRuntime()
 
 
 class PilotReplica(ResourceMeta):
@@ -129,6 +131,8 @@ class PilotReplica(ResourceMeta):
     state: ReplicaState
     state_message: str
     started_at: datetime | None = None
+
+    runtime: ReplicaRuntime = ReplicaRuntime()
 
 
 class PilotDeploymentDetail(PilotDeploymentSummary, spec.PilotDeploymentSpec):
@@ -152,6 +156,7 @@ class ModelSummary(ResourceMeta, spec.ModelSpec):
     kind: Literal["Model"] = "Model"
     pilot_deployments: list[PilotDeploymentSummary]
     static_deployments: list[StaticDeployment]
+    runtime: ModelRuntime = ModelRuntime()
 
 
 class PilotJob(ResourceMeta):

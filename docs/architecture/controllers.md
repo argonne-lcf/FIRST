@@ -799,8 +799,7 @@ every 10s:
     target = ladder(ewma)
 
     if target > current_replicas:
-        if cooldown has elapsed:
-            scale up                     # EWMA is the only gate
+        scale up                     # EWMA is the only gate
     elif target < current_replicas:
         if ewma has been below threshold for scale_down_sustain_sec:
               scale down
