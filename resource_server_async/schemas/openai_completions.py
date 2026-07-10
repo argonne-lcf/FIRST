@@ -1,12 +1,11 @@
 from typing import Dict, List, Literal, Optional, Self, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Extention of the Pydantic BaseModel that prevent extra attributes
 class BaseModelExtraForbid(BaseModel):
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 # OpenAI stream_options

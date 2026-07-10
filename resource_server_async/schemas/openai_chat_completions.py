@@ -198,12 +198,16 @@ class ToolChoice(str, Enum):
 
 # Extention of the Pydantic BaseModel that prevent extra attributes
 class BaseModelExtraForbid(BaseModel):
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
+
+
+# Antonym of `BaseModelExtraForbid`
+class BaseModelExtraAllow(BaseModel):
+    model_config = ConfigDict(extra="allow")
 
 
 # vLLM extra_body field
-class ExtraBody(BaseModelExtraForbid):
+class ExtraBody(BaseModelExtraAllow):
     use_beam_search: bool
 
 
