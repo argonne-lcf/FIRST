@@ -12,7 +12,7 @@ from typing import NamedTuple
 from pydantic import BaseModel
 
 
-class ReplicaRuntime(BaseModel):
+class BackendRuntime(BaseModel):
     inflight: int = 0
     cooldown_errors: int = 0
 

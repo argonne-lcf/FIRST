@@ -1,14 +1,14 @@
 -- Admission: quota checks once, then walk the ordered candidate list.
--- Commit atomically for the first replica with capacity.
+-- Commit atomically for the first backend with capacity.
 --
 -- KEYS[1]    quota:{model}:{user}:tokens     GCRA TAT
 -- KEYS[2]    quota:{model}:{user}:rpm        GCRA TAT
 -- KEYS[3]    quota:{model}:{user}:inflight   user concurrency counter
--- KEYS[4]    rt:model:{model}:inflight       HASH replica_id → count
+-- KEYS[4]    rt:model:{model}:inflight       HASH backend_id → count
 -- KEYS[5]    rt:model:{model}:demand         HASH {inflight, capacity_rejects_total, last_reject_ts}
 -- KEYS[6]    rt:deadlines                    ZSET request_id → deadline_ts
 -- KEYS[7]    rt:reserve:{request_id}         reservation blob
--- KEYS[8..N] rt:replica:{id}:errors          one per candidate (parallel to ARGV triples)
+-- KEYS[8..N] rt:backend:{id}:errors          one per candidate (parallel to ARGV triples)
 --
 -- ARGV[1]  request_id
 -- ARGV[2]  model_name
@@ -20,10 +20,10 @@
 -- ARGV[8]  requests_per_sec
 -- ARGV[9]  burst_requests
 -- ARGV[10] lease_sec
--- ARGV[11..] candidate triples: replica_id, max_replica_concurrency, cooldown_threshold
+-- ARGV[11..] candidate triples: backend_id, max_backend_concurrency, cooldown_threshold
 --
 -- Returns:
---   {1, replica_id}                     ADMITTED
+--   {1, backend_id}                     ADMITTED
 --   {2, reason, retry_after_sec}          REJECT_QUOTA
 --   {3, reason}                         REJECT_CAPACITY
 
@@ -87,15 +87,15 @@ end
 
 -- ---- capacity: walk candidates in router-chosen order ---------------------
 
-local chosen_replica_id = nil
+local chosen_backend_id = nil
 local num_benched = 0
 local num_candidates = #KEYS - NUM_FIXED_KEYS
 
 local argv_i = NUM_FIXED_ARGS + 1
 for ci = 1, num_candidates do
   local error_key = KEYS[NUM_FIXED_KEYS + ci]
-  local replica_id = ARGV[argv_i]
-  local max_replica_concurrency = tonumber(ARGV[argv_i + 1])
+  local backend_id = ARGV[argv_i]
+  local max_backend_concurrency = tonumber(ARGV[argv_i + 1])
   local cooldown_threshold = tonumber(ARGV[argv_i + 2])
 
   local errs = tonumber(redis.call('GET', error_key) or '0')
@@ -103,9 +103,9 @@ for ci = 1, num_candidates do
   if cooldown_threshold > 0 and errs >= cooldown_threshold then
     num_benched = num_benched + 1
   else
-    local inflight = tonumber(redis.call('HGET', model_inflight_key, replica_id) or '0')
-    if inflight < max_replica_concurrency then
-      chosen_replica_id = replica_id
+    local inflight = tonumber(redis.call('HGET', model_inflight_key, backend_id) or '0')
+    if inflight < max_backend_concurrency then
+      chosen_backend_id = backend_id
       break
     end
   end
@@ -114,7 +114,7 @@ end
 
 -- ---- capacity reject ------------------------------------------------------
 
-if not chosen_replica_id then
+if not chosen_backend_id then
   redis.call('HINCRBY', model_demand_key, 'capacity_rejects_total', 1)
   redis.call('HSET', model_demand_key, 'last_reject_ts', tostring(now))
 
@@ -134,14 +134,14 @@ if tat_r then redis.call('SET', quota_rpm_key, tostring(tat_r), 'EX', ttl_r) end
 if tat_t then redis.call('SET', quota_tokens_key, tostring(tat_t), 'EX', ttl_t) end
 
 redis.call('INCR', quota_inflight_key)
-redis.call('HINCRBY', model_inflight_key, chosen_replica_id, 1)
+redis.call('HINCRBY', model_inflight_key, chosen_backend_id, 1)
 redis.call('HINCRBY', model_demand_key, 'inflight', 1)
 
 local row = cjson.encode({
   request_id     = request_id,
   model_name     = model_name,
   user_id        = user_id,
-  replica_id     = chosen_replica_id,
+  backend_id     = chosen_backend_id,
   est_tokens     = est_tokens,
   admit_ts       = now,
   tokens_per_sec = tokens_per_sec,
@@ -149,4 +149,4 @@ local row = cjson.encode({
 })
 redis.call('SET', reservation_key, row)
 redis.call('ZADD', deadlines_key, now + lease_sec, request_id)
-return {1, chosen_replica_id}
+return {1, chosen_backend_id}

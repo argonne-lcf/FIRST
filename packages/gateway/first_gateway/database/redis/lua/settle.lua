@@ -3,12 +3,12 @@
 -- concurrent callers race safely and exactly one applies.
 --
 -- The caller pre-reads the reservation to build all KEYS from the stored
--- model/user/replica.  A concurrent settle between pre-read and this script
+-- model/user/backend.  A concurrent settle between pre-read and this script
 -- is safe: the GET guard below detects it and returns {0}.
 --
 -- KEYS[1]  rt:reserve:{request_id}          reservation blob
 -- KEYS[2]  rt:deadlines                     ZSET request_id → deadline_ts
--- KEYS[3]  rt:model:{model}:inflight        HASH replica_id → count
+-- KEYS[3]  rt:model:{model}:inflight        HASH backend_id → count
 -- KEYS[4]  quota:{model}:{user}:inflight    user concurrency counter
 -- KEYS[5]  quota:{model}:{user}:tokens      GCRA TAT
 -- KEYS[6]  rt:model:{model}:demand          HASH {inflight, ...}
@@ -39,9 +39,9 @@ local row = cjson.decode(raw)
 local t = redis.call('TIME')
 local now = tonumber(t[1]) + tonumber(t[2]) / 1e6
 
--- replica inflight (clamped to zero)
-if redis.call('HINCRBY', model_inflight_key, row.replica_id, -1) < 0 then
-  redis.call('HSET', model_inflight_key, row.replica_id, 0)
+-- backend inflight (clamped to zero)
+if redis.call('HINCRBY', model_inflight_key, row.backend_id, -1) < 0 then
+  redis.call('HSET', model_inflight_key, row.backend_id, 0)
 end
 
 -- user inflight (delete at zero)

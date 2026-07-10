@@ -6,7 +6,7 @@ availability requirements:
 - **Control plane** — everything that participates in *configuring* models,
   launching/scaling them, and tracking their health.
 - **Data plane** — the path an inference request actually traverses, from
-  the user's HTTP call to the model replica and back.
+  the user's HTTP call to the model backend and back.
 
 End users almost never touch the control plane directly. Admins drive it
 through declarative manifests (see [Declarative Configuration](declarative-config.md)),

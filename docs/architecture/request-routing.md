@@ -2,15 +2,16 @@
 
 The FIRST gateway combines:
 
-- A [control plane](controllers.md) that brings up, scales, and tears down model deployments across multiple disjoint HPC clusters and provides a federated view of models across these heterogeneous systems. Capacity is dynamic: replicas appear and disappear due to autoscaling and cold starts.
-- A **data plane** (this document) that routes user requests to live model replicas. It runs as ~4 FastAPI/asyncio worker processes sharing a Redis instance.
+- A [control plane](controllers.md) that brings up, scales, and tears down model deployments across multiple disjoint HPC clusters and provides a federated view of models across these heterogeneous systems. Capacity is dynamic: backends appear and disappear due to autoscaling and cold starts.
+- A **data plane** (this document) that routes user requests to live model backends. It runs as ~4 FastAPI/asyncio worker processes sharing a Redis instance.
 
 This page describes the data plane and *per-request* path through the gateway: how an
 inference call is validated, mapped to a model deployment, and proxied to
-a backend replica. For the durable resource model behind these views, see
+a model backend. For the durable resource model behind these views, see
 [Data Model](data-model.md); for how routing config is published, see
 [Declarative Configuration](declarative-config.md) and the
 [Controller Framework](controllers.md).
+
 
 ## API Surface
 
@@ -22,7 +23,7 @@ The `/api/federated/` routes are the preferred routes for users seeking
 available models without backend preferences:
 
 ```
-/api/federated/v1/chat/completions    # replica chosen via "model" in body
+/api/federated/v1/chat/completions    # backend chosen via "model" in body
 /api/federated/v1/responses
 /api/federated/v1/messages            # Anthropic dialect
 /api/federated/v1/embeddings
@@ -85,7 +86,7 @@ The Control Plane APIs and operational APIs are restricted to admins:
                            ▼                  │
      ┌────────────────────────────────────────┴───────────┐
      │                        Redis                        │
-     │ cfg:*     control plane-written (models, replicas)  │
+     │ cfg:*     control plane-written (models, backends)  │
      │ rt:*      router state (inflight, cooldowns)        │
      │ quota:*   per-user GCRA buckets, concurrency        │
      │ pubsub    cfg-changed notifications                 │
@@ -110,7 +111,7 @@ The Control Plane APIs and operational APIs are restricted to admins:
 ## Redis Contracts
 
 The data plane runs as multiple independent worker processes sharing a single
-Redis instance.  Admission decisions — "is this replica saturated?", "has this
+Redis instance.  Admission decisions — "is this backend saturated?", "has this
 user exceeded their quota?" — require reading a counter, comparing it to a limit,
 and conditionally updating state.  If two workers execute these steps as
 separate Redis commands, both can pass the same check and both increment — a
@@ -132,10 +133,10 @@ the control plane, which publishes the configuration blob, and the data plane,
 where apiservers continuously reload an in-memory snapshot of the
 `RouterConfig`.
 
-- Control plane advertises a replica as `healthy` **only when actually warm**
+- Control plane advertises a backend as `healthy` **only when actually warm**
 (this requires passing health check)
-- Replicas are identified by `uid`, which is a postgres autoincrementing primary
-key that is never recycled.  This ensures replicas identifiers are unique/stable
+- Backends are identified by `id`, which is derived from a postgres autoincrementing
+primary key that is never recycled.  This ensures backend identifiers are unique/stable
 across reconciles, and redis state remains valid across config rewrites.
 - Models are identified from the HTTP request body `model` parameter, which is
 matched to the unique preferred `name` or any number of optional legacy `aliases`.
@@ -144,27 +145,27 @@ path, and deployment names may contain `/`, the name is
 mapped to a slug (1:1 mapping by swapping `/` for `~`).
 - Config rewrite is atomic from the router's view: write keys → bump `cfg:version` → publish.
 
-Even though FIRST Gateway does not explicitly manage Replicas for static
+Even though FIRST Gateway does not explicitly manage backends for static
 deployments, all deployment types converge to the uniform `RouterConfig` so that
 routing is decoupled from the mechanics of model deployment.  Pilot deployments
-will happen to have a truly dynamic list of replicas; Static deployments will
-always have just one hard-coded replica.
+will happen to have a truly dynamic list of backends; Static deployments will
+always have just one hard-coded backend.
 
 ### Router-managed state
 
 The data plane tracks three categories of live state in Redis:
 
-- **Replica utilization** — how busy is each backend right now?
+- **Backend utilization** — how busy is each backend right now?
 - **Demand signals** — how much unmet demand exists, for the autoscaler?
 - **Reservation ledger** — what has each in-flight request reserved, so settlement can undo it exactly?
 
-#### Replica and model counters
+#### Backend and model counters
 
 | Key | Type | Description |
 |---|---|---|
-| `rt:model:{model}:inflight` | HASH `replica_id → int` | Per-replica concurrent request count, grouped into one hash per model so a single `HGETALL` retrieves all replica loads at once. Incremented atomically by `admit`, decremented by `settle`. |
-| `rt:model:{model}:demand` | HASH `{inflight, capacity_rejects_total, last_reject_ts}` | Autoscaler-facing signals. `inflight` is a gauge of total model load across all replicas. `capacity_rejects_total` is a monotonic counter the autoscaler diffs over a window to compute reject rate. `last_reject_ts` drives scale-from-zero (recent reject with zero replicas → cold start). |
-| `rt:replica:{id}:errors` | INT with TTL | Upstream error counter that doubles as the cooldown mechanism. The first error arms a TTL of `cooldown_window_sec`; if errors accumulate to `cooldown_threshold` within that window, the TTL is extended to `cooldown_bench_sec` and `admit` treats the replica as benched until the key expires. Incarnation-unique replica IDs (Postgres autoincrement, never recycled) guarantee a counter never haunts a relaunched replica. |
+| `rt:model:{model}:inflight` | HASH `backend_id → int` | Per-backend concurrent request count, grouped into one hash per model so a single `HGETALL` retrieves all backend loads at once. Incremented atomically by `admit`, decremented by `settle`. |
+| `rt:model:{model}:demand` | HASH `{inflight, capacity_rejects_total, last_reject_ts}` | Autoscaler-facing signals. `inflight` is a gauge of total model load across all backends. `capacity_rejects_total` is a monotonic counter the autoscaler diffs over a window to compute reject rate. `last_reject_ts` drives scale-from-zero (recent reject with zero backends → cold start). |
+| `rt:backend:{id}:errors` | INT with TTL | Upstream error counter that doubles as the cooldown mechanism. The first error arms a TTL of `cooldown_window_sec`; if errors accumulate to `cooldown_threshold` within that window, the TTL is extended to `cooldown_bench_sec` and `admit` treats the backend as benched until the key expires. Incarnation-unique backend IDs (Postgres autoincrement, never recycled) guarantee a counter never haunts a relaunched backend. |
 
 #### Reservation ledger
 
@@ -172,7 +173,7 @@ Each admitted request writes a **reservation** — a record of what resources it
 
 | Key | Type | Description |
 |---|---|---|
-| `rt:reserve:{request_id}` | JSON string | The reservation blob: `{request_id, model_name, user_id, replica_id, est_tokens, admit_ts, tokens_per_sec, burst_tokens}`.  Written by `admit`, read and deleted by `settle`.  Has **no TTL** — lifecycle is managed by the deadline index below. |
+| `rt:reserve:{request_id}` | JSON string | The reservation blob: `{request_id, model_name, user_id, backend_id, est_tokens, admit_ts, tokens_per_sec, burst_tokens}`.  Written by `admit`, read and deleted by `settle`.  Has **no TTL** — lifecycle is managed by the deadline index below. |
 | `rt:deadlines` | ZSET `request_id → deadline_ts` | Lease index for all live reservations. Workers renew their requests' deadlines every ~10s (bumping to `now + lease_sec`, capped at `admit_ts + max_request_sec`).  The sweeper runs `ZRANGEBYSCORE` to find past-due entries — reservations whose worker crashed or whose stream exceeded the cap — and settles them. |
 
 #### Quota state
@@ -187,7 +188,7 @@ Per-user, per-model rate limiting uses the [GCRA algorithm](#gcra-quota-mechanic
 
 #### Feedback to Control Plane Autoscaler
 
-The Control Plane observes and aggregates replica counters to determine
+The Control Plane observes and aggregates backend counters to determine
 aggregate demand for the autoscaler.  Quota rejections never count as demand — a
 user over fair share is not a scaling reason.
 
@@ -200,12 +201,12 @@ user over fair share is not a scaling reason.
 
 ### Config Snapshot Manager
 
-- Each worker holds an **immutable in-memory snapshot** of the full config (models, deployments, replicas, ACL maps, quota tables, compiled route tables).
+- Each worker holds an **immutable in-memory snapshot** of the full config (models, deployments, backends, ACL maps, quota tables, compiled route tables).
 - Subscribe to pub/sub; on notify (or poll fallback), compare `cfg:version`; if newer, load `cfg:*` and **atomically swap** the snapshot reference. In-flight requests keep the snapshot they started with.
 
 ### Cooldown
 
-Cooldown is **error-driven** (threshold errors within window → bench replica)
+Cooldown is **error-driven** (threshold errors within window → bench backend)
 and lives in `rt:*`; parameters come from the deployment config.  Relies on
 Redis TTL to naturally expire cooldowns.
 
@@ -222,7 +223,7 @@ Four Lua scripts manage the admission lifecycle
 
 | Script | Purpose |
 |---|---|
-| `admit` | Check quotas and capacity, assign a replica, write the reservation. |
+| `admit` | Check quotas and capacity, assign a backend, write the reservation. |
 | `settle` | Reverse a reservation's effects: decrement counters, correct GCRA, delete the reservation. |
 | `renew` | Extend lease deadlines for in-flight requests (batched). |
 | `record_error` | Track upstream failures and trigger cooldown (see Cooldown above). |
@@ -230,7 +231,7 @@ Four Lua scripts manage the admission lifecycle
 #### admit()
 
 Takes the request identity (`request_id`, `model_name`, `user_id`), estimated
-token usage, quota limits, and an ordered list of candidate replicas chosen by
+token usage, quota limits, and an ordered list of candidate backends chosen by
 the router.  Checks are evaluated in a fixed order — **quota first, then
 capacity** — so that per-user rejections never inflate demand signals:
 
@@ -240,27 +241,27 @@ quota checks (affect only the requesting user):
   GCRA request rate  would exceed limit            → REJECT_QUOTA(user_rpm, retry_after_sec)
   GCRA token rate    would exceed limit            → REJECT_QUOTA(user_tpm, retry_after_sec)
 
-capacity check (walks candidate replicas in router-chosen order):
+capacity check (walks candidate backends in router-chosen order):
   for each candidate:
     error count ≥ cooldown_threshold               → skip (benched)
-    replica inflight ≥ max_replica_concurrency      → skip (saturated)
-    first replica with headroom                     → chosen
+    backend inflight ≥ max_backend_concurrency      → skip (saturated)
+    first backend with headroom                     → chosen
 
-  if no replica chosen → REJECT_CAPACITY(reason)
+  if no backend chosen → REJECT_CAPACITY(reason)
     reason: "no_candidates" | "all_benched" | "saturated"
 
 commit:
   advance GCRA states (reserve est_tokens)
-  increment user and replica inflight counters
+  increment user and backend inflight counters
   increment demand inflight gauge
   write reservation to rt:reserve:{request_id}
-  add lease deadline to rt:deadlines               → ADMIT(replica_id)
+  add lease deadline to rt:deadlines               → ADMIT(backend_id)
 ```
 
 Return values:
 
 ```lua
-{1, replica_id}                  -- ADMIT
+{1, backend_id}                  -- ADMIT
 {2, reason, retry_after_sec}       -- REJECT_QUOTA   (retry_after_sec = -1 for concurrency)
 {3, reason}                      -- REJECT_CAPACITY
 ```
@@ -275,7 +276,7 @@ the demand counter — a user over fair share is not a scaling reason.
 Takes `request_id` and optionally `actual_tokens`.  Reads the reservation to
 discover what was reserved, then reverses it:
 
-1. Decrement the replica's count in `rt:model:{model}:inflight`
+1. Decrement the backend's count in `rt:model:{model}:inflight`
 2. Decrement the user's count in `quota:{model}:{user}:inflight`
 3. If actual token usage is known, apply a GCRA correction: adjust the TAT by
    `(actual − estimated) / tokens_per_sec`
@@ -331,15 +332,15 @@ implementation is a few lines inside `admit.lua`'s `gcra_eval()` helper.
 
 ### Router
 
-- For federated APIs, all replicas across the model's deployments form one candidate set.
-- For deployment-pinned APIs, only consider the replicas within the chosen deployment.
-- Selection weight _per-replica_ is `deployment.weight`, so effective deployment share = `weight × current replica count`
-- Weighted-random sampling among available replicas with headroom.  On capacity REJECT from admission, drop that replica and retry.
-- If all replicas exhausted → Overload Responder
+- For federated APIs, all backends across the model's deployments form one candidate set.
+- For deployment-pinned APIs, only consider the backends within the chosen deployment.
+- Selection weight _per-backend_ is `deployment.weight`, so effective deployment share = `weight × current backend count`
+- Weighted-random sampling among available backends with headroom.  On capacity REJECT from admission, drop that backend and retry.
+- If all backends exhausted → Overload Responder
 
 ### Overload / Cold-Start Handler
 
-We will set `per_replica_concurrency` to slightly oversubscribe each backend,
+We will set `per_backend_concurrency` to slightly oversubscribe each backend,
 allowing engines to naturally queue and serve inference requests over their max
 headroom.  For example, a vLLM instance that averages ~10 concurrent requests
 may be configured with a concurrency level of 20.  This provides a built-in,
@@ -347,14 +348,14 @@ bounded in-process hold queue.
 
 The queue depth is conservative, so excess demand results in an immediate 429
 with Retry-After and increments the deployment's capacity-reject counter.  When
-replicas are available but saturated, the `Retry-After` is obtained from a
+backends are available but saturated, the `Retry-After` is obtained from a
 configured `short_retry_s` +/- `retry_jitter_pct` to break herds.
 
 When cold-starting, the first request arrival is immediately rejected; the
 capacity-reject increments demand, to which the autoscaler responds.  The
 `Retry-After` ETA is obtained from the deployment, which advertises whether any
-replica is starting (and its launch timestamp), the estimated replica cold start
-time, and whether or not there is capacity to cold-start the replica.
+backend is starting (and its launch timestamp), the estimated backend cold start
+time, and whether or not there is capacity to cold-start the backend.
 
 
 ### Request Classifier
@@ -365,12 +366,12 @@ time, and whether or not there is capacity to cold-start the replica.
 
 ### Proxy Engine (hot path)
 
-- **Connections:** per-replica pooled `httpx.AsyncClient` (tuned pool, generous keepalive); lazily created and reaped.
-- **Passthrough mode:** forward original bytes; strip scope prefix; map to the backend's matching dialect path; swap auth header for the replica's key; stream response bytes chunk-for-chunk via `StreamingResponse`. **No re-serialization anywhere.**
+- **Connections:** per-backend pooled `httpx.AsyncClient` (tuned pool, generous keepalive); lazily created and reaped.
+- **Passthrough mode:** forward original bytes; strip scope prefix; map to the backend's matching dialect path; swap auth header for the backend's key; stream response bytes chunk-for-chunk via `StreamingResponse`. **No re-serialization anywhere.**
     - One exception: OpenAI chat streaming without `stream_options.include_usage` → inject it (request-side re-serialization only) and **drop the trailing usage chunk** before the client if the client didn't ask for it.
 - **SSE hygiene:** iterate raw bytes (not lines); no compression middleware on streaming routes; `X-Accel-Buffering: no`; flush per chunk; propagate Content-Type.
 - **Cancellation:** on client disconnect, close the upstream connection promptly (vLLM aborts generation); `finally` guarantees settle/decrements fire with tokens-so-far flagged estimated.
-- **Retries:** safe only before the first response byte reaches the client. Connect errors and immediate 5xx errors are recorded for cooldown; router attempts next replica.
+- **Retries:** safe only before the first response byte reaches the client. Connect errors and immediate 5xx errors are recorded for cooldown; router attempts next backend.
 - **Mid-stream failure**: → SSE error event to the client, no retry.
 
 ### Usage Tap & Metrics Pipeline
@@ -383,7 +384,7 @@ time, and whether or not there is capacity to cold-start the replica.
   | OpenAI Chat | final chunk iff `include_usage` (gateway-injected) | `usage` in body |
   | OpenAI Responses | `response.completed` event | `usage` in body |
 
-- Stream end → record `{request_id, user, model, deployment, replica, API path, tokens_in/out, ttfb, duration, status, estimated?}` → asyncio queue → batching task → sinks
+- Stream end → record `{request_id, user, model, deployment, backend, API path, tokens_in/out, ttfb, duration, status, estimated?}` → asyncio queue → batching task → sinks
     - Structured logs: JSONL to stdout
     - Redis rollups for `/api/control/v1/usage`; exposed by control plane observer as Prometheus metrics
     - Emission never blocks the request path; the settle script consumes the same record.
@@ -393,17 +394,17 @@ time, and whether or not there is capacity to cold-start the replica.
 ### Discovery, Catalog & Observability
 
 - `/api/{scope}/v1/models`: OpenAI-shaped, ACL-filtered, snapshot-served.
-- `/api/catalog/v1/*`: full metadata: deployments with replica counts/states; snapshot + selected `rt:*`/`demand:*` reads.
+- `/api/catalog/v1/*`: full metadata: deployments with backend counts/states; snapshot + selected `rt:*`/`demand:*` reads.
 - Prometheus per worker: request counts/latency by model/deployment/task, TTFB, inter-chunk latency, token counters, **admission rejects by reason (capacity vs each quota type)**,  demand gauges, translation-path counter (should trend → 0), snapshot version/age.
 - `/readyz` = snapshot loaded ∧ Redis reachable.
 
 ## Request Lifecycles (reference walkthroughs)
 
-**A. Streaming (common case):** auth → classify (raw bytes kept) → router picks replica → Lua admit (quota then capacity; reserves tokens, bumps demand) → byte passthrough with SSE tap → usage frame parsed → settle Lua (correct GCRA, decrement inflight/demand) → metrics enqueued.
+**A. Streaming (common case):** auth → classify (raw bytes kept) → router picks backend → Lua admit (quota then capacity; reserves tokens, bumps demand) → byte passthrough with SSE tap → usage frame parsed → settle Lua (correct GCRA, decrement inflight/demand) → metrics enqueued.
 
-**B. Capacity exhausted:** admit rejects capacity on all replicas (or zero healthy replicas) → overload handler: 429 + Retry-After ≈ ETA; capacity-reject counted in demand → autoscaler sees sustained demand → wakes deployment → later retries admit normally.
+**B. Capacity exhausted:** admit rejects capacity on all backends (or zero healthy backends) → overload handler: 429 + Retry-After ≈ ETA; capacity-reject counted in demand → autoscaler sees sustained demand → wakes deployment → later retries admit normally.
 
 **C. User over token quota:** GCRA reject → 429 + Retry-After from refill math; demand untouched; SDK backs off; no scaling triggered.
 
-**D. Replica failure:** replica starts erroring → router cooldown benches the replica; traffic flows to siblings → control plane's health check withdraws the replica seconds later → its rt: keys expire via TTL; relaunch arrives as a fresh replica ID.
+**D. Backend failure:** backend starts erroring → router cooldown benches the backend; traffic flows to siblings → control plane's health check withdraws the backend seconds later → its rt: keys expire via TTL; relaunch arrives as a fresh backend ID.
 

@@ -19,7 +19,7 @@ class Keys:
 
     @staticmethod
     def model_inflight(model: str) -> str:
-        """HASH keyed by replica_id → concurrent request count."""
+        """HASH keyed by backend_id → concurrent request count."""
         return f"rt:model:{model}:inflight"
 
     @staticmethod
@@ -28,9 +28,9 @@ class Keys:
         return f"rt:model:{model}:demand"
 
     @staticmethod
-    def replica_errors(replica_id: str) -> str:
+    def backend_errors(backend_id: str) -> str:
         """INT counter with TTL; count >= threshold IS the cooldown bench."""
-        return f"rt:replica:{replica_id}:errors"
+        return f"rt:backend:{backend_id}:errors"
 
     @staticmethod
     def reservation(request_id: str) -> str:

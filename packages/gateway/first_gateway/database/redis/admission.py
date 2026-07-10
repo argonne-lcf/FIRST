@@ -47,7 +47,7 @@ class AdmitResult(BaseModel):
     """Decoded return of the admit.lua script."""
 
     status: AdmitStatus
-    replica_id: str | None = None
+    backend_id: str | None = None
     quota_reason: QuotaReason | None = None
     capacity_reason: CapacityReason | None = None
     retry_after_sec: float | None = None
@@ -60,7 +60,7 @@ class AdmitResult(BaseModel):
     def from_lua(cls, raw: Sequence[Any]) -> "AdmitResult":
         code = int(raw[0])
         if code == AdmitStatus.ADMITTED:
-            return cls(status=AdmitStatus.ADMITTED, replica_id=to_str(raw[1]))
+            return cls(status=AdmitStatus.ADMITTED, backend_id=to_str(raw[1]))
         if code == AdmitStatus.REJECT_QUOTA:
             retry_after = float(raw[2])
             return cls(
@@ -74,11 +74,11 @@ class AdmitResult(BaseModel):
         )
 
 
-class CandidateReplica(BaseModel):
+class CandidateBackend(BaseModel):
     """One entry of the ordered candidate list, to be checked for capacity."""
 
     uid: str
-    max_replica_concurrency: int
+    max_backend_concurrency: int
     cooldown_threshold: int
 
 
@@ -86,11 +86,11 @@ class InflightCounts(NamedTuple):
     """
     Inflight model-grouped utilization counts.
 
-    - by_replica provides a count for each active replica
-    - by_replica provides a count for each active user
+    - by_backend provides a count for each active backend
+    - by_user provides a count for each active user
     """
 
-    by_replica: dict[str, dict[str, int]]
+    by_backend: dict[str, dict[str, int]]
     by_user: dict[str, dict[str, int]]
 
 
@@ -98,7 +98,7 @@ class AdmissionController:
     """
     Controller for distributed request admission: performs quota bookkeeping
     (RPM, TPM, Concurrency) per user/model and backend capacity bookkeeping (
-    cooldown state, per-replica concurrency).
+    cooldown state, per-backend concurrency).
 
     Owns the Lua script inventory (admit, settle, renew, record_error) and the
     sweep loop.
@@ -133,7 +133,7 @@ class AdmissionController:
         request_id: str,
         model_name: str,
         user_id: str,
-        candidates: Sequence[CandidateReplica],
+        candidates: Sequence[CandidateBackend],
         estimated_tokens: int,
         quota: UsageLimits,
     ) -> AdmitResult:
@@ -154,8 +154,8 @@ class AdmissionController:
         - `request_id`: unique per-request identifier
         - `model_name`: unique model name
         - `user_id`: unique user ID
-        - `candidates`: ordered list of replicas (uid, max_concurrency, max_errors).
-          The router must select healthy replicas in scope for the current request and sort them
+        - `candidates`: ordered list of backends (uid, max_concurrency, max_errors).
+          The router must select healthy backends in scope for the current request and sort them
           into the desired weighted random sampling order.
         - `estimated_tokens`:  estimated heuristic prompt_tokens+max_tokens for
            this request to be reserved.  Set to 0 for non-LLM requests.
@@ -171,7 +171,7 @@ class AdmissionController:
             Keys.reservation(request_id),
         ]
         for c in candidates:
-            keys.append(Keys.replica_errors(c.uid))
+            keys.append(Keys.backend_errors(c.uid))
 
         args: list[str | int | float] = [
             request_id,
@@ -186,7 +186,7 @@ class AdmissionController:
             self.lease_sec,
         ]
         for c in candidates:
-            args.extend([c.uid, c.max_replica_concurrency, c.cooldown_threshold])
+            args.extend([c.uid, c.max_backend_concurrency, c.cooldown_threshold])
 
         raw = await self._admit(keys=keys, args=args)
         return AdmitResult.from_lua(raw)
@@ -280,22 +280,22 @@ class AdmissionController:
         return settled
 
     async def record_error(
-        self, replica_id: str, router_params: RouterParams
+        self, backend_id: str, router_params: RouterParams
     ) -> tuple[int, bool]:
         """
         Register an upstream failure.  Returns (error_count, is_benched).
 
-        admit() treats error_count >= router_params.cooldown_threshold as benched: the replica
+        admit() treats error_count >= router_params.cooldown_threshold as benched: the backend
         is removed from the pool for router_params.cooldown_bench_sec.
 
         For example: given cooldown threshold=2, window=30s, bench=120s: any
-        replica that experiences 2 errors within a 30second window is benched
+        backend that experiences 2 errors within a 30second window is benched
         for 2 minutes.
 
         The Lua script correctly re-arms the TTL under concurrent failures.
         """
         raw = await self._record_error(
-            keys=[Keys.replica_errors(replica_id)],
+            keys=[Keys.backend_errors(backend_id)],
             args=[
                 router_params.cooldown_window_sec,
                 router_params.cooldown_threshold,
@@ -306,11 +306,11 @@ class AdmissionController:
 
     async def rebuild_inflight_from_ledger(self) -> InflightCounts:
         """
-        Recompute per-model, per-replica inflight from the reservation ledger
+        Recompute per-model, per-backend inflight from the reservation ledger
         (the base table).  Feed the result to ModelStatus.reconcile_inflight per
         model.  Uses SCAN, never KEYS.
         """
-        by_replica: dict[str, dict[str, int]] = {}
+        by_backend: dict[str, dict[str, int]] = {}
         by_user: dict[str, dict[str, int]] = {}
         async for key in self.client.scan_iter(
             match=Keys.reservation_scan_pattern(), count=200
@@ -321,14 +321,14 @@ class AdmissionController:
             try:
                 row = json.loads(raw)
                 model = row["model_name"]
-                replica = row["replica_id"]
+                backend = row["backend_id"]
                 user_id = row["user_id"]
-                by_replica.setdefault(model, {}).setdefault(replica, 0)
+                by_backend.setdefault(model, {}).setdefault(backend, 0)
                 by_user.setdefault(model, {}).setdefault(user_id, 0)
-                by_replica[model][replica] += 1
+                by_backend[model][backend] += 1
                 by_user[model][user_id] += 1
             except (ValueError, KeyError):
                 logger.warning(f"Reconcile cannot parse malformed reservation: {raw!r}")
                 continue
 
-        return InflightCounts(by_replica=by_replica, by_user=by_user)
+        return InflightCounts(by_backend=by_backend, by_user=by_user)

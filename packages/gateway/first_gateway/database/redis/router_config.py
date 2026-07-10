@@ -9,8 +9,8 @@ from first_common.schema.types import OverloadPolicy, RouterParams, UsagePolicy
 from .keys import CONFIG_CHANNEL, Keys
 
 
-class ReplicaConfig(BaseModel):
-    uid: int
+class BackendConfig(BaseModel):
+    id: str
     model_url: str
     backend_model_name: str
     api_key: str | None
@@ -22,7 +22,7 @@ class DeploymentConfig(BaseModel):
     router_params: RouterParams
     prometheus_metrics_path: str | None
     prometheus_scrape_interval_sec: int
-    replicas: list[ReplicaConfig]
+    backends: list[BackendConfig]
 
 
 class ModelConfig(BaseModel):

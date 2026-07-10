@@ -12,7 +12,7 @@ from first_gateway.database.redis.admission import (
     AdmissionController,
     AdmitResult,
     AdmitStatus,
-    CandidateReplica,
+    CandidateBackend,
     CapacityReason,
     QuotaReason,
 )
@@ -44,11 +44,11 @@ USER = "alice"
 
 def _candidates(
     *uids: str, concurrency: int = 10, cooldown_threshold: int = 3
-) -> list[CandidateReplica]:
+) -> list[CandidateBackend]:
     return [
-        CandidateReplica(
+        CandidateBackend(
             uid=uid,
-            max_replica_concurrency=concurrency,
+            max_backend_concurrency=concurrency,
             cooldown_threshold=cooldown_threshold,
         )
         for uid in uids
@@ -79,10 +79,10 @@ async def _hget_int(redis: Redis, key: str, field: str) -> int:
 
 
 class TestAdmitSettleHappyPath:
-    async def test_admit_returns_chosen_replica(self, ac: AdmissionController) -> None:
+    async def test_admit_returns_chosen_backend(self, ac: AdmissionController) -> None:
         result = await _admit(ac, "req-1")
         assert result.admitted
-        assert result.replica_id in ("r1", "r2")
+        assert result.backend_id in ("r1", "r2")
 
     async def test_settle_returns_true_on_first_call(
         self, ac: AdmissionController
@@ -97,17 +97,17 @@ class TestAdmitSettleHappyPath:
         self, ac: AdmissionController, redis: Redis
     ) -> None:
         result = await _admit(ac, "req-1")
-        assert result.replica_id is not None
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.replica_id)
+        assert result.backend_id is not None
+        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
         assert inflight == 1
 
     async def test_settle_decrements_inflight(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
         result = await _admit(ac, "req-1")
-        assert result.replica_id is not None
+        assert result.backend_id is not None
         await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.replica_id)
+        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
         assert inflight == 0
 
     async def test_settle_cleans_up_reservation_and_deadline(
@@ -211,7 +211,7 @@ class TestQuotaRejects:
 
 
 class TestCapacityRejects:
-    async def test_saturated_when_all_replicas_full(
+    async def test_saturated_when_all_backends_full(
         self, ac: AdmissionController
     ) -> None:
         candidates = _candidates("r1", concurrency=1)
@@ -252,16 +252,16 @@ class TestCapacityRejects:
         await ac.record_error("r1", params)
 
         candidates = [
-            CandidateReplica(
-                uid="r1", max_replica_concurrency=10, cooldown_threshold=1
+            CandidateBackend(
+                uid="r1", max_backend_concurrency=10, cooldown_threshold=1
             ),
-            CandidateReplica(
-                uid="r2", max_replica_concurrency=10, cooldown_threshold=1
+            CandidateBackend(
+                uid="r2", max_backend_concurrency=10, cooldown_threshold=1
             ),
         ]
         result = await _admit(ac, "req-1", candidates=candidates)
         assert result.admitted
-        assert result.replica_id == "r2"
+        assert result.backend_id == "r2"
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +289,11 @@ class TestDoubleSettleSafety:
         self, ac: AdmissionController, redis: Redis
     ) -> None:
         result = await _admit(ac, "req-1")
-        assert result.replica_id is not None
+        assert result.backend_id is not None
         await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
         await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
 
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.replica_id)
+        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
         assert inflight >= 0
 
     async def test_concurrent_settle_paths(self, ac: AdmissionController) -> None:
@@ -326,7 +326,7 @@ class TestRecordErrorCooldown:
         assert count == 3
         assert benched is True
 
-    async def test_benched_replica_rejected_by_admit(
+    async def test_benched_backend_rejected_by_admit(
         self, ac: AdmissionController
     ) -> None:
         params = RouterParams(cooldown_threshold=2, cooldown_bench_sec=60)
@@ -342,7 +342,7 @@ class TestRecordErrorCooldown:
     ) -> None:
         params = RouterParams(cooldown_threshold=3, cooldown_window_sec=30)
         await ac.record_error("r1", params)
-        ttl = await redis.ttl(Keys.replica_errors("r1"))
+        ttl = await redis.ttl(Keys.backend_errors("r1"))
         assert 0 < ttl <= 30
 
     async def test_bench_extends_ttl(
@@ -353,7 +353,7 @@ class TestRecordErrorCooldown:
         )
         for _ in range(2):
             await ac.record_error("r1", params)
-        ttl = await redis.ttl(Keys.replica_errors("r1"))
+        ttl = await redis.ttl(Keys.backend_errors("r1"))
         assert ttl > 10
 
 
@@ -452,12 +452,12 @@ class TestSweeper:
     ) -> None:
         short_lease = AdmissionController(ac.client, lease_sec=0.1, max_request_sec=900)
         result = await _admit(short_lease, "req-stale")
-        assert result.replica_id is not None
+        assert result.backend_id is not None
 
         await asyncio.sleep(0.2)
 
         await short_lease.sweep()
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.replica_id)
+        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
         assert inflight == 0
 
 
@@ -469,7 +469,7 @@ class TestSweeper:
 class TestRebuildInflight:
     async def test_empty_ledger(self, ac: AdmissionController) -> None:
         counts = await ac.rebuild_inflight_from_ledger()
-        assert counts.by_replica == {}
+        assert counts.by_backend == {}
 
     async def test_counts_match_live_reservations(
         self, ac: AdmissionController
@@ -478,8 +478,8 @@ class TestRebuildInflight:
         await _admit(ac, "req-2")
 
         counts = await ac.rebuild_inflight_from_ledger()
-        assert MODEL in counts.by_replica
-        total = sum(counts.by_replica[MODEL].values())
+        assert MODEL in counts.by_backend
+        total = sum(counts.by_backend[MODEL].values())
         assert total == 2
 
     async def test_settled_not_counted(self, ac: AdmissionController) -> None:
@@ -488,7 +488,7 @@ class TestRebuildInflight:
         await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
 
         counts = await ac.rebuild_inflight_from_ledger()
-        total = sum(counts.by_replica[MODEL].values())
+        total = sum(counts.by_backend[MODEL].values())
         assert total == 1
 
     async def test_multiple_models(self, ac: AdmissionController) -> None:
@@ -497,12 +497,12 @@ class TestRebuildInflight:
         await _admit(ac, "req-2", model_name="model-b", candidates=candidates)
 
         counts = await ac.rebuild_inflight_from_ledger()
-        assert "model-a" in counts.by_replica
-        assert "model-b" in counts.by_replica
-        assert sum(counts.by_replica["model-a"].values()) == 1
-        assert sum(counts.by_replica["model-b"].values()) == 1
+        assert "model-a" in counts.by_backend
+        assert "model-b" in counts.by_backend
+        assert sum(counts.by_backend["model-a"].values()) == 1
+        assert sum(counts.by_backend["model-b"].values()) == 1
 
-    async def test_per_replica_breakdown(self, ac: AdmissionController) -> None:
+    async def test_per_backend_breakdown(self, ac: AdmissionController) -> None:
         candidates_r1_only = _candidates("r1", concurrency=100)
         candidates_r2_only = _candidates("r2", concurrency=100)
         await _admit(ac, "req-1", candidates=candidates_r1_only)
@@ -510,5 +510,5 @@ class TestRebuildInflight:
         await _admit(ac, "req-3", candidates=candidates_r2_only)
 
         counts = await ac.rebuild_inflight_from_ledger()
-        assert counts.by_replica[MODEL]["r1"] == 2
-        assert counts.by_replica[MODEL]["r2"] == 1
+        assert counts.by_backend[MODEL]["r1"] == 2
+        assert counts.by_backend[MODEL]["r2"] == 1

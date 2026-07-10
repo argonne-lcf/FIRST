@@ -34,6 +34,30 @@ Inference engine settings are easy to change and roll back with declarative conf
 - **Authentication and access control.** [Globus Auth](https://www.globus.org/globus-auth-service)
   integration with group-based authorization governing model access.
 
+## Terminology
+
+- **Endpoint:** Task-specific HTTP method+URL exposed by the gateway API.
+ `POST /chat/completions` is the API endpoint to create an OpenAI chat completion.
+  Endpoints describe the task, _not_ the AI model.
+- **Model:**  The Model resource provides the canonical _name_ of the AI model that users select when calling an API Endpoint.  Users invoke the endpoint `POST /chat/completions` while selecting the model in the request body: `{"model": "openai/gpt-oss-120b"}`. Models advertise their supported endpoints; LLMs generally support the standard OpenAI and Anthropic endpoints. Models like SAM3 support promptable image segmentation tasks.  Models also encapsulate usage policy: what user groups can access the model?  What are the per-user quotas for the model?
+- **Deployment:** A model can have one or more Deployments, which describe how a live model backend is created.  Deployments are tied to _Clusters_, which group deployments sharing a common underlying platform (e.g. same HPC scheduler)
+- **Backend:** One routeable instance of a model deployment, possessing a live URL that the gateway can proxy endpoint traffic to.
+
+FIRST currently implements two concrete **Deployment** classes:
+
+1. `StaticDeployment`: consists simply of a static base URL for exactly **one Backend**.  The gateway control plane does nothing to start, stop, or autoscale a StaticDeployment: the responsibility of launching and maintaining a healthy backend is out of scope. StaticDeployment can be used to provide model capacity via cloud APIs or other manually-managed backends.  For example, ALCF staff manually configure SambaStack on Metis and provide a static URL/API key for the Inference Gateway.
+2. `PilotDeployment`: a recipe for **launching model backends** onto dynamically-allocated HPC resources. Here, the control plane owns the lifecycle of each backend and performs autoscaling: changing the number of desired backend `PilotReplicas` in response to model demand.  The system is self-healing: unhealthy replicas are replaced, and enables highly dynamic model placement on HPC resources (replicas can be placed/removed from GPU resources without disrupting neighboring replicas of other models on the same node)
+
+Additional deployment types can be implemented, for example to integrate with additional control planes like NVIDIA Dyanmo or Run:ai.  The contract between deployments and the data plane is that each deployment is responsible for advertising its healthy backends to the router.
+
+- **Gateway:** API service, control plane orchestrator, and observability hub.  The user-facing API handles policy enforcement (authentication, model access group-based authorization, usage quota enforcement, capacity limits), dynamic load balancing to model backends, and efficiently proxying all AI endpoint traffic.
+- **Control Plane Orchestrator:**  Provides a declarative (YAML manifest) configuration system for admins to define the desired Models and Deployments.  A Controller Manager framework runs the control loops that reconcile the desired Deployment state with the actual state of the system.  Static deployments are merely health-checked; the majority of the current responsibility for the control plane is to manage and automate `PilotDeployments`.
+- **Observability Hub:**  A unified view of system health/activity: a web UI and CLI provide views into the current state of the control plane, including PilotDeployment details that previously required SSHing into clusters and searching a multitude of files (available resources, replica status and logs).  A Prometheus instance gathers metrics from the Controller Manager, the API servers, and all Model Backends that provide a Prometheus metrics endpoint.  This enables a "single pane of glass" Grafana view across the entire fleet of models running on heterogenous resources.
+- **Control Plane:** The actors and APIs involved in managing model backends.  This spans everything from the declarative admin APIs to the Pilot system: HPC scheduler interfaces, pilot jobs, APIs to start/stop/health check models, and the mechanisms to advertise healthy backends to the data plane.
+- **Data Plane:** The actors and APIs involved in the flow of inference endpoint traffic.  This is the clients, the user-facing gateway APIs, the policy/router/proxy engine, and the streaming HTTP connections to upstream model backends. The contract between the control plane and data plane is the published backend routing configuration, written into Redis.
+
+The control plane is strongly decoupled from the data plane: it can crash and restart without impacting the flow of inference traffic for short periods of time.  The data plane makes intensive use of Redis as the centralized source of routing/policy truth shared among distributed API servers.  Persistent data (e.g. PostgreSQL transactions) are avoided in the data plane path.
+
 ## How models are deployed
 
 The gateway decouples *where* a model runs from *how* clients reach it, and

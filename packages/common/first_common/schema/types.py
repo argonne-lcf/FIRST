@@ -47,9 +47,9 @@ class HealthCheckResult(str, Enum):
     unknown = "unknown"
 
 
-class DeploymentState(str, Enum):
+class PilotDeploymentState(str, Enum):
     """
-    Aggregated deployment state
+    Aggregated state of a PilotDeployment
     """
 
     offline = "offline"  # No replicas exist / all pending
@@ -61,7 +61,7 @@ class DeploymentState(str, Enum):
 
 class ReplicaState(str, Enum):
     """
-    Lifecycle of a single AI model instance (replica).
+    Lifecycle of a single PilotReplica model instance.
     """
 
     # initial states
@@ -132,7 +132,7 @@ class RouterParams(BaseModel):
     """
 
     weight: int = 1
-    max_replica_concurrency: int = 16
+    max_backend_concurrency: int = 16
     cooldown_threshold: int = 3
     cooldown_window_sec: int = 30
     cooldown_bench_sec: int = 60

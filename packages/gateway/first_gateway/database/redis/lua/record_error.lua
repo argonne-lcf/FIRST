@@ -1,9 +1,9 @@
 -- Error counter with cooldown collapsed in: count >= threshold IS the bench.
 -- First error arms the window TTL; crossing the threshold re-arms the TTL to
--- the bench duration.  Absence == healthy.  Incarnation-unique replica IDs
--- guarantee a counter can never haunt a relaunched replica.
+-- the bench duration.  Absence == healthy.  Incarnation-unique backend IDs
+-- guarantee a counter can never haunt a relaunched backend.
 --
--- KEYS[1] rt:replica:{id}:errors
+-- KEYS[1] rt:backend:{id}:errors
 -- ARGV[1] window_s   ARGV[2] threshold   ARGV[3] bench_s
 --
 -- Returns {count, benched(0|1)}

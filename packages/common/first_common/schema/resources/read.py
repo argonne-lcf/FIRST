@@ -6,15 +6,15 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from ..base_scheduler import SchedulerJobState
 from ..pilot import PilotResources
 from ..types import (
-    DeploymentState,
     GpuClaim,
     HealthCheckResult,
+    PilotDeploymentState,
     ReplicaState,
     ResourceName,
     RouterParams,
 )
 from . import spec
-from .runtime import ModelRuntime, ReplicaRuntime
+from .runtime import BackendRuntime, ModelRuntime
 
 
 class _Overlay:
@@ -97,7 +97,7 @@ class PilotDeploymentSummary(ResourceMeta):
     router_params: RouterParams
 
     desired_replicas: int
-    state: DeploymentState
+    state: PilotDeploymentState
     consecutive_launch_failures: int
 
 
@@ -109,7 +109,7 @@ class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
 
     kind: Literal["StaticDeployment"] = "StaticDeployment"
     health: HealthCheckResult
-    runtime: ReplicaRuntime = ReplicaRuntime()
+    runtime: BackendRuntime = BackendRuntime()
 
 
 class PilotReplica(ResourceMeta):
@@ -132,7 +132,7 @@ class PilotReplica(ResourceMeta):
     state_message: str
     started_at: datetime | None = None
 
-    runtime: ReplicaRuntime = ReplicaRuntime()
+    runtime: BackendRuntime = BackendRuntime()
 
 
 class PilotDeploymentDetail(PilotDeploymentSummary, spec.PilotDeploymentSpec):

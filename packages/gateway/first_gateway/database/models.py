@@ -21,8 +21,8 @@ from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.types import (
-    DeploymentState,
     HealthCheckResult,
+    PilotDeploymentState,
     ReplicaState,
     ResourceName,
 )
@@ -313,6 +313,11 @@ class StaticDeployment(ResourceRow):
         back_populates="static_deployments", lazy="raise"
     )
 
+    @property
+    def backend_id(self) -> str:
+        """Unique identifier for routeable backend"""
+        return f"static_deployment/{self.uid}"
+
 
 class PilotDeployment(ResourceRow):
     __tablename__ = "pilot_deployment"
@@ -331,7 +336,7 @@ class PilotDeployment(ResourceRow):
     launch_spec: Mapped[DictJsonb]
 
     desired_replicas: Mapped[int] = mapped_column(default=0)
-    state: Mapped[str] = mapped_column(default=DeploymentState.offline.value)
+    state: Mapped[str] = mapped_column(default=PilotDeploymentState.offline.value)
     consecutive_launch_failures: Mapped[int] = mapped_column(default=0)
 
     replicas: Mapped[list["PilotReplica"]] = relationship(
@@ -444,6 +449,11 @@ class PilotReplica(ResourceRow, SoftDeletable):
     pilot_job: Mapped[PilotJob] = relationship(
         back_populates="assigned_replicas", lazy="raise"
     )
+
+    @property
+    def backend_id(self) -> str:
+        """Unique identifier for routeable backend"""
+        return f"pilot_replica/{self.uid}"
 
 
 _RECONCILE_CASCADES: dict[str, list[tuple[type[ResourceRow], str]]] = {

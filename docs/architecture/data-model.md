@@ -106,7 +106,7 @@ An HPC-managed deployment of a model, hosted via the
   how the deployment integrates with the router + observability.
 - Autoscaler controls: `scaling_strategy: DemandThresholdStrategy | None`,
   `min_replicas`, `max_replicas`.
-- Controller-owned Status: `desired_replicas`, `state: DeploymentState`,
+- Controller-owned Status: `desired_replicas`, `state: PilotDeploymentState`,
   `consecutive_launch_failures`.
 
 ### `StaticDeployment` — admin Spec, controller Status
