@@ -14,6 +14,7 @@ from .cluster_health_observer import ClusterHealthObserver
 from .lease import ManagerLease
 from .metrics_server import serve as serve_metrics
 from .retention import RetentionSweeper
+from .router_config_observer import RouterConfigObserver
 from .static_health_observer import StaticDeploymentHealthObserver
 from .worker import Worker
 
@@ -54,9 +55,10 @@ class ControllerManager:
 
     def _build_workers(self) -> list[Worker]:
         return [
-            ClusterHealthObserver("cluster-status", self.client_state),
+            ClusterHealthObserver("cluster-health", self.client_state),
             StaticDeploymentHealthObserver("static-health", self.client_state),
             RetentionSweeper("retention-sweeper", self.client_state),
+            RouterConfigObserver("router-config", self.client_state),
         ]
 
     async def run(self) -> None:

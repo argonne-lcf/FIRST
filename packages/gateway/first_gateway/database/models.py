@@ -245,12 +245,20 @@ class Model(ResourceRow):
     )
 
     @classmethod
-    async def list(cls, sess: AsyncSession) -> list[Self]:
+    async def list(
+        cls, sess: AsyncSession, *, load_pilot_replicas: bool = False
+    ) -> list[Self]:
         q = sa.select(cls).options(
             joinedload(cls.access_group),
             selectinload(cls.pilot_deployments),
             selectinload(cls.static_deployments),
         )
+        if load_pilot_replicas:
+            q = q.options(
+                selectinload(cls.pilot_deployments).selectinload(
+                    PilotDeployment.replicas
+                )
+            )
         return list(await sess.scalars(q))
 
 

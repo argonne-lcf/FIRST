@@ -6,8 +6,8 @@ designed to be owned by a specific controller; see the
 [Controller Framework](controllers.md) for how rows are meant to be
 acted on (most controllers are still under construction — today the
 schema is fully defined and exercised by the plan/apply path, and the
-controller framework itself is in place, but only a stub controller is
-wired up).
+controller framework is in place with the Cluster Health Observer,
+Static Health Observer, and Retention Sweeper running).
 
 The authoritative class definitions live in
 `first_gateway.database.models` (SQLAlchemy ORM, schema `first`) and
@@ -128,7 +128,7 @@ pilot can host replicas of several different `PilotDeployment`s on the
 same node, so the FK to `Cluster` is intentionally singular and no FK
 to `PilotDeployment` exists.
 
-Notable fields: `scheduler_job_id`, `state: SchedulerJobState`, `manager_url`
+Notable fields: `scheduler_job_id`, `scheduler_state: SchedulerJobState`, `manager_url`
 (set once the pilot's readyfile is discovered), `manager_health`,
 `resources: PilotResources` (mirrored from the pilot's `/status`),
 `idle_since` (drives idle-pilot reaping), `walltime_min`,
@@ -148,8 +148,7 @@ A single running replica of a model inside a pilot job.
   create replicas in a "pending placement" state and bind them to a job
   as capacity opens up.
 - `used_resources: list[GpuClaim]`, `model_url`, `observed_served_name`,
-  `state: ReplicaState`, `state_message`, `last_health_check`,
-  `started_at`.
+  `state: ReplicaState`, `state_message`, `started_at`.
 
 Similarly, there is no Spec for `PilotReplica`; Replicas are created/destroyed
 by controllers in response to the desired scaling level of each model

@@ -167,11 +167,11 @@ untouched.
 
 ```bash
 # Rotate the server cert (new key + new serial, same CA):
-python mtls.py server inference-server --name server
+pilot-certmanager server inference-server
 # redeploy server.crt + server.key to the HPC filesystem, reload NGINX.
 
 # Rotate the gateway client cert:
-python mtls.py client inference-gateway --name client
+pilot-certmanager client inference-gateway
 # redeploy client.crt + client.key to the gateway, restart the gateway.
 ```
 

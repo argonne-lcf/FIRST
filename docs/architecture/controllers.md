@@ -425,21 +425,28 @@ We split state across two stores:
   `manager_health`, in-flight counts, load averages) that would otherwise
   spam triggers and balloon WAL.
 
-The danger is Redis access scattered ad-hoc throughout the codebase. We
-contain it with two abstractions:
+The danger is Redis access scattered ad-hoc throughout the codebase.
+We contain it with:
 
-All health and state fields are stored directly in Postgres. API read
-schemas map directly from the ORM models.
+- Redis Key builder: centralized in `first_gateway.database.redis.keys`
+- Router configuration managed in `first_gateway.database.redis.router_config`
+- Admission controller logic / Lua scripts managed in `first_gateway.database.redis.admission`
+- Cache and runtime state managed in `first_gateway.database.redis.repo.RedisRepo`
+
+Runtime state is read from Redis and structured in `<Entity>Runtime` models
+defined in `first_common.schema.resources.runtime`.  These classes are used to
+delineate runtime state that changes frequently and can be fetched independently
+of ORM data.
 
 ## Observability
 
 The manager process exposes a small FastAPI on a local port (e.g.
-`127.0.0.1:9100`) with two routes:
+`127.0.0.1:9100`) with three routes:
 
 - `GET /healthz` — returns 200 iff every registered `Worker` has a fresh
   heartbeat across all its named beats. Used as the docker healthcheck.
 - `GET /metrics` — Prometheus exposition format, emitted by `prometheus_client`.
-- `GET /api/controllers` — for each worker: name, status (running/restarting),
+- `GET /controllers` — for each worker: name, status (running/restarting),
   named heartbeats with seconds-since-last-beat, last error, restart count.
 
 The following metrics are defined in `first_gateway.controllers.controller`
@@ -458,7 +465,7 @@ and `first_gateway.controllers.worker`:
 Logging is the primary debugging surface: structured JSONL via the existing
 `first_gateway.log_config`.
 
-The admin dashboard polls `/api/controllers` and renders a status pane next
+The admin dashboard polls `/controllers` and renders a status pane next
 to the resource list. Prometheus (run separately in our deployment) scrapes
 `/metrics`, alongside the vLLM `/metrics` endpoints exposed via dynamic
 service discovery from the router config.
@@ -515,7 +522,10 @@ Before diving into the controller details, let's trace through the stages involv
 The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
 
 !!! info "Implementation status"
-    The Cluster Health Observer and Static Health Observer are written.
+    The Cluster Health Observer, Static Health Observer, Router Config
+    Observer, and Retention Sweeper are implemented. The Router Config
+    Observer is not yet registered in the controller manager. The
+    remaining controllers below are design specifications.
 
 ### Observer controllers
 

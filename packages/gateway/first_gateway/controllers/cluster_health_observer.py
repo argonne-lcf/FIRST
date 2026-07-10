@@ -33,7 +33,7 @@ class ClusterHealthObserver(Worker):
 
     async def _poll(self) -> None:
         async with self.client_state.db_sessionmaker() as sess:
-            clusters = list(await sess.scalars(sa.select(Cluster)))
+            clusters = await Cluster.list(sess)
 
         results = await asyncio.gather(*(self._check(c) for c in clusters))
         observed = [r for r in results if r is not None]

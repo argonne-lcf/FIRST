@@ -33,7 +33,7 @@ class StaticDeploymentHealthObserver(Worker):
 
     async def _poll(self) -> None:
         async with self.client_state.db_sessionmaker() as sess:
-            deployments = list(await sess.scalars(sa.select(StaticDeployment)))
+            deployments = await StaticDeployment.list(sess)
 
         results = await asyncio.gather(*(self._check(d) for d in deployments))
         observed = [r for r in results if r is not None]

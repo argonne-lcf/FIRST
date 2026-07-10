@@ -49,27 +49,27 @@ Non-LLM modalities are exposed via explicit task namespaces:
 /api/deployments/{slug}/v1/tasks/{task}
 ```
 
-Users can discover available resources via `/api/catalog/`:
+Users can discover available resources via `/catalog/`:
 
 ```
-/api/catalog/v1/models
-/api/catalog/v1/models/{name}
-/api/catalog/v1/deployments
-/api/catalog/v1/deployments/{slug}
+/catalog/v1/models
+/catalog/v1/models/{name}
+/catalog/v1/deployments
+/catalog/v1/deployments/{slug}
 ```
 
 The Control Plane APIs and operational APIs are restricted to admins:
 
 ```
 # ── Control plane (admin; separate auth/middleware/audit) ──────
-/api/control/v1/deployments               # CRUD, scale, drain
-/api/control/v1/deployments/{slug}
-/api/control/v1/clusters
-/api/control/v1/usage                     # token metric rollups
-/api/control/v1/demand                    # model-level demand signals (autoscaler view)
+/control/v1/deployments               # CRUD, scale, drain
+/control/v1/deployments/{slug}
+/control/v1/clusters
+/control/v1/usage                     # token metric rollups
+/control/v1/demand                    # model-level demand signals (autoscaler view)
 
 # ── Operational ────────────────────────────────────────────────
-/healthz  /readyz  /metrics
+/health  /healthz  /readyz  /metrics
 ```
 
 
@@ -80,13 +80,13 @@ The Control Plane APIs and operational APIs are restricted to admins:
                    │           Control Plane            │
                    │ lifecycle · autoscaler · cold start│
                    └───────┬──────────────────▲─────────┘
-        writes cfg:* (3-   │                  │ reads live
-        level hierarchy),  │                  │ usage metrics
-        bumps version, pub │                  │
+   writes router-cfg    │                  │ reads live
+   blob, publishes      │                  │ usage metrics
+   cfg:changed          │                  │
                            ▼                  │
      ┌────────────────────────────────────────┴───────────┐
      │                        Redis                        │
-     │ cfg:*     control plane-written (models, backends)  │
+     │ router-cfg  control plane-written config blob        │
      │ rt:*      router state (inflight, cooldowns)        │
      │ quota:*   per-user GCRA buckets, concurrency        │
      │ pubsub    cfg-changed notifications                 │
@@ -143,7 +143,7 @@ matched to the unique preferred `name` or any number of optional legacy `aliases
 - Deployments are identified  by `name`.  Since users may target deployments in the URL
 path, and deployment names may contain `/`, the name is
 mapped to a slug (1:1 mapping by swapping `/` for `~`).
-- Config rewrite is atomic from the router's view: write keys → bump `cfg:version` → publish.
+- Config rewrite is atomic from the router's view: write the `router-cfg` blob → publish on the `cfg:changed` channel.
 
 Even though FIRST Gateway does not explicitly manage backends for static
 deployments, all deployment types converge to the uniform `RouterConfig` so that
@@ -202,7 +202,7 @@ user over fair share is not a scaling reason.
 ### Config Snapshot Manager
 
 - Each worker holds an **immutable in-memory snapshot** of the full config (models, deployments, backends, ACL maps, quota tables, compiled route tables).
-- Subscribe to pub/sub; on notify (or poll fallback), compare `cfg:version`; if newer, load `cfg:*` and **atomically swap** the snapshot reference. In-flight requests keep the snapshot they started with.
+- Subscribe to the `cfg:changed` pub/sub channel; on notify (or poll fallback), reload the `router-cfg` blob and **atomically swap** the snapshot reference. In-flight requests keep the snapshot they started with.
 
 ### Cooldown
 
@@ -386,15 +386,15 @@ time, and whether or not there is capacity to cold-start the backend.
 
 - Stream end → record `{request_id, user, model, deployment, backend, API path, tokens_in/out, ttfb, duration, status, estimated?}` → asyncio queue → batching task → sinks
     - Structured logs: JSONL to stdout
-    - Redis rollups for `/api/control/v1/usage`; exposed by control plane observer as Prometheus metrics
+    - Redis rollups for `/control/v1/usage`; exposed by control plane observer as Prometheus metrics
     - Emission never blocks the request path; the settle script consumes the same record.
 - Missing usage (disconnects, legacy backends): chunk-count proxy or tokens-so-far flagged `estimated: true`
 
 
 ### Discovery, Catalog & Observability
 
-- `/api/{scope}/v1/models`: OpenAI-shaped, ACL-filtered, snapshot-served.
-- `/api/catalog/v1/*`: full metadata: deployments with backend counts/states; snapshot + selected `rt:*`/`demand:*` reads.
+- `/{scope}/v1/models`: OpenAI-shaped, ACL-filtered, snapshot-served.
+- `/catalog/v1/*`: full metadata: deployments with backend counts/states; snapshot + selected `rt:*`/`demand:*` reads.
 - Prometheus per worker: request counts/latency by model/deployment/task, TTFB, inter-chunk latency, token counters, **admission rejects by reason (capacity vs each quota type)**,  demand gauges, translation-path counter (should trend → 0), snapshot version/age.
 - `/readyz` = snapshot loaded ∧ Redis reachable.
 

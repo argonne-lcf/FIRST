@@ -48,7 +48,7 @@ We also want to populate the in-memory config to serve out for Prometheus to dis
 ### Add API routes that proxy through routers
 
 Implement the inference API routes like `/api/federated/v1/chat/completions` following the design
-in [request-routing.md](./docs/architecture/request-routing.md). Postgres should
+in [request-routing.md](architecture/request-routing.md). Postgres should
 not be involved in the inference path at all.
 
 Routing is federated/load-balanced by default, but we should also consider how to structure and provide additional API paths to side-step the router and target specific deployments.
