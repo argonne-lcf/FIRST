@@ -2,7 +2,6 @@ from typing import Annotated, AsyncGenerator, cast
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from redis.asyncio import Redis as _AsyncRedis
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
 )
@@ -29,10 +28,6 @@ async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
     """
     async with state.db_sessionmaker() as sess:
         yield sess
-
-
-async def get_redis(state: AppState) -> _AsyncRedis:
-    return state.redis
 
 
 async def get_redis_repo(state: AppState) -> _RedisRepo:
@@ -75,7 +70,6 @@ async def is_user_admin(
 
 BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]
 DbSession = Annotated[AsyncSession, Depends(get_session)]
-AsyncRedis = Annotated[_AsyncRedis, Depends(get_redis)]
 RedisRepo = Annotated[_RedisRepo, Depends(get_redis_repo)]
 AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]

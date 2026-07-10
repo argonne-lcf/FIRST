@@ -15,8 +15,6 @@ class Keys:
     def config() -> str:
         return "router-cfg"
 
-    # -- router state (rt:*) -------------------------------------------------
-
     @staticmethod
     def model_inflight(model: str) -> str:
         """HASH keyed by backend_id → concurrent request count."""
@@ -47,10 +45,28 @@ class Keys:
         """ZSET of request_ids scored by deadline timestamp."""
         return "rt:deadlines"
 
-    # -- quota state (quota:*) -----------------------------------------------
-
     @staticmethod
     def quota(
         model: str, user: str, resource: Literal["tokens", "rpm", "inflight"]
     ) -> str:
         return f"quota:{model}:{user}:{resource}"
+
+    @staticmethod
+    def token_introspect(token_hash: str) -> str:
+        """Cached token introspection result, keyed by SHA-256 of the bearer token."""
+        return f"auth:token_introspect:{token_hash}"
+
+    @staticmethod
+    def authed_user(user_id: str) -> str:
+        """NX-guarded flag to emit a UserAuthEvent once per TTL window."""
+        return f"auth:user:{user_id}"
+
+    @staticmethod
+    def log_dedup_5xx(user: str, status_code: int) -> str:
+        """NX-guarded flag to suppress repeated 5xx log lines."""
+        return f"logdedup:{user}:{status_code}"
+
+    @staticmethod
+    def log_dedup_4xx(user: str, fingerprint: str, status_code: int) -> str:
+        """NX-guarded flag to suppress repeated 4xx log lines."""
+        return f"logdedup:{user}:{fingerprint}:{status_code}"

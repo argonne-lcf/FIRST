@@ -35,19 +35,16 @@ class GlobusAuthService:
     def __init__(self, client_state: ClientState) -> None:
         self.cfg = client_state.settings.globus
         self.client = client_state.auth_client
-        self.cache = client_state.redis
+        self.repo = client_state.redis_repo
 
     async def introspect_token(self, bearer_token: str) -> TokenIntrospectionResult:
         """
         Introspect a token with policies, collect group memberships, and return the response.
         Uses Redis cache for multi-worker support.
         """
-        # Create cache key from token hash (don't store raw tokens in cache keys)
-        # Store the entire hash to avoid collisions where different users would have the same last hash digits
         token_hash = hashlib.sha256(bearer_token.encode()).hexdigest()
-        cache_key = f"token_introspect:{token_hash}"
 
-        cached_result = await self.cache.get(cache_key)
+        cached_result = await self.repo.get_cached_token(token_hash)
         if cached_result is not None:
             return TokenIntrospectionResult.model_validate_json(cached_result)
 
@@ -59,7 +56,9 @@ class GlobusAuthService:
             error_result = TokenIntrospectionResult(
                 token_data=None, user_groups=[], error=str(e)
             )
-            await self.cache.set(cache_key, error_result.model_dump_json(), ex=60)
+            await self.repo.set_cached_token(
+                token_hash, error_result.model_dump_json(), ttl=60
+            )
             raise
 
         # If the introspection was successful ...
@@ -74,8 +73,7 @@ class GlobusAuthService:
         # Set cache time and make sure it is not shorter than the time until token expiration
         ttl = min(600, seconds_until_expiration)
 
-        # Cache the result (successful or error)
-        await self.cache.set(cache_key, result.model_dump_json(), ex=ttl)
+        await self.repo.set_cached_token(token_hash, result.model_dump_json(), ttl=ttl)
         return result
 
     async def _perform_token_introspection(
@@ -440,7 +438,7 @@ class GlobusAuthService:
 
         # Return valid token response
         log.debug(f"{user.name} requesting {introspection.token_data['scope']}")
-        if await self.cache.set(f"authed_user:{user.id}", "", nx=True, ex=120):
+        if await self.repo.mark_authed_user(user.id):
             user.emit()
         return user
 

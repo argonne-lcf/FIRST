@@ -105,3 +105,30 @@ class RedisRepo:
                 pipe.hgetall(Keys.model_demand(name))
             results = await pipe.execute()
         return [_parse_model_runtime(data) for data in results]
+
+    async def get_cached_token(self, token_hash: str) -> str | None:
+        val = await self.client.get(Keys.token_introspect(token_hash))
+        return _to_str(val) if val else None
+
+    async def set_cached_token(self, token_hash: str, value: str, ttl: int) -> None:
+        await self.client.set(Keys.token_introspect(token_hash), value, ex=ttl)
+
+    async def mark_authed_user(self, user_id: str, ttl: int = 120) -> bool:
+        """Returns True if this is the first mark within the TTL window."""
+        return bool(
+            await self.client.set(Keys.authed_user(user_id), "", nx=True, ex=ttl)
+        )
+
+    async def is_new_error_log(
+        self,
+        user: str,
+        status_code: int,
+        fingerprint: str | None = None,
+        ttl: int = 30,
+    ) -> bool:
+        """Returns True if this user/status/fingerprint combo hasn't been seen within TTL."""
+        if fingerprint is None:
+            key = Keys.log_dedup_5xx(user, status_code)
+        else:
+            key = Keys.log_dedup_4xx(user, fingerprint, status_code)
+        return bool(await self.client.set(key, "", nx=True, ex=ttl))

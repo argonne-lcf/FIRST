@@ -7,12 +7,12 @@ from typing import Any
 
 from fastapi.requests import Request
 from fastapi.responses import Response, StreamingResponse
-from redis.asyncio import Redis
 
 from first_common.schema.structured_logs import (
     AccessLog,
 )
 
+from ..database.redis.repo import RedisRepo
 from ..settings import ClientState
 from .context import RequestContext, _request_context
 
@@ -80,7 +80,7 @@ async def log_request(request: Request, call_next: Any) -> Response:
         _request_context.reset(token)
 
     client_state: ClientState = request.app.state.client_state
-    if await should_skip_logging(ctx_data, request, response, client_state.redis):
+    if await should_skip_logging(ctx_data, request, response, client_state.redis_repo):
         return response
 
     # Fire-and-forget logging pattern:
@@ -96,19 +96,18 @@ async def should_skip_logging(
     ctx: RequestContext,
     request: Request,
     response: Response,
-    redis: Redis,
+    repo: RedisRepo,
 ) -> bool:
-    # Don't log internal streaming requests:
     if "api/streaming" in request.url.path:
         return True
 
     status_code = response.status_code
-    user = ctx.user.username if ctx.user else ctx.access_log.origin_ip
+    user = ctx.user.username if ctx.user else (ctx.access_log.origin_ip or "unknown")
 
     if status_code < 400:
         return False
     elif status_code >= 500:
-        is_new_err = await redis.set(f"{user}{status_code}", "", nx=True, ex=30)
+        is_new = await repo.is_new_error_log(user, status_code)
     else:
         body = getattr(response, "body", b"")
         fingerprint = (
@@ -116,9 +115,6 @@ async def should_skip_logging(
             if isinstance(response, StreamingResponse)
             else (str(body[:128]))
         )
-        is_new_err = await redis.set(
-            f"{user}{fingerprint}{status_code}", "", nx=True, ex=30
-        )
+        is_new = await repo.is_new_error_log(user, status_code, fingerprint=fingerprint)
 
-    # De-duplicate logs when it's the same user/error repeatedly:
-    return not is_new_err
+    return not is_new
