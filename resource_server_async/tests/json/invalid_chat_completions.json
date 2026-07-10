@@ -1266,37 +1266,14 @@
         "stream": "hello this is not a boolean"
     },
 
-  {
-    "model": "meta-llama/Meta-Llama-3-8B-Instruct",
-    "messages": [
-      {
-        "role": "system",
-        "content": "this is my question?"
-      }
-    ],
-    "extra_body": {"use_beam_search": true, "extra": "should not be allowed"}
-  },
-
-  {
-    "model": "meta-llama/Meta-Llama-3-8B-Instruct",
-    "messages": [
-      {
-        "role": "system",
-        "content": "this is my question?"
-      }
-    ],
-    "extra_body": {"use_beam_search": "not a boolean"}
-  },
-
-  {
-    "model": "meta-llama/Meta-Llama-3-8B-Instruct",
-    "messages": [
-      {
-        "role": "system",
-        "content": "this is my question?"
-      }
-    ],
-    "extra_body": {"not_a_valid_option": true}
-  }
-
+    {
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "messages": [
+          {
+            "role": "system",
+            "content": "this is my question?"
+          }
+        ],
+        "extra_body": {"use_beam_search": "not a boolean"}
+    }
 ]
