@@ -141,7 +141,7 @@ async def db(
     monkeypatch.setenv("FIRST_REDIS_URL", redis_url)
 
     # Flush Test Redis
-    cache = AsyncRedis.from_url(redis_url)
+    cache = AsyncRedis.from_url(redis_url, decode_responses=True)
     await cache.flushdb()
     await cache.aclose()
 

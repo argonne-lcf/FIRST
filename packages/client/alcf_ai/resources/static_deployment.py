@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from first_common.schema.resources.read import StaticDeployment
+from first_common.schema.resources.read import StaticDeploymentDetail
 
 from .._http import raise_for_status
 
@@ -12,7 +12,7 @@ class StaticDeploymentsResource:
     def __init__(self, client: "InferenceClient") -> None:
         self._client = client
 
-    def list(self) -> list[StaticDeployment]:
+    def list(self) -> list[StaticDeploymentDetail]:
         resp = self._client.get("/resources/static-deployments")
         raise_for_status(resp)
-        return [StaticDeployment.model_validate(o) for o in resp.json()]
+        return [StaticDeploymentDetail.model_validate(o) for o in resp.json()]

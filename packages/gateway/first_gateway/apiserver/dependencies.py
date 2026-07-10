@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.resources.spec import AccessGroupSpec
 
+from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
 
@@ -32,6 +33,10 @@ async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
 
 async def get_redis(state: AppState) -> _AsyncRedis:
     return state.redis
+
+
+async def get_redis_repo(state: AppState) -> _RedisRepo:
+    return state.redis_repo
 
 
 async def get_auth_user(
@@ -71,6 +76,7 @@ async def is_user_admin(
 BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 AsyncRedis = Annotated[_AsyncRedis, Depends(get_redis)]
+RedisRepo = Annotated[_RedisRepo, Depends(get_redis_repo)]
 AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
 IsUserAdmin = Annotated[bool, Depends(is_user_admin)]

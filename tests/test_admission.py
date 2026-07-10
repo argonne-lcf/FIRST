@@ -22,7 +22,7 @@ from first_gateway.database.redis.keys import Keys
 @pytest.fixture
 async def redis() -> AsyncGenerator[Redis, None]:
     url = Settings().redis_url
-    r: Redis = Redis.from_url(url)
+    r: Redis = Redis.from_url(url, decode_responses=True)
     await r.flushdb()
     try:
         yield r

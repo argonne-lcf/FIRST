@@ -595,6 +595,17 @@ published by the control plane and consumed by the apiserver workers of the data
 - Groups successful startups and failures by PilotDeployment.  For each PilotDeployment,
 update `consecutive_launch_failures` (incrementing per failed or timed-out replica and resetting to 0 on success)
 
+#### Inflight Count Observer
+
+Cron job: every ~15 minutes use
+`AdmissionController.rebuild_inflight_from_ledger()` to re-count the inflights
+per backend and per user.  Atomically update the counts in Redis if any drift is
+detected.  Should always be a no-op under correct operation of the service. This
+is merely a backstop for operational errors (accidental corruption of data in
+Redis; restoring from stale backup; future development introducing buggy TTLs,
+etc...).  By recounting, fixing, and alarming on detected drift, we add a layer
+of defense to what should otherwise remain consistent on its own.
+
 ### Lifecycle controllers
 
 #### PilotJob Controller (`table_name = "pilot_job"`)

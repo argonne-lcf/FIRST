@@ -14,7 +14,8 @@ from first_common.schema.resources.read import (
     ModelSummary,
     PilotDeploymentDetail,
     PilotDeploymentSummary,
-    StaticDeployment,
+    PilotReplica,
+    StaticDeploymentDetail,
 )
 
 from ...database import models as db
@@ -25,6 +26,7 @@ from ..dependencies import (
     AuthUser,
     DbSession,
     IsUserAdmin,
+    RedisRepo,
 )
 
 admin_router = APIRouter(prefix="/resources")
@@ -47,16 +49,20 @@ async def list_access_groups(
 
 @user_router.get("/models", response_model=list[ModelSummary])
 async def list_models(
-    sess: DbSession, user: AuthUser, is_admin: IsUserAdmin
-) -> list[db.Model]:
+    sess: DbSession, user: AuthUser, is_admin: IsUserAdmin, repo: RedisRepo
+) -> list[ModelSummary]:
     """
     List Models.  Admins see all; ordinary users see only Models whose
     AccessGroup grants them access.
     """
     models = await db.Model.list(sess)
-    if is_admin:
-        return models
-    return [m for m in models if user_can_access_group(user, m.access_group)]
+    if not is_admin:
+        models = [m for m in models if user_can_access_group(user, m.access_group)]
+
+    runtimes = await repo.get_many_model_runtimes([m.name for m in models])
+    return [
+        ModelSummary.merge(model, runtime=rt) for (model, rt) in zip(models, runtimes)
+    ]
 
 
 @user_router.get("/pilot-deployments", response_model=list[PilotDeploymentSummary])
@@ -84,21 +90,29 @@ async def get_pilot_deployment(
     user: AuthUser,
     name: str,
     is_admin: IsUserAdmin,
-) -> db.PilotDeployment:
+    repo: RedisRepo,
+) -> PilotDeploymentDetail:
     """Get a single PilotDeployment with its replicas."""
     deployment = await db.PilotDeployment.get_detail(sess, name)
     if not (is_admin or user_can_access_group(user, deployment.model.access_group)):
         raise AccessDenied(f"Permission denied for PilotDeployment {name!r}.")
 
-    return deployment
+    keys = [(deployment.model_name, r.backend_id) for r in deployment.replicas]
+    runtimes = await repo.get_many_backend_runtimes(keys)
+    merged_replicas = [
+        PilotReplica.merge(r, runtime=rt)
+        for r, rt in zip(deployment.replicas, runtimes)
+    ]
+    return PilotDeploymentDetail.merge(deployment, replicas=merged_replicas)
 
 
-@user_router.get("/static-deployments", response_model=list[StaticDeployment])
+@user_router.get("/static-deployments", response_model=list[StaticDeploymentDetail])
 async def list_static_deployments(
     sess: DbSession,
     user: AuthUser,
     is_admin: IsUserAdmin,
-) -> list[db.StaticDeployment]:
+    repo: RedisRepo,
+) -> list[StaticDeploymentDetail]:
     """
     List StaticDeployments.  Admins see all; ordinary users see only deployments
     whose parent Model authorizes them.
@@ -113,7 +127,11 @@ async def list_static_deployments(
             if user_can_access_group(user, model.access_group)
         ]
 
-    return rows
+    keys = [(sd.model_name, sd.backend_id) for sd in rows]
+    runtimes = await repo.get_many_backend_runtimes(keys)
+    return [
+        StaticDeploymentDetail.merge(sd, runtime=rt) for sd, rt in zip(rows, runtimes)
+    ]
 
 
 @user_router.get("/clusters", response_model=list[ClusterSummary])

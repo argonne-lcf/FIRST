@@ -18,7 +18,7 @@ from first_gateway.database.models import Cluster
 @pytest.fixture
 async def redis():  # type: ignore[no-untyped-def]
     url = Settings().redis_url
-    r = Redis.from_url(url)
+    r = Redis.from_url(url, decode_responses=True)
     await r.flushdb()
     try:
         yield r

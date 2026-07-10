@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from .database.redis.repo import RedisRepo
+
 
 @dataclass
 class ClientState:
@@ -29,6 +31,7 @@ class ClientState:
     settings: "Settings"
     httpx_client: AsyncClient
     redis: AsyncRedis
+    redis_repo: RedisRepo
     db_engine: AsyncEngine
     db_sessionmaker: async_sessionmaker[AsyncSession]
     auth_client: ConfidentialAppAuthClient
@@ -106,7 +109,7 @@ class Settings(BaseSettings):
         )
         sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
 
-        redis = AsyncRedis.from_url(self.redis_url)
+        redis = AsyncRedis.from_url(self.redis_url, decode_responses=True)
         await redis.ping()
         try:
             async with AsyncClient() as httpx_client:
@@ -115,6 +118,7 @@ class Settings(BaseSettings):
                     db_engine=engine,
                     db_sessionmaker=sessionmaker,
                     redis=redis,
+                    redis_repo=RedisRepo(redis),
                     httpx_client=httpx_client,
                     auth_client=ConfidentialAppAuthClient(
                         self.globus.app_id, self.globus.app_secret.get_secret_value()

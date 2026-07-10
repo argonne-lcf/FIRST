@@ -302,7 +302,10 @@ async def test_replica_lifecycle(
         assert r.status_code == 200, r.text
 
         async def _ready() -> bool:
-            s = PilotJobStatus.model_validate((await client.get("/status")).json())
+            try:
+                s = PilotJobStatus.model_validate((await client.get("/status")).json())
+            except httpx.TransportError:
+                return False
             return any(
                 rep.name == "r0" and rep.state == ReplicaState.ready
                 for rep in s.replicas

@@ -67,7 +67,7 @@ class ResourceMeta(BaseModel):
         return self.name.replace("/", "~")
 
     @classmethod
-    def merge(cls, obj: Any, **overrides: BaseModel) -> Self:
+    def merge(cls, obj: Any, **overrides: Any) -> Self:
         """
         Validate `obj` with additional attributes defined in overrides.
         """
@@ -101,7 +101,7 @@ class PilotDeploymentSummary(ResourceMeta):
     consecutive_launch_failures: int
 
 
-class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
+class StaticDeploymentSummary(ResourceMeta, spec.StaticDeploymentSpec):
     """
     Concise information about StaticDeployments, where the model lifecycle is
     externally-managed and FIRST merely proxies to a given URL.
@@ -109,6 +109,13 @@ class StaticDeployment(ResourceMeta, spec.StaticDeploymentSpec):
 
     kind: Literal["StaticDeployment"] = "StaticDeployment"
     health: HealthCheckResult
+
+
+class StaticDeploymentDetail(StaticDeploymentSummary):
+    """
+    Static Deployment with backend runtime information.
+    """
+
     runtime: BackendRuntime = BackendRuntime()
 
 
@@ -155,7 +162,7 @@ class ModelSummary(ResourceMeta, spec.ModelSpec):
 
     kind: Literal["Model"] = "Model"
     pilot_deployments: list[PilotDeploymentSummary]
-    static_deployments: list[StaticDeployment]
+    static_deployments: list[StaticDeploymentSummary]
     runtime: ModelRuntime = ModelRuntime()
 
 
