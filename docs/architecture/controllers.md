@@ -522,7 +522,7 @@ Before diving into the controller details, let's trace through the stages involv
 The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
 
 !!! info "Implementation status"
-    The Cluster Health Observer, Static Health Observer, Router Config
+    The Health Observer, Router Config
     Observer, and Retention Sweeper are implemented. The Router Config
     Observer is not yet registered in the controller manager. The
     remaining controllers below are design specifications.
@@ -531,15 +531,10 @@ The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it 
 
 These read external systems and write to Postgres.
 
-#### Cluster Health Observer
-- Polls each `Cluster`'s configured `health_check` endpoint via
-  `perform_health_check`.
-- Postgres write: `Cluster.health` (only on transition).
-
-#### StaticDeployment Health Observer
-- Polls `health_check` endpoint for each `StaticDeployment` via
-  `perform_health_check`.
-- Postgres write: `StaticDeployment.health` (only on transition).
+#### Health Observer
+- Polls each `Cluster`'s and `StaticDeployment`'s configured `health_check`
+endpoint via `perform_health_check`.
+- Postgres write: `<ResourceCls>.health` (only on transition).
 
 #### Router Config Observer
 - Interface to [data plane](request-routing.md): the router config is

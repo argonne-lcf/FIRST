@@ -290,7 +290,7 @@ async def test_replica_lifecycle(
                 env={},
                 serve_script_template=_MOCK_REPLICA_SCRIPT,
                 max_startup_sec=20,
-                health_check=HealthCheckParams(health_url="http://localhost/health"),
+                health_check=HealthCheckParams(url="http://localhost/health"),
             ).model_dump(mode="json"),
             "resources": [
                 GpuClaim(

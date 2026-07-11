@@ -10,7 +10,7 @@ kind: Cluster
 name: sophia
 spec:
   health_check:
-    health_url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
+    url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
     read_timeout: 10
   maintenance_notice: "Sophia is operational"
   pilot_system:

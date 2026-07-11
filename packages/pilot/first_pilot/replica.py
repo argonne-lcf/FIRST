@@ -57,7 +57,6 @@ class Replica:
     """
 
     _HEALTH_INTERVAL = 0.4
-    _HEALTH_DEBOUNCE = 10
     _TERM_GRACE = 8.0
     _KILL_GRACE = 5.0
     _GROUP_POLL_INTERVAL = 0.2
@@ -120,6 +119,16 @@ class Replica:
         self._unhealthy_since: float | None = None
         self._health_client = Client()
 
+        self._health_params = self.launch_spec.health_check
+        self._health_debounce = max(5, self._health_params.debounce)
+        if self._health_params.url:
+            path = urlparse(self._health_params.url).path
+            url = f"http://127.0.0.1:{self.port}/{path.lstrip('/')}"
+            self._health_params.url = url
+            logger.info(f"Replica will monitor health at {url}")
+        else:
+            logger.info("Replica health check disabled")
+
         self._teardown_lock = threading.Lock()
         self._torn_down = False
         self._monitor_exit = threading.Event()
@@ -155,20 +164,11 @@ class Replica:
         return env.from_string(spec.serve_script_template).render(**context)
 
     def _check_health(self) -> HealthCheckResult:
-        health_check = self.launch_spec.health_check
-
-        if not health_check.health_url:
+        if not self._health_params.url:
             # No health endpoint -> trust the process: alive == healthy.
             return HealthCheckResult.healthy
 
-        health_path = urlparse(health_check.health_url).path
-        health_url = f"http://127.0.0.1:{self.port}/{health_path.lstrip('/')}"
-
-        return perform_health_check_sync(
-            self._health_client,
-            health_url,
-            **health_check.model_dump(exclude={"health_url"}),
-        )
+        return perform_health_check_sync(self._health_client, self._health_params)
 
     def _record_health(self, health: HealthCheckResult) -> None:
         if health == HealthCheckResult.healthy:
@@ -242,14 +242,14 @@ class Replica:
                 self._shutdown()
 
         elif self.state == ReplicaState.ready:
-            if not healthy and self.consecutive_health_fail >= self._HEALTH_DEBOUNCE:
+            if not healthy and self.consecutive_health_fail >= self._health_debounce:
                 logger.warning(msg := f"replica {self.name} became unhealthy")
                 self.state_message = msg
                 self.state = ReplicaState.unhealthy
                 self._unhealthy_since = time.monotonic()
 
         elif self.state == ReplicaState.unhealthy:
-            if healthy and self.consecutive_health_ok >= self._HEALTH_DEBOUNCE:
+            if healthy and self.consecutive_health_ok >= self._health_debounce:
                 logger.info(msg := f"replica {self.name} recovered")
                 self.state_message = msg
                 self.state = ReplicaState.ready

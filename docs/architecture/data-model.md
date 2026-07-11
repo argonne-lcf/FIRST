@@ -6,8 +6,8 @@ designed to be owned by a specific controller; see the
 [Controller Framework](controllers.md) for how rows are meant to be
 acted on (most controllers are still under construction — today the
 schema is fully defined and exercised by the plan/apply path, and the
-controller framework is in place with the Cluster Health Observer,
-Static Health Observer, and Retention Sweeper running).
+controller framework is in place with the Health Observer,
+ and Retention Sweeper running).
 
 The authoritative class definitions live in
 `first_gateway.database.models` (SQLAlchemy ORM, schema `first`) and

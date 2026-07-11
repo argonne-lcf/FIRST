@@ -1,91 +1,67 @@
+import asyncio
 import logging
 import re
-from http import HTTPMethod
-from typing import Any
+import time
 
-from httpx import AsyncClient, Client, HTTPError, Timeout
+from httpx import Client, HTTPError, Timeout
 
-from first_common.schema.types import HealthCheckResult
+from first_common.schema.types import HealthCheckParams, HealthCheckResult
 
 logger = logging.getLogger(__name__)
 
 
 async def perform_health_check(
-    client: AsyncClient,
-    health_url: str,
-    *,
-    connect_timeout: float = 3.1,
-    read_timeout: float = 12.0,
-    http_method: HTTPMethod = HTTPMethod.GET,
-    json_body: Any | None = None,
-    status_range: tuple[int, int] = (200, 299),
-    match_pattern: str | None = None,
+    client: Client, params: HealthCheckParams
 ) -> HealthCheckResult:
-
-    if not health_url:
-        # No URL: disabled check
-        return HealthCheckResult.unknown
-
-    try:
-        resp = await client.request(
-            method=http_method,
-            url=health_url,
-            timeout=Timeout(read_timeout, connect=connect_timeout),
-            json=json_body,
-        )
-    except HTTPError:
-        logger.exception(f"Request error for health check to {health_url!r}")
-        return HealthCheckResult.unhealthy
-
-    if not status_range[0] <= resp.status_code <= status_range[1]:
-        logger.warning(
-            f"Health check {health_url!r} status code {resp.status_code} out of range"
-        )
-        return HealthCheckResult.unhealthy
-
-    if match_pattern:
-        if not re.search(match_pattern, resp.content.decode(errors="ignore")):
-            logger.warning(
-                f"Health check {health_url!r} response body did not find {match_pattern=!r}"
-            )
-            return HealthCheckResult.unhealthy
-
-    return HealthCheckResult.healthy
+    return await asyncio.to_thread(perform_health_check_sync, client, params)
 
 
 def perform_health_check_sync(
     client: Client,
-    health_url: str,
-    *,
-    connect_timeout: float = 3.1,
-    read_timeout: float = 12.0,
-    http_method: HTTPMethod = HTTPMethod.GET,
-    json_body: Any | None = None,
-    status_range: tuple[int, int] = (200, 299),
-    match_pattern: str | None = None,
+    params: HealthCheckParams,
 ) -> HealthCheckResult:
+    health = HealthCheckResult.unknown
+
+    for attempt in range(params.attempts_per_check):
+        health = _check_once(client, params)
+
+        if (
+            health == HealthCheckResult.unhealthy
+            and attempt < params.attempts_per_check - 1
+        ):
+            time.sleep(params.attempt_delay)
+            continue
+
+        break
+
+    return health
+
+
+def _check_once(client: Client, params: HealthCheckParams) -> HealthCheckResult:
+    if not params.url:
+        return HealthCheckResult.unknown
 
     try:
         resp = client.request(
-            method=http_method,
-            url=health_url,
-            timeout=Timeout(read_timeout, connect=connect_timeout),
-            json=json_body,
+            method=params.http_method,
+            url=params.url,
+            timeout=Timeout(params.read_timeout, connect=params.connect_timeout),
+            json=params.json_body,
         )
-    except HTTPError:
-        logger.exception(f"Request error for health check to {health_url!r}")
+    except HTTPError as exc:
+        logger.warning(f"Request error for health check to {params.url!r}: {exc}")
         return HealthCheckResult.unhealthy
 
-    if not status_range[0] <= resp.status_code <= status_range[1]:
+    if not params.status_range[0] <= resp.status_code <= params.status_range[1]:
         logger.warning(
-            f"Health check {health_url!r} status code {resp.status_code} out of range"
+            f"Health check {params.url!r} status code {resp.status_code} out of range"
         )
         return HealthCheckResult.unhealthy
 
-    if match_pattern:
-        if not re.search(match_pattern, resp.content.decode(errors="ignore")):
+    if params.match_pattern:
+        if not re.search(params.match_pattern, resp.content.decode(errors="ignore")):
             logger.warning(
-                f"Health check {health_url!r} response body did not find {match_pattern=!r}"
+                f"Health check {params.url!r} response body did not find {params.match_pattern=!r}"
             )
             return HealthCheckResult.unhealthy
 

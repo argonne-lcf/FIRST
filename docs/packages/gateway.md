@@ -34,7 +34,7 @@ one object that every downstream layer is given.
 | Subpackage | What it does |
 |---|---|
 | `apiserver` | FastAPI app, auth, dependency wiring, route definitions. Lives in `apiserver/routes/`. |
-| `controllers` | `Worker` base class + supervising `manager.main`. The framework is implemented; today `ClusterHealthObserver`, `StaticDeploymentHealthObserver`, and `RetentionSweeper` are registered (see [Controller Framework](../architecture/controllers.md) for the full design). |
+| `controllers` | `Worker` base class + supervising `manager.main`. The framework is implemented; today `HealthObserver` and `RetentionSweeper` are registered (see [Controller Framework](../architecture/controllers.md) for the full design). |
 | `database` | SQLAlchemy ORM (`models.py`) and Alembic migrations. Each `ResourceRow` subclass auto-registers into `resource_registry` so `plan_apply` can dispatch by `kind`. All relationships are `lazy="raise"`; callers must explicitly eager-load. See [Data Model](../architecture/data-model.md). |
 | `platforms` | Adapters to specific HPC environments. `schedulers/globus_compute_pbs.py` (the only adapter shipped today). |
 | `services` | Cross-cutting business logic kept out of API views — `plan_apply` (declarative config), `pilot_submitter` (renders pilot config + cert + submit script, then calls the scheduler adapter), and `certmanager` (library + CLI for the mTLS PKI; see [Certificate Manager](certmanager.md)). |

@@ -5,7 +5,6 @@ from typing import AsyncGenerator
 
 from globus_compute_sdk import Client as ComputeClient
 from globus_sdk import ClientApp, ConfidentialAppAuthClient
-from httpx import AsyncClient
 from pydantic import (
     SecretStr,
     computed_field,
@@ -29,7 +28,6 @@ class ClientState:
     """
 
     settings: "Settings"
-    httpx_client: AsyncClient
     redis: AsyncRedis
     redis_repo: RedisRepo
     db_engine: AsyncEngine
@@ -112,25 +110,23 @@ class Settings(BaseSettings):
         redis = AsyncRedis.from_url(self.redis_url, decode_responses=True)
         await redis.ping()
         try:
-            async with AsyncClient() as httpx_client:
-                yield ClientState(
-                    settings=self,
-                    db_engine=engine,
-                    db_sessionmaker=sessionmaker,
-                    redis=redis,
-                    redis_repo=RedisRepo(redis),
-                    httpx_client=httpx_client,
-                    auth_client=ConfidentialAppAuthClient(
-                        self.globus.app_id, self.globus.app_secret.get_secret_value()
+            yield ClientState(
+                settings=self,
+                db_engine=engine,
+                db_sessionmaker=sessionmaker,
+                redis=redis,
+                redis_repo=RedisRepo(redis),
+                auth_client=ConfidentialAppAuthClient(
+                    self.globus.app_id, self.globus.app_secret.get_secret_value()
+                ),
+                compute_client=ComputeClient(
+                    app=ClientApp(
+                        client_id=self.globus.app_id,
+                        client_secret=self.globus.app_secret.get_secret_value(),
                     ),
-                    compute_client=ComputeClient(
-                        app=ClientApp(
-                            client_id=self.globus.app_id,
-                            client_secret=self.globus.app_secret.get_secret_value(),
-                        ),
-                        do_version_check=False,
-                    ),
-                )
+                    do_version_check=False,
+                ),
+            )
         finally:
             await redis.aclose()
             await engine.dispose()

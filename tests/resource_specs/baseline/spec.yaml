@@ -10,7 +10,7 @@ kind: Cluster
 name: sophia
 spec:
   health_check:
-    health_url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
+    url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
     read_timeout: 10
   maintenance_notice: "Sophia is operational"
   pilot_system:
@@ -59,7 +59,7 @@ spec:
   prometheus_metrics_path: "/metrics"
   prometheus_scrape_interval_sec: 30
   health_check:
-    health_url: "https://sophia.alcf.anl.gov/health"
+    url: "https://sophia.alcf.anl.gov/health"
     read_timeout: 10
 
 ---
@@ -97,4 +97,4 @@ spec:
       vllm serve {{weights_path}}
     max_startup_sec: 900
     health_check:
-      health_url: "http://localhost/health"
+      url: "http://localhost/health"

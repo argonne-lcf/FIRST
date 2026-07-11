@@ -25,16 +25,19 @@ class HealthCheckParams(BaseModel):
     """
     Inputs to first_common.health.perform_health_check.
 
-    If health_url is an empty string, health check is disabled.
+    If url is an empty string, health check is disabled.
     """
 
-    health_url: str
+    url: str
     connect_timeout: float = 3.1
     read_timeout: float = 12
     http_method: HTTPMethod = HTTPMethod.GET
     json_body: Any | None = None
     status_range: tuple[int, int] = (200, 299)
     match_pattern: str | None = None
+    attempts_per_check: int = 2
+    attempt_delay: float = 0.1
+    debounce: int = 3
 
 
 class HealthCheckResult(str, Enum):

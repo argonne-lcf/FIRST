@@ -10,12 +10,11 @@ from sqlalchemy.engine import make_url
 from first_gateway.log_config import config_logging
 
 from ..settings import ClientState, Settings
-from .cluster_health_observer import ClusterHealthObserver
+from .health_observer import HealthObserver
 from .lease import ManagerLease
 from .metrics_server import serve as serve_metrics
 from .retention import RetentionSweeper
 from .router_config_observer import RouterConfigObserver
-from .static_health_observer import StaticDeploymentHealthObserver
 from .worker import Worker
 
 logger = logging.getLogger("first_gateway.controllers.manager")
@@ -55,8 +54,7 @@ class ControllerManager:
 
     def _build_workers(self) -> list[Worker]:
         return [
-            ClusterHealthObserver("cluster-health", self.client_state),
-            StaticDeploymentHealthObserver("static-health", self.client_state),
+            HealthObserver("health-observer", self.client_state),
             RetentionSweeper("retention-sweeper", self.client_state),
             RouterConfigObserver("router-config", self.client_state),
         ]

@@ -13,7 +13,7 @@ kind: Cluster
 name: sophia
 spec:
   health_check:
-    health_url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
+    url: "https://api.alcf.anl.gov/api/v1/status/resources/sophia-id"
     read_timeout: 10
   maintenance_notice: "Sophia is offline until tomorrow"
   pilot_system:
@@ -92,7 +92,7 @@ spec:
 
     max_startup_sec: 500
     health_check:
-      health_url: "http://localhost/health"
+      url: "http://localhost/health"
 
     env:
       HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
