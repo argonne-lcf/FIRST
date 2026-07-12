@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from ..database.models import PilotJob, PilotReplica
-from .worker import Worker
+from ...database.models import PilotJob, PilotReplica
+from ..worker import Worker
 
 logger = logging.getLogger(__name__)
 

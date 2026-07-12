@@ -10,12 +10,12 @@ from sqlalchemy.engine import make_url
 from first_gateway.log_config import config_logging
 
 from ..settings import ClientState, Settings
-from .health_observer import HealthObserver
 from .lease import ManagerLease
 from .metrics_server import serve as serve_metrics
-from .retention import RetentionSweeper
-from .router_config_observer import RouterConfigObserver
 from .worker import Worker
+from .workers.health_observer import HealthObserver
+from .workers.retention import RetentionSweeper
+from .workers.router_config_observer import RouterConfigObserver
 
 logger = logging.getLogger("first_gateway.controllers.manager")
 

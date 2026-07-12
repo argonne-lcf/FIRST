@@ -8,7 +8,9 @@ from redis.asyncio import Redis
 
 from first_common.schema.types import OverloadPolicy, RouterParams, UsagePolicy
 from first_gateway import Settings
-from first_gateway.controllers.router_config_observer import RouterConfigObserver
+from first_gateway.controllers.workers.router_config_observer import (
+    RouterConfigObserver,
+)
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -66,9 +68,7 @@ def _sample_models() -> list[ModelConfig]:
     ]
 
 
-_PATCH_TARGET = (
-    "first_gateway.controllers.router_config_observer.RouterConfigObserver.rebuild"
-)
+_PATCH_TARGET = "first_gateway.controllers.workers.router_config_observer.RouterConfigObserver.rebuild"
 
 
 async def test_subscriber_receives_published_config(redis: Redis) -> None:

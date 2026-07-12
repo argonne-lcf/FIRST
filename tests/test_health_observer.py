@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_common.schema.types import HealthCheckResult
 from first_gateway import Settings
-from first_gateway.controllers.health_observer import HealthObserver
+from first_gateway.controllers.workers.health_observer import HealthObserver
 from first_gateway.database.models import (
     AccessGroup,
     Cluster,
@@ -19,7 +19,7 @@ from first_gateway.database.models import (
     StaticDeployment,
 )
 
-_PATCH_TARGET = "first_gateway.controllers.health_observer.perform_health_check"
+_PATCH_TARGET = "first_gateway.controllers.workers.health_observer.perform_health_check"
 
 
 @pytest.fixture

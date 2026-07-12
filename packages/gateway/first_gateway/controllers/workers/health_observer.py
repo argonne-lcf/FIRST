@@ -8,9 +8,9 @@ from httpx import Client
 from first_common.health import perform_health_check
 from first_common.schema.types import HealthCheckParams, HealthCheckResult
 
-from ..database.models import Cluster, StaticDeployment
-from ..settings import ClientState
-from .worker import Worker
+from ...database.models import Cluster, StaticDeployment
+from ...settings import ClientState
+from ..worker import Worker
 
 logger = logging.getLogger(__name__)
 

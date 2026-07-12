@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from first_gateway.controllers.retention import RetentionSweeper
+from first_gateway.controllers.workers.retention import RetentionSweeper
 from first_gateway.database.models import (
     AccessGroup,
     Cluster,

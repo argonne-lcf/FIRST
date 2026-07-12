@@ -9,14 +9,14 @@ from first_common.schema.types import (
     UsagePolicy,
 )
 
-from ..database import models as db
-from ..database.redis.router_config import (
+from ...database import models as db
+from ...database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
     ModelConfig,
     RouterConfig,
 )
-from .worker import Worker
+from ..worker import Worker
 
 logger = logging.getLogger(__name__)
 
