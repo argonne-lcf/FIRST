@@ -101,6 +101,8 @@ async def reconcile_reset(
     async with sess.begin():
         row = await ResourceClass.get_by_name(sess, name)
         await ResourceClass.reset_reconcile_state(sess, row.uid, cascade=True)
+        if isinstance(row, db.PilotDeployment):
+            row.consecutive_launch_failures = 0
 
     return {"status": "ok", "resource": resource}
 

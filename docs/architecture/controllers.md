@@ -94,21 +94,6 @@ async def advance_to_running(sess: AsyncSession, job_id: int) -> bool:
     return True
 ```
 
-```python
-# Pattern B: bulk UPDATE in an observer, only writes rows that actually changed.
-# IS DISTINCT FROM keeps the trigger from firing for unchanged rows, which
-# matters for LISTEN/NOTIFY traffic.
-await sess.execute(
-    sa.update(PilotJob)
-    .where(
-        PilotJob.uid == sa.bindparam("uid"),
-        PilotJob.scheduler_state.is_distinct_from(sa.bindparam("state")),
-    )
-    .values(state=sa.bindparam("state")),
-    updates,  # list[dict[str, Any]] — executemany
-)
-```
-
 Notes on premised updates:
 
 - **Log what failed, don't raise.** A stale update is a normal, expected event
@@ -118,10 +103,10 @@ Notes on premised updates:
   same logical concept, give them distinct columns (or a relation table they
   each own exclusively). Premised updates are a safety net, not a license for
   shared writers.
-- **Don't write back unchanged values.** The bulk-update pattern above is
-  generalizable: include `IS DISTINCT FROM` checks for every field you're
-  updating so an unchanged row doesn't fire the notify trigger and re-wake the
-  loop. (See [Notification feedback loops](#notification-feedback-loops).)
+- **Don't write back unchanged values.** include `IS DISTINCT FROM` checks for
+every field you're updating so an unchanged row doesn't fire the notify trigger
+and re-wake the loop. (See [Notification feedback
+loops](#notification-feedback-loops).)
 
 ### Mutual exclusion within the manager
 
@@ -147,7 +132,7 @@ locking needed.
 This applies to:
 
 - `SELECT ... FOR UPDATE` over multiple rows.
-- Bulk UPDATEs touching N rows in the same table.
+- UPDATEs touching N rows in the same table.
 - Multi-table updates inside one transaction (sort within each table; if
   multiple tables, also pick a stable cross-table order).
 
@@ -377,11 +362,9 @@ class HpcSchedulerObserver(Worker):
 
 Observers should:
 
-- Read external state, write to Postgres via bulk premised UPDATE
+- Read external state, write to Postgres via premised UPDATE
   (`IS DISTINCT FROM` on every field).
 - Be idempotent: polling twice with no external change is a no-op.
-- Update many rows in one DB round trip when the external API returns a
-  batch (e.g. `qstat` returns all jobs).
 - Use Redis for per-poll timestamps/counters that would otherwise churn
   Postgres rows.
 
@@ -521,7 +504,7 @@ Before diving into the controller details, let's trace through the stages involv
 The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
 
 !!! info "Implementation status"
-    The Health Observer, Router Config
+    The Health Observer, PilotJob Observer, Router Config
     Observer, and Retention Sweeper are implemented. The Router Config
     Observer is not yet registered in the controller manager. The
     remaining controllers below are design specifications.
@@ -572,7 +555,7 @@ At each polling iteration, it:
 `first_gateway.services.pilot_submitter.PilotSubmitter` instance.
 - Invokes `PilotSubmitter.get_statuses()` for each cluster.
     - Jobs from the scheduler are matched to known `PilotJob` instances in the database using `scheduler_job_id`
-    - For each known `PilotJob`: bulk premised UPDATE of
+    - For each known `PilotJob`: premised UPDATE of
       `scheduler_state`, `time_started` (`IS DISTINCT FROM` per field).
     - For each **orphan** — a scheduler job whose name starts with
     `PilotConfig.job_name_prefix` but has no matching `PilotJob` row — issues

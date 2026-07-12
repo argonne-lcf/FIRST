@@ -14,6 +14,7 @@ from .lease import ManagerLease
 from .metrics_server import serve as serve_metrics
 from .worker import Worker
 from .workers.health_observer import HealthObserver
+from .workers.pilot_job_observer import PilotJobObserver
 from .workers.retention import RetentionSweeper
 from .workers.router_config_observer import RouterConfigObserver
 
@@ -55,6 +56,7 @@ class ControllerManager:
     def _build_workers(self) -> list[Worker]:
         return [
             HealthObserver("health-observer", self.client_state),
+            PilotJobObserver("pilot-job-observer", self.client_state),
             RetentionSweeper("retention-sweeper", self.client_state),
             RouterConfigObserver("router-config", self.client_state),
         ]
