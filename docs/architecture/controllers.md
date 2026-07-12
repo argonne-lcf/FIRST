@@ -287,7 +287,7 @@ Separately, `PilotDeployment.consecutive_launch_failures` counts the number of `
 - **Level-triggered.** Re-read current state from Postgres; act on what *is*, not what *changed*. If a controller crashes mid-step, the next reconcile resumes from whatever state the DB reflects.
 - **Each external side effect must be idempotent.** For
   schedulers without idempotency keys (PBS): use a deterministic job name
-  (`__FIRST_PILOT_<resource-name>`), `qstat` to check, then `qsub` only on
+  (`<first-pilot-prefix><resource-name>`), `qstat` to check, then `qsub` only on
   absence. Mutual exclusion is provided by the manager's single-coroutine
   rule above.
 - **One step per reconcile.** If a job goes through `pending_submit ->
@@ -511,13 +511,12 @@ Before diving into the controller details, let's trace through the stages involv
 2. The Replica Reconciler inserts a new PilotReplica
 3. The Replica Placement Controller sees no PilotJobs and creates one
 4. The Pilot Job Controller enqueues the job that’s pending submit
-5. The HPC Scheduler Observer discovers the job has started running
-6. The PilotJob Endpoint Discovery Controller discovers and sets the running manager URL
-7. The Pilot Replica Status Observer discovers the available GPU resources on the Pilot, which now has non-empty resources.
-8. The Replica Placement Controller finally sees that the resources are available and the Replica is placed onto the Pilot Job
-9. The Pilot Replica Status Observer discovers that the replica has started successfully and populates the model_url
-10. The Router Config Controller sees the deployment with a live replica and updates the global router configuration.
-11. The APIServer reacts to the router change notification and updates its in-memory LiteLLM Router structure to proxy inference traffic to the new Replica.
+5. The PilotJob Observer discovers the job has started running and sets the running manager URL
+6. The Pilot Replica Status Observer discovers the available GPU resources on the Pilot, which now has non-empty resources.
+7. The Replica Placement Controller finally sees that the resources are available and the Replica is placed onto the Pilot Job
+8. The Pilot Replica Status Observer discovers that the replica has started successfully and populates the model_url
+9. The Router Config Controller sees the deployment with a live replica and updates the global router configuration.
+10. The APIServer reacts to the router change notification and updates its in-memory LiteLLM Router structure to proxy inference traffic to the new Replica.
 
 The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
 
@@ -562,17 +561,31 @@ published by the control plane and consumed by the apiserver workers of the data
     - Live deployment endpoints and corresponding routing parameters
     - Access Group information for pre-flight authorization
 
-#### HPC Scheduler Observer
-- Polls `qstat` per cluster's pilot system.
-- For each known `PilotJob`: bulk premised UPDATE of
-  `state`, `time_started` (`IS DISTINCT FROM` per field).
-- For each **orphan** — a scheduler job whose name starts with
-  `__FIRST_PILOT_` but has no matching `PilotJob` row — issues `qdel`
-  directly. The observer owns the `__FIRST_PILOT_` namespace; cleaning up
-  inside it is part of being an observer of that namespace. No DB rows are
-  inserted, no zombie state exists.
-- Logs every orphan reap at INFO so operators can see it in
-  `docker compose logs`.
+#### PilotJob Observer
+
+The PilotJob observer reads state from the cluster's job queue and discovers
+pilot job manager endpoints.
+
+At each polling iteration, it:
+
+- Uses each Cluster with a `pilot_system` to construct the corresponding `SchedulerAdapter` (`first_gateway.platforms.schedulers.build_scheduler`) and
+`first_gateway.services.pilot_submitter.PilotSubmitter` instance.
+- Invokes `PilotSubmitter.get_statuses()` for each cluster.
+    - Jobs from the scheduler are matched to known `PilotJob` instances in the database using `scheduler_job_id`
+    - For each known `PilotJob`: bulk premised UPDATE of
+      `scheduler_state`, `time_started` (`IS DISTINCT FROM` per field).
+    - For each **orphan** — a scheduler job whose name starts with
+    `PilotConfig.job_name_prefix` but has no matching `PilotJob` row — issues
+    `SchedulerAdapter.terminate_job(scheduler_job_id)` directly. The observer
+    owns the prefix namespace and reaps orphans. No DB rows are affected, no
+    zombie state exists. Log every orphan reap at INFO so operators can see it
+    in `docker compose logs`.
+
+Once the HPC job scheduler statuses are reconciled, the observer identifies actionable `PilotJob`s where `scheduler_state = running` and `manager_url IS NULL`.
+These jobs require manager endpoint discovery.  If there is at least one actionable job, proceed to:
+
+- Use `PilotSubmitter.list_ready_endpoints()` to list the readyfiles that currently exist.  Intersect the existing set with the set of actionable jobs: any jobs in this intersection are ready to have `manager_url` updated.
+- For each of the ready jobs, use `PilotSubmitter.get_endpoint()` to discover the job's `AddressInfo`.  Log the discovered info and UPDATE the `AddressInfo.base_url` on `PilotJob.manager_url` to store the discovered endpoint.
 
 #### Pilot Replica Status Observer
 - `list_actionable` (Postgres): `PilotJob` where `state = running` AND
@@ -652,14 +665,6 @@ of defense to what should otherwise remain consistent on its own.
   `PilotJob.scheduled_deletion` (self-set on idle/unhealthy timeout),
   `PilotJob.deleted_at`.
 
-#### PilotJob Endpoint Discovery Controller (`table_name = "pilot_job"`)
-- `list_actionable`: `PilotJob` where `state = running` AND
-  `manager_url IS NULL`. Optionally intersected with
-  `PilotSubmitter.list_ready_endpoints()` if you want to skip ones the
-  filesystem says aren't ready yet.
-- `reconcile`: `PilotSubmitter.get_endpoint()`, set `manager_url`.
-- Owns only `manager_url` on `PilotJob`. PilotJob Controller does not
-  write that field.
 
 #### PilotDeployment Controller (`table_name = "pilot_deployment"`)
 - `list_actionable`: `PilotDeployment` rows where

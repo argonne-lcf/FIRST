@@ -34,7 +34,7 @@ layer above the adapter. Per pilot-job submission it:
 3. Writes a small shell script that `uvx`-launches the pinned
    `first-pilot` version with `PILOT_CONFIG_FILE` pointing at the YAML.
 4. Calls `adapter.submit_job` with the resulting `JobSubmitPayload`,
-   under a name prefixed `__FIRST_PILOT_` so zombie discovery can
+   under a prefixed name so zombie discovery can
    distinguish FIRST-owned jobs from anything else on the queue.
 
 ### Adapters shipped today

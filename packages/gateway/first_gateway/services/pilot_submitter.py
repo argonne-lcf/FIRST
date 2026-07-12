@@ -14,7 +14,6 @@ from first_common.schema.types import PilotConfig
 
 from .certmanager import generate_server_cert
 
-PILOT_NAME_PREFIX = "__FIRST_PILOT_"
 _READY_SUFFIX = ".ready.json"
 
 
@@ -43,7 +42,7 @@ class PilotSubmitter:
     async def submit(self, pilot_job: PilotJob) -> JobSubmitResult:
         pc = self.pilot_config
         name = pilot_job.name
-        scheduler_name = f"{PILOT_NAME_PREFIX}{name}"
+        scheduler_name = f"{pc.job_name_prefix}{name}"
 
         server_crt, server_key = generate_server_cert(
             cn=name,
@@ -91,7 +90,9 @@ class PilotSubmitter:
 
     async def get_statuses(self) -> list[JobStatusInfo]:
         all_jobs = await self.adapter.get_job_statuses()
-        return [j for j in all_jobs if j.name.startswith(PILOT_NAME_PREFIX)]
+        return [
+            j for j in all_jobs if j.name.startswith(self.pilot_config.job_name_prefix)
+        ]
 
     async def list_ready_endpoints(self) -> list[str]:
         files = await self.adapter.list_files(self._readyfile_dir)

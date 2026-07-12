@@ -164,6 +164,7 @@ class PilotConfig(BaseModel):
     node_file_env: str
     submit_script_preamble: str
     pilot_version: str
+    job_name_prefix: str = "__FIRST_PILOT_"
 
 
 class DemandEstimate(BaseModel):

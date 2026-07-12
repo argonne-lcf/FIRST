@@ -16,10 +16,7 @@ from first_common.schema.pilot import AddressInfo, PilotResources
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import HealthCheckResult, PilotConfig
 from first_gateway.services.certmanager import gen_ca_pem
-from first_gateway.services.pilot_submitter import (
-    PILOT_NAME_PREFIX,
-    PilotSubmitter,
-)
+from first_gateway.services.pilot_submitter import PilotSubmitter
 
 
 class FakeSchedulerAdapter(SchedulerAdapter):
@@ -133,7 +130,7 @@ async def test_submit_renders_config_and_script(
 
     assert len(adapter.submitted) == 1
     payload = adapter.submitted[0]
-    assert payload.name == f"{PILOT_NAME_PREFIX}alpha-7"
+    assert payload.name == f"{pilot_config.job_name_prefix}alpha-7"
     assert payload.queue == "debug"
     assert payload.account == "TestAcct"
     assert payload.scheduler_flags == "-l filesystems=home"
@@ -143,7 +140,7 @@ async def test_submit_renders_config_and_script(
     assert payload.script_path == script_path
     assert payload.log_path == pilot_config.workdir / "submit_scripts" / "alpha-7.log"
 
-    assert result.job_name == f"{PILOT_NAME_PREFIX}alpha-7"
+    assert result.job_name == f"{pilot_config.job_name_prefix}alpha-7"
     assert result.scheduler_id == "42.fake"
 
 
@@ -155,7 +152,7 @@ async def test_get_statuses_filters_by_prefix(
     adapter.statuses = [
         JobStatusInfo(
             id="1",
-            name=f"{PILOT_NAME_PREFIX}mine",
+            name=f"{pilot_config.job_name_prefix}mine",
             state=SchedulerJobState.running,
             created_at=now,
             started_at=now,
@@ -173,7 +170,7 @@ async def test_get_statuses_filters_by_prefix(
     submitter = PilotSubmitter(pilot_config, adapter, *ca_pair)
 
     statuses = await submitter.get_statuses()
-    assert [s.name for s in statuses] == [f"{PILOT_NAME_PREFIX}mine"]
+    assert [s.name for s in statuses] == [f"{pilot_config.job_name_prefix}mine"]
 
 
 async def test_list_ready_endpoints_strips_suffix(
