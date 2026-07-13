@@ -570,31 +570,31 @@ These jobs require manager endpoint discovery.  If there is at least one actiona
 - Use `PilotSubmitter.list_ready_endpoints()` to list the readyfiles that currently exist.  Intersect the existing set with the set of actionable jobs: any jobs in this intersection are ready to have `manager_url` updated.
 - For each of the ready jobs, use `PilotSubmitter.get_endpoint()` to discover the job's `AddressInfo`.  Log the discovered info and UPDATE the `AddressInfo.base_url` on `PilotJob.manager_url` to store the discovered endpoint.
 
-#### Pilot Replica Status Observer
-- `list_actionable` (Postgres): `PilotJob` where `state = running` AND
-  `manager_url IS NOT NULL`.
-- LISTEN wakes on both `pilot_job` and `pilot_replica`.
+#### Pilot Replica Observer
+- `list_actionable` (Postgres): `PilotJob` where `state = running` AND `manager_url IS NOT NULL`.
 - Per job: calls `GET /status` on the pilot manager.
   - Postgres writes (premised, only on change): `PilotJob.resources`,
     `PilotJob.manager_health`, `PilotJob.manager_unhealthy_since` (set
     to `now()` on first unhealthy observation, NULL on healthy),
     `PilotJob.idle_since` (set to `now()` iff currently NULL and zero
-    replicas running; set to NULL iff any replica running), per-replica
-    `model_url`, `observed_served_name`, `state`, `state_message`,
-    `started_at`.
-  - Redis writes: `PilotJob.last_status_check`, per-replica
-    `last_health_check`. None of these fire triggers.
+    replicas running; set to NULL iff any replica running). Per-replica
+    `PilotReplica.model_url`, `PilotReplica.observed_served_name`, `PilotReplica.state`, `PilotReplica.state_message`,
+    `PilotReplica.started_at`.  Do a single row premised update per DB transaction;
+    only create transactions if an update is necessary.
   - **Reap orphans**: replicas appearing in pilot manager `/status` with
     no matching `PilotReplica` row, or with a row that has a non-matching
-    Pilot Job FK. Re-verify replica does not exist in DB and issue `stop-replica`
-    immediately. (Consider a replica
+    Pilot Job FK. Re-verify replica does not exist in DB and then issue `stop-replica`
+    API control command immediately. (Consider a replica
     that is placed on PilotJob 1, then a transient DB error occurs so
     the placement is never recorded, and finally the replica is placed
     again on PilotJob 2. Now the same replica name exists in two pilot
     jobs. The first replica on Pilot Job 1 is unregistered and should
     be reaped.)
-- Groups successful startups and failures by PilotDeployment.  For each PilotDeployment,
+- Group successful startups and failures by PilotDeployment.  For each PilotDeployment,
 update `consecutive_launch_failures` (incrementing per failed or timed-out replica and resetting to 0 on success)
+   - Success reset only happens when a replica transitions to `ready`
+   - Failure is counted if the launch HTTP request fails or the replica state
+   transitions to `error` or `start_timeout`
 
 #### Inflight Count Observer
 
@@ -717,8 +717,8 @@ Job Resources becoming available/ready unblocks placing replicas.
 - `reconcile`: bin-pack onto an existing `PilotJob` that has free resources.
   - If a job fits: call `POST /start-replica` on the pilot manager and
     set `pilot_job_name = <job>` and `state= 'placed'` in the same transaction. If the API call
-    fails, leave `pilot_job_name = NULL` — next reconcile retries (it's
-    idempotent because the pilot manager keys replicas by name).
+    fails, leave `pilot_job_name = NULL` but increment `PilotDeployment.consecutive_launch_failures`
+    — next reconcile retries (it's idempotent because the pilot manager keys replicas by name).
   - If nothing fits: INSERT a new `PilotJob` in `state = pending_submit`
     (subject to per-cluster max). Replica stays `pending`; on the next
     pass, once the new job is `running` with capacity, it gets placed.
