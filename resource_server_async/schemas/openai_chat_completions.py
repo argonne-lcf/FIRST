@@ -314,7 +314,7 @@ class ToolFunction(BaseModelExtraForbid):
 
 
 # Tool
-class Tool(BaseModelExtraForbid):
+class Tool(BaseModelExtraAllow):
     function: ToolFunction
     type: ToolType
 
