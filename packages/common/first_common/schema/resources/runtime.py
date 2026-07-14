@@ -11,6 +11,8 @@ from typing import NamedTuple
 
 from pydantic import BaseModel
 
+from ..pilot import PilotResources
+
 
 class BackendRuntime(BaseModel):
     inflight: int = 0
@@ -31,3 +33,7 @@ class ScaledownCandidate(NamedTuple):
 class AutoscalerRuntime(BaseModel):
     demand_ewma: dict[str, float]
     scale_down_candidates: dict[str, list[ScaledownCandidate]]
+
+
+class PilotJobRuntime(BaseModel):
+    resources: PilotResources = PilotResources(hosts=[])

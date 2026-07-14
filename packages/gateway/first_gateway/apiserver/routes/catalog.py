@@ -8,6 +8,7 @@ from first_common.schema.resources.read import (
     ModelSummary,
     PilotDeploymentDetail,
     PilotDeploymentSummary,
+    PilotJob,
     PilotReplica,
     StaticDeploymentDetail,
 )
@@ -133,9 +134,18 @@ async def list_clusters(sess: DbSession) -> list[db.Cluster]:
 
 
 @admin_router.get("/clusters/{name:path}", response_model=ClusterDetail)
-async def get_cluster(sess: DbSession, name: str) -> db.Cluster:
+async def get_cluster(sess: DbSession, name: str, repo: RedisRepo) -> ClusterDetail:
     """
     Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
     sensitive operational state.
     """
-    return await db.Cluster.get_detail(sess, name)
+    cluster = await db.Cluster.get_detail(sess, name)
+    runtimes = await repo.get_pilot_job_runtimes([j.uid for j in cluster.pilot_jobs])
+
+    return ClusterDetail.merge(
+        cluster,
+        pilot_jobs=[
+            PilotJob.merge(job, runtime=rt)
+            for job, rt in zip(cluster.pilot_jobs, runtimes)
+        ],
+    )

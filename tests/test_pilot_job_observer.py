@@ -183,7 +183,7 @@ async def test_submitted_to_running_and_endpoint_discovery(
 
     async with db() as sess:
         job = (await sess.scalars(select(PilotJob).where(PilotJob.uid == uid))).one()
-    assert job.manager_url == "https://10.1.2.3:8443"
+    assert job.manager_url == "https://10.1.2.3:8443/control"
 
 
 async def test_orphan_scheduler_job_reaped(

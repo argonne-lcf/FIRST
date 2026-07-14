@@ -5,7 +5,11 @@ from typing import Any
 
 from redis.asyncio import Redis
 
-from first_common.schema.resources.runtime import BackendRuntime, ModelRuntime
+from first_common.schema.resources.runtime import (
+    BackendRuntime,
+    ModelRuntime,
+    PilotJobRuntime,
+)
 
 from .keys import Keys
 
@@ -127,3 +131,25 @@ class RedisRepo:
         else:
             key = Keys.log_dedup_4xx(user, fingerprint, status_code)
         return bool(await self.client.set(key, "", nx=True, ex=ttl))
+
+    async def set_pilot_job_runtime(
+        self,
+        uid: int,
+        runtime: PilotJobRuntime,
+        ttl: int = 120,
+    ) -> None:
+        await self.client.set(
+            Keys.pilot_job_resources(uid),
+            runtime.model_dump_json(),
+            ex=ttl,
+        )
+
+    async def get_pilot_job_runtimes(
+        self, uids: list[int]
+    ) -> list[None | PilotJobRuntime]:
+        keys = [Keys.pilot_job_resources(uid) for uid in uids]
+        blobs = await self.client.mget(keys)
+        return [
+            PilotJobRuntime.model_validate_json(blob) if blob else None
+            for blob in blobs
+        ]

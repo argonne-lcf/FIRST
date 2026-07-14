@@ -95,3 +95,8 @@ class Keys:
     def log_dedup_4xx(user: str, fingerprint: str, status_code: int) -> str:
         """NX-guarded flag to suppress repeated 4xx log lines."""
         return f"logdedup:{user}:{fingerprint}:{status_code}"
+
+    @staticmethod
+    def pilot_job_resources(uid: int) -> str:
+        """JSON Blob of serialized PilotResources"""
+        return f"pilot_job:{uid}:resources"

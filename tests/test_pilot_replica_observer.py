@@ -2,7 +2,7 @@
 and consecutive_launch_failures tracking."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import sqlalchemy as sa
@@ -96,6 +96,7 @@ def _make_observer(
 ) -> PilotReplicaObserver:
     cs = MagicMock()
     cs.db_sessionmaker = db
+    cs.redis_repo = AsyncMock()
     observer = PilotReplicaObserver.__new__(PilotReplicaObserver)
     Worker.__init__(observer, "pilot-replica-observer", cs)
     observer._http = httpx.AsyncClient(transport=transport)

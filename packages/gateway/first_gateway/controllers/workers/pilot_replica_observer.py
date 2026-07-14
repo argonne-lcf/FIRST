@@ -2,13 +2,16 @@ import asyncio
 import logging
 import ssl
 import tempfile
+from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
 import sqlalchemy as sa
 
 from first_common.schema.pilot import PilotJobStatus, ReplicaInfo
+from first_common.schema.resources.runtime import PilotJobRuntime
 from first_common.schema.types import HealthCheckResult, ReplicaState
 
 from ...database.models import PilotDeployment, PilotJob, PilotReplica
@@ -24,9 +27,10 @@ class PilotReplicaObserver(Worker):
     Polls GET /status on each running pilot manager and syncs replica state
     back to Postgres.
 
-    Writes: PilotJob.{resources, manager_health, manager_unhealthy_since,
-    idle_since}; PilotReplica.{state, state_message, model_url,
-    observed_served_name, started_at}; PilotDeployment.consecutive_launch_failures.
+    Writes:
+    - PilotJob.{resources, manager_health, manager_unhealthy_since, idle_since}
+    - PilotReplica.{state, state_message, model_url, observed_served_name, started_at}
+    - PilotDeployment.consecutive_launch_failures
 
     Reaps orphan replicas reported by a pilot manager that have no matching
     PilotReplica row (or a row pointing at a different PilotJob).
@@ -55,31 +59,22 @@ class PilotReplicaObserver(Worker):
     @staticmethod
     def _build_http_client(client_state: ClientState) -> httpx.AsyncClient:
         settings = client_state.settings
-        ca_crt = settings.pilot_ca_crt
-        ca_key = settings.pilot_ca_key.get_secret_value()
+
+        ctx = ssl.create_default_context(cadata=settings.pilot_ca_crt)
+        ctx.check_hostname = False
 
         client_crt_pem, client_key_pem = generate_client_cert(
             cn="pilot-replica-observer",
-            ca_cert_pem=ca_crt,
-            ca_key_pem=ca_key,
+            ca_cert_pem=settings.pilot_ca_crt,
+            ca_key_pem=settings.pilot_ca_key.get_secret_value(),
         )
 
-        tmpdir = tempfile.mkdtemp(prefix="pilot_obs_")
-        ca_path = f"{tmpdir}/ca.crt"
-        crt_path = f"{tmpdir}/client.crt"
-        key_path = f"{tmpdir}/client.key"
-
-        for path, content in [
-            (ca_path, ca_crt),
-            (crt_path, client_crt_pem),
-            (key_path, client_key_pem),
-        ]:
-            with open(path, "w") as f:
-                f.write(content)
-
-        ctx = ssl.create_default_context(cafile=ca_path)
-        ctx.check_hostname = False
-        ctx.load_cert_chain(crt_path, key_path)
+        with tempfile.TemporaryDirectory(delete=True) as tmpdir:
+            crt_path = Path(tmpdir) / "client.crt"
+            key_path = Path(tmpdir) / "client.key"
+            crt_path.write_text(client_crt_pem)
+            key_path.write_text(client_key_pem)
+            ctx.load_cert_chain(crt_path, key_path)
 
         return httpx.AsyncClient(verify=ctx, timeout=10.0)
 
@@ -104,7 +99,8 @@ class PilotReplicaObserver(Worker):
                 )
             )
 
-        deployment_results: dict[str, list[str]] = {}
+        successful_deployments: set[str] = set()
+        deploy_fail_counts: dict[str, int] = defaultdict(int)
 
         for job in jobs:
             try:
@@ -121,19 +117,22 @@ class PilotReplicaObserver(Worker):
                 continue
 
             await self._update_job_status(job, status)
-            await self._sync_replicas(job, status.replicas, deployment_results)
+
+            success, fail = await self._sync_replicas(job, status.replicas)
+            successful_deployments |= success
+            for key, count in fail.items():
+                deploy_fail_counts[key] += count
+
             await self._reap_orphans(job, status.replicas)
 
-        await self._update_consecutive_launch_failures(deployment_results)
+        await self._update_consecutive_launch_failures(
+            successful_deployments, deploy_fail_counts
+        )
 
     async def _fetch_status(self, manager_url: str) -> PilotJobStatus:
         resp = await self._http.get(f"{manager_url}/status")
         resp.raise_for_status()
         return PilotJobStatus.model_validate(resp.json())
-
-    async def _stop_replica(self, manager_url: str, replica_name: str) -> None:
-        resp = await self._http.post(f"{manager_url}/stop-replica/{replica_name}")
-        resp.raise_for_status()
 
     async def _record_unhealthy(self, job: PilotJob) -> None:
         now = datetime.now(timezone.utc)
@@ -153,100 +152,124 @@ class PilotReplicaObserver(Worker):
             )
 
     async def _update_job_status(self, job: PilotJob, status: PilotJobStatus) -> None:
+        id_clause = PilotJob.uid == job.uid
+
+        # If we have manager status response, it's healthy:
+        if job.manager_health != HealthCheckResult.healthy.value:
+            async with self.client_state.db_sessionmaker.begin() as sess:
+                await sess.execute(
+                    sa.update(PilotJob)
+                    .where(
+                        id_clause,
+                        PilotJob.manager_health.is_distinct_from(
+                            HealthCheckResult.healthy.value
+                        ),
+                    )
+                    .values(
+                        manager_health=HealthCheckResult.healthy.value,
+                        manager_unhealthy_since=None,
+                    )
+                )
+
+        # Update Resources in DB on startup only (default empty dict):
         resources_dict = status.resources.model_dump(mode="json")
-        has_running = any(
-            r.state
-            in (
-                ReplicaState.ready,
-                ReplicaState.launching,
-                ReplicaState.placed,
-                ReplicaState.unhealthy,
-            )
-            for r in status.replicas
+        if not job.resources:
+            async with self.client_state.db_sessionmaker.begin() as sess:
+                await sess.execute(
+                    sa.update(PilotJob)
+                    .where(id_clause)
+                    .values(resources=resources_dict)
+                )
+
+        # Update in Redis unconditionally (tracking GPU memory usage # continuously)
+        await self.client_state.redis_repo.set_pilot_job_runtime(
+            job.uid, PilotJobRuntime(resources=status.resources)
         )
 
-        values: dict[str, Any] = {}
-        wheres: list[Any] = [PilotJob.uid == job.uid]
-
-        if resources_dict != job.resources:
-            values["resources"] = resources_dict
-            wheres.append(PilotJob.resources.is_distinct_from(resources_dict))
-
-        if job.manager_health != HealthCheckResult.healthy.value:
-            values["manager_health"] = HealthCheckResult.healthy.value
-            values["manager_unhealthy_since"] = None
-            wheres.append(
-                PilotJob.manager_health.is_distinct_from(
-                    HealthCheckResult.healthy.value
-                )
+        has_running = any(
+            replica.state
+            in (
+                ReplicaState.placed,
+                ReplicaState.launching,
+                ReplicaState.ready,
+                ReplicaState.unhealthy,
             )
+            for replica in status.replicas
+        )
 
+        # Mark or clear idle_since timestamp
         if has_running and job.idle_since is not None:
-            values["idle_since"] = None
-            wheres.append(PilotJob.idle_since.is_not(None))
+            async with self.client_state.db_sessionmaker.begin() as sess:
+                await sess.execute(
+                    sa.update(PilotJob)
+                    .where(id_clause, PilotJob.idle_since.is_not(None))
+                    .values(idle_since=None)
+                )
         elif not has_running and job.idle_since is None:
-            values["idle_since"] = datetime.now(timezone.utc)
-            wheres.append(PilotJob.idle_since.is_(None))
-
-        if not values:
-            return
-
-        async with self.client_state.db_sessionmaker.begin() as sess:
-            await sess.execute(sa.update(PilotJob).where(*wheres).values(**values))
+            async with self.client_state.db_sessionmaker.begin() as sess:
+                await sess.execute(
+                    sa.update(PilotJob)
+                    .where(id_clause, PilotJob.idle_since.is_(None))
+                    .values(idle_since=datetime.now(timezone.utc))
+                )
 
     async def _sync_replicas(
         self,
         job: PilotJob,
         remote_replicas: list[ReplicaInfo],
-        deployment_results: dict[str, list[str]],
-    ) -> None:
+    ) -> tuple[set[str], dict[str, int]]:
+        """
+        Update PilotReplica DB state and return (success_deployments, fail_counts).
+        """
+        success_deployments: set[str] = set()
+        fail_counts: defaultdict[str, int] = defaultdict(int)
+
         for ri in remote_replicas:
             async with self.client_state.db_sessionmaker() as sess:
-                replica = await sess.scalar(
+                db_replica = await sess.scalar(
                     sa.select(PilotReplica).where(
                         PilotReplica.name == ri.name,
                         PilotReplica.pilot_job_name == job.name,
                     )
                 )
 
-            if replica is None:
+            if db_replica is None:
                 continue
 
-            deployment_name = replica.pilot_deployment_name
-            deployment_results.setdefault(deployment_name, []).append(ri.state.value)
-
             values: dict[str, Any] = {}
-            wheres: list[Any] = [PilotReplica.uid == replica.uid]
 
-            if ri.state.value != replica.state:
+            if ri.state.value != db_replica.state:
                 values["state"] = ri.state.value
-                wheres.append(PilotReplica.state.is_distinct_from(ri.state.value))
-            if ri.state_message != replica.state_message:
+
+                # Only on state transition, track successes and failures:
+                if ri.state == ReplicaState.ready:
+                    success_deployments.add(db_replica.pilot_deployment_name)
+                elif ri.state in (ReplicaState.error, ReplicaState.start_timeout):
+                    fail_counts[db_replica.pilot_deployment_name] += 1
+
+            if ri.state_message != db_replica.state_message:
                 values["state_message"] = ri.state_message
-                wheres.append(
-                    PilotReplica.state_message.is_distinct_from(ri.state_message)
-                )
-            if ri.url != replica.model_url:
+
+            if ri.url != db_replica.model_url:
                 values["model_url"] = ri.url
-                wheres.append(PilotReplica.model_url.is_distinct_from(ri.url))
-            if ri.served_model_name != replica.observed_served_name:
+
+            if ri.served_model_name != db_replica.observed_served_name:
                 values["observed_served_name"] = ri.served_model_name
-                wheres.append(
-                    PilotReplica.observed_served_name.is_distinct_from(
-                        ri.served_model_name
-                    )
-                )
-            if ri.started_at != replica.started_at:
+
+            if ri.started_at != db_replica.started_at:
                 values["started_at"] = ri.started_at
-                wheres.append(PilotReplica.started_at.is_distinct_from(ri.started_at))
 
             if not values:
                 continue
 
             async with self.client_state.db_sessionmaker.begin() as sess:
                 await sess.execute(
-                    sa.update(PilotReplica).where(*wheres).values(**values)
+                    sa.update(PilotReplica)
+                    .where(PilotReplica.uid == db_replica.uid)
+                    .values(**values)
                 )
+
+        return success_deployments, fail_counts
 
     async def _reap_orphans(
         self, job: PilotJob, remote_replicas: list[ReplicaInfo]
@@ -265,7 +288,7 @@ class PilotReplicaObserver(Worker):
             if exists:
                 continue
 
-            logger.info("Reaping orphan replica %s on job %s", ri.name, job.name)
+            logger.warning("Reaping orphan replica %s on job %s", ri.name, job.name)
             try:
                 await self._stop_replica(job.manager_url, ri.name)  # type: ignore[arg-type]
             except Exception:
@@ -275,38 +298,33 @@ class PilotReplicaObserver(Worker):
                     job.name,
                 )
 
-    async def _update_consecutive_launch_failures(
-        self, deployment_results: dict[str, list[str]]
-    ) -> None:
-        for deployment_name, states in sorted(deployment_results.items()):
-            has_success = ReplicaState.ready.value in states
-            failure_states = {
-                ReplicaState.error.value,
-                ReplicaState.start_timeout.value,
-            }
-            failure_count = sum(1 for s in states if s in failure_states)
+    async def _stop_replica(self, manager_url: str, replica_name: str) -> None:
+        resp = await self._http.post(f"{manager_url}/stop-replica/{replica_name}")
+        resp.raise_for_status()
 
-            if has_success:
-                async with self.client_state.db_sessionmaker.begin() as sess:
-                    await sess.execute(
-                        sa.update(PilotDeployment)
-                        .where(
-                            PilotDeployment.name == deployment_name,
-                            PilotDeployment.consecutive_launch_failures != 0,
-                        )
-                        .values(consecutive_launch_failures=0)
+    async def _update_consecutive_launch_failures(
+        self, successful_deployments: set[str], fail_counts: dict[str, int]
+    ) -> None:
+        for deployment_name in successful_deployments:
+            async with self.client_state.db_sessionmaker.begin() as sess:
+                await sess.execute(
+                    sa.update(PilotDeployment)
+                    .where(
+                        PilotDeployment.name == deployment_name,
+                        PilotDeployment.consecutive_launch_failures != 0,
                     )
-            elif failure_count > 0:
+                    .values(consecutive_launch_failures=0)
+                )
+
+        for deployment_name, fail_count in fail_counts.items():
+            if fail_count > 0 and deployment_name not in successful_deployments:
                 async with self.client_state.db_sessionmaker.begin() as sess:
                     await sess.execute(
                         sa.update(PilotDeployment)
-                        .where(
-                            PilotDeployment.name == deployment_name,
-                        )
+                        .where(PilotDeployment.name == deployment_name)
                         .values(
                             consecutive_launch_failures=(
-                                PilotDeployment.consecutive_launch_failures
-                                + failure_count
+                                PilotDeployment.consecutive_launch_failures + fail_count
                             )
                         )
                     )

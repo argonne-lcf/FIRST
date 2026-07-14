@@ -85,7 +85,7 @@ class PilotJobObserver(Worker):
             db_job.scheduler_job_id for db_job in db_jobs
         )
         for orphan_id in orphan_job_ids:
-            logger.info("Reaping orphan scheduler job id=%s", orphan_id)
+            logger.warning("Reaping orphan scheduler job id=%s", orphan_id)
             try:
                 await submitter.adapter.terminate_job(orphan_id)
             except Exception:
@@ -162,7 +162,7 @@ class PilotJobObserver(Worker):
             logger.info(
                 "Discovered manager endpoint for job %s: %s",
                 job_name,
-                addr.base_url,
+                addr.control_url,
             )
             async with self.client_state.db_sessionmaker.begin() as sess:
                 await sess.execute(
@@ -171,5 +171,5 @@ class PilotJobObserver(Worker):
                         PilotJob.uid == actionable_by_name[job_name],
                         PilotJob.manager_url.is_(None),
                     )
-                    .values(manager_url=addr.base_url)
+                    .values(manager_url=addr.control_url)
                 )

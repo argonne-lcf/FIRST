@@ -14,7 +14,7 @@ from ..types import (
     RouterParams,
 )
 from . import spec
-from .runtime import BackendRuntime, ModelRuntime
+from .runtime import BackendRuntime, ModelRuntime, PilotJobRuntime
 
 
 class _Overlay:
@@ -188,6 +188,8 @@ class PilotJob(ResourceMeta):
     walltime_min: int
     num_nodes: int
     gpus_per_node: int
+
+    runtime: PilotJobRuntime | None = None
 
 
 class ClusterSummary(ResourceMeta, spec.ClusterSpec):
