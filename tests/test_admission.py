@@ -1,10 +1,12 @@
 """Tests for the admission controller Lua scripts and Python facade."""
 
 import asyncio
+import json
 from typing import AsyncGenerator
 
 import pytest
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 
 from first_common.schema.types import RouterParams, UsageLimits
 from first_gateway import Settings
@@ -68,11 +70,6 @@ async def _admit(ac: AdmissionController, request_id: str, **kw: object) -> Admi
     return await ac.admit(**defaults)  # type: ignore[arg-type]
 
 
-async def _hget_int(redis: Redis, key: str, field: str) -> int:
-    raw = await redis.hget(key, field)
-    return int(raw) if raw is not None else 0
-
-
 # ---------------------------------------------------------------------------
 # 1. Admit / settle happy path
 # ---------------------------------------------------------------------------
@@ -87,60 +84,103 @@ class TestAdmitSettleHappyPath:
     async def test_settle_returns_true_on_first_call(
         self, ac: AdmissionController
     ) -> None:
-        await _admit(ac, "req-1")
+        result = await _admit(ac, "req-1")
         applied = await ac.settle(
-            "req-1", actual_tokens=50, model_name=MODEL, user_id=USER
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
         )
         assert applied is True
 
-    async def test_admit_increments_inflight(
+    async def test_admit_increments_backend_inflight(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
         result = await _admit(ac, "req-1")
         assert result.backend_id is not None
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
+        inflight = await redis.zcard(Keys.backend_inflight(MODEL, result.backend_id))
         assert inflight == 1
 
-    async def test_settle_decrements_inflight(
+    async def test_settle_decrements_backend_inflight(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
         result = await _admit(ac, "req-1")
         assert result.backend_id is not None
-        await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
+        await ac.settle(
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+        )
+        inflight = await redis.zcard(Keys.backend_inflight(MODEL, result.backend_id))
         assert inflight == 0
 
     async def test_settle_cleans_up_reservation_and_deadline(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
-        await _admit(ac, "req-1")
-        await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
+        result = await _admit(ac, "req-1")
+        await ac.settle(
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+        )
         assert await redis.get(Keys.reservation("req-1")) is None
         assert await redis.zscore(Keys.deadlines(), "req-1") is None
 
     async def test_settle_cleans_user_inflight_at_zero(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
-        await _admit(ac, "req-1")
-        await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
-        assert await redis.get(Keys.quota(MODEL, USER, "inflight")) is None
+        result = await _admit(ac, "req-1")
+        await ac.settle(
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+        )
+        assert await redis.zcard(Keys.user_inflight(MODEL, USER)) == 0
 
     async def test_settle_without_caller_context_pre_reads(
         self, ac: AdmissionController
     ) -> None:
-        """Sweeper path: settle without model_name/user_id still works."""
+        """Sweeper path: settle without model_name/user_id/backend_id still works."""
         await _admit(ac, "req-1")
         applied = await ac.settle("req-1", actual_tokens=50)
         assert applied is True
 
-    async def test_demand_gauge_incremented_and_decremented(
+    async def test_model_reservations_incremented_and_decremented(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
         await _admit(ac, "req-1")
-        assert await _hget_int(redis, Keys.model_demand(MODEL), "inflight") == 1
+        assert await redis.zcard(Keys.model_inflight(MODEL)) == 1
 
-        await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
-        assert await _hget_int(redis, Keys.model_demand(MODEL), "inflight") == 0
+        result = await _admit(ac, "req-1-lookup")
+        await ac.settle(
+            "req-1", actual_tokens=50, model_name=MODEL, user_id=USER, backend_id="r1"
+        )
+        # Settle only removes one; the second is still there
+        assert await redis.zcard(Keys.model_inflight(MODEL)) == 1
+        await ac.settle(
+            "req-1-lookup",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+        )
+        assert await redis.zcard(Keys.model_inflight(MODEL)) == 0
+
+    async def test_user_inflight_zset_membership(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await _admit(ac, "req-1")
+        assert await redis.zcard(Keys.user_inflight(MODEL, USER)) == 1
+
+        await _admit(ac, "req-2")
+        assert await redis.zcard(Keys.user_inflight(MODEL, USER)) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +241,7 @@ class TestQuotaRejects:
             await _admit(ac, f"req-{i}")
 
         await _admit(ac, "req-over")
-        rejects = await redis.hget(Keys.model_demand(MODEL), "capacity_rejects_total")
+        rejects = await redis.hget(Keys.model_rejects(MODEL), "capacity_rejects_total")
         assert rejects is None or int(rejects) == 0
 
 
@@ -243,7 +283,7 @@ class TestCapacityRejects:
     ) -> None:
         await _admit(ac, "req-1", candidates=[])
 
-        rejects = await redis.hget(Keys.model_demand(MODEL), "capacity_rejects_total")
+        rejects = await redis.hget(Keys.model_rejects(MODEL), "capacity_rejects_total")
         assert rejects is not None
         assert int(rejects) == 1
 
@@ -271,12 +311,20 @@ class TestCapacityRejects:
 
 class TestDoubleSettleSafety:
     async def test_second_settle_returns_false(self, ac: AdmissionController) -> None:
-        await _admit(ac, "req-1")
+        result = await _admit(ac, "req-1")
         first = await ac.settle(
-            "req-1", actual_tokens=50, model_name=MODEL, user_id=USER
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
         )
         second = await ac.settle(
-            "req-1", actual_tokens=50, model_name=MODEL, user_id=USER
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
         )
         assert first is True
         assert second is False
@@ -290,16 +338,33 @@ class TestDoubleSettleSafety:
     ) -> None:
         result = await _admit(ac, "req-1")
         assert result.backend_id is not None
-        await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
-        await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
-
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
+        await ac.settle(
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+        )
+        await ac.settle(
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+        )
+        inflight = await redis.zcard(Keys.backend_inflight(MODEL, result.backend_id))
         assert inflight >= 0
 
     async def test_concurrent_settle_paths(self, ac: AdmissionController) -> None:
         """Hot-path settle (with context) racing sweeper settle (without context)."""
-        await _admit(ac, "req-1")
-        hot = await ac.settle("req-1", actual_tokens=50, model_name=MODEL, user_id=USER)
+        result = await _admit(ac, "req-1")
+        hot = await ac.settle(
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+        )
         sweep = await ac.settle("req-1", actual_tokens=None)
         assert (hot, sweep) == (True, False)
 
@@ -395,7 +460,7 @@ class TestLeaseRenewal:
         assert renewed == 5
 
     async def test_renew_chunks_large_batches(self, ac: AdmissionController) -> None:
-        ac_small_chunk = AdmissionController(ac.client, renew_chunk=2)
+        ac_small_chunk = AdmissionController(ac.client, chunk_size=2)
         for i in range(5):
             await _admit(ac, f"req-{i}", quota=self.WIDE_QUOTA)
         renewed = await ac_small_chunk.renew([f"req-{i}" for i in range(5)])
@@ -447,7 +512,7 @@ class TestSweeper:
         assert first == 1
         assert second == 0
 
-    async def test_sweeper_restores_counters(
+    async def test_sweeper_restores_inflight(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
         short_lease = AdmissionController(ac.client, lease_sec=0.1, max_request_sec=900)
@@ -457,5 +522,124 @@ class TestSweeper:
         await asyncio.sleep(0.2)
 
         await short_lease.sweep()
-        inflight = await _hget_int(redis, Keys.model_inflight(MODEL), result.backend_id)
+        inflight = await redis.zcard(Keys.backend_inflight(MODEL, result.backend_id))
         assert inflight == 0
+
+    async def test_sweeper_survives_malformed_blob(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        """A blob missing backend_id doesn't wedge the sweeper."""
+        short_lease = AdmissionController(ac.client, lease_sec=0.1, max_request_sec=900)
+        result = await _admit(short_lease, "req-good")
+        assert result.backend_id is not None
+
+        # Inject a malformed reservation: missing backend_id
+        poison_key = Keys.reservation("req-poison")
+        await redis.set(poison_key, json.dumps({"model_name": MODEL, "user_id": USER}))
+        await redis.zadd(Keys.deadlines(), {"req-poison": 0.0})
+
+        await asyncio.sleep(0.2)
+
+        settled = await short_lease.sweep()
+        # req-good is settled normally; req-poison is cleaned up without crashing
+        assert settled >= 1
+        assert await redis.get(poison_key) is None
+        assert await redis.zscore(Keys.deadlines(), "req-poison") is None
+
+
+# ---------------------------------------------------------------------------
+# 8. Orphan repair
+# ---------------------------------------------------------------------------
+
+
+class TestOrphanRepair:
+    async def test_repair_removes_orphaned_zset_members(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        """Orphan: ZSET member exists but reservation blob is gone."""
+        result = await _admit(ac, "req-1")
+        assert result.backend_id is not None
+
+        await redis.delete(Keys.reservation("req-1"))
+
+        removed = await ac.repair_orphaned_zsets()
+        assert removed == 3  # backend_inflight + user_inflight + model_reservations
+
+        assert await redis.zcard(Keys.backend_inflight(MODEL, result.backend_id)) == 0
+        assert await redis.zcard(Keys.user_inflight(MODEL, USER)) == 0
+        assert await redis.zcard(Keys.model_inflight(MODEL)) == 0
+
+    async def test_repair_leaves_live_reservations_alone(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        """Live reservation with blob intact should not be touched."""
+        await _admit(ac, "req-1")
+
+        removed = await ac.repair_orphaned_zsets()
+        assert removed == 0
+
+        assert await redis.zcard(Keys.model_inflight(MODEL)) == 1
+
+    async def test_repair_is_idempotent(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await _admit(ac, "req-1")
+        await redis.delete(Keys.reservation("req-1"))
+
+        first = await ac.repair_orphaned_zsets()
+        second = await ac.repair_orphaned_zsets()
+        assert first == 3
+        assert second == 0
+
+    async def test_repair_chunks_large_zsets(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        """Exercise chunk boundary with >chunk_size orphans in one ZSET."""
+        n = ac.chunk_size + 50
+        zset_key = Keys.model_inflight(MODEL)
+        now = 1700000000.0
+        await redis.zadd(zset_key, {f"orphan-{i}": now for i in range(n)})
+
+        removed = await ac.repair_orphaned_zsets()
+        assert removed == n
+        assert await redis.zcard(zset_key) == 0
+
+
+# ---------------------------------------------------------------------------
+# 9. Script-level guards
+# ---------------------------------------------------------------------------
+
+
+class TestScriptGuards:
+    async def test_admit_rejects_odd_candidate_key_count(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        """Passing an odd number of trailing keys triggers a loud error."""
+        keys = [
+            Keys.user_rate_limit(MODEL, USER, "tokens"),
+            Keys.user_rate_limit(MODEL, USER, "rpm"),
+            Keys.user_inflight(MODEL, USER),
+            Keys.model_inflight(MODEL),
+            Keys.model_rejects(MODEL),
+            Keys.deadlines(),
+            Keys.reservation("req-odd"),
+            Keys.backend_errors("r1"),
+            # missing backend_inflight key — odd count
+        ]
+        args: list[str | int | float] = [
+            "req-odd",
+            MODEL,
+            USER,
+            100,
+            3,
+            1000.0,
+            200000,
+            1.0,
+            5,
+            30.0,
+            "r1",
+            10,
+            3,
+        ]
+        with pytest.raises(ResponseError, match="odd number of candidate keys"):
+            await ac._admit(keys=keys, args=args)

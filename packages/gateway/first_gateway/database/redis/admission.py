@@ -3,7 +3,7 @@ import logging
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, NamedTuple, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from pydantic import BaseModel
 from redis.asyncio import Redis
@@ -26,21 +26,25 @@ def to_str(v: Any) -> str:
 
 
 class AdmitStatus(int, Enum):
-    ADMITTED = 1
-    REJECT_QUOTA = 2
-    REJECT_CAPACITY = 3
+    """
+    Return status of admit() Redis Lua script.
+    """
+
+    ADMITTED = 1  # proceed
+    REJECT_QUOTA = 2  # user is over their usage limit; retry-after
+    REJECT_CAPACITY = 3  # model does not have headroom (or cold start; 0 free capacity)
 
 
 class QuotaReason(str, Enum):
-    USER_CONCURRENCY = "user_concurrency"
-    USER_RPM = "user_rpm"
-    USER_TPM = "user_tpm"
+    USER_CONCURRENCY = "user_concurrency"  # user over max inflight limit
+    USER_RPM = "user_rpm"  # user over requests/minute rate
+    USER_TPM = "user_tpm"  # user over tokens/minute rate
 
 
 class CapacityReason(str, Enum):
-    SATURATED = "saturated"
-    ALL_BENCHED = "all_benched"
-    NO_CANDIDATES = "no_candidates"
+    SATURATED = "saturated"  # there are live backends; all slots are full
+    ALL_BENCHED = "all_benched"  # all backends are in error cooldown
+    NO_CANDIDATES = "no_candidates"  # no live backends (cold start)
 
 
 class AdmitResult(BaseModel):
@@ -82,23 +86,17 @@ class CandidateBackend(BaseModel):
     cooldown_threshold: int
 
 
-class InflightCounts(NamedTuple):
-    """
-    Inflight model-grouped utilization counts.
-
-    - by_backend provides a count for each active backend
-    - by_user provides a count for each active user
-    """
-
-    by_backend: dict[str, dict[str, int]]
-    by_user: dict[str, dict[str, int]]
-
-
 class AdmissionController:
     """
     Controller for distributed request admission: performs quota bookkeeping
     (RPM, TPM, Concurrency) per user/model and backend capacity bookkeeping (
     cooldown state, per-backend concurrency).
+
+    Simple INT counters cannot be reliably maintained in a distributed system
+    with crashing workers and retries. The controller manages a ledger of
+    reservations (one per admitted unique request_id) and uses ZSETs (sorted
+    sets keyed on request_id) for idempotent request accounting.  Atomic sets
+    of operations are executed on the Redis server as serializable Lua scripts.
 
     Owns the Lua script inventory (admit, settle, renew, record_error) and the
     sweep loop.
@@ -110,18 +108,18 @@ class AdmissionController:
         *,
         lease_sec: float = 30.0,
         max_request_sec: float = 3600.0,
-        renew_chunk: int = 500,
+        chunk_size: int = 500,
     ) -> None:
         """
         - lease_sec: default reservation duration
         - max_request_sec: lease can be renewed for up to this long (backstop
           for stuck requests that never stop renewing the lease)
-        - renew_chunk: lease renewal batch size: how many requests at a time
+        - chunk_size: batch size for lease renewal and repair ops
         """
         self.client = client
         self.lease_sec = lease_sec
         self.max_request_sec = max_request_sec
-        self.renew_chunk = renew_chunk
+        self.chunk_size = chunk_size
         self._admit = client.register_script(_ADMIT_LUA)
         self._settle = client.register_script(_SETTLE_LUA)
         self._renew = client.register_script(_RENEW_LUA)
@@ -148,30 +146,30 @@ class AdmissionController:
         be maintained during the lifetime of the request, using renew().
 
         All reservations must be cleared used settle().  Reservations cannot use
-        a TTL, because several pieces of related state must be rolled back
-        atomically.
+        a TTL, because related state must be rolled back atomically.
 
         - `request_id`: unique per-request identifier
         - `model_name`: unique model name
         - `user_id`: unique user ID
-        - `candidates`: ordered list of backends (uid, max_concurrency, max_errors).
-          The router must select healthy backends in scope for the current request and sort them
-          into the desired weighted random sampling order.
+        - `candidates`: ordered list of backends.  The router must select
+           healthy backends in scope for the current request and sort them into the
+           desired weighted random sampling order.
         - `estimated_tokens`:  estimated heuristic prompt_tokens+max_tokens for
            this request to be reserved.  Set to 0 for non-LLM requests.
         - `quota`: the configured usage rate limits for this model_name.
         """
         keys: list[str] = [
-            Keys.quota(model_name, user_id, "tokens"),
-            Keys.quota(model_name, user_id, "rpm"),
-            Keys.quota(model_name, user_id, "inflight"),
+            Keys.user_rate_limit(model_name, user_id, "tokens"),
+            Keys.user_rate_limit(model_name, user_id, "rpm"),
+            Keys.user_inflight(model_name, user_id),
             Keys.model_inflight(model_name),
-            Keys.model_demand(model_name),
+            Keys.model_rejects(model_name),
             Keys.deadlines(),
             Keys.reservation(request_id),
         ]
         for c in candidates:
             keys.append(Keys.backend_errors(c.uid))
+            keys.append(Keys.backend_inflight(model_name, c.uid))
 
         args: list[str | int | float] = [
             request_id,
@@ -198,6 +196,7 @@ class AdmissionController:
         *,
         model_name: str | None = None,
         user_id: str | None = None,
+        backend_id: str | None = None,
     ) -> bool:
         """
         Reverse one reservation's effects idempotently.
@@ -205,36 +204,50 @@ class AdmissionController:
         Safe to call from the request `finally`, the sweeper, and retries
         simultaneously; returns True iff this call was the one that applied.
 
-        Pass model_name and user_id from the request context to skip the
-        pre-read round trip on the hot path.  The sweeper omits them and
-        pays one extra GET to discover the reservation's identity.
+        Pass model_name, user_id, and backend_id from the request context to
+        skip the pre-read round trip on the hot path.  The sweeper omits them
+        and pays one extra GET to discover the reservation's identity.
         """
         reservation_key = Keys.reservation(request_id)
 
-        if model_name is None or user_id is None:
+        if not model_name or not user_id or not backend_id:
             raw_reservation = await self.client.get(reservation_key)
             if raw_reservation is None:
                 await self.client.zrem(Keys.deadlines(), request_id)
                 return False
-            row = json.loads(raw_reservation)
-            model_name = row["model_name"]
-            user_id = row["user_id"]
+            try:
+                row = json.loads(raw_reservation)
+            except json.JSONDecodeError:
+                row = {}
+            model_name = row.get("model_name")
+            user_id = row.get("user_id")
+            backend_id = row.get("backend_id")
+            if not model_name or not user_id or not backend_id:
+                logger.error(
+                    "settle: malformed reservation blob for %s, "
+                    "force-removing from deadlines",
+                    request_id,
+                )
+                await self.client.zrem(Keys.deadlines(), request_id)
+                await self.client.delete(reservation_key)
+                return False
 
         raw = await self._settle(
             keys=[
                 reservation_key,
                 Keys.deadlines(),
+                Keys.backend_inflight(model_name, backend_id),
+                Keys.user_inflight(model_name, user_id),
+                Keys.user_rate_limit(model_name, user_id, "tokens"),
                 Keys.model_inflight(model_name),
-                Keys.quota(model_name, user_id, "inflight"),
-                Keys.quota(model_name, user_id, "tokens"),
-                Keys.model_demand(model_name),
             ],
             args=[
                 "" if actual_tokens is None else int(actual_tokens),
                 request_id,
             ],
         )
-        return bool(int(raw[0]))
+        code = int(raw[0])
+        return bool(code)
 
     async def renew(self, request_ids: Sequence[str]) -> int:
         """
@@ -246,8 +259,8 @@ class AdmissionController:
         the stale reservations within ~lease_sec.
         """
         renewed = 0
-        for i in range(0, len(request_ids), self.renew_chunk):
-            chunk = list(request_ids[i : i + self.renew_chunk])
+        for i in range(0, len(request_ids), self.chunk_size):
+            chunk = list(request_ids[i : i + self.chunk_size])
             keys = [Keys.deadlines()] + [Keys.reservation(rid) for rid in chunk]
             renewed += int(
                 await self._renew(
@@ -275,7 +288,9 @@ class AdmissionController:
                 settled += 1
 
         if settled > 0:
-            logger.info(f"Reservation sweeper settled {settled} expired reservations")
+            logger.warning(
+                f"Reservation sweeper settled {settled} expired reservations"
+            )
 
         return settled
 
@@ -304,31 +319,45 @@ class AdmissionController:
         )
         return int(raw[0]), bool(int(raw[1]))
 
-    async def rebuild_inflight_from_ledger(self) -> InflightCounts:
+    async def repair_orphaned_zsets(self) -> int:
         """
-        Recompute per-model, per-backend inflight from the reservation ledger
-        (the base table).  Feed the result to ModelStatus.reconcile_inflight per
-        model.  Uses SCAN, never KEYS.
-        """
-        by_backend: dict[str, dict[str, int]] = {}
-        by_user: dict[str, dict[str, int]] = {}
-        async for key in self.client.scan_iter(
-            match=Keys.reservation_scan_pattern(), count=200
-        ):
-            raw = await self.client.get(key)
-            if not raw:
-                continue
-            try:
-                row = json.loads(raw)
-                model = row["model_name"]
-                backend = row["backend_id"]
-                user_id = row["user_id"]
-                by_backend.setdefault(model, {}).setdefault(backend, 0)
-                by_user.setdefault(model, {}).setdefault(user_id, 0)
-                by_backend[model][backend] += 1
-                by_user[model][user_id] += 1
-            except (ValueError, KeyError):
-                logger.warning(f"Reconcile cannot parse malformed reservation: {raw!r}")
-                continue
+        Remove orphans from the backend/user/model inflight sorted sets.
 
-        return InflightCounts(by_backend=by_backend, by_user=by_user)
+        An orphan is a ZSET member whose reservation blob no longer exists
+        (e.g. eviction or partial admit failure).
+
+        SCAN membership zsets, then ZSCAN each set in chunks and batch-EXISTS
+        the reservations.  ZREM the dead ones.  Race-safe without any
+        transaction: if a concurrent settle deletes the blob mid-check, both
+        parties ZREM safely.
+        """
+        patterns = [
+            Keys.backend_inflight_scan_pattern(),
+            Keys.user_inflight_scan_pattern(),
+            Keys.model_inflight_scan_pattern(),
+        ]
+        removed = 0
+        for pattern in patterns:
+            async for key in self.client.scan_iter(match=pattern, count=100):
+                key_str = to_str(key)
+                batch: list[str] = []
+                async for member in self.client.zscan_iter(
+                    key_str, count=self.chunk_size
+                ):
+                    batch.append(to_str(member[0]))
+                    if len(batch) >= self.chunk_size:
+                        removed += await self._zrem_dead(key_str, batch)
+                        batch = []
+                if batch:
+                    removed += await self._zrem_dead(key_str, batch)
+        return removed
+
+    async def _zrem_dead(self, key: str, request_ids: list[str]) -> int:
+        async with self.client.pipeline(transaction=False) as pipe:
+            for rid in request_ids:
+                pipe.exists(Keys.reservation(rid))
+            alive = await pipe.execute()
+        dead = [rid for rid, ok in zip(request_ids, alive) if not ok]
+        if dead:
+            return int(await self.client.zrem(key, *dead))
+        return 0

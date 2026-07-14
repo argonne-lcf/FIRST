@@ -164,7 +164,7 @@ The data plane tracks three categories of live state in Redis:
 | Key | Type | Description |
 |---|---|---|
 | `rt:model:{model}:inflight` | HASH `backend_id → int` | Per-backend concurrent request count, grouped into one hash per model so a single `HGETALL` retrieves all backend loads at once. Incremented atomically by `admit`, decremented by `settle`. |
-| `rt:model:{model}:demand` | HASH `{inflight, capacity_rejects_total, last_reject_ts}` | Autoscaler-facing signals. `inflight` is a gauge of total model load across all backends. `capacity_rejects_total` is a monotonic counter the autoscaler diffs over a window to compute reject rate. `last_reject_ts` drives scale-from-zero (recent reject with zero backends → cold start). |
+| `rt:model:{model}:rejects` | HASH `{inflight, capacity_rejects_total, last_reject_ts}` | Autoscaler-facing signals. `inflight` is a gauge of total model load across all backends. `capacity_rejects_total` is a monotonic counter the autoscaler diffs over a window to compute reject rate. `last_reject_ts` drives scale-from-zero (recent reject with zero backends → cold start). |
 | `rt:backend:{id}:errors` | INT with TTL | Upstream error counter that doubles as the cooldown mechanism. The first error arms a TTL of `cooldown_window_sec`; if errors accumulate to `cooldown_threshold` within that window, the TTL is extended to `cooldown_bench_sec` and `admit` treats the backend as benched until the key expires. Incarnation-unique backend IDs (Postgres autoincrement, never recycled) guarantee a counter never haunts a relaunched backend. |
 
 #### Reservation ledger

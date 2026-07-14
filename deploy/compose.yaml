@@ -73,6 +73,7 @@ services:
       - --latency-monitor-threshold 10
       - --slowlog-log-slower-than 10000
       - --slowlog-max-len 128
+      - --maxmemory-policy noeviction
     networks:
       - gateway
     restart: unless-stopped

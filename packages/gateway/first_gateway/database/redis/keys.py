@@ -13,21 +13,32 @@ class Keys:
 
     @staticmethod
     def config() -> str:
+        """The Main Router Configuration Blob"""
         return "router-cfg"
 
     @staticmethod
+    def backend_inflight(model: str, backend_id: str) -> str:
+        """ZSET request_id → admit_ts. ZCARD = per-backend inflight."""
+        return f"rt:model:{model}:backend:{backend_id}:inflight"
+
+    @staticmethod
+    def user_inflight(model: str, user_id: str) -> str:
+        """ZSET request_id → admit_ts. ZCARD = user concurrency."""
+        return f"rt:user-inflight:{model}:{user_id}"
+
+    @staticmethod
     def model_inflight(model: str) -> str:
-        """HASH keyed by backend_id → concurrent request count."""
+        """ZSET request_id → admit_ts. ZCARD = model total inflight."""
         return f"rt:model:{model}:inflight"
 
     @staticmethod
-    def model_demand(model: str) -> str:
-        """HASH {inflight, capacity_rejects_total, last_reject_ts}."""
-        return f"rt:model:{model}:demand"
+    def model_rejects(model: str) -> str:
+        """HASH {capacity_rejects_total, last_reject_ts}."""
+        return f"rt:model:{model}:rejects"
 
     @staticmethod
     def backend_errors(backend_id: str) -> str:
-        """INT counter with TTL; count >= threshold IS the cooldown bench."""
+        """Error counter with TTL; count >= threshold IS the cooldown bench."""
         return f"rt:backend:{backend_id}:errors"
 
     @staticmethod
@@ -36,20 +47,34 @@ class Keys:
         return f"rt:reserve:{request_id}"
 
     @staticmethod
-    def reservation_scan_pattern() -> str:
-        """SCAN match pattern that covers all reservation keys."""
-        return "rt:reserve:*"
-
-    @staticmethod
     def deadlines() -> str:
         """ZSET of request_ids scored by deadline timestamp."""
         return "rt:deadlines"
 
     @staticmethod
-    def quota(
-        model: str, user: str, resource: Literal["tokens", "rpm", "inflight"]
+    def user_rate_limit(
+        model: str, user: str, resource: Literal["tokens", "rpm"]
     ) -> str:
+        """Per-user, per-model TPM/RPM Bucket Arrival Times"""
         return f"quota:{model}:{user}:{resource}"
+
+    @staticmethod
+    def backend_inflight_scan_pattern() -> str:
+        """SCAN match pattern for all per-backend inflight ZSETs.
+        Keep in sync with backend_inflight()."""
+        return "rt:model:*:backend:*:inflight"
+
+    @staticmethod
+    def user_inflight_scan_pattern() -> str:
+        """SCAN match pattern for all per-user inflight ZSETs.
+        Keep in sync with user_inflight()."""
+        return "rt:user-inflight:*"
+
+    @staticmethod
+    def model_inflight_scan_pattern() -> str:
+        """SCAN match pattern for all per-model reservation ZSETs.
+        Keep in sync with model_inflight()."""
+        return "rt:model:*:inflight"
 
     @staticmethod
     def token_introspect(token_hash: str) -> str:

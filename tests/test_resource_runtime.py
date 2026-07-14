@@ -42,14 +42,14 @@ async def _get_models(client: httpx.AsyncClient) -> list[dict[str, Any]]:
 async def test_list_models_runtime(
     client: httpx.AsyncClient, baseline: None, redis: Redis
 ) -> None:
-    """list_models populates ModelRuntime from the model_demand hash."""
+    """list_models populates ModelRuntime from model_reservations ZSET + model_demand hash."""
     model_name = "meta-llama/llama-3-8b"
+    now = 1700000000.0
+    for i in range(7):
+        await redis.zadd(Keys.model_inflight(model_name), {f"req-{i}": now})
     await redis.hset(
-        Keys.model_demand(model_name),
-        mapping={
-            "inflight": "7",
-            "capacity_rejects_total": "3",
-        },
+        Keys.model_rejects(model_name),
+        mapping={"capacity_rejects_total": "3"},
     )
 
     models = await _get_models(client)
@@ -72,7 +72,11 @@ async def test_list_static_deployments_runtime(
     backend_id = f"static_deployment/{sd_uid}"
     model_name = "meta-llama/llama-3-8b"
 
-    await redis.hset(Keys.model_inflight(model_name), backend_id, "10")
+    now = 1700000000.0
+    for i in range(10):
+        await redis.zadd(
+            Keys.backend_inflight(model_name, backend_id), {f"req-{i}": now}
+        )
     await redis.set(Keys.backend_errors(backend_id), "4")
 
     resp = await client.get(

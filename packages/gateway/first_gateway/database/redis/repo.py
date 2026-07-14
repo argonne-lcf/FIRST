@@ -24,18 +24,15 @@ def _parse_backend_runtime(inflight_raw: Any, errors_raw: Any) -> BackendRuntime
     )
 
 
-def _parse_model_runtime(raw: dict[Any, Any]) -> ModelRuntime:
+def _parse_model_rejects(raw: dict[Any, Any]) -> tuple[int, datetime | None]:
+    """Extract rejection counters from the model demand hash."""
     if not raw:
-        return ModelRuntime()
-
+        return 0, None
     data = {_to_str(k): _to_str(v) for k, v in raw.items()}
     last_ts = data.get("last_reject_ts")
-    return ModelRuntime(
-        total_inflight=int(data.get("inflight", "0")),
-        capacity_rejects_total=int(data.get("capacity_rejects_total", "0")),
-        last_capacity_reject=(
-            datetime.fromtimestamp(float(last_ts), tz=UTC) if last_ts else None
-        ),
+    return (
+        int(data.get("capacity_rejects_total", "0")),
+        datetime.fromtimestamp(float(last_ts), tz=UTC) if last_ts else None,
     )
 
 
@@ -47,42 +44,19 @@ class RedisRepo:
         self, model_name: str, backend_id: str
     ) -> BackendRuntime:
         async with self.client.pipeline(transaction=False) as pipe:
-            pipe.hget(Keys.model_inflight(model_name), backend_id)
+            pipe.zcard(Keys.backend_inflight(model_name, backend_id))
             pipe.get(Keys.backend_errors(backend_id))
             inflight_raw, errors_raw = await pipe.execute()
         return _parse_backend_runtime(inflight_raw, errors_raw)
 
-    async def get_all_backend_runtimes(
-        self, model_name: str
-    ) -> dict[str, BackendRuntime]:
-        raw_map = await self.client.hgetall(Keys.model_inflight(model_name))
-        if not raw_map:
-            return {}
-
-        inflight_map = {_to_str(k): _to_str(v) for k, v in raw_map.items()}
-        backend_ids = list(inflight_map)
-        error_keys = [Keys.backend_errors(bid) for bid in backend_ids]
-        error_vals = await self.client.mget(error_keys)
-
-        result: dict[str, BackendRuntime] = {}
-        for bid, errors_raw in zip(backend_ids, error_vals):
-            result[bid] = BackendRuntime(
-                inflight=int(inflight_map[bid]),
-                cooldown_errors=int(_to_str(errors_raw)) if errors_raw else 0,
-            )
-        return result
-
     async def get_many_backend_runtimes(
         self, keys: list[tuple[str, str]]
     ) -> list[BackendRuntime]:
-        """
-        Fetch a list of BackendRuntimes by (model_name, backend_id)
-        """
         if not keys:
             return []
         async with self.client.pipeline(transaction=False) as pipe:
             for model_name, backend_id in keys:
-                pipe.hget(Keys.model_inflight(model_name), backend_id)
+                pipe.zcard(Keys.backend_inflight(model_name, backend_id))
                 pipe.get(Keys.backend_errors(backend_id))
             results = await pipe.execute()
 
@@ -92,8 +66,16 @@ class RedisRepo:
         return out
 
     async def get_model_runtime(self, model_name: str) -> ModelRuntime:
-        raw = await self.client.hgetall(Keys.model_demand(model_name))
-        return _parse_model_runtime(raw)
+        async with self.client.pipeline(transaction=False) as pipe:
+            pipe.zcard(Keys.model_inflight(model_name))
+            pipe.hgetall(Keys.model_rejects(model_name))
+            inflight, rejects_raw = await pipe.execute()
+        rejects, last_reject = _parse_model_rejects(rejects_raw)
+        return ModelRuntime(
+            total_inflight=int(inflight),
+            capacity_rejects_total=rejects,
+            last_capacity_reject=last_reject,
+        )
 
     async def get_many_model_runtimes(
         self, model_names: list[str]
@@ -102,9 +84,22 @@ class RedisRepo:
             return []
         async with self.client.pipeline(transaction=False) as pipe:
             for name in model_names:
-                pipe.hgetall(Keys.model_demand(name))
+                pipe.zcard(Keys.model_inflight(name))
+                pipe.hgetall(Keys.model_rejects(name))
             results = await pipe.execute()
-        return [_parse_model_runtime(data) for data in results]
+
+        out: list[ModelRuntime] = []
+        for i in range(0, len(results), 2):
+            inflight = int(results[i])
+            rejects, last_reject = _parse_model_rejects(results[i + 1])
+            out.append(
+                ModelRuntime(
+                    total_inflight=inflight,
+                    capacity_rejects_total=rejects,
+                    last_capacity_reject=last_reject,
+                )
+            )
+        return out
 
     async def get_cached_token(self, token_hash: str) -> str | None:
         val = await self.client.get(Keys.token_introspect(token_hash))

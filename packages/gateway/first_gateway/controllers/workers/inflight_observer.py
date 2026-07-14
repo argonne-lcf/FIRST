@@ -32,4 +32,11 @@ class InflightObserver(Worker):
     async def _reconcile(self) -> None:
         redis = self.client_state.redis
         ac = AdmissionController(redis)
-        await ac.repair_orphaned_zsets()
+        removed = await ac.repair_orphaned_zsets()
+        if removed:
+            logger.warning(
+                f"Removed {removed} orphaned reservations from inflight sets. "
+                "This means the AdmissionController settled one or more reservations without "
+                "cleaning up the matching inflight sets. I handled it, but "
+                "please verify the root cause."
+            )
