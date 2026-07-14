@@ -455,7 +455,7 @@ class PilotReplica(ResourceRow, SoftDeletable):
     pilot_deployment: Mapped[PilotDeployment] = relationship(
         back_populates="replicas", lazy="raise"
     )
-    pilot_job: Mapped[PilotJob] = relationship(
+    pilot_job: Mapped[PilotJob | None] = relationship(
         back_populates="assigned_replicas", lazy="raise"
     )
 

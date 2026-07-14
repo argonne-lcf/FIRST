@@ -92,7 +92,11 @@ class RouterConfigObserver(Worker):
 
         for dep in sorted(pilots, key=lambda d: d.uid):
             healthy_replicas = sorted(
-                (r for r in dep.replicas if r.state == ReplicaState.ready.value),
+                (
+                    r
+                    for r in dep.replicas
+                    if r.state == ReplicaState.ready and not r.scheduled_deletion
+                ),
                 key=lambda r: r.uid,
             )
             if healthy_replicas:

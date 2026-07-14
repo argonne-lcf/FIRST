@@ -671,16 +671,21 @@ of defense to what should otherwise remain consistent on its own.
 Split into three focused controllers, all on `table_name = "pilot_replica"`:
 
 ##### Replica Reconciler
-- **Sole writer of `PilotReplica.scheduled_deletion`.** All conditions
-  that should drain a replica funnel through this controller — excess
-  count, parent job terminal/deleting, parent deployment deleting,
-  stuck-in-`launching` past timeout, unhealthy past timeout. Other
-  controllers signal intent through their own fields
-  (`PilotJob.scheduler_state`/`scheduled_deletion`,
-  `PilotDeployment.scheduled_deletion`); the Replica Reconciler reads
-  those and writes `scheduled_deletion` on the replicas.
-- Drives observed count toward `desired_replicas`.
-- `list_actionable`:
+- **Sole writer of `PilotReplica.scheduled_deletion`.** All conditions that
+should drain a replica or free its resources funnel through this controller:
+
+— Excess count
+- parent job terminal/deleting
+- parent deployment deleting
+- Replica state is terminal, including `error` or `start_timeout` (the replica stopped, but we still have to free the resources of the PilotJob and on-node ReplicaManager and mark it for deletion)
+- Other controllers signal intent through their own fields (e.g.
+`PilotJob.scheduler_state`/`scheduled_deletion`); the Replica Reconciler reads
+those and writes `scheduled_deletion` on the replicas.
+
+The reconciler drives observed count toward `desired_replicas`.
+
+
+`list_actionable`:
   - Any deployment where `desired_replicas` differs from
     `count(replicas where deleted_at IS NULL)`.
   - Any non-terminal replica whose parent `PilotJob` is in a terminal
@@ -691,7 +696,9 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
     `placed_at < now() - launching_timeout`.
   - Any non-terminal replica observed unhealthy past its debounce
     window (read from the per-replica status the observer maintains).
-- `reconcile`:
+
+
+`reconcile`:
   - Per deployment with count mismatch:
     - Too few: INSERT new `PilotReplica` rows in `state=pending` with
       `pilot_job_name=NULL`. The Replica Placement controller will pick
@@ -734,16 +741,31 @@ Job Resources becoming available/ready unblocks placing replicas.
   If placed on the same pilot job, the Control API will raise a `409 CONFLICT` and
   the FK to the pilot job can be written.
 
+Emit structured logs to track replica placement events.  The DB records are used
+for _live_ state and will not persist e.g. the assigned resources after the
+replica has stopped.
+
 ##### Replica Drainer
-- Does not write `scheduled_deletion` — only consumes it. The Replica
-  Reconciler is the sole writer of that field; see above.
-- **Drain**: replicas with `scheduled_deletion = true` and
-  `state != terminated`. Reconcile: ensure removed from router (router
-  config controller does this on its own loop; here we just verify
-  `deleted_at_router IS NOT NULL`), then after a 30s drain window call
-  `POST /stop-replica`, set `state = terminated`, `deleted_at = now()`.
-- Owns: `PilotReplica.state` transitions to `terminated`,
-  `PilotReplica.deleted_at`.
+
+Does not write `scheduled_deletion` — only consumes it. The Replica Reconciler is the sole writer of that field; see above.
+
+Replicas with `scheduled_deletion = true` and `state == ready` must wait for both of these conditions before delete
+eligible:
+
+1. At least ~20 seconds after `scheduled_deletion` is flipped on (apiserver stops advertising the replica)
+2. Number of inflight requests to the backend is zero OR it has been more than 5 minutes since `scheduled_deletion` (backstop)
+
+Note: might want to replace `scheduled_deletion: bool` by a `scheduled_deletion_at: datetime` timestamp, so that we can track the above logic naturally.  Then `scheduled_deletion` can be recovered as an `@property`.
+
+Replicas with `scheduled_deletion = true` and any state other than `ready` are **immediately eligible** for deletion.
+
+Deletion process:
+
+1. Call POST /control/stop-replica if the PilotJob is running.  Do this even if the Replica is in a terminal state, because the ReplicaManager continues to hold the resources for `error` and `start_timeout` replicas until they are explicitly stopped. On 404 status error, gracefully continue (double-delete: OK).
+2. Commit transaction:
+    - If the state was not already terminal, update the state to `terminated`. Preserve other terminal states like `error` and `start_timeout`.
+    - Call `PilotJob.unassign_replica()` to free the resources tracked in the DB.
+    - Set `deleted_at`: the replica has now been cleaned and is ready for the retention sweeper.
 
 #### Replica pipeline summary
 
