@@ -132,6 +132,9 @@ def upgrade() -> None:
         sa.Column("manager_health", sa.String(), nullable=False),
         sa.Column("manager_unhealthy_since", sa.DateTime(timezone=True), nullable=True),
         sa.Column("resources", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column(
+            "used_resources", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+        ),
         sa.Column("time_started", sa.DateTime(timezone=True), nullable=True),
         sa.Column("idle_since", sa.DateTime(timezone=True), nullable=True),
         sa.Column("walltime_min", sa.Integer(), nullable=False),

@@ -1,3 +1,4 @@
+import logging
 import os
 import signal
 import socket
@@ -10,6 +11,8 @@ from typing import NamedTuple
 from jinja2 import Template
 
 from first_common.schema.pilot import PilotRuntimeConfig
+
+logger = logging.getLogger(__name__)
 
 _conf_template_str = """
     worker_processes 2;
@@ -159,6 +162,12 @@ class NginxManager:
         os.replace(new_config, self.config_path)
         self._nginx.send_signal(signal.SIGHUP)
 
+    def _read_error_log(self) -> str:
+        error_log = self.tmpdir / "nginx-error.log"
+        if error_log.exists():
+            return error_log.read_text()
+        return "(nginx-error.log not found)"
+
     def wait_until_healthy(self, timeout: float = 10.0, interval: float = 0.2) -> None:
         if self._nginx is None:
             raise RuntimeError("NGINX process is not set yet; must call start() first.")
@@ -168,6 +177,10 @@ class NginxManager:
 
         while time.monotonic() < deadline:
             if self._nginx.poll() is not None:
+                error_log = self._read_error_log()
+                logger.error(
+                    "nginx exited with code %s\n%s", self._nginx.returncode, error_log
+                )
                 raise RuntimeError(f"nginx exited with code {self._nginx.returncode}")
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=1):
@@ -175,4 +188,8 @@ class NginxManager:
             except OSError:
                 time.sleep(interval)
 
+        error_log = self._read_error_log()
+        logger.error(
+            "nginx not ready on port %d after %ss\n%s", port, timeout, error_log
+        )
         raise TimeoutError(f"nginx not ready on port {port} after {timeout}s")

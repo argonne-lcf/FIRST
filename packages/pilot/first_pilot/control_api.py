@@ -19,7 +19,7 @@ from first_common.schema.pilot import (
 )
 
 from .nginx_manager import NginxManager, ReplicaPort
-from .replica_manager import ReplicaManager
+from .replica_manager import ReplicaManager, safe_getfqdn
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,9 @@ class _PilotManager:
     def start(self, readyfile: Path) -> None:
         self.nginx.start()
         self.nginx.wait_until_healthy()
+        logger.info("nginx healthy on port %d", self.config.external_port)
         readyfile.write_text(self._endpoint.model_dump_json())
+        logger.info("readyfile written: %s", readyfile)
 
     def stop(self) -> None:
         self.nginx.stop()
@@ -48,9 +50,8 @@ class _PilotManager:
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
 
-        fqdn = socket.getfqdn(ip)
         return AddressInfo(
-            hostname=fqdn,
+            hostname=safe_getfqdn(ip),
             ip=ip,
             external_port=self.config.external_port,
             control_path=self.nginx.control_path,

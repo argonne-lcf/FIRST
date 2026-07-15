@@ -225,12 +225,17 @@ async def _submit_and_wait_ready(
     async def _ready() -> bool:
         return name in await submitter.list_ready_endpoints()
 
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
         if await _ready():
             break
         await asyncio.sleep(0.05)
     else:
+        # Dump all logs while the subprocess (and its tmpdirs) are still alive.
+        workdir = submitter.pilot_config.workdir
+        for log in sorted(workdir.rglob("*.log")):
+            rel = log.relative_to(workdir)
+            sys.stderr.write(f"\n--- {rel} ---\n{log.read_text()}\n")
         raise AssertionError(f"pilot {name} never wrote its readyfile")
 
     statuses = await submitter.get_statuses()
@@ -311,7 +316,7 @@ async def test_replica_lifecycle(
                 for rep in s.replicas
             )
 
-        deadline = time.monotonic() + 20.0
+        deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             if await _ready():
                 break

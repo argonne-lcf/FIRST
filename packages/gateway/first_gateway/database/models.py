@@ -20,7 +20,9 @@ from sqlalchemy.orm import (
 from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.base_scheduler import SchedulerJobState
+from first_common.schema.pilot import PilotResources
 from first_common.schema.types import (
+    GpuClaim,
     HealthCheckResult,
     PilotDeploymentState,
     ReplicaState,
@@ -424,6 +426,7 @@ class PilotJob(ResourceRow, SoftDeletable):
     manager_health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
     manager_unhealthy_since: Mapped[DateTimeOrNone]
     resources: Mapped[DictJsonb] = mapped_column(JSONB, default=dict)
+    used_resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     time_started: Mapped[DateTimeOrNone]
     idle_since: Mapped[DateTimeOrNone]
     walltime_min: Mapped[int]
@@ -434,6 +437,83 @@ class PilotJob(ResourceRow, SoftDeletable):
     assigned_replicas: Mapped[list["PilotReplica"]] = relationship(
         back_populates="pilot_job", lazy="raise"
     )
+
+    async def assign_replica(
+        self,
+        sess: AsyncSession,
+        replica: "PilotReplica",
+        resources: list[GpuClaim],
+    ) -> bool:
+        job = await sess.scalar(
+            sa.select(PilotJob).where(PilotJob.uid == self.uid).with_for_update()
+        )
+        replica_row = await sess.scalar(
+            sa.select(PilotReplica)
+            .where(PilotReplica.uid == replica.uid)
+            .with_for_update()
+        )
+        assert job is not None and replica_row is not None
+
+        pilot_resources = PilotResources.model_validate(job.resources)
+        known_gpus = {
+            (host.hostname, gpu.index)
+            for host in pilot_resources.hosts
+            for gpu in host.gpus
+        }
+        requested_gpus = {
+            (claim.hostname, gpu_id) for claim in resources for gpu_id in claim.gpu_ids
+        }
+        if not requested_gpus.issubset(known_gpus):
+            raise ValueError(
+                f"PilotJob does not possess requested resources: {requested_gpus - known_gpus}"
+            )
+
+        used_gpus = {
+            (entry["hostname"], gpu_id)
+            for entry in job.used_resources
+            for gpu_id in entry["gpu_ids"]
+        }
+        if requested_gpus & used_gpus:
+            return False
+
+        new_claims = [claim.model_dump() for claim in resources]
+        job.used_resources = job.used_resources + new_claims
+        replica_row.used_resources = new_claims
+        replica_row.pilot_job_name = job.name
+        return True
+
+    async def unassign_replica(
+        self, sess: AsyncSession, replica: "PilotReplica"
+    ) -> None:
+        job = await sess.scalar(
+            sa.select(PilotJob).where(PilotJob.uid == self.uid).with_for_update()
+        )
+        replica_row = await sess.scalar(
+            sa.select(PilotReplica)
+            .where(PilotReplica.uid == replica.uid)
+            .with_for_update()
+        )
+        assert job is not None and replica_row is not None
+        assert replica_row.pilot_job_name == job.name
+
+        to_remove = {
+            (entry["hostname"], gpu_id)
+            for entry in replica_row.used_resources
+            for gpu_id in entry["gpu_ids"]
+        }
+        new_used = []
+        for entry in job.used_resources:
+            remaining = [
+                gid
+                for gid in entry["gpu_ids"]
+                if (entry["hostname"], gid) not in to_remove
+            ]
+            if remaining:
+                new_used.append({"hostname": entry["hostname"], "gpu_ids": remaining})
+
+        job.used_resources = new_used
+        replica_row.used_resources = []
+        replica_row.pilot_job_name = None
 
 
 class PilotReplica(ResourceRow, SoftDeletable):

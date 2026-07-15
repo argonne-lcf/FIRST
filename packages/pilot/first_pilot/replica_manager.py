@@ -4,6 +4,7 @@ import socket
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import TimeoutError as FutTimeout
 from enum import Enum
 from typing import Literal
 
@@ -31,6 +32,18 @@ from .replica import Replica
 logger = logging.getLogger(__name__)
 
 REPLICA_PORT_OFFSET = 2
+
+
+def safe_getfqdn(name: str = "", *, timeout: float = 2.0) -> str:
+    """getfqdn with a timeout — falls back to *name* (or the raw hostname) on slow rDNS."""
+    pool = ThreadPoolExecutor(1)
+    try:
+        return pool.submit(socket.getfqdn, name).result(timeout=timeout)
+    except FutTimeout:
+        logger.warning("getfqdn(%r) timed out after %ss", name, timeout)
+        return name or socket.gethostname()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 class _ReservedSentinel(Enum):
@@ -98,7 +111,7 @@ def query_gpus(hostname: str) -> HostGpus:
 
 def discover_hosts(node_file_env: str) -> list[str]:
     node_file = os.environ.get(node_file_env)
-    localhost = socket.getfqdn()
+    localhost = safe_getfqdn()
 
     if not node_file:
         logger.info(

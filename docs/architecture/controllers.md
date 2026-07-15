@@ -674,7 +674,7 @@ Split into three focused controllers, all on `table_name = "pilot_replica"`:
 - **Sole writer of `PilotReplica.scheduled_deletion`.** All conditions that
 should drain a replica or free its resources funnel through this controller:
 
-— Excess count
+— Excess count (desired_count on the deployment currently exceeds the number of replicas)
 - parent job terminal/deleting
 - parent deployment deleting
 - Replica state is terminal, including `error` or `start_timeout` (the replica stopped, but we still have to free the resources of the PilotJob and on-node ReplicaManager and mark it for deletion)
@@ -716,30 +716,53 @@ the baseline causes the older stale replicas to get drained.  This enables a
 zero-downtime rollout.
 
 ##### Replica Placement Controller
-- `list_actionable`: `PilotReplica` where `state = pending` AND
-  `pilot_job_name IS NULL` AND `scheduled_deletion = false`.
-- Listener subscribes to both Replica and Pilot Job tables, because Pilot
-Job Resources becoming available/ready unblocks placing replicas.
-- `reconcile`: bin-pack onto an existing `PilotJob` that has free resources.
-  - If a job fits: call `POST /start-replica` on the pilot manager and
-    set `pilot_job_name = <job>` and `state= 'placed'` in the same transaction. If the API call
-    fails, leave `pilot_job_name = NULL` but increment `PilotDeployment.consecutive_launch_failures`
-    — next reconcile retries (it's idempotent because the pilot manager keys replicas by name).
-  - If nothing fits: INSERT a new `PilotJob` in `state = pending_submit`
-    (subject to per-cluster max). Replica stays `pending`; on the next
-    pass, once the new job is `running` with capacity, it gets placed.
-    Careful not to submit if the cluster's pilot job count is at `max_concurrent_jobs`
-    or there is already a Pilot that's queued/starting/ready-but-waiting-to-discover-resources.
-  - If no clusters can accommodate the replica at all: write
-    `state_message = 'AT_CAPACITY'`, leave pending. The full-resync loop
-    picks it up periodically until capacity opens.
+`list_actionable`: `PilotReplica` where `state = pending` AND `pilot_job_name IS NULL` AND `scheduled_deletion = false`.
 
-  *Recovery from partial failure:* If `start-replica` succeeded but the
-  DB write failed, the next reconcile sees an unplaced replica and attempts
-  placement on a Pilot Job again. If placed on a different pilot job, the
-  unregistered first replica (now an orphan) will [be reaped](#replica-drainerreaper).
-  If placed on the same pilot job, the Control API will raise a `409 CONFLICT` and
-  the FK to the pilot job can be written.
+Listener subscribes to both Replica and Pilot Job tables, because Pilot
+Job Resources becoming available/ready unblocks placing replicas.
+
+`reconcile`: bin-pack onto an existing `PilotJob` that has free resources. If a
+job fits, then confirm and commit the assignment using
+`PilotJob.assign_replica()`.  This re-reads the PilotJob using `SELECT ... FOR
+UPDATE` and ensures that no invariant is violated during the Replica placement.
+
+After the PilotReplica->PilotJob assignment has committed, then call
+`POST /start-replica` on the pilot manager and update `state= placed`.
+
+If the API call fails, roll back the assignment with
+`PilotJob.unassign_replica()` and increment
+`PilotDeployment.consecutive_launch_failures`.
+
+*Recovery from partial failure 1*: if `assign_replica()` commits, `start-replica` fails, and
+`unassign_replica()` never rolls back due to crash, then the PilotReplica will be left in
+`state=pending` with the committed resource assignment.  Retry `start-replica` with the same
+resource placement.
+
+*Recovery from partial failure 2:* If `start-replica` succeeded but the
+DB write of `state=placed` failed, the next reconcile sees an unplaced replica
+with a resource assignment and attempts to place it on the same PilotJob with
+the same resource assignment.  If placed on the same pilot job, the Control API
+will raise a `409 CONFLICT` and this can be interpreted as "already succeeded;
+Replica is placed and running".
+
+*Recovery from partial failure 3:* Suppose `start-replica` succeeded on the backend but the
+response failed to reach the controller and `unassign_replica()` was called
+erroneously.  On the second reconcile, the PilotReplica is placed on a different pilot job, leaving the
+previously launched Replica as an **unregistered orphan** that occupies resources on the first PilotJob.
+This orphan will [be reaped by the Replica Observer](#pilot-replica-observer) to address the resultant
+resource leak.
+
+If we end up with 1 or more Replicas that could not be placed in any existing `PilotJob`:
+
+- Calculate the aggregate resource demand of the unplaceable replicas (how many single node pilots and multinode pilots would satisfy the demand). Single node models bin-pack in a single-node pilot.  Multi-node models need dedicated multi-node jobs.
+- Look at the headroom in the cluster: how many nodes are reserved by existing `PilotJobs` versus the limit
+`Cluster.pilot_system.max_num_nodes`.  Consider pending/queued/starting/running jobs here.
+- If there is headroom, create as many `PilotJobs` as possible to satisfy the demand while staying within the headroom.
+- PilotJobs are `INSERT`ed with the resource requirements and `state =
+pending_submit`.  PilotReplicas that can't fit stay `pending`. On the next pass,
+once the new job is `running` with capacity, it gets placed.
+- If there is no current or future capacity, write `state_message = 'AT_CAPACITY'`,
+leave pending. The full-resync loop picks it up periodically until capacity opens.
 
 Emit structured logs to track replica placement events.  The DB records are used
 for _live_ state and will not persist e.g. the assigned resources after the

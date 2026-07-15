@@ -275,6 +275,9 @@ class PilotReplicaObserver(Worker):
         self, job: PilotJob, remote_replicas: list[ReplicaInfo]
     ) -> None:
         for ri in remote_replicas:
+            # Match on BOTH name and pilot_job_name (even though name is
+            # unique), because if same Replica is assigned to a different
+            # PilotJob, this one is still an orphan (resource leak).
             async with self.client_state.db_sessionmaker() as sess:
                 exists = await sess.scalar(
                     sa.select(
