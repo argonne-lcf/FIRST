@@ -52,14 +52,19 @@ class HealthCheckResult(str, Enum):
 
 class PilotDeploymentState(str, Enum):
     """
-    Aggregated state of a PilotDeployment
+    Aggregated state of a PilotDeployment.
+
+    Refer to aggregate_state() in pilot_replica_observer.py for the procedure to
+    calculate this state from a PilotDeployment and its Replica children.
     """
 
-    offline = "offline"  # No replicas exist / all pending
-    starting = "starting"  # At least one replica is placed or launching; none are healthy or unhealthy
-    healthy = "healthy"  # All are healthy
-    partial_capacity = "partial_capacity"  # At least one is healthy
-    unhealthy = "unhealthy"  # None are healthy, at least one is unhealthy
+    healthy = "healthy"
+    degraded = "degraded"
+    starting = "starting"
+    stopping = "stopping"
+    failed = "failed"
+    awaiting_capacity = "awaiting_capacity"
+    offline = "offline"
 
 
 class ReplicaState(str, Enum):
@@ -153,7 +158,9 @@ class PilotConfig(BaseModel):
 
     job_walltime_min: int
     pilot_max_idle_time_min: int = 60
+    pilot_max_unhealthy_time_min: int = 5
     max_concurrent_jobs: int = 100
+    max_num_nodes: int = 64
     queue: str
     account: str
     scheduler_flags: str = ""

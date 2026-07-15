@@ -595,6 +595,8 @@ update `consecutive_launch_failures` (incrementing per failed or timed-out repli
    - Success reset only happens when a replica transitions to `ready`
    - Failure is counted if the launch HTTP request fails or the replica state
    transitions to `error` or `start_timeout`
+- Calculate and write `PilotDeployment.state` as the aggregated `PilotDeploymentState` based on
+live replica runtime states and the controller state (desired replica count, recent launch failures)
 
 #### Inflight Count Observer
 
@@ -613,16 +615,12 @@ of defense to what should otherwise remain consistent on its own.
   ```sql
   SELECT uid FROM pilot_job
    WHERE (reconcile_retry_at IS NULL OR reconcile_retry_at < now())
-     AND state NOT IN ('terminated', 'failed')
+     AND (deleted_at IS NULL)
      AND (
-            scheduled_deletion = true
-         OR state = 'pending_submit'
-         OR (idle_since IS NOT NULL
-             AND idle_since < now() - (
-                pilot_max_idle_time_min || ' minutes')::interval)
-         OR (manager_health = 'unhealthy'
-             AND manager_unhealthy_since
-                 < now() - manager_unhealthy_debounce)
+         scheduled_deletion = true
+         OR state NOT IN ('queued', 'starting', 'running')
+         OR (idle_since IS NOT NULL)
+         OR (manager_health = 'unhealthy')
      );
   ```
 - `reconcile`:
@@ -631,40 +629,20 @@ of defense to what should otherwise remain consistent on its own.
      `scheduled_deletion` to assigned replicas is the Replica
      Reconciler's job — it picks up replicas whose parent job is in a
      terminal or deleting state.)
-  2. If state is terminal: nothing to do — Replica Reconciler handles
-     replica cleanup. Return.
+  2. If state is terminal: set `scheduled_deletion` and return.
   3. If `idle_since` exceeds the cluster's threshold: set
      `scheduled_deletion = true` and return — the next reconcile handles
      teardown.
   4. If manager has been unhealthy (control APIs not responding with 200s) past debounce: set
      `scheduled_deletion = true` and return.
   5. If `state = pending_submit`: check cluster's pilot_system
-     `max_concurrent_jobs`. If under cap, `PilotSubmitter.submit()`,
-     record `scheduler_job_id`, advance state. (Cap counted via
-     `SELECT count(*) FROM pilot_job WHERE cluster_name=... AND state IN
-     ('submitted','running')`.)
-- Owns: `PilotJob.scheduler_state`, `PilotJob.scheduler_job_id`,
+     `max_concurrent_jobs` and `max_num_nodes`. If all pending/submitted/starting/running jobs are
+     under the caps, `PilotSubmitter.submit()`, record `scheduler_job_id`, advance state.
+
+- Writes: `PilotJob.scheduler_state`, `PilotJob.scheduler_job_id`,
   `PilotJob.scheduled_deletion` (self-set on idle/unhealthy timeout),
   `PilotJob.deleted_at`.
 
-
-#### PilotDeployment Controller (`table_name = "pilot_deployment"`)
-- `list_actionable`: `PilotDeployment` rows where
-  `(reconcile_retry_at IS NULL OR reconcile_retry_at < now())`. N is
-  small but the backoff filter still applies — a persistently broken
-  deployment must stay cold like any other resource.
-- `reconcile`:
-  1. Aggregate health from current `PilotReplica.state` for owned replicas;
-     write `PilotDeployment.health` (premised, only on transition). When
-     `consecutive_launch_failures` exceeds threshold, aggregate state is
-     `deployments_failing` (the Autoscaler separately pins
-     `desired_replicas = 0` on this signal).
-  2. When `scheduled_deletion = true`, an admin has requested that the
-  entire deployment is deleted.  We immediately comply, cascading the
-  delete to all child `PilotReplicas` without respecting their retention
-  period. This enables immediate recycling of deployment names and clears
-  out data for deployments that are no longer under the purview of the system.
-- Owns: `PilotDeployment.health`, `PilotDeployment.deleted_at`.
 
 #### PilotReplica controllers
 

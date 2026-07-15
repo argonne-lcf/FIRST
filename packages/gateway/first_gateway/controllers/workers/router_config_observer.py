@@ -95,7 +95,7 @@ class RouterConfigObserver(Worker):
                 (
                     r
                     for r in dep.replicas
-                    if r.state == ReplicaState.ready and not r.scheduled_deletion
+                    if r.state == ReplicaState.ready and not r.is_draining
                 ),
                 key=lambda r: r.uid,
             )

@@ -184,7 +184,7 @@ async def test_replica_transitions_to_ready(
         {"GET /status": httpx.Response(200, json=_status_json([ri]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         rep = (
@@ -211,7 +211,7 @@ async def test_replica_transitions_to_error(
         {"GET /status": httpx.Response(200, json=_status_json([ri]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         rep = (
@@ -233,7 +233,7 @@ async def test_job_resources_populated(
         {"GET /status": httpx.Response(200, json=_status_json())}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         job = (
@@ -255,7 +255,7 @@ async def test_manager_health_set_healthy_on_success(
         {"GET /status": httpx.Response(200, json=_status_json())}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         job = (
@@ -275,7 +275,7 @@ async def test_manager_health_set_unhealthy_on_failure(
 
     transport = _make_transport({"GET /status": httpx.Response(500)})
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         job = (
@@ -297,7 +297,7 @@ async def test_idle_since_set_when_no_replicas(
         {"GET /status": httpx.Response(200, json=_status_json(replicas=[]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         job = (
@@ -323,7 +323,7 @@ async def test_idle_since_cleared_when_replica_running(
         {"GET /status": httpx.Response(200, json=_status_json([ri]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         job = (
@@ -355,7 +355,7 @@ async def test_orphan_replica_reaped(
 
     transport = httpx.MockTransport(handler)
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     assert stop_called
 
@@ -385,7 +385,7 @@ async def test_orphan_replica_wrong_job_fk_reaped(
 
     transport = httpx.MockTransport(handler)
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     assert stop_called
 
@@ -411,7 +411,7 @@ async def test_consecutive_launch_failures_incremented(
         {"GET /status": httpx.Response(200, json=_status_json([r1, r2]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         dep = (
@@ -441,7 +441,7 @@ async def test_consecutive_launch_failures_reset_on_success(
         {"GET /status": httpx.Response(200, json=_status_json([ri]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         dep = (
@@ -471,7 +471,7 @@ async def test_consecutive_launch_failures_accumulates(
         {"GET /status": httpx.Response(200, json=_status_json([ri]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         dep = (
@@ -506,7 +506,7 @@ async def test_no_update_when_state_unchanged(
         {"GET /status": httpx.Response(200, json=_status_json([ri]))}
     )
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         rep = (
@@ -533,7 +533,7 @@ async def test_non_running_jobs_skipped(
 
     transport = _make_transport({})
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
 
 async def test_http_failure_per_job_does_not_block_others(
@@ -559,7 +559,7 @@ async def test_http_failure_per_job_does_not_block_others(
 
     transport = httpx.MockTransport(handler)
     observer = _make_observer(db, transport)
-    await observer._poll()
+    await observer.poll()
 
     async with db() as sess:
         rep = (

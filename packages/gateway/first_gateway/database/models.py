@@ -438,18 +438,20 @@ class PilotJob(ResourceRow, SoftDeletable):
         back_populates="pilot_job", lazy="raise"
     )
 
+    @classmethod
     async def assign_replica(
-        self,
+        cls,
         sess: AsyncSession,
-        replica: "PilotReplica",
+        pilot_job_uid: int,
+        replica_uid: int,
         resources: list[GpuClaim],
     ) -> bool:
         job = await sess.scalar(
-            sa.select(PilotJob).where(PilotJob.uid == self.uid).with_for_update()
+            sa.select(PilotJob).where(PilotJob.uid == pilot_job_uid).with_for_update()
         )
         replica_row = await sess.scalar(
             sa.select(PilotReplica)
-            .where(PilotReplica.uid == replica.uid)
+            .where(PilotReplica.uid == replica_uid)
             .with_for_update()
         )
         assert job is not None and replica_row is not None
@@ -482,15 +484,16 @@ class PilotJob(ResourceRow, SoftDeletable):
         replica_row.pilot_job_name = job.name
         return True
 
+    @classmethod
     async def unassign_replica(
-        self, sess: AsyncSession, replica: "PilotReplica"
+        cls, sess: AsyncSession, pilot_job_uid: int, replica_uid: int
     ) -> None:
         job = await sess.scalar(
-            sa.select(PilotJob).where(PilotJob.uid == self.uid).with_for_update()
+            sa.select(PilotJob).where(PilotJob.uid == pilot_job_uid).with_for_update()
         )
         replica_row = await sess.scalar(
             sa.select(PilotReplica)
-            .where(PilotReplica.uid == replica.uid)
+            .where(PilotReplica.uid == replica_uid)
             .with_for_update()
         )
         assert job is not None and replica_row is not None
@@ -531,6 +534,7 @@ class PilotReplica(ResourceRow, SoftDeletable):
     state: Mapped[str] = mapped_column(default=ReplicaState.pending.value)
     state_message: Mapped[str] = mapped_column(default="Replica created.")
     started_at: Mapped[DateTimeOrNone]
+    stopped_at: Mapped[DateTimeOrNone]
 
     pilot_deployment: Mapped[PilotDeployment] = relationship(
         back_populates="replicas", lazy="raise"
@@ -543,6 +547,10 @@ class PilotReplica(ResourceRow, SoftDeletable):
     def backend_id(self) -> str:
         """Unique identifier for routeable backend"""
         return f"pilot_replica/{self.uid}"
+
+    @property
+    def is_draining(self) -> bool:
+        return self.scheduled_deletion or self.state == ReplicaState.terminating
 
 
 _RECONCILE_CASCADES: dict[str, list[tuple[type[ResourceRow], str]]] = {

@@ -290,6 +290,7 @@ def upgrade() -> None:
         sa.Column("state", sa.String(), nullable=False),
         sa.Column("state_message", sa.String(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("stopped_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",

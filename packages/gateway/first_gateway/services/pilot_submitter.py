@@ -1,3 +1,4 @@
+from math import ceil
 from pathlib import Path
 
 import yaml
@@ -48,6 +49,7 @@ class PilotSubmitter:
             cn=name,
             ca_cert_pem=self.ca_crt,
             ca_key_pem=self.ca_key,
+            days=ceil(self.pilot_config.job_walltime_min / 60 / 24),
         )
 
         runtime_cfg = PilotRuntimeConfig(

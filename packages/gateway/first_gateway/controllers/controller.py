@@ -83,7 +83,7 @@ class Controller(Worker):
         return tn
 
     @abstractmethod
-    async def reconcile(self, sess: AsyncSession, uid: int) -> None: ...
+    async def reconcile(self, uid: int) -> None: ...
 
     @abstractmethod
     async def list_actionable(self, sess: AsyncSession) -> list[int]: ...
@@ -130,8 +130,7 @@ class Controller(Worker):
     async def _reconcile_one(self, uid: int) -> None:
         t0 = monotonic()
         try:
-            async with self.client_state.db_sessionmaker.begin() as sess:
-                await self.reconcile(sess, uid)
+            await self.reconcile(uid)
         except StaleReconcile:
             outcome = "stale"
             logger.warning("%s: reconcile uid=%d stale", self.name, uid)

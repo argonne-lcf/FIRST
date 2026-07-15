@@ -62,7 +62,7 @@ class ResourceMeta(BaseModel):
         Case-sensitive slug, safe for use in a URL path segment.
 
         '/' is allowed in name but unsuitable for slugs; replace it by '~' to
-        obtain a bijective mapping (~ is disallowed in pattern but slug-safe).
+        obtain a bijective mapping (~ is disallowed in name but slug-safe).
         """
         return self.name.replace("/", "~")
 
@@ -138,6 +138,7 @@ class PilotReplica(ResourceMeta):
     state: ReplicaState
     state_message: str
     started_at: datetime | None = None
+    stopped_at: datetime | None = None
 
     runtime: BackendRuntime = BackendRuntime()
 
@@ -185,6 +186,7 @@ class PilotJob(ResourceMeta):
     resources: PilotResources
     assigned_replicas: list[PilotReplica]
     time_started: datetime | None = None
+    idle_since: datetime | None = None
     walltime_min: int
     num_nodes: int
     gpus_per_node: int
