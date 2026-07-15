@@ -17,7 +17,11 @@ from first_common.schema.pilot import (
     PilotResources,
     ReplicaInfo,
 )
-from first_common.schema.types import HealthCheckResult, ReplicaState
+from first_common.schema.types import (
+    HealthCheckResult,
+    PilotDeploymentState,
+    ReplicaState,
+)
 from first_gateway.controllers.worker import Worker
 from first_gateway.controllers.workers.pilot_replica_observer import (
     PilotReplicaObserver,
@@ -574,3 +578,248 @@ async def test_http_failure_per_job_does_not_block_others(
             await sess.scalars(select(PilotJob).where(PilotJob.name == "job-bad"))
         ).one()
     assert bad_job.manager_health == HealthCheckResult.unhealthy.value
+
+
+# ── Deployment aggregate state tests ────────────────────────────────
+
+
+async def test_deployment_state_healthy(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is healthy when serving replicas >= desired."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1")
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=1)
+        )
+
+    ri = _replica_info(name="rep-1", state=ReplicaState.ready)
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([ri]))}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.healthy.value
+
+
+async def test_deployment_state_degraded(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is degraded when some replicas serve but fewer than desired."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1")
+        await _add_replica(sess, name="rep-2")
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=2)
+        )
+
+    r1 = _replica_info(name="rep-1", state=ReplicaState.ready)
+    r2 = _replica_info(name="rep-2", state=ReplicaState.launching)
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([r1, r2]))}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.degraded.value
+
+
+async def test_deployment_state_starting(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is starting when no replicas serve but some are in-flight."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1")
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=1)
+        )
+
+    ri = _replica_info(name="rep-1", state=ReplicaState.launching)
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([ri]))}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.starting.value
+
+
+async def test_deployment_state_stopping(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is stopping when replicas are draining (terminating)."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1", state=ReplicaState.ready.value)
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=0)
+        )
+
+    ri = _replica_info(
+        name="rep-1", state=ReplicaState.terminating, state_message="Shutting down"
+    )
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([ri]))}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.stopping.value
+
+
+async def test_deployment_state_failed_from_launch_failures(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is failed when desired > 0 and consecutive launch failures accumulate."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1")
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=1)
+        )
+
+    ri = _replica_info(
+        name="rep-1", state=ReplicaState.error, state_message="OOM killed"
+    )
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([ri]))}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.failed.value
+    assert dep.consecutive_launch_failures == 1
+
+
+async def test_deployment_state_failed_from_unhealthy_replicas(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is failed when desired > 0 and all replicas are unhealthy."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1", state=ReplicaState.ready.value)
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=1)
+        )
+
+    ri = _replica_info(
+        name="rep-1",
+        state=ReplicaState.unhealthy,
+        state_message="Health check failing",
+    )
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([ri]))}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.failed.value
+
+
+async def test_deployment_state_awaiting_capacity(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is awaiting_capacity when desired > 0 but no replicas exist."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=1)
+        )
+
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json())}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.awaiting_capacity.value
+
+
+async def test_deployment_state_offline(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Deployment is offline when desired is 0 and no live replicas exist."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json())}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    async with db() as sess:
+        dep = (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == "pd")
+            )
+        ).one()
+    assert dep.state == PilotDeploymentState.offline.value
