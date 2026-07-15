@@ -13,6 +13,7 @@ from first_common.schema.pilot import AddressInfo, PilotRuntimeConfig
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import PilotConfig
 
+from ..database import models as db
 from .certmanager import generate_server_cert
 
 _READY_SUFFIX = ".ready.json"
@@ -40,7 +41,7 @@ class PilotSubmitter:
         self.ca_crt = ca_crt
         self.ca_key = ca_key
 
-    async def submit(self, pilot_job: PilotJob) -> JobSubmitResult:
+    async def submit(self, pilot_job: PilotJob | db.PilotJob) -> JobSubmitResult:
         pc = self.pilot_config
         name = pilot_job.name
         scheduler_name = f"{pc.job_name_prefix}{name}"
