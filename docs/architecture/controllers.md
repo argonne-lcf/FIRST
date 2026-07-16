@@ -1,6 +1,5 @@
 # Controller Framework
 
-
 FIRST allows admins to declaratively configure models with access controls,
 routing policies, and multi-cluster HPC deployments.  The controllers work
 continuously in the background to ensure that these deployments are enacted and
@@ -65,48 +64,15 @@ Our rule, applied uniformly across the codebase:
 > reads fresh state and tries again.
 
 This is just SQLAlchemy core/ORM — no helper class needed.
-
-```python
-# Pattern A: ORM update with premise check
-async def advance_to_running(sess: AsyncSession, job_id: int) -> bool:
-    result = await sess.execute(
-        sa.update(PilotJob)
-        .where(
-            PilotJob.uid == job_id,
-            # premises read earlier in this reconcile:
-            PilotJob.scheduler_state == SchedulerJobState.submitted.value,
-            PilotJob.scheduler_job_id.is_not(None),
-        )
-        .values(
-            scheduler_state=SchedulerJobState.running.value,
-        )
-    )
-    if result.rowcount == 0:
-        # Re-read so the log line names *which* premise failed.
-        current = await sess.get(PilotJob, job_id)
-        logger.info(
-            "advance_to_running stale for job %d: "
-            "state=%r scheduler_job_id=%r (expected submitted/not-null)",
-            job_id, current and current.state,
-            current and current.scheduler_job_id,
-        )
-        return False
-    return True
-```
-
 Notes on premised updates:
 
-- **Log what failed, don't raise.** A stale update is a normal, expected event
-  (the whole design assumes it). Treating it as an exception loses the most
-  useful piece of diagnostic information — which premise was wrong.
+- **Log what failed, don't raise.**
 - **One writer per field.** If two controllers need to contribute info to the
   same logical concept, give them distinct columns (or a relation table they
-  each own exclusively). Premised updates are a safety net, not a license for
-  shared writers.
+  each own exclusively).
 - **Don't write back unchanged values.** include `IS DISTINCT FROM` checks for
 every field you're updating so an unchanged row doesn't fire the notify trigger
-and re-wake the loop. (See [Notification feedback
-loops](#notification-feedback-loops).)
+and re-wake the loop.
 
 ### Mutual exclusion within the manager
 
@@ -330,7 +296,7 @@ class PilotJobController(Controller):
         job = await sess.get(PilotJob, uid)
         if job is None:
             return  # deleted out from under us
-        if job.scheduled_deletion:
+        if job.scheduled_deletion_at:
             await self._terminate(sess, job)
             return
         if job.state == SchedulerJobState.pending_submit.value:
@@ -388,8 +354,8 @@ soft-delete+sweep pattern across resources that are soft-deletable.
 
 Flow:
 
-1. Controller decides to `UPDATE ... SET scheduled_deletion = true`.
-2. The owning controller's `list_actionable` includes `scheduled_deletion =
+1. Controller decides to `UPDATE ... SET scheduled_deletion_at = now()`.
+2. The owning controller's `list_actionable` includes `scheduled_deletion_at =
    true` rows. On reconcile, it performs cleanup (terminate job, send
    stop signal to replica) and then sets `deleted_at = now()`.
 3. A **retention sweeper** (a small `Worker`) runs every
@@ -486,8 +452,6 @@ controller adds one asyncio task and one SQL predicate. Splitting a fat
 controller into focused ones makes each easier to test, reason about, and
 restart on failure without disturbing the others.
 
-### Tracing model start lifecycle
-
 Before diving into the controller details, let's trace through the stages involved from "cold power-on" to "model is live":
 
 1. An AutoScaler sets desired_replicas=1 on a PilotDeployment
@@ -499,26 +463,17 @@ Before diving into the controller details, let's trace through the stages involv
 7. The Replica Placement Controller finally sees that the resources are available and the Replica is placed onto the Pilot Job
 8. The Pilot Replica Status Observer discovers that the replica has started successfully and populates the model_url
 9. The Router Config Controller sees the deployment with a live replica and updates the global router configuration.
-10. The APIServer reacts to the router change notification and updates its in-memory LiteLLM Router structure to proxy inference traffic to the new Replica.
+10. The APIServer reacts to the router change notification and updates its in-memory Router structure to proxy inference traffic to the new Replica.
 
 The LISTEN/NOTIFY layer ensures that end-to-end startup proceeds faster than it would with 11 independent sleep/polling loops.
 
-!!! info "Implementation status"
-    The Health Observer, PilotJob Observer, Router Config
-    Observer, and Retention Sweeper are implemented. The Router Config
-    Observer is not yet registered in the controller manager. The
-    remaining controllers below are design specifications.
 
-### Observer controllers
-
-These read external systems and write to Postgres.
-
-#### Health Observer
+### Health Observer
 - Polls each `Cluster`'s and `StaticDeployment`'s configured `health_check`
 endpoint via `perform_health_check`.
 - Postgres write: `<ResourceCls>.health` (only on transition).
 
-#### Router Config Observer
+### Router Config Observer
 - Interface to [data plane](request-routing.md): the router config is
 published by the control plane and consumed by the apiserver workers of the data plane.
 - Watches all of: `pilot_deployment`, `static_deployment`,
@@ -536,7 +491,7 @@ published by the control plane and consumed by the apiserver workers of the data
   in-memory LiteLLM router on change.
 - The rebuilt config excludes:
   - Deployments whose cluster has `maintenance_notice` set.
-  - Replicas in `pending`, `terminated`, or with `scheduled_deletion`.
+  - Replicas in `pending`, `terminated`, or with `scheduled_deletion_at`.
   - Replicas whose parent `PilotJob.manager_health != healthy`.
 - The router config is keyed on `Model.name` and provides the full map of:
     - Model aliases: models may declare multiple non-overlapping alias names
@@ -544,7 +499,7 @@ published by the control plane and consumed by the apiserver workers of the data
     - Live deployment endpoints and corresponding routing parameters
     - Access Group information for pre-flight authorization
 
-#### PilotJob Observer
+### PilotJob Observer
 
 The PilotJob observer reads state from the cluster's job queue and discovers
 pilot job manager endpoints.
@@ -570,7 +525,7 @@ These jobs require manager endpoint discovery.  If there is at least one actiona
 - Use `PilotSubmitter.list_ready_endpoints()` to list the readyfiles that currently exist.  Intersect the existing set with the set of actionable jobs: any jobs in this intersection are ready to have `manager_url` updated.
 - For each of the ready jobs, use `PilotSubmitter.get_endpoint()` to discover the job's `AddressInfo`.  Log the discovered info and UPDATE the `AddressInfo.base_url` on `PilotJob.manager_url` to store the discovered endpoint.
 
-#### Pilot Replica Observer
+### Pilot Replica Observer
 - `list_actionable` (Postgres): `PilotJob` where `state = running` AND `manager_url IS NOT NULL`.
 - Per job: calls `GET /status` on the pilot manager.
   - Postgres writes (premised, only on change): `PilotJob.resources`,
@@ -598,7 +553,7 @@ update `consecutive_launch_failures` (incrementing per failed or timed-out repli
 - Calculate and write `PilotDeployment.state` as the aggregated `PilotDeploymentState` based on
 live replica runtime states and the controller state (desired replica count, recent launch failures)
 
-#### Inflight Count Observer
+### Inflight Count Observer
 
 Cron job: every ~15 minutes use
 `AdmissionController.repair_orphaned_zsets()` to remove orphaned members of the inflight sorted sets.
@@ -608,83 +563,68 @@ Redis; restoring from stale backup; future development introducing buggy TTLs,
 etc...).  By recounting, fixing, and alarming on detected drift, we add a layer
 of defense to what should otherwise remain consistent on its own.
 
-### Lifecycle controllers
 
-#### PilotJob Controller (`table_name = "pilot_job"`)
+### PilotJob Controller
 - `list_actionable`:
   ```sql
   SELECT uid FROM pilot_job
    WHERE (reconcile_retry_at IS NULL OR reconcile_retry_at < now())
      AND (deleted_at IS NULL)
      AND (
-         scheduled_deletion = true
+         scheduled_deletion_at IS NOT NULL
          OR state NOT IN ('queued', 'starting', 'running')
          OR (idle_since IS NOT NULL)
          OR (manager_health = 'unhealthy')
      );
   ```
 - `reconcile`:
-  1. If `scheduled_deletion`: terminate via scheduler, set
+  1. If `scheduled_deletion_at`: terminate via scheduler, set
      `state = terminated`, set `deleted_at = now()`. (Cascading
-     `scheduled_deletion` to assigned replicas is the Replica
+     `scheduled_deletion_at` to assigned replicas is the Replica
      Reconciler's job — it picks up replicas whose parent job is in a
      terminal or deleting state.)
-  2. If state is terminal: set `scheduled_deletion` and return.
+  2. If state is terminal: set `scheduled_deletion_at` and return.
   3. If `idle_since` exceeds the cluster's threshold: set
-     `scheduled_deletion = true` and return — the next reconcile handles
+     `scheduled_deletion_at = now()` and return — the next reconcile handles
      teardown.
   4. If manager has been unhealthy (control APIs not responding with 200s) past debounce: set
-     `scheduled_deletion = true` and return.
+     `scheduled_deletion_at = now()` and return.
   5. If `state = pending_submit`: check cluster's pilot_system
      `max_concurrent_jobs` and `max_num_nodes`. If all pending/submitted/starting/running jobs are
      under the caps, `PilotSubmitter.submit()`, record `scheduler_job_id`, advance state.
 
 - Writes: `PilotJob.scheduler_state`, `PilotJob.scheduler_job_id`,
-  `PilotJob.scheduled_deletion` (self-set on idle/unhealthy timeout),
+  `PilotJob.scheduled_deletion_at` (self-set on idle/unhealthy timeout),
   `PilotJob.deleted_at`.
 
 
-#### PilotReplica controllers
 
-Split into three focused controllers, all on `table_name = "pilot_replica"`:
+### Pilot Replica Reconciler
 
-##### Replica Reconciler
-- **Sole writer of `PilotReplica.scheduled_deletion`.** All conditions that
-should drain a replica or free its resources funnel through this controller:
-
-— Excess count (desired_count on the deployment currently exceeds the number of replicas)
-- parent job terminal/deleting
-- parent deployment deleting
-- Replica state is terminal, including `error` or `start_timeout` (the replica stopped, but we still have to free the resources of the PilotJob and on-node ReplicaManager and mark it for deletion)
-- Other controllers signal intent through their own fields (e.g.
-`PilotJob.scheduler_state`/`scheduled_deletion`); the Replica Reconciler reads
-those and writes `scheduled_deletion` on the replicas.
-
+Sole writer of `PilotReplica.scheduled_deletion_at` and inserter of new PilotReplica rows.
+All conditions that should drain a replica or free its resources funnel through this controller.
 The reconciler drives observed count toward `desired_replicas`.
 
+The reconciler reads all entries from `PilotDeployment`, fetching related
+`PilotReplica`s and their assigned `PilotJob`s. It wakes on
+`PilotDeployment.desired_replicas` changes. Filter for deployments where
+`reconcile_retry_at` is null/past.
 
-`list_actionable`:
-  - Any deployment where `desired_replicas` differs from
-    `count(replicas where deleted_at IS NULL)`.
-  - Any non-terminal replica whose parent `PilotJob` is in a terminal
-    state or has `scheduled_deletion = true`.
-  - Any non-terminal replica whose parent `PilotDeployment` has
-    `scheduled_deletion = true`.
-  - Any non-terminal replica with `state = launching` AND
-    `placed_at < now() - launching_timeout`.
-  - Any non-terminal replica observed unhealthy past its debounce
-    window (read from the per-replica status the observer maintains).
+Load each deployment + its replicas (+ each replica's `pilot_job` state).
+For each replica in the deployment that matches one of the following drain predicates, set `scheduled_deletion_at = now()` if not already set:
 
+- Parent `PilotJob` is in a terminal state or has `scheduled_deletion_at`.
+- Replica is in a terminal state, including `error` or `start_timeout`. The replica already stopped, but we must still free the resources through the drain pathway.
 
-`reconcile`:
-  - Per deployment with count mismatch:
-    - Too few: INSERT new `PilotReplica` rows in `state=pending` with
-      `pilot_job_name=NULL`. The Replica Placement controller will pick
-      them up.
-    - Too many: pick replicas to drain (prefer `pending` over `running`;
-      among `running`, oldest first), set `scheduled_deletion = true`.
-  - Per individual replica matching one of the drain predicates above:
-    set `scheduled_deletion = true`. The Drainer handles the rest.
+After draining the non-viable replicas above, commit the transaction.
+
+Proceed to scan each PilotDeployment where `desired_replicas` differs from the current number of live/in-flight replicas that aren't soft-deleted or draining:
+
+- If `num_live < desired`, use `PilotReplica.create(deploy.name)` to create `desired - live` new ones.
+- If `live > desired`, pick `live - desired` to drain by priority:
+    - `pending > placed > unhealthy > launching > ready`
+    - tie-break: prefer to drain older replicas first (earlier `started_at`)
+    - UPDATE `scheduled_deletion_at = now()` for the drained replicas.
 
 This controller naturally supports rollouts of updated `PilotDeployments`: when
 admins apply a spec, the running replicas will be stale but continue unaffected.
@@ -693,72 +633,144 @@ replicas over the current capacity.  Then, decreasing the desired count back to
 the baseline causes the older stale replicas to get drained.  This enables a
 zero-downtime rollout.
 
-##### Replica Placement Controller
-`list_actionable`: `PilotReplica` where `state = pending` AND `pilot_job_name IS NULL` AND `scheduled_deletion = false`.
+### Pilot Replica Placement Controller
 
-Listener subscribes to both Replica and Pilot Job tables, because Pilot
-Job Resources becoming available/ready unblocks placing replicas.
+Listener wakes on Replica creation. This Controller does not perform any RPC or
+interact with the outside world; it is solely responsible for scheduling
+PilotReplicas onto PilotJobs and creating new PilotJobs to meet demand up to
+capacity limits.  All logic is internal DB state bookkeeping.
 
-`reconcile`: bin-pack onto an existing `PilotJob` that has free resources. If a
-job fits, then confirm and commit the assignment using
+`list_actionable`: `PilotReplica` where `state = pending` AND `scheduled_deletion_at IS NULL`.
+
+Extract each Replica's `created_at` and `gpus_per_node` from parent `PilotDeployment.launch_spec`.
+Skip the replica if it's not pending or is now draining.
+
+Sort the `pending` Replicas using an effective submit time formula:
+`t_eff = created_at − BETA * gpus_per_node`, ascending.
+`BETA` is a hard-coded module-level constant equal to `timedelta(minutes=5)`.
+It means that an 8-GPU job is treated as if submitted 40 minutes earlier than it was.
+When many Replicas are created within a ~40 minute window, larger replicas get a head
+start to facilitate bin packing efficiency.  At the same time, this heuristic ensures that
+smaller replicas that have been waiting a long time do not starve.
+Multi-node replicas do not get priority over single-node replicas.
+
+Reconcile handles the pending replicas in the above `t_eff` order to balance
+fairness and sizing priority.  If the Replica is `pending`, attempt to bin-pack
+it onto an existing `PilotJob` with enough free resources.
+
+The resource claim data type (PilotJob.claimed_gpu_ids) is `list[tuple[int, int]]`:
+each element is `(host_index, gpu_index)`.  The full resource inventory on a `PilotJob`
+is `{(node, gpu) for node in range(job.num_nodes) for gpu in range(job.gpus_per_node)}`.
+
+The free GPUs on a PilotJob are therefore obtainable via:
+
+```python
+inventory = {(node, gpu) for node in range(job.num_nodes) for gpu in range(job.gpus_per_node)}
+used = set(pilot_job.claimed_gpu_ids)
+free = sorted(inventory - used)
+```
+
+Any `PilotJob` that is in an active/in-flight state (not `exiting` or `gone`) and does not have
+`scheduled_deletion_at` is eligible for placement. This means that replicas can be immediately placed onto
+pending `PilotJobs` before they begin running.
+
+Placement rules:
+
+- Use PilotDeployment.launch_spec (a JSONB-encoded `PilotLaunchSpec`) to determine the replica footprint `num_nodes` and `gpus_per_node`
+- If `num_nodes >= 2`, the replica requires a dedicated multi-node pilot job all to itself.  No bin-packing.
+- If `num_nodes == 1`, the replica can be placed into any single-node PilotJob with free GPU resources.
+- GPUs must be assigned contiguously (a 4 GPU replica can use GPU IDs {4,5,6,7} but not {3,5,6,7})
+- Use **Best-fit node** selection: when placing any replica, choose the node with
+the fewest free GPUs that still fits it (exact fit is ideal). This keeps small
+replicas consolidated on partially-full nodes.
+
+If the Replica fits in any job, confirm the assignment using
 `PilotJob.assign_replica()`.  This re-reads the PilotJob using `SELECT ... FOR
 UPDATE` and ensures that no invariant is violated during the Replica placement.
+Update the Replica state from `pending` to `placed` and commit the DB transaction.
+
+If the Replica cannot be placed in any existing `PilotJob`:
+
+1. Determine if there is headroom in the cluster to create the necessary job: the total number of active pilot jobs
+must not exceed `Cluster.pilot_system.max_concurrent_jobs` and the sum of reserved `num_nodes` must not
+exceed `Cluster.pilot_system.max_num_nodes`.
+2. If there is headroom, use `PilotJob.create()` to create the new pending job. `num_nodes` is matched to the
+replica's `num_nodes`.  `gpus_per_node` and `walltime_min` are obtained from the cluster's `PilotConfig`.
+3. Immediately place the replica on the new job if it could be created, using the same transaction logic as above.
+Otherwise, write write `state_message = 'AT_CAPACITY'` onto the Replica, leaving it pending for the next resync loop.
+
+
+### Pilot Replica Launch Controller
+
+This controller launches scheduled replicas (`state = placed`) onto PilotJobs
+once they are running and available.
+
+Listener wakes on Replica and Pilot Job state transitions,
+because Pilot Job Resources becoming available/ready unblocks launching replicas.
+A multi-table wake is enabled via `extra_wake_tables`.
+
+`list_actionable`: `PilotReplica` where:
+
+- state is `placed` (successfully mapped to a PilotJob by previous controller)
+- scheduled_deletion_at is NULL
+- not in reoncile cooldown
+- parent pilot_job.scheduler_state = 'running' and manager_url is not null
 
 After the PilotReplica->PilotJob assignment has committed, then call
 `POST /start-replica` on the pilot manager and update `state= placed`.
 
-If the API call fails, roll back the assignment with
+Perform the API call with built-in timeout and retry.
+
+- If the API call fails with a ReplicaStartError code, increment `PilotDeployment.consecutive_launch_failures` and update the replica state to `error` with a `state_message`
+that explains what went wrong. The reconciler will drain/free its resources.
+- If the API call failed with 409 CONFLICT, this can be interpreted as a retry of a successful
+operation.  Accept the error, verify the replica was actually placed with `GET /status`, and move on successfully.
+- Any network or other 500 error should be logged and raised so that reconcile will cooldown and retry automatically, without penalizing the deployment or draining the replica.
+
+network or 500 error, raise an error  roll back the assignment with
 `PilotJob.unassign_replica()` and increment
 `PilotDeployment.consecutive_launch_failures`.
 
-*Recovery from partial failure 1*: if `assign_replica()` commits, `start-replica` fails, and
-`unassign_replica()` never rolls back due to crash, then the PilotReplica will be left in
-`state=pending` with the committed resource assignment.  Retry `start-replica` with the same
-resource placement.
+       `POST /start-replica` (`ReplicaStartRequest`); on success set
+       `state=placed` (premised on `state=pending`); on failure
+       `PilotJob.unassign_replica` + increment
+       `PilotDeployment.consecutive_launch_failures`.
+
+*Recovery from partial failure 1*: if `assign_replica()` commits,
+`start-replica` fails, and `unassign_replica()` never rolls back due to crash,
+then the PilotReplica will be left in `state=pending` with the committed
+resource assignment.  The next reconcile will retry `start-replica` with the
+same resource placement.
 
 *Recovery from partial failure 2:* If `start-replica` succeeded but the
 DB write of `state=placed` failed, the next reconcile sees an unplaced replica
 with a resource assignment and attempts to place it on the same PilotJob with
 the same resource assignment.  If placed on the same pilot job, the Control API
 will raise a `409 CONFLICT` and this can be interpreted as "already succeeded;
-Replica is placed and running".
+Replica is placed and running". Accept this error as a good sign, verify the
+Replica is placed with the `GET /status` API, and continue.
 
 *Recovery from partial failure 3:* Suppose `start-replica` succeeded on the backend but the
 response failed to reach the controller and `unassign_replica()` was called
 erroneously.  On the second reconcile, the PilotReplica is placed on a different pilot job, leaving the
 previously launched Replica as an **unregistered orphan** that occupies resources on the first PilotJob.
 This orphan will [be reaped by the Replica Observer](#pilot-replica-observer) to address the resultant
-resource leak.
+resource leak. The Placement Controller is not concerned with the orphans.
 
-If we end up with 1 or more Replicas that could not be placed in any existing `PilotJob`:
 
-- Calculate the aggregate resource demand of the unplaceable replicas (how many single node pilots and multinode pilots would satisfy the demand). Single node models bin-pack in a single-node pilot.  Multi-node models need dedicated multi-node jobs.
-- Look at the headroom in the cluster: how many nodes are reserved by existing `PilotJobs` versus the limit
-`Cluster.pilot_system.max_num_nodes`.  Consider pending/queued/starting/running jobs here.
-- If there is headroom, create as many `PilotJobs` as possible to satisfy the demand while staying within the headroom.
-- PilotJobs are `INSERT`ed with the resource requirements and `state =
-pending_submit`.  PilotReplicas that can't fit stay `pending`. On the next pass,
-once the new job is `running` with capacity, it gets placed.
-- If there is no current or future capacity, write `state_message = 'AT_CAPACITY'`,
-leave pending. The full-resync loop picks it up periodically until capacity opens.
+Emit structured logs to track replica placement and launch events.
 
-Emit structured logs to track replica placement events.  The DB records are used
-for _live_ state and will not persist e.g. the assigned resources after the
-replica has stopped.
+### Pilot Replica Drainer
 
-##### Replica Drainer
+Does not write `scheduled_deletion_at` — only consumes it. The Replica Reconciler is the sole writer of that field; see above.
 
-Does not write `scheduled_deletion` — only consumes it. The Replica Reconciler is the sole writer of that field; see above.
-
-Replicas with `scheduled_deletion = true` and `state == ready` must wait for both of these conditions before delete
+Replicas with `scheduled_deletion_at` and `state == ready` must wait for both of these conditions before delete
 eligible:
 
-1. At least ~20 seconds after `scheduled_deletion` is flipped on (apiserver stops advertising the replica)
-2. Number of inflight requests to the backend is zero OR it has been more than 5 minutes since `scheduled_deletion` (backstop)
+1. At least ~20 seconds after `scheduled_deletion_at` is flipped on (apiserver stops advertising the replica)
+2. Number of inflight requests to the backend is zero OR it has been more than 5 minutes since `scheduled_deletion_at` (backstop)
 
-Note: might want to replace `scheduled_deletion: bool` by a `scheduled_deletion_at: datetime` timestamp, so that we can track the above logic naturally.  Then `scheduled_deletion` can be recovered as an `@property`.
-
-Replicas with `scheduled_deletion = true` and any state other than `ready` are **immediately eligible** for deletion.
+Replicas with `scheduled_deletion_at` and any state other than `ready` are **immediately eligible** for deletion.
 
 Deletion process:
 
@@ -768,8 +780,8 @@ Deletion process:
     - Call `PilotJob.unassign_replica()` to free the resources tracked in the DB.
     - Set `deleted_at`: the replica has now been cleaned and is ready for the retention sweeper.
 
-#### Replica pipeline summary
 
+To summarize the Replica control pipeline:
 ```
 Autoscaler (writes PilotDeployment.desired_replicas)
         |
@@ -780,7 +792,7 @@ Replica Reconciler (inserts pending replicas / marks excess for drain)
 Replica Placement (calls start-replica + sets pilot_job_name FK, or creates new PilotJob)
         |
         v
-Replica Drainer (handles scheduled_deletion: drain from router, stop-replica, mark terminated)
+Replica Drainer (handles scheduled_deletion_at: drain from router, stop-replica, mark terminated)
         |
         v
 Retention Sweeper (hard-deletes after retention_days)
@@ -789,27 +801,27 @@ Retention Sweeper (hard-deletes after retention_days)
 Each arrow is exactly one controller hand-off via Postgres state. Failures
 at any stage are recovered by the level-triggered loop.
 
-#### Pilot Autoscaler Controller (`table_name = "pilot_deployment"`)
+### Pilot Autoscaler Controller (`table_name = "pilot_deployment"`)
 - **Sole writer of `PilotDeployment.desired_replicas`.** This is true
   even when autoscaling is technically "disabled" for the deployment —
   the Autoscaler still runs and is the only place that pins
   `desired_replicas` for unhealthy or terminating deployments. Other
-  controllers signal intent via separate fields (`scheduled_deletion`,
+  controllers signal intent via separate fields (`scheduled_deletion_at`,
   `consecutive_launch_failures`); the Autoscaler is what reads those
   and writes `desired_replicas`.
 
 - Reconcile order:
-  1. If `scheduled_deletion = true`, set `desired_replicas = 0`. Done.
-  2. If `consecutive_launch_failures` exceeds threshold, set
+  1. If `consecutive_launch_failures` exceeds threshold, set
      `desired_replicas = 0`. Done.
-  3. Otherwise, if autoscaling is enabled, sample demand
+  2. Otherwise, if autoscaling is enabled, sample demand
      from Redis and compute target `desired_replicas` per the
      deployment's `scaling_strategy`.
-  4. Otherwise (autoscaling disabled, healthy, not deleting), leave
+  3. Otherwise (autoscaling disabled, healthy, not deleting), leave
      `desired_replicas` at the operator-set value.
-- All writes are premised on the inputs above (`scheduled_deletion`,
-  `consecutive_launch_failures`, prior `desired_replicas`) so a
-  concurrent operator edit through the API can't be silently clobbered.
+
+- All writes are premised on the inputs above (`consecutive_launch_failures`,
+prior `desired_replicas`) so a concurrent operator edit through the API can't be
+silently clobbered.
 
 The demand threshold strategy pseudocode:
 
@@ -831,15 +843,13 @@ every 10s:
               scale down
 ```
 
-#### Retention Sweeper
+### Retention Sweeper
 - One small `Worker`, runs every ~5 minutes.
 - `DELETE FROM <each table>` where `deleted_at IS NOT NULL` and the
   retention window has elapsed.
 - Logs the count per table on each pass.
 
-### Alerting
-
-#### Health Alert Controller
+### Health Alert Controller
 - Watches table changes to `Cluster`, `PilotJob`, `StaticDeployment`,
   `PilotReplica`, `PilotDeployment`, plus periodic checks for things not
   represented as `ResourceRow`s:
@@ -853,7 +863,7 @@ every 10s:
 - Owns its own table `alert_state(resource_table, resource_id,
   last_alerted_status, last_alerted_at)`.
 
-##### Debouncing and flap suppression
+#### Debouncing and flap suppression
 
 Two windows interact:
 
