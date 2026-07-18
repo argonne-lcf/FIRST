@@ -93,6 +93,7 @@ def _make_pilot_job(name: str) -> PilotJob:
         manager_health=HealthCheckResult.unknown,
         resources=PilotResources(hosts=[]),
         assigned_replicas=[],
+        claimed_gpu_ids=[],
         walltime_min=120,
         num_nodes=2,
         gpus_per_node=4,

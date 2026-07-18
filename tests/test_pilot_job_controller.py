@@ -132,7 +132,7 @@ async def _insert_pilot_job(
     cluster_name: str = "polaris",
     scheduler_job_id: str | None = None,
     scheduler_state: SchedulerJobState = SchedulerJobState.running,
-    scheduled_deletion: bool = False,
+    scheduled_deletion_at: datetime | None = None,
     deleted_at: datetime | None = None,
     idle_since: datetime | None = None,
     manager_health: str = HealthCheckResult.unknown.value,
@@ -145,7 +145,7 @@ async def _insert_pilot_job(
         cluster_name=cluster_name,
         scheduler_job_id=scheduler_job_id,
         scheduler_state=scheduler_state.value,
-        scheduled_deletion=scheduled_deletion,
+        scheduled_deletion_at=scheduled_deletion_at,
         deleted_at=deleted_at,
         idle_since=idle_since,
         manager_health=manager_health,
@@ -178,7 +178,7 @@ async def test_list_actionable(
     async with db.begin() as sess:
         await _seed_cluster(sess)
         uid_sched_del = await _insert_pilot_job(
-            sess, "sched-del", scheduled_deletion=True
+            sess, "sched-del", scheduled_deletion_at=NOW
         )
         uid_pending = await _insert_pilot_job(
             sess, "pending", scheduler_state=SchedulerJobState.pending_submit
@@ -202,7 +202,7 @@ async def test_list_actionable(
         await _insert_pilot_job(
             sess,
             "deleted",
-            scheduled_deletion=True,
+            scheduled_deletion_at=NOW,
             deleted_at=NOW,
         )
         # NOT actionable: retry in the future
@@ -284,7 +284,7 @@ async def test_scheduled_deletion_terminates_running_job(
             sess,
             "job-to-kill",
             scheduler_job_id="100.pbs",
-            scheduled_deletion=True,
+            scheduled_deletion_at=NOW,
         )
 
     controller = _make_controller(db, ca_pair)
@@ -309,7 +309,7 @@ async def test_scheduled_deletion_without_scheduler_job_skips_terminate(
             sess,
             "never-submitted",
             scheduler_state=SchedulerJobState.pending_submit,
-            scheduled_deletion=True,
+            scheduled_deletion_at=NOW,
         )
 
     controller = _make_controller(db, ca_pair)
@@ -335,7 +335,7 @@ async def test_scheduled_deletion_skips_terminate_when_already_terminal(
             "already-gone",
             scheduler_job_id="200.pbs",
             scheduler_state=SchedulerJobState.gone,
-            scheduled_deletion=True,
+            scheduled_deletion_at=NOW,
         )
 
     controller = _make_controller(db, ca_pair)

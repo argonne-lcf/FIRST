@@ -18,6 +18,7 @@ from first_common.schema.pilot import (
     ReplicaInfo,
 )
 from first_common.schema.types import (
+    GpuClaim,
     HealthCheckResult,
     PilotDeploymentState,
     ReplicaState,
@@ -34,6 +35,7 @@ from first_gateway.database.models import (
     PilotJob,
     PilotReplica,
 )
+from first_gateway.services.pilot_control import PilotControlClient
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -77,6 +79,7 @@ def _replica_info(
         served_model_name=served_model_name,
         state_message=state_message,
         started_at=started_at,
+        resources=[GpuClaim(hostname="foo", gpu_ids=["0", "1"])],
     )
 
 
@@ -103,7 +106,9 @@ def _make_observer(
     cs.redis_repo = AsyncMock()
     observer = PilotReplicaObserver.__new__(PilotReplicaObserver)
     Worker.__init__(observer, "pilot-replica-observer", cs)
-    observer._http = httpx.AsyncClient(transport=transport)
+    client = PilotControlClient.__new__(PilotControlClient)
+    client._client = httpx.AsyncClient(transport=transport)
+    observer.client = client
     return observer
 
 

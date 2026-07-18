@@ -23,7 +23,7 @@ class ReplicaStartRequest(BaseModel):
     name: str
     deployment_name: str
     launch_spec: PilotLaunchSpec
-    resources: list[GpuClaim]
+    gpu_indices: list[tuple[int, int]]
 
 
 class ReplicaInfo(BaseModel):
@@ -37,6 +37,7 @@ class ReplicaInfo(BaseModel):
     started_at: datetime
     state_message: str
     served_model_name: str
+    resources: list[GpuClaim]
 
 
 class AddressInfo(BaseModel):

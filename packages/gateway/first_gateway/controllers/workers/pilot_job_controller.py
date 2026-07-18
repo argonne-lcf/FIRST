@@ -38,7 +38,7 @@ class PilotJobController(Controller):
             ),
             PilotJob.deleted_at.is_(None),
             sa.or_(
-                PilotJob.scheduled_deletion.is_(True),
+                PilotJob.scheduled_deletion_at.is_not(None),
                 PilotJob.scheduler_state.not_in(
                     [
                         SchedulerJobState.queued.value,
@@ -152,7 +152,7 @@ class PilotJobController(Controller):
                 sa.update(PilotJob)
                 .where(
                     PilotJob.uid == job.uid,
-                    PilotJob.scheduled_deletion.is_(True),
+                    PilotJob.scheduled_deletion_at.is_not(None),
                     PilotJob.deleted_at.is_(None),
                 )
                 .values(
@@ -173,10 +173,10 @@ class PilotJobController(Controller):
                 sa.update(PilotJob)
                 .where(
                     PilotJob.uid == job.uid,
-                    PilotJob.scheduled_deletion.is_(False),
+                    PilotJob.scheduled_deletion_at.is_(None),
                     *extra_premises,
                 )
-                .values(scheduled_deletion=True)
+                .values(scheduled_deletion_at=datetime.now(timezone.utc))
             )
             if result.rowcount == 0:  # type: ignore[attr-defined]
                 raise StaleReconcile(

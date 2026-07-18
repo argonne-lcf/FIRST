@@ -66,6 +66,10 @@ class Controller(Worker):
     resync_interval: ClassVar[float] = 30.0
     max_backoff_seconds: ClassVar[float] = 3600.0
 
+    # Additional tables (besides `table_name`) whose changes should shorten
+    # the resync wait
+    extra_wake_tables: ClassVar[list[str]] = []
+
     def __init__(
         self,
         name: str,
@@ -92,7 +96,14 @@ class Controller(Worker):
 
     async def run(self) -> None:
         hb = self.register_heartbeat("reconcile")
-        wake = self._dispatcher.event_for(self.table_name) if self._dispatcher else None
+        wake_events = (
+            [
+                self._dispatcher.event_for(t)
+                for t in (self.table_name, *self.extra_wake_tables)
+            ]
+            if self._dispatcher
+            else []
+        )
         last_tick_end = monotonic()
 
         while True:
@@ -107,15 +118,26 @@ class Controller(Worker):
                 (last_tick_end - tick_start) / self.resync_interval
             )
 
-            if wake:
-                try:
-                    await asyncio.wait_for(wake.wait(), timeout=self.resync_interval)
-                except asyncio.TimeoutError:
-                    pass
-                finally:
-                    wake.clear()
-            else:
-                await asyncio.sleep(self.resync_interval)
+            await self._wait_for_wake(wake_events)
+
+    async def _wait_for_wake(self, wake_events: list[asyncio.Event]) -> None:
+        """Sleep until any watched table notifies or the resync interval elapses."""
+        if not wake_events:
+            await asyncio.sleep(self.resync_interval)
+            return
+
+        waiters = [asyncio.ensure_future(ev.wait()) for ev in wake_events]
+        try:
+            await asyncio.wait(
+                waiters,
+                timeout=self.resync_interval,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for w in waiters:
+                w.cancel()
+            for ev in wake_events:
+                ev.clear()
 
     async def _tick(self, hb: Heartbeat) -> None:
         async with self.client_state.db_sessionmaker() as sess:

@@ -27,7 +27,6 @@ from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.pilot import AddressInfo, PilotJobStatus, PilotResources
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import (
-    GpuClaim,
     HealthCheckParams,
     HealthCheckResult,
     PilotConfig,
@@ -177,6 +176,7 @@ def _make_pilot_job(name: str) -> PilotJob:
         manager_url="",
         manager_health=HealthCheckResult.unknown,
         resources=PilotResources(hosts=[]),
+        claimed_gpu_ids=[],
         assigned_replicas=[],
         walltime_min=60,
         num_nodes=1,
@@ -279,9 +279,6 @@ async def test_replica_lifecycle(
     async with _build_mtls_client(
         ca_pair, gateway_client_cert, workdir, base_url
     ) as client:
-        # Pick the first GPU advertised by query_resources().
-        status0 = PilotJobStatus.model_validate((await client.get("/status")).json())
-        host0 = status0.resources.hosts[0]
         start_req = {
             "name": "r0",
             "deployment_name": "depl",
@@ -297,11 +294,7 @@ async def test_replica_lifecycle(
                 max_startup_sec=20,
                 health_check=HealthCheckParams(url="http://localhost/health"),
             ).model_dump(mode="json"),
-            "resources": [
-                GpuClaim(
-                    hostname=host0.hostname, gpu_ids=[host0.gpus[0].index]
-                ).model_dump(mode="json")
-            ],
+            "gpu_indices": [(0, 0)],
         }
         r = await client.post("/start-replica", json=start_req)
         assert r.status_code == 200, r.text

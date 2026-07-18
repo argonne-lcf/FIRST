@@ -1,14 +1,10 @@
 import asyncio
 import logging
-import ssl
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
-import httpx
 import sqlalchemy as sa
 from sqlalchemy.orm import selectinload
 
@@ -21,7 +17,7 @@ from first_common.schema.types import (
 )
 
 from ...database.models import PilotDeployment, PilotJob, PilotReplica
-from ...services.certmanager import generate_client_cert
+from ...services.pilot_control import PilotControlClient
 from ...settings import ClientState
 from ..worker import Worker
 
@@ -116,7 +112,7 @@ class PilotReplicaObserver(Worker):
 
     Writes:
     - PilotJob.{resources, manager_health, manager_unhealthy_since, idle_since}
-    - PilotReplica.{state, state_message, model_url, observed_served_name, started_at}
+    - PilotReplica.{state, state_message, resources, model_url, observed_served_name, started_at}
     - PilotDeployment.{consecutive_launch_failures, state}
 
     Reaps orphan replicas reported by a pilot manager that have no matching
@@ -141,29 +137,7 @@ class PilotReplicaObserver(Worker):
             max_backoff=max_backoff,
             heartbeat_timeout=heartbeat_timeout,
         )
-        self._http = self._build_http_client(client_state)
-
-    @staticmethod
-    def _build_http_client(client_state: ClientState) -> httpx.AsyncClient:
-        settings = client_state.settings
-
-        ctx = ssl.create_default_context(cadata=settings.pilot_ca_crt)
-        ctx.check_hostname = False
-
-        client_crt_pem, client_key_pem = generate_client_cert(
-            cn="pilot-replica-observer",
-            ca_cert_pem=settings.pilot_ca_crt,
-            ca_key_pem=settings.pilot_ca_key.get_secret_value(),
-        )
-
-        with tempfile.TemporaryDirectory(delete=True) as tmpdir:
-            crt_path = Path(tmpdir) / "client.crt"
-            key_path = Path(tmpdir) / "client.key"
-            crt_path.write_text(client_crt_pem)
-            key_path.write_text(client_key_pem)
-            ctx.load_cert_chain(crt_path, key_path)
-
-        return httpx.AsyncClient(verify=ctx, timeout=10.0)
+        self.client = PilotControlClient(client_state, cn="pilot-replica-observer")
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -191,7 +165,7 @@ class PilotReplicaObserver(Worker):
         for job in jobs:
             try:
                 assert job.manager_url is not None
-                status = await self.fetch_status(job.manager_url)
+                status = await self.client.get_status(job.manager_url)
             except Exception:
                 logger.exception(
                     "%s: failed to fetch /status from job %s at %s",
@@ -207,11 +181,6 @@ class PilotReplicaObserver(Worker):
             await self.reap_orphans(job, status.replicas)
 
         await self.update_deployments(deploy_counter)
-
-    async def fetch_status(self, manager_url: str) -> PilotJobStatus:
-        resp = await self._http.get(f"{manager_url}/status")
-        resp.raise_for_status()
-        return PilotJobStatus.model_validate(resp.json())
 
     async def record_unhealthy(self, job: PilotJob) -> None:
         now = datetime.now(timezone.utc)
@@ -339,6 +308,9 @@ class PilotReplicaObserver(Worker):
             if ri.started_at != db_replica.started_at:
                 values["started_at"] = ri.started_at
 
+            if ri.resources and not db_replica.resources:
+                values["resources"] = [r.model_dump(mode="json") for r in ri.resources]
+
             if not values:
                 continue
 
@@ -352,6 +324,7 @@ class PilotReplicaObserver(Worker):
     async def reap_orphans(
         self, job: PilotJob, remote_replicas: list[ReplicaInfo]
     ) -> None:
+        assert job.manager_url is not None
         for ri in remote_replicas:
             # Match on BOTH name and pilot_job_name (even though name is
             # unique), because if same Replica is assigned to a different
@@ -371,17 +344,14 @@ class PilotReplicaObserver(Worker):
 
             logger.warning("Reaping orphan replica %s on job %s", ri.name, job.name)
             try:
-                await self._stop_replica(job.manager_url, ri.name)  # type: ignore[arg-type]
+                resp = await self.client.stop_replica(job.manager_url, ri.name)
+                resp.raise_for_status()
             except Exception:
                 logger.exception(
                     "Failed to stop orphan replica %s on job %s",
                     ri.name,
                     job.name,
                 )
-
-    async def _stop_replica(self, manager_url: str, replica_name: str) -> None:
-        resp = await self._http.post(f"{manager_url}/stop-replica/{replica_name}")
-        resp.raise_for_status()
 
     async def update_deployments(self, counter: DeploymentCounter) -> None:
         successful = [

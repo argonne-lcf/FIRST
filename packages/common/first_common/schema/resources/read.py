@@ -48,7 +48,7 @@ class ResourceMeta(BaseModel):
     kind: str
     name: str = Field(
         min_length=1,
-        max_length=256,
+        max_length=320,  # larger than spec to accomodate generated names
         pattern=r"^[a-zA-Z0-9._\-/]+$",
         examples=["meta-llama/Meta-Llama-3.1-8B"],
     )
@@ -131,7 +131,8 @@ class PilotReplica(ResourceMeta):
 
     pilot_deployment_name: str
     pilot_job_name: str | None
-    used_resources: list[GpuClaim]
+    claimed_gpu_ids: list[tuple[int, int]]
+    resources: list[GpuClaim]
     model_url: str | None
     observed_served_name: str
 
@@ -184,6 +185,7 @@ class PilotJob(ResourceMeta):
     manager_url: str | None
     manager_health: HealthCheckResult
     resources: PilotResources
+    claimed_gpu_ids: list[tuple[int, int]]
     assigned_replicas: list[PilotReplica]
     time_started: datetime | None = None
     idle_since: datetime | None = None

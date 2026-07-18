@@ -3,6 +3,7 @@ import os
 import socket
 import subprocess
 import threading
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, wait
 from concurrent.futures import TimeoutError as FutTimeout
 from enum import Enum
@@ -106,6 +107,7 @@ def query_gpus(hostname: str) -> HostGpus:
     lines = result.stdout.strip().splitlines()
 
     gpus = [info for line in lines if line.strip() and (info := _parse_gpu_row(line))]
+    gpus = sorted(gpus, key=lambda gpu: gpu.index)
     return HostGpus(hostname=hostname, gpus=gpus)
 
 
@@ -152,13 +154,11 @@ class ReplicaManager:
     def __init__(self, config: PilotRuntimeConfig) -> None:
         self.config = config
 
-        self.node_hostnames = discover_hosts(self.config.node_file_env)
+        self.node_hostnames = sorted(discover_hosts(self.config.node_file_env))
         resources = self.query_resources()
 
-        self._inventory = frozenset(
-            (host.hostname, gpu.index) for host in resources.hosts for gpu in host.gpus
-        )
-        if not self._inventory:
+        self._inventory = resources.hosts
+        if not any(host.gpus for host in self._inventory):
             raise RuntimeError("no GPUs discovered; cannot start ReplicaManager")
 
         logger.info(
@@ -188,24 +188,34 @@ class ReplicaManager:
         ]
 
     def _validate_request(
-        self, name: str, resources: list[GpuClaim]
+        self, name: str, gpu_indices: list[tuple[int, int]]
     ) -> list[tuple[str, str]]:
         """
         Validate the parts of a start request that depend ONLY on immutable
         state (inventory + the request itself). Lock-free.
         """
-        requested = self._flatten(resources)
-        if not requested:
+        if not gpu_indices:
             raise BadPilotRequest("replica must request at least one GPU")
 
-        if len(set(requested)) != len(requested):
+        if len(set(gpu_indices)) != len(gpu_indices):
             raise BadPilotRequest(
                 f"duplicate GPU specified in replica {name!r} resources"
             )
 
-        unknown = [r for r in requested if r not in self._inventory]
-        if unknown:
-            raise BadPilotRequest(f"requested GPUs not in pilot inventory: {unknown}")
+        requested: list[tuple[str, str]] = []
+
+        for host_idx, gpu_idx in gpu_indices:
+            if host_idx >= len(self._inventory) or gpu_idx >= len(
+                self._inventory[host_idx].gpus
+            ):
+                raise BadPilotRequest(
+                    f"requested {host_idx=} {gpu_idx=} outside GPUs pilot inventory"
+                )
+
+            hostname = self._inventory[host_idx].hostname
+            gpu_id = self._inventory[host_idx].gpus[gpu_idx].index
+            requested.append((hostname, gpu_id))
+
         return requested
 
     def _allocate_port_locked(self) -> int:
@@ -223,7 +233,16 @@ class ReplicaManager:
         self._used_ports.discard(port)
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
-        requested = self._validate_request(replica.name, replica.resources)
+        requested = self._validate_request(replica.name, replica.gpu_indices)
+
+        host_gpus: dict[str, list[str]] = defaultdict(list)
+        for hostname, gpu_id in requested:
+            host_gpus[hostname].append(gpu_id)
+
+        resources = [
+            GpuClaim(hostname=hostname, gpu_ids=gpu_list)
+            for hostname, gpu_list in host_gpus.items()
+        ]
 
         # Short critical section: reserve name + GPUs + port atomically.
         with self._lock:
@@ -254,7 +273,7 @@ class ReplicaManager:
             r = Replica(
                 name=replica.name,
                 port=port,
-                resources=replica.resources,
+                resources=resources,
                 launch_spec=replica.launch_spec,
                 workdir=workdir,
             )
@@ -263,7 +282,7 @@ class ReplicaManager:
                 "failed to start replica %s; releasing reservation", replica.name
             )
             with self._lock:
-                self._release_locked(replica.name, replica.resources, port)
+                self._release_locked(replica.name, resources, port)
             raise FirstError(f"Failed to start replica: {e}") from e
 
         with self._lock:

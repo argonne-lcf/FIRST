@@ -106,7 +106,7 @@ class PilotJobObserver(Worker):
                     )
                     .values(
                         scheduler_state=SchedulerJobState.gone.value,
-                        scheduled_deletion=True,
+                        scheduled_deletion_at=datetime.now(timezone.utc),
                         deleted_at=datetime.now(timezone.utc),
                     )
                 )

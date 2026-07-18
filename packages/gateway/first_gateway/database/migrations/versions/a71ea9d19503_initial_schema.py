@@ -133,7 +133,7 @@ def upgrade() -> None:
         sa.Column("manager_unhealthy_since", sa.DateTime(timezone=True), nullable=True),
         sa.Column("resources", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
-            "used_resources", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+            "claimed_gpu_ids", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
         sa.Column("time_started", sa.DateTime(timezone=True), nullable=True),
         sa.Column("idle_since", sa.DateTime(timezone=True), nullable=True),
@@ -151,7 +151,7 @@ def upgrade() -> None:
         sa.Column("reconcile_last_error", sa.Text(), nullable=True),
         sa.Column("reconcile_retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("uid", sa.BigInteger(), nullable=False),
-        sa.Column("scheduled_deletion", sa.Boolean(), nullable=False),
+        sa.Column("scheduled_deletion_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("retention_days", sa.Integer(), nullable=False),
         sa.ForeignKeyConstraint(
@@ -283,8 +283,9 @@ def upgrade() -> None:
         sa.Column("pilot_deployment_name", sa.Text(), nullable=False),
         sa.Column("pilot_job_name", sa.Text(), nullable=True),
         sa.Column(
-            "used_resources", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+            "claimed_gpu_ids", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
+        sa.Column("resources", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("model_url", sa.String(), nullable=True),
         sa.Column("observed_served_name", sa.String(), nullable=True),
         sa.Column("state", sa.String(), nullable=False),
@@ -302,7 +303,7 @@ def upgrade() -> None:
         sa.Column("reconcile_last_error", sa.Text(), nullable=True),
         sa.Column("reconcile_retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("uid", sa.BigInteger(), nullable=False),
-        sa.Column("scheduled_deletion", sa.Boolean(), nullable=False),
+        sa.Column("scheduled_deletion_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("retention_days", sa.Integer(), nullable=False),
         sa.ForeignKeyConstraint(

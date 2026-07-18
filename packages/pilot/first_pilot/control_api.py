@@ -87,6 +87,7 @@ class _PilotManager:
                 started_at=r.started_at,
                 state_message=r.state_message,
                 served_model_name=r.launch_spec.served_model_name,
+                resources=r.resources,
             )
             for r in self.replica_manager.get_replicas()
         ]

@@ -716,7 +716,7 @@ A multi-table wake is enabled via `extra_wake_tables`.
 - not in reoncile cooldown
 - parent pilot_job.scheduler_state = 'running' and manager_url is not null
 
-Launch controller builds `self._http = build_pilot_control_client(client_state, cn="replica-drainer")`.
+Launch controller builds `self.client = PilotControlClient(client_state, cn="replica-drainer")`.
 Use the it with `start_replica` helper to invoke
 `POST /start-replica` on the pilot manager, then update `state = launching`.
 
@@ -743,7 +743,7 @@ Does not write `scheduled_deletion_at` — only consumes it. The Replica Reconci
 
 `list_actionable`: `scheduled_deletion_at IS NOT NULL AND deleted_at IS NULL` (retry gate).
 
-Drainer builds `self._http = build_pilot_control_client(client_state, cn="replica-drainer")`.
+Drainer builds `self.client = PilotControlClient(client_state, cn="replica-drainer")`.
 
 Load replica (+pilot_job, +deployment.model_name). Early return if `deleted_at`.
 Replicas with `scheduled_deletion_at` and `state == ready` must wait for eligibility gate:

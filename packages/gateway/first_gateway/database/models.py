@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Self
@@ -20,9 +21,7 @@ from sqlalchemy.orm import (
 from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.base_scheduler import SchedulerJobState
-from first_common.schema.pilot import PilotResources
 from first_common.schema.types import (
-    GpuClaim,
     HealthCheckResult,
     PilotDeploymentState,
     ReplicaState,
@@ -384,14 +383,20 @@ class SoftDeletable:
     """
     Mixin class to support soft-deletion:
 
-    - Flip scheduled_deletion to trigger controller cleanup
+    - Set scheduled_deletion_at to trigger controller cleanup. The moment of the
+      flip is recorded so drain logic can reason about elapsed time.
     - Controller sets `deleted_at` when the resource has cleaned up.
     - sweep_expired() hard-deletes rows where the retention_days has past.
     """
 
-    scheduled_deletion: Mapped[bool] = mapped_column(default=False)
+    scheduled_deletion_at: Mapped[DateTimeOrNone]
     deleted_at: Mapped[DateTimeOrNone]
     retention_days: Mapped[int] = mapped_column(default=7)
+
+    @property
+    def scheduled_deletion(self) -> bool:
+        """scheduled_deletion_at is not None"""
+        return self.scheduled_deletion_at is not None
 
     @classmethod
     async def sweep_expired(cls, sess: AsyncSession) -> int:
@@ -426,7 +431,7 @@ class PilotJob(ResourceRow, SoftDeletable):
     manager_health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
     manager_unhealthy_since: Mapped[DateTimeOrNone]
     resources: Mapped[DictJsonb] = mapped_column(JSONB, default=dict)
-    used_resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    claimed_gpu_ids: Mapped[list[tuple[int, int]]] = mapped_column(JSONB, default=list)
     time_started: Mapped[DateTimeOrNone]
     idle_since: Mapped[DateTimeOrNone]
     walltime_min: Mapped[int]
@@ -439,12 +444,24 @@ class PilotJob(ResourceRow, SoftDeletable):
     )
 
     @classmethod
+    def create(
+        cls, cluster_name: str, walltime_min: int, num_nodes: int, gpus_per_node: int
+    ) -> Self:
+        return cls(
+            name=f"{cluster_name}/pilot-job/{secrets.token_hex(4)}",
+            cluster_name=cluster_name,
+            walltime_min=walltime_min,
+            num_nodes=num_nodes,
+            gpus_per_node=gpus_per_node,
+        )
+
+    @classmethod
     async def assign_replica(
         cls,
         sess: AsyncSession,
         pilot_job_uid: int,
         replica_uid: int,
-        resources: list[GpuClaim],
+        requested_gpus: set[tuple[int, int]],
     ) -> bool:
         job = await sess.scalar(
             sa.select(PilotJob).where(PilotJob.uid == pilot_job_uid).with_for_update()
@@ -456,31 +473,22 @@ class PilotJob(ResourceRow, SoftDeletable):
         )
         assert job is not None and replica_row is not None
 
-        pilot_resources = PilotResources.model_validate(job.resources)
         known_gpus = {
-            (host.hostname, gpu.index)
-            for host in pilot_resources.hosts
-            for gpu in host.gpus
-        }
-        requested_gpus = {
-            (claim.hostname, gpu_id) for claim in resources for gpu_id in claim.gpu_ids
+            (host_idx, gpu_idx)
+            for host_idx in range(job.num_nodes)
+            for gpu_idx in range(job.gpus_per_node)
         }
         if not requested_gpus.issubset(known_gpus):
             raise ValueError(
-                f"PilotJob does not possess requested resources: {requested_gpus - known_gpus}"
+                f"PilotJob does not possess requested GPU IDs: {requested_gpus - known_gpus}"
             )
 
-        used_gpus = {
-            (entry["hostname"], gpu_id)
-            for entry in job.used_resources
-            for gpu_id in entry["gpu_ids"]
-        }
-        if requested_gpus & used_gpus:
+        claimed_gpu_ids = set(job.claimed_gpu_ids)
+        if requested_gpus & claimed_gpu_ids:
             return False
 
-        new_claims = [claim.model_dump() for claim in resources]
-        job.used_resources = job.used_resources + new_claims
-        replica_row.used_resources = new_claims
+        job.claimed_gpu_ids = job.claimed_gpu_ids + sorted(requested_gpus)
+        replica_row.claimed_gpu_ids = sorted(requested_gpus)
         replica_row.pilot_job_name = job.name
         return True
 
@@ -497,26 +505,18 @@ class PilotJob(ResourceRow, SoftDeletable):
             .with_for_update()
         )
         assert job is not None and replica_row is not None
-        assert replica_row.pilot_job_name == job.name
+        if replica_row.pilot_job_name != job.name:
+            raise ValueError(
+                f"Cannot unassign replica from {job.name!r}; currently tied to {replica_row.pilot_job_name!r}"
+            )
 
-        to_remove = {
-            (entry["hostname"], gpu_id)
-            for entry in replica_row.used_resources
-            for gpu_id in entry["gpu_ids"]
-        }
-        new_used = []
-        for entry in job.used_resources:
-            remaining = [
-                gid
-                for gid in entry["gpu_ids"]
-                if (entry["hostname"], gid) not in to_remove
-            ]
-            if remaining:
-                new_used.append({"hostname": entry["hostname"], "gpu_ids": remaining})
+        to_remove = set(replica_row.claimed_gpu_ids)
+        job.claimed_gpu_ids = sorted(set(job.claimed_gpu_ids) - to_remove)
 
-        job.used_resources = new_used
-        replica_row.used_resources = []
-        replica_row.pilot_job_name = None
+        replica_row.claimed_gpu_ids = []
+
+        # Let's preserve the linkage to the pilot job for historical tracking.
+        # replica_row.pilot_job_name = None
 
 
 class PilotReplica(ResourceRow, SoftDeletable):
@@ -527,7 +527,15 @@ class PilotReplica(ResourceRow, SoftDeletable):
     pilot_job_name: Mapped[str | None] = mapped_column(
         sa.ForeignKey("pilot_job.name", ondelete="SET NULL"), index=True
     )
-    used_resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+
+    # Claimed GPU IDs are locked up *right now*; clears out when Replica stops.
+    # Not necessary to surface in Read schema.  Internal placement bookeeping.
+    claimed_gpu_ids: Mapped[list[tuple[int, int]]] = mapped_column(JSONB, default=list)
+
+    # Resources are the snapshot of hostname and GPU IDs assigned at launch.  Persists
+    # even after the Replica has stopped. Surfaced in Read schema.
+    resources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+
     model_url: Mapped[str | None]
     observed_served_name: Mapped[str | None]
 
@@ -542,6 +550,14 @@ class PilotReplica(ResourceRow, SoftDeletable):
     pilot_job: Mapped[PilotJob | None] = relationship(
         back_populates="assigned_replicas", lazy="raise"
     )
+
+    @classmethod
+    def create(cls, deployment_name: str) -> Self:
+        return cls(
+            name=f"{deployment_name}/replica/{secrets.token_hex(4)}",
+            pilot_deployment_name=deployment_name,
+            state=ReplicaState.pending.value,
+        )
 
     @property
     def backend_id(self) -> str:

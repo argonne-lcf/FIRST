@@ -161,6 +161,7 @@ class PilotConfig(BaseModel):
     pilot_max_unhealthy_time_min: int = 5
     max_concurrent_jobs: int = 100
     max_num_nodes: int = 64
+    gpus_per_node: int = 8
     queue: str
     account: str
     scheduler_flags: str = ""
