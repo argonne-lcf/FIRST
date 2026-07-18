@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections import defaultdict
 
-from ..database.redis.pubsub import Channel, RedisPubSub
+from ..database.redis.pubsub import Channel
 from ..settings import ClientState
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ class WakeupDispatcher:
 
     def __init__(self, client_state: ClientState) -> None:
         self._subscribers: dict[Channel, list[asyncio.Event]] = defaultdict(list)
-        self._pubsub = RedisPubSub(client_state.redis)
+        self._pubsub = client_state.redis_pubsub
 
     def subscribe(self, event: asyncio.Event, channels: list[Channel]) -> None:
         for channel in channels:

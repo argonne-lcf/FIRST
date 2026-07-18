@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from .database.redis.pubsub import RedisPubSub
 from .database.redis.repo import RedisRepo
 
 
@@ -30,6 +31,7 @@ class ClientState:
     settings: "Settings"
     redis: AsyncRedis
     redis_repo: RedisRepo
+    redis_pubsub: RedisPubSub
     db_engine: AsyncEngine
     db_sessionmaker: async_sessionmaker[AsyncSession]
     auth_client: ConfidentialAppAuthClient
@@ -116,6 +118,7 @@ class Settings(BaseSettings):
                 db_sessionmaker=sessionmaker,
                 redis=redis,
                 redis_repo=RedisRepo(redis),
+                redis_pubsub=RedisPubSub(redis),
                 auth_client=ConfidentialAppAuthClient(
                     self.globus.app_id, self.globus.app_secret.get_secret_value()
                 ),

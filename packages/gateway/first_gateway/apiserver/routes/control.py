@@ -12,10 +12,12 @@ from first_common.schema.resources.read import (
 )
 
 from ...database import models as db
+from ...database.redis.pubsub import Channel
 from ...services.plan_apply import apply_plan, create_plan
 from ..dependencies import (
     AdminUser,
     DbSession,
+    RedisPubSub,
 )
 
 admin_router = APIRouter(prefix="/control/v1")
@@ -74,12 +76,16 @@ async def get_config_version(sess: DbSession, uid: int) -> db.ConfigVersion:
     response_model=PilotDeploymentSummary,
 )
 async def set_desired_pilot_replicas(
-    sess: DbSession, name: str, num_replicas: int = Body(embed=True, ge=0, le=4096)
+    sess: DbSession,
+    pubsub: RedisPubSub,
+    name: str,
+    num_replicas: int = Body(embed=True, ge=0, le=4096),
 ) -> db.PilotDeployment:
     """Manually set desired scale of a PilotDeployment"""
     async with sess.begin():
         deployment = await db.PilotDeployment.get_by_name(sess, name)
         deployment.set_desired_replicas(num_replicas)
+    await pubsub.publish(Channel.desired_replicas_changed, name)
     return deployment
 
 

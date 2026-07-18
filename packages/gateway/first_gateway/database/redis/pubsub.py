@@ -6,6 +6,7 @@ from redis.asyncio import Redis
 
 class Channel(str, Enum):
     router_cfg_updated = "router_cfg_updated"
+    desired_replicas_changed = "desired_replicas_changed"
 
 
 class RedisPubSub:
