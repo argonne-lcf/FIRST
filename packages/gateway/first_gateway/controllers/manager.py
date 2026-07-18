@@ -1,17 +1,15 @@
 import asyncio
-import json
 import logging
 import signal
 
-import psycopg
 import uvloop
-from sqlalchemy.engine import make_url
 
 from first_gateway.log_config import config_logging
 
 from ..settings import ClientState, Settings
 from .lease import ManagerLease
 from .metrics_server import serve as serve_metrics
+from .wakeup import WakeupDispatcher
 from .worker import Worker
 from .workers.health_observer import HealthObserver
 from .workers.inflight_observer import InflightObserver
@@ -23,46 +21,23 @@ from .workers.router_config_observer import RouterConfigObserver
 logger = logging.getLogger("first_gateway.controllers.manager")
 
 
-class WakeupDispatcher:
-    """Single LISTEN connection in the manager; fans out per-table wakes."""
-
-    def __init__(self) -> None:
-        self._events: dict[str, asyncio.Event] = {}
-
-    def event_for(self, table: str) -> asyncio.Event:
-        return self._events.setdefault(table, asyncio.Event())
-
-    async def run(self, conninfo: str) -> None:
-        aconn = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-        try:
-            await aconn.execute("LISTEN resource_changes")
-            async for notify in aconn.notifies():
-                try:
-                    payload = json.loads(notify.payload)
-                    ev = self._events.get(payload["table"])
-                    if ev is not None:
-                        ev.set()
-                except (json.JSONDecodeError, KeyError):
-                    logger.warning("bad notify payload: %r", notify.payload)
-        finally:
-            await aconn.close()
-
-
 class ControllerManager:
     def __init__(self, client_state: ClientState) -> None:
         self.client_state = client_state
         self.lease = ManagerLease(client_state.db_sessionmaker)
-        self.dispatcher = WakeupDispatcher()
+        self.dispatcher = WakeupDispatcher(client_state)
         self._shutdown = asyncio.Event()
 
     def _build_workers(self) -> list[Worker]:
         return [
-            HealthObserver("health-observer", self.client_state),
-            InflightObserver("inflight-observer", self.client_state),
-            PilotJobObserver("pilot-job-observer", self.client_state),
-            PilotReplicaObserver("pilot-replica-observer", self.client_state),
-            RetentionSweeper("retention-sweeper", self.client_state),
-            RouterConfigObserver("router-config", self.client_state),
+            HealthObserver("health-observer", self.client_state, self.dispatcher),
+            InflightObserver("inflight-observer", self.client_state, self.dispatcher),
+            PilotJobObserver("pilot-job-observer", self.client_state, self.dispatcher),
+            PilotReplicaObserver(
+                "pilot-replica-observer", self.client_state, self.dispatcher
+            ),
+            RetentionSweeper("retention-sweeper", self.client_state, self.dispatcher),
+            RouterConfigObserver("router-config", self.client_state, self.dispatcher),
         ]
 
     async def run(self) -> None:
@@ -80,12 +55,6 @@ class ControllerManager:
 
         workers = self._build_workers()
 
-        conninfo = (
-            make_url(self.client_state.settings.db_url.get_secret_value())
-            .set(drivername="postgresql")
-            .render_as_string(hide_password=False)
-        )
-
         tasks: list[asyncio.Task[None]] = [
             asyncio.create_task(w.supervise(self._shutdown), name=w.name)
             for w in workers
@@ -99,7 +68,7 @@ class ControllerManager:
             asyncio.create_task(self.lease.run_renewal(), name="lease-renewal")
         )
         tasks.append(
-            asyncio.create_task(self.dispatcher.run(conninfo), name="wakeup-dispatcher")
+            asyncio.create_task(self.dispatcher.run(), name="wakeup-dispatcher")
         )
         tasks.append(asyncio.create_task(serve_metrics(workers), name="metrics-server"))
 

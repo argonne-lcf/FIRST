@@ -1,7 +1,7 @@
 """Tests for RouterConfigObserver publish → subscribe flow."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from redis.asyncio import Redis
@@ -74,8 +74,7 @@ _PATCH_TARGET = "first_gateway.controllers.workers.router_config_observer.Router
 async def test_subscriber_receives_published_config(redis: Redis) -> None:
     """Observer publishes config; a RouterConfig.subscribe listener wakes and reads it."""
     cs = _make_client_state(redis)
-    observer = RouterConfigObserver("router-cfg", cs)
-    observer.poll_interval = 0.05
+    observer = RouterConfigObserver("router-cfg", cs, MagicMock())
 
     expected_models = _sample_models()
 
@@ -90,7 +89,10 @@ async def test_subscriber_receives_published_config(redis: Redis) -> None:
     # Give the subscriber a moment to set up the pubsub listener
     await asyncio.sleep(0.05)
 
-    with patch(_PATCH_TARGET, new_callable=AsyncMock, return_value=expected_models):
+    with (
+        patch(_PATCH_TARGET, new_callable=AsyncMock, return_value=expected_models),
+        patch.object(RouterConfigObserver, "poll_interval", 0.05),
+    ):
         observer_task = asyncio.create_task(observer.run())
         # Wait for the subscriber to receive a config
         await asyncio.wait_for(subscriber_task, timeout=2.0)
@@ -108,8 +110,7 @@ async def test_subscriber_receives_published_config(redis: Redis) -> None:
 async def test_no_publish_when_config_unchanged(redis: Redis) -> None:
     """Observer does not publish when rebuild returns the same config."""
     cs = _make_client_state(redis)
-    observer = RouterConfigObserver("router-cfg", cs)
-    observer.poll_interval = 0.05
+    observer = RouterConfigObserver("router-cfg", cs, MagicMock())
 
     models = _sample_models()
 
@@ -128,6 +129,7 @@ async def test_no_publish_when_config_unchanged(redis: Redis) -> None:
     with (
         patch(_PATCH_TARGET, new_callable=AsyncMock, return_value=models),
         patch.object(RouterConfig, "publish", _tracking_publish),
+        patch.object(RouterConfigObserver, "poll_interval", 0.05),
     ):
         task = asyncio.create_task(observer.run())
         await asyncio.sleep(0.15)

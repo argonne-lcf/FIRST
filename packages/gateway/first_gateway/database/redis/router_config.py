@@ -6,7 +6,8 @@ from redis.asyncio import Redis
 
 from first_common.schema.types import OverloadPolicy, RouterParams, UsagePolicy
 
-from .keys import CONFIG_CHANNEL, Keys
+from .keys import Keys
+from .pubsub import Channel, RedisPubSub
 
 
 class BackendConfig(BaseModel):
@@ -72,18 +73,15 @@ class RouterConfig(BaseModel):
         """
         self.version += 1
         await client.set(Keys.config(), self.model_dump_json())
-        await client.publish(CONFIG_CHANNEL, str(self.version))
+        await RedisPubSub(client).publish(Channel.router_cfg_updated, str(self.version))
         return self.version
 
     @classmethod
     async def subscribe(cls, client: Redis) -> AsyncIterator[Self]:
         """Yield fresh configs as versions are announced (poll fallback is the
         caller's job).  Convenience for the snapshot manager."""
-        pubsub = client.pubsub()
-        await pubsub.subscribe(CONFIG_CHANNEL)
-        async for msg in pubsub.listen():
-            if msg.get("type") != "message":
-                continue
+        pubsub = RedisPubSub(client)
+
+        async for _ in pubsub.subscribe(Channel.router_cfg_updated):
             cfg = await cls.load(client)
-            if cfg is not None:
-                yield cfg
+            yield cfg

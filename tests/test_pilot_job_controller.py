@@ -109,7 +109,9 @@ def _make_controller(
     db: async_sessionmaker[AsyncSession],
     ca_pair: tuple[str, str],
 ) -> PilotJobController:
-    return PilotJobController("pilot-job-controller", _make_client_state(db, ca_pair))
+    return PilotJobController(
+        "pilot-job-controller", _make_client_state(db, ca_pair), MagicMock()
+    )
 
 
 async def _seed_cluster(

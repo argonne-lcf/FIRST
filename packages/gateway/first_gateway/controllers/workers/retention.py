@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from ...database.models import PilotJob, PilotReplica
@@ -15,14 +14,14 @@ class RetentionSweeper(Worker):
     Runs sweep_expired() on every SoftDeletable table every poll_interval seconds.
     """
 
-    poll_interval: float = 60.0
+    poll_interval = 60.0
 
     async def run(self) -> None:
         hb = self.register_heartbeat("sweep")
         while True:
             hb.beat()
             await self._sweep_all()
-            await asyncio.sleep(self.poll_interval)
+            await self.wait_for_wake()
 
     async def _sweep_all(self) -> None:
         for cls in _SWEEPABLE:

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -24,7 +23,7 @@ class PilotJobObserver(Worker):
     Reaps orphaned scheduler jobs that have no matching PilotJob row.
     """
 
-    poll_interval: float = 10.0
+    poll_interval = 10.0
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -34,7 +33,7 @@ class PilotJobObserver(Worker):
                 await self._poll_all_clusters()
             except Exception:
                 logger.exception("%s: poll failed", self.name)
-            await asyncio.sleep(self.poll_interval)
+            await self.wait_for_wake()
 
     async def _poll_all_clusters(self) -> None:
         async with self.client_state.db_sessionmaker() as sess:

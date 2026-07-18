@@ -10,6 +10,7 @@ from first_common.schema.types import HealthCheckParams, HealthCheckResult
 
 from ...database.models import Cluster, StaticDeployment
 from ...settings import ClientState
+from ..wakeup import WakeupDispatcher
 from ..worker import Worker
 
 logger = logging.getLogger(__name__)
@@ -24,12 +25,13 @@ class HealthObserver(Worker):
     failures.
     """
 
-    poll_interval: float = 30.0
+    poll_interval = 30.0
 
     def __init__(
         self,
         name: str,
         client_state: ClientState,
+        wakeup_dispatcher: WakeupDispatcher,
         *,
         restart_backoff: float = 1.0,
         max_backoff: float = 30.0,
@@ -38,6 +40,7 @@ class HealthObserver(Worker):
         super().__init__(
             name,
             client_state,
+            wakeup_dispatcher,
             restart_backoff=restart_backoff,
             max_backoff=max_backoff,
             heartbeat_timeout=heartbeat_timeout,
@@ -50,7 +53,7 @@ class HealthObserver(Worker):
         while True:
             hb.beat()
             await self._poll()
-            await asyncio.sleep(self.poll_interval)
+            await self.wait_for_wake()
 
     async def _poll(self) -> None:
         async with self.client_state.db_sessionmaker() as sess:

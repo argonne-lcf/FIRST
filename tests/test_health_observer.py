@@ -1,7 +1,7 @@
 """Tests for the unified HealthObserver worker."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -51,7 +51,10 @@ def _observer(
     heartbeat_timeout: float = 120.0,
 ) -> HealthObserver:
     return HealthObserver(
-        "health", _make_client_state(db, redis), heartbeat_timeout=heartbeat_timeout
+        "health",
+        _make_client_state(db, redis),
+        MagicMock(),
+        heartbeat_timeout=heartbeat_timeout,
     )
 
 
@@ -219,14 +222,14 @@ async def test_heartbeat_beats(
     redis: Redis,
 ) -> None:
     observer = _observer(db, redis, heartbeat_timeout=10)
-    observer.poll_interval = 0.05
 
-    task = asyncio.create_task(observer.run())
-    await asyncio.sleep(0.15)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    with patch.object(HealthObserver, "poll_interval", 0.05):
+        task = asyncio.create_task(observer.run())
+        await asyncio.sleep(0.15)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     assert not observer.check_heartbeat().timed_out

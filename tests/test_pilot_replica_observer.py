@@ -105,7 +105,7 @@ def _make_observer(
     cs.db_sessionmaker = db
     cs.redis_repo = AsyncMock()
     observer = PilotReplicaObserver.__new__(PilotReplicaObserver)
-    Worker.__init__(observer, "pilot-replica-observer", cs)
+    Worker.__init__(observer, "pilot-replica-observer", cs, MagicMock())
     client = PilotControlClient.__new__(PilotControlClient)
     client._client = httpx.AsyncClient(transport=transport)
     observer.client = client

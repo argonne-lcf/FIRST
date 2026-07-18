@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from first_common.schema.types import (
 from ...database.models import PilotDeployment, PilotJob, PilotReplica
 from ...services.pilot_control import PilotControlClient
 from ...settings import ClientState
+from ..wakeup import WakeupDispatcher
 from ..worker import Worker
 
 logger = logging.getLogger(__name__)
@@ -119,12 +119,13 @@ class PilotReplicaObserver(Worker):
     PilotReplica row (or a row pointing at a different PilotJob).
     """
 
-    poll_interval: float = 10.0
+    poll_interval = 10.0
 
     def __init__(
         self,
         name: str,
         client_state: ClientState,
+        wakeup_dispatcher: WakeupDispatcher,
         *,
         restart_backoff: float = 1.0,
         max_backoff: float = 30.0,
@@ -133,6 +134,7 @@ class PilotReplicaObserver(Worker):
         super().__init__(
             name,
             client_state,
+            wakeup_dispatcher,
             restart_backoff=restart_backoff,
             max_backoff=max_backoff,
             heartbeat_timeout=heartbeat_timeout,
@@ -147,7 +149,7 @@ class PilotReplicaObserver(Worker):
                 await self.poll()
             except Exception:
                 logger.exception("%s: poll failed", self.name)
-            await asyncio.sleep(self.poll_interval)
+            await self.wait_for_wake()
 
     async def poll(self) -> None:
         async with self.client_state.db_sessionmaker() as sess:

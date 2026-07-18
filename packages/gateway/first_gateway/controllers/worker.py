@@ -2,11 +2,13 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from time import monotonic
-from typing import NamedTuple
+from typing import ClassVar, NamedTuple
 
 from prometheus_client import Counter
 
+from ..database.redis.pubsub import Channel
 from ..settings import ClientState
+from .wakeup import WakeupDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,14 @@ class HeartbeatStatus(NamedTuple):
 
 
 class Worker(ABC):
+    poll_interval: ClassVar[float] = 10.0
+    wakeup_channels: ClassVar[list[Channel]] = []
+
     def __init__(
         self,
         name: str,
         client_state: ClientState,
+        wakeup_dispatcher: WakeupDispatcher,
         *,
         restart_backoff: float = 1.0,
         max_backoff: float = 30.0,
@@ -55,8 +61,19 @@ class Worker(ABC):
         self._max_backoff = max_backoff
         self._heartbeat_timeout = heartbeat_timeout
 
+        self._wake_event = asyncio.Event()
         self._heartbeats: list[Heartbeat] = []
         self.run_task: asyncio.Task[None] | None = None
+        wakeup_dispatcher.subscribe(self._wake_event, self.wakeup_channels)
+
+    async def wait_for_wake(self) -> None:
+        """Sleep for up to poll_interval or when any wakeup_channels notification arrives"""
+        try:
+            await asyncio.wait_for(self._wake_event.wait(), timeout=self.poll_interval)
+        except TimeoutError:
+            pass
+        finally:
+            self._wake_event.clear()
 
     def register_heartbeat(self, name: str) -> Heartbeat:
         hb = Heartbeat(name=f"{self.name}.{name}", timeout=self._heartbeat_timeout)

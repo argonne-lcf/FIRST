@@ -94,7 +94,7 @@ def _make_client_state(
 def _make_observer(
     db: async_sessionmaker[AsyncSession],
 ) -> PilotJobObserver:
-    return PilotJobObserver("pilot-job-observer", _make_client_state(db))
+    return PilotJobObserver("pilot-job-observer", _make_client_state(db), MagicMock())
 
 
 async def _seed_cluster(sess: AsyncSession) -> None:

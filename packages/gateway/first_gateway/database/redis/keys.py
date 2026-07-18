@@ -1,7 +1,5 @@
 from typing import Literal
 
-CONFIG_CHANNEL = "cfg:changed"
-
 
 class Keys:
     """Redis key builders — the single source of truth for all key patterns.

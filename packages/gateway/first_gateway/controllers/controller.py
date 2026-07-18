@@ -1,18 +1,13 @@
-import asyncio
 import logging
 from abc import abstractmethod
 from time import monotonic
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import ClassVar
 
 from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database.models import ResourceRow
-from ..settings import ClientState
 from .worker import Heartbeat, Worker
-
-if TYPE_CHECKING:
-    from .manager import WakeupDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +23,9 @@ RECONCILE_DURATION = Histogram(
     "Duration of individual reconcile calls",
     ["controller"],
 )
-RESYNC_USED_FRACTION = Gauge(
-    "controller_resync_interval_used_fraction",
-    "Fraction of resync interval spent reconciling",
+POLL_USED_FRACTION = Gauge(
+    "controller_poll_interval_used_fraction",
+    "Fraction of poll interval spent reconciling",
     ["controller"],
 )
 ACTIONABLE_ROWS = Gauge(
@@ -55,36 +50,15 @@ class StaleReconcile(Exception):
 
 class Controller(Worker):
     """Worker subclass that polls Postgres for actionable rows, calls
-    reconcile() on each, and sleeps until either the resync interval
-    elapses or a LISTEN/NOTIFY notification arrives.
+    reconcile() on each, and sleeps until either the poll_interval
+    elapses or a wakeup notification arrives.
 
     Subclasses set ``resource_type`` and implement ``list_actionable``
     and ``reconcile``.
     """
 
     resource_type: ClassVar[type[ResourceRow]]
-    resync_interval: ClassVar[float] = 30.0
     max_backoff_seconds: ClassVar[float] = 3600.0
-
-    # Additional tables (besides `table_name`) whose changes should shorten
-    # the resync wait
-    extra_wake_tables: ClassVar[list[str]] = []
-
-    def __init__(
-        self,
-        name: str,
-        client_state: ClientState,
-        *,
-        dispatcher: "WakeupDispatcher | None" = None,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(name, client_state, **kwargs)
-        self._dispatcher = dispatcher
-
-    @property
-    def table_name(self) -> str:
-        tn: str = self.resource_type.__tablename__
-        return tn
 
     @abstractmethod
     async def reconcile(self, uid: int) -> None: ...
@@ -96,14 +70,6 @@ class Controller(Worker):
 
     async def run(self) -> None:
         hb = self.register_heartbeat("reconcile")
-        wake_events = (
-            [
-                self._dispatcher.event_for(t)
-                for t in (self.table_name, *self.extra_wake_tables)
-            ]
-            if self._dispatcher
-            else []
-        )
         last_tick_end = monotonic()
 
         while True:
@@ -114,30 +80,11 @@ class Controller(Worker):
             await self._tick(hb)
             last_tick_end = monotonic()
 
-            RESYNC_USED_FRACTION.labels(self.name).set(
-                (last_tick_end - tick_start) / self.resync_interval
+            POLL_USED_FRACTION.labels(self.name).set(
+                (last_tick_end - tick_start) / self.poll_interval
             )
 
-            await self._wait_for_wake(wake_events)
-
-    async def _wait_for_wake(self, wake_events: list[asyncio.Event]) -> None:
-        """Sleep until any watched table notifies or the resync interval elapses."""
-        if not wake_events:
-            await asyncio.sleep(self.resync_interval)
-            return
-
-        waiters = [asyncio.ensure_future(ev.wait()) for ev in wake_events]
-        try:
-            await asyncio.wait(
-                waiters,
-                timeout=self.resync_interval,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            for w in waiters:
-                w.cancel()
-            for ev in wake_events:
-                ev.clear()
+            await self.wait_for_wake()
 
     async def _tick(self, hb: Heartbeat) -> None:
         async with self.client_state.db_sessionmaker() as sess:

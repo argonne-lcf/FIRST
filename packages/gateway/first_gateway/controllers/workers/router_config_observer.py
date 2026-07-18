@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from first_common.schema.types import (
@@ -26,7 +25,8 @@ class RouterConfigObserver(Worker):
     Rewrites RouterConfig periodically to inform the data plane of changes in available model backends.
     """
 
-    poll_interval: float = 10.0
+    poll_interval = 10.0
+    wakeup_channels = []  # Update config as backends come and go
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -41,7 +41,7 @@ class RouterConfigObserver(Worker):
                 current_config.models = new_models
                 await current_config.publish(self.client_state.redis)
 
-            await asyncio.sleep(self.poll_interval)
+            await self.wait_for_wake()
 
     async def rebuild(self) -> list[ModelConfig]:
         async with self.client_state.db_sessionmaker() as sess:

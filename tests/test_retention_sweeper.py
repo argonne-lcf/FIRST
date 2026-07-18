@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -56,17 +56,18 @@ async def test_sweeper_starts_and_heartbeats(
     sweeper = RetentionSweeper(
         "retention-sweeper",
         _make_client_state(db),
+        MagicMock(),
         heartbeat_timeout=10,
     )
-    sweeper.poll_interval = 0.05
 
-    task = asyncio.create_task(sweeper.run())
-    await asyncio.sleep(0.2)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    with patch.object(RetentionSweeper, "poll_interval", 0.05):
+        task = asyncio.create_task(sweeper.run())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     status = sweeper.check_heartbeat()
     assert not status.timed_out, "heartbeat should not have timed out"
@@ -102,6 +103,7 @@ async def test_sweeper_deletes_expired_rows(
     sweeper = RetentionSweeper(
         "retention-sweeper",
         _make_client_state(db),
+        MagicMock(),
         heartbeat_timeout=10,
     )
     await sweeper._sweep_all()
@@ -131,6 +133,7 @@ async def test_sweeper_keeps_rows_within_retention(
     sweeper = RetentionSweeper(
         "retention-sweeper",
         _make_client_state(db),
+        MagicMock(),
         heartbeat_timeout=10,
     )
     await sweeper._sweep_all()

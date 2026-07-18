@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from ...database.redis.admission import AdmissionController
@@ -16,7 +15,7 @@ class InflightObserver(Worker):
     Under correct operation this is always a no-op.
     """
 
-    poll_interval: float = 30.0
+    poll_interval = 30.0
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -27,7 +26,7 @@ class InflightObserver(Worker):
                 await self._reconcile(iteration)
             except Exception:
                 logger.exception("%s: reconcile failed", self.name)
-            await asyncio.sleep(self.poll_interval)
+            await self.wait_for_wake()
             iteration += 1
 
     async def _reconcile(self, iteration: int) -> None:
