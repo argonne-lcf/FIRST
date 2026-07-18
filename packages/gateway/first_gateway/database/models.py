@@ -38,6 +38,21 @@ DictJsonb = Annotated[dict[str, Any], mapped_column(JSONB)]
 DictJsonbOrNone = Annotated[dict[str, Any] | None, mapped_column(JSONB)]
 DateTimeOrNone = Annotated[datetime | None, mapped_column(sa.DateTime(timezone=True))]
 
+
+class IntPairList(sa.types.TypeDecorator[list[tuple[int, int]]]):
+    """JSONB list of `(int, int)` pairs that reloads as hashable tuples."""
+
+    impl = JSONB
+    cache_ok = True
+
+    def process_result_value(
+        self, value: list[list[int]] | None, _dialect: object
+    ) -> list[tuple[int, int]] | None:
+        if value is None:
+            return None
+        return [(pair[0], pair[1]) for pair in value]
+
+
 resource_registry: dict[str, type["ResourceRow"]] = {}
 
 
@@ -431,7 +446,9 @@ class PilotJob(ResourceRow, SoftDeletable):
     manager_health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
     manager_unhealthy_since: Mapped[DateTimeOrNone]
     resources: Mapped[DictJsonb] = mapped_column(JSONB, default=dict)
-    claimed_gpu_ids: Mapped[list[tuple[int, int]]] = mapped_column(JSONB, default=list)
+    claimed_gpu_ids: Mapped[list[tuple[int, int]]] = mapped_column(
+        IntPairList, default=list
+    )
     time_started: Mapped[DateTimeOrNone]
     idle_since: Mapped[DateTimeOrNone]
     walltime_min: Mapped[int]
@@ -463,13 +480,20 @@ class PilotJob(ResourceRow, SoftDeletable):
         replica_uid: int,
         requested_gpus: set[tuple[int, int]],
     ) -> bool:
+        # populate_existing forces the locked row's values to overwrite anything
+        # this Session may already have cached, so the read-modify-write below
+        # acts on freshly-locked state (no lost updates / double GPU claims).
         job = await sess.scalar(
-            sa.select(PilotJob).where(PilotJob.uid == pilot_job_uid).with_for_update()
+            sa.select(PilotJob)
+            .where(PilotJob.uid == pilot_job_uid)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         replica_row = await sess.scalar(
             sa.select(PilotReplica)
             .where(PilotReplica.uid == replica_uid)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         assert job is not None and replica_row is not None
 
@@ -497,12 +521,16 @@ class PilotJob(ResourceRow, SoftDeletable):
         cls, sess: AsyncSession, pilot_job_uid: int, replica_uid: int
     ) -> None:
         job = await sess.scalar(
-            sa.select(PilotJob).where(PilotJob.uid == pilot_job_uid).with_for_update()
+            sa.select(PilotJob)
+            .where(PilotJob.uid == pilot_job_uid)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         replica_row = await sess.scalar(
             sa.select(PilotReplica)
             .where(PilotReplica.uid == replica_uid)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         assert job is not None and replica_row is not None
         if replica_row.pilot_job_name != job.name:
@@ -530,7 +558,9 @@ class PilotReplica(ResourceRow, SoftDeletable):
 
     # Claimed GPU IDs are locked up *right now*; clears out when Replica stops.
     # Not necessary to surface in Read schema.  Internal placement bookeeping.
-    claimed_gpu_ids: Mapped[list[tuple[int, int]]] = mapped_column(JSONB, default=list)
+    claimed_gpu_ids: Mapped[list[tuple[int, int]]] = mapped_column(
+        IntPairList, default=list
+    )
 
     # Resources are the snapshot of hostname and GPU IDs assigned at launch.  Persists
     # even after the Replica has stopped. Surfaced in Read schema.

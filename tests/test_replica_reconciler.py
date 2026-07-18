@@ -2,7 +2,7 @@
 
 import itertools
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -48,6 +48,7 @@ def _make_controller(
 ) -> ReplicaReconciler:
     cs = MagicMock()
     cs.db_sessionmaker = db
+    cs.redis_pubsub.publish = AsyncMock()
     return ReplicaReconciler("replica-reconciler", cs, MagicMock())
 
 
@@ -248,6 +249,36 @@ async def test_scale_up_creates_pending_replicas(
     await ctrl.reconcile(uid)
 
     assert await _count_replicas(db, "dep-up") == 3
+
+
+async def test_scale_up_publishes_replica_created(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    from first_gateway.database.redis.pubsub import Channel
+
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        uid = await _insert_deployment(sess, "dep-notify", desired_replicas=2)
+
+    ctrl = _make_controller(db)
+    await ctrl.reconcile(uid)
+
+    ctrl.client_state.redis_pubsub.publish.assert_awaited_once_with(  # type: ignore[attr-defined]
+        Channel.replica_created, "dep-notify"
+    )
+
+
+async def test_noop_does_not_publish_replica_created(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        uid = await _insert_deployment(sess, "dep-quiet", desired_replicas=0)
+
+    ctrl = _make_controller(db)
+    await ctrl.reconcile(uid)
+
+    ctrl.client_state.redis_pubsub.publish.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 async def test_scale_up_accounts_for_existing_live_replicas(

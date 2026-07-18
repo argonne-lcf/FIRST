@@ -159,6 +159,8 @@ class ReplicaReconciler(Controller):
         )
 
     async def _insert_replicas(self, dep: PilotDeployment, n_new: int) -> None:
+        if n_new < 1:
+            return
         async with self.client_state.db_sessionmaker.begin() as sess:
             sess.add_all(PilotReplica.create(dep.name) for _ in range(n_new))
         logger.info(
@@ -168,3 +170,5 @@ class ReplicaReconciler(Controller):
             n_new,
             dep.desired_replicas,
         )
+        # Wake the Placement controller now that pending replicas exist
+        await self.client_state.redis_pubsub.publish(Channel.replica_created, dep.name)
