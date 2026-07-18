@@ -550,9 +550,8 @@ The total number of such jobs must not exceed `Cluster.pilot_system.max_concurre
 This controller launches scheduled replicas (`state = placed`) onto PilotJobs
 once they are running and available.
 
-Listener wakes on Replica and Pilot Job state transitions,
+Listener wakes on Replica placement and Pilot Job manager-ready transitions,
 because Pilot Job Resources becoming available/ready unblocks launching replicas.
-A multi-table wake is enabled via `extra_wake_tables`.
 
 `list_actionable`: `PilotReplica` where:
 

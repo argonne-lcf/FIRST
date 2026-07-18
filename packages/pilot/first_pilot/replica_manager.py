@@ -13,9 +13,9 @@ from cachetools.func import ttl_cache
 
 from first_common.errors import (
     BadPilotRequest,
-    FirstError,
     NotFound,
     ReplicaAlreadyPlaced,
+    ReplicaStartError,
 )
 from first_common.schema.pilot import (
     GpuInfo,
@@ -283,7 +283,7 @@ class ReplicaManager:
             )
             with self._lock:
                 self._release_locked(replica.name, resources, port)
-            raise FirstError(f"Failed to start replica: {e}") from e
+            raise ReplicaStartError(f"Failed to start replica: {e}") from e
 
         with self._lock:
             self._replicas[replica.name] = r

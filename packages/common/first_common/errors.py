@@ -86,6 +86,11 @@ class ReplicaAlreadyPlaced(FirstError):
     code: str = "replica_already_placed"
 
 
+class ReplicaStartError(FirstError):
+    status_code = HTTPStatus.BAD_REQUEST
+    code: str = "replica_start_error"
+
+
 class StatusCASFailed(FirstError):
     """Raised when CAS keeps losing the race past max_cas_attempts."""
 
