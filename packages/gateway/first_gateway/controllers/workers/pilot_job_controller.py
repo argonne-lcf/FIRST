@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from first_common.schema.base_scheduler import SchedulerJobState
+from first_common.schema.base_scheduler import JobSubmitResult, SchedulerJobState
 from first_common.schema.types import HealthCheckResult, PilotConfig
 
 from ...database.models import Cluster, PilotJob
@@ -231,15 +231,30 @@ class PilotJobController(Controller):
             settings.pilot_ca_crt,
             settings.pilot_ca_key.get_secret_value(),
         )
-        submit_result = await asyncio.wait_for(
-            submitter.submit(job),
+
+        # Check if already queued to prevent duplicates on partial failure
+        statuses = await asyncio.wait_for(
+            adapter.get_job_statuses(),
             timeout=_RPC_TIMEOUT,
         )
-        logger.info(
-            "PilotJob %s: submitted as scheduler job %s",
-            job.name,
-            submit_result.scheduler_id,
-        )
+        existing_job = next((j for j in statuses if j.name == job.name), None)
+
+        if existing_job:
+            logger.warning(
+                f"Job with name {job.name!r} already exists in scheduler. "
+                f"Linking scheduler_id={existing_job.id} instead of re-submitting."
+            )
+            submit_result = JobSubmitResult(job.name, scheduler_id=existing_job.id)
+        else:
+            submit_result = await asyncio.wait_for(
+                submitter.submit(job),
+                timeout=_RPC_TIMEOUT,
+            )
+            logger.info(
+                "PilotJob %s: submitted as scheduler job %s",
+                job.name,
+                submit_result.scheduler_id,
+            )
 
         async with self.client_state.db_sessionmaker.begin() as sess:
             await sess.execute(
