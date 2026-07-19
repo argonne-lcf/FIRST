@@ -614,38 +614,203 @@ Deletion process:
 
 
 
-### Pilot Autoscaler Controller (`table_name = "pilot_deployment"`)
+### Pilot Autoscaler Controller
+
+This controller **reconciles per `Model`** and enacts scaling on each of that
+model's child `PilotDeployment`s. The demand signal is inherently per-model, so
+the reconcile unit is the model: sample once, then drive every child deployment
+from that one signal. `resource_type = Model`.
+
 - **Sole writer of `PilotDeployment.desired_replicas`.** This is true
-  even when autoscaling is technically "disabled" for the deployment —
+  even when autoscaling is technically "disabled" for a deployment —
   the Autoscaler still runs and is the only place that pins
-  `desired_replicas` for unhealthy or terminating deployments. Other
+  `desired_replicas=0` for unhealthy deployments. Other
   controllers signal intent via separate fields (`scheduled_deletion_at`,
   `consecutive_launch_failures`); the Autoscaler is what reads those
   and writes `desired_replicas`.
 
-All `PilotDeployment` are actionable.
+`list_actionable` returns UIDs of `Model`s that have at least one
+`PilotDeployment`. This controller intentionally does not consult the
+`reconcile_retry_at` backoff gate — its work is pure compute plus Redis
+reads/writes with no external RPC, so there is nothing to back off from, and it
+must run on a fixed clock (see below).
 
-- Reconcile order:
-  1. If `consecutive_launch_failures` exceeds `max_consecutive_launch_failures`, set `desired_replicas = 0`. Done.
-  2. If `scaling_strategy` is None: return, done.
-  3. Use `DemandThresholdStrategy` to validate `scaling_strategy` JSONB.
-  4. Sample model demand using `RedisRepo.get_model_runtime`.
-  5. For each model, maintain an in-memory ring buffer of capacity reject values along with timestamps `(sample_timestamp, capacity_rejects_total)`.  Grow the list of samples until the oldest timestamp is more than `reject_window_sec` in the past.
-  5. Take the current `(sample_timestamp, capacity_rejects_total)` and find the past sample closest to `reject_window_sec` ago.  Calculate the average per-model rejection rate (delta rejections divided by delta-time) in rejections per second.
-  6. Calculate the aggregate model demand using the `DemandEstimate` formula helper built into the `DemandThresholdStrategy`.
-  7. Update the exponentially weighted moving average of the aggregate demand estimate, using the current instantaneous value, `ewma_alpha`, and the previous EWMA stored in Redis.  Store the updated estimate using `RedisRepo` methods to set/get Autoscaler data.  You will need to implement the necessary getters/setters.  Use the existing `AutoscalerRuntime` schema as a starting point for the stored data.
-  8. If `desired_replicas=0` AND (`now - last_capacity_reject < 5min` OR `instantaneous demand > 0`) AND `immediate_cold_start=True`, then immediately scale to `max(1, ladder(ewma))` and return.
-  9. Otherwise, compute the target `desired_replicas` from the `scaling_thresholds` ladder.
-  10. If target > current desired, scale up immediately (EWMA is the gate)
-  11. If target < current desired, add the `ScaledownCandidate` to the Redis runtime state on `AutoscalerRuntime.scale_down_candidates[deployment_name]`. The candidate encodes `(target, starting_from)` so that we record the moment a deployment dropped to a lower scaling rung. The EWMA must stay belong the rung threshold for `scaledown_sustain_sec` before `desired_replicas` is updated to the new target.
-  12. scale_down_candidates should be updated on every EWMA update iteration: clear out candidates if the EWMA lifts above the threshold (resets the sustain waiting period).  Multiple candidates may be added to the list if the target drops multiple rungs over the waiting period.  When a scaledown event is finally eligible and `desired_replicas` is lowered, the candidates at or above `desired_replicas` are cleared out too (they've been enacted, no longer candidate state).
+#### Per-model signal, per-deployment action
 
-The scaling threshold ladder compares the current EWMA value to the `scaling_thresholds`: this is an ordered
-ladder where each rung is `(demand_lower_bound_exclusive, num_replicas)`.  The target replica count is `scaling_thresholds[i][1]` if `scaling_thresholds[i][0] < ewma_demand <= scaling_thresholds[i+1][0]`. If above the top rung, the target should be `min(max_rung_replicas, deployment.max_replicas)`.  If below the bottom rung, the target should be `deployment.min_replicas`.
+The demand signal is **aggregated per `Model`**; the scaling decision is
+**enacted per `PilotDeployment`**. A `Model` may have several `PilotDeployment`s
+(typically one per cluster). Reconciling the model samples the shared signal
+exactly once, then evaluates each child deployment's own ladder against it —
+there is no cross-deployment coordination problem to guard against because the
+sample and EWMA update happen once per reconcile by construction.
 
-- All writes are premised on the inputs above (`consecutive_launch_failures`,
-prior `desired_replicas`) so a concurrent operator edit through the API can't be
-silently clobbered.
+Because the deployments share one signal but each carries its own
+`scaling_thresholds`, the ladder is what expresses per-deployment policy:
+
+- Set both deployments' rungs identically and they scale up **together**,
+  splitting one model's load across clusters.
+- Set deployment B's rungs *above* deployment A's and you get a **two-tier
+  spillover**: B only begins adding capacity once A has scaled to its top rung
+  and demand keeps climbing.
+
+#### Signal config lives on the Model; policy lives on the deployment
+
+The config split follows the signal/action boundary:
+
+- **`Model.demand_signal` — demand-signal generation** (one shared signal per
+  model). A `DemandSignalConfig` holds `reject_window_sec`,
+  `avg_request_duration_sec`, and `ewma_alpha`, plus the `calculate_demand`
+  helper. These define the single EWMA every child deployment reads, so they
+  cannot meaningfully differ per deployment.
+- **`PilotDeployment` — scaling policy** (per deployment). The
+  `scaling_strategy` (`DemandThresholdStrategy`) holds `scaling_thresholds`,
+  `immediate_cold_start`, and `scale_down_sustain_sec`; `min_replicas`,
+  `max_replicas`, and `max_consecutive_launch_failures` are dedicated columns.
+  `immediate_cold_start` and `scale_down_sustain_sec` are deliberately
+  per-deployment: one deployment can be eager (jump in on the first cold
+  request, release slowly) while a sibling stays lazy (watch the signal and
+  join only when the ladder says so).
+
+#### Sampling clock
+
+Set the `poll_interval` ClassVar to **10 seconds**, and leave `wakeup_channels`
+empty so there are **no early wakes**. Unlike the other controllers — where
+PubSub wakeups just shorten the resync wait and the exact cadence is
+immaterial — here `poll_interval` *is the sampling clock*. Both the EWMA
+(`ewma = alpha*sample + (1-alpha)*ewma`) and the reject-rate window assume a
+regular ~10s tick; an irregular or event-driven cadence would distort both.
+
+#### Reconcile order (per model)
+
+Load the `Model` (with `DemandSignalConfig`) and its child `PilotDeployment`s.
+
+**A. Sample the model's demand signal once:**
+
+  1. Sample the model runtime with `RedisRepo.get_model_runtime`
+     (`total_inflight`, `capacity_rejects_total`, `last_capacity_reject`).
+  2. Append `(sample_ts, capacity_rejects_total)` to the model's reject-sample
+     window **stored in Redis** (see [runtime schema](#autoscaler-runtime-schema)),
+     and drop samples older than `reject_window_sec`.
+  3. Compute the average per-model rejection rate: find the retained sample
+     closest to `reject_window_sec` ago, then `reject_rate = max(0, Δrejects) /
+     Δt` in rejects/sec. **Clamp `Δrejects` at 0** so a Redis flush/restore that
+     resets the monotonic `capacity_rejects_total` counter produces a rate of 0
+     rather than a negative spike.
+  4. Compute instantaneous aggregate demand with
+     `DemandSignalConfig.calculate_demand(inflight, reject_rate)`.
+  5. Update the EWMA from the previous per-model value in Redis and store the
+     new value (see schema below).
+
+**B. For each child `PilotDeployment`, decide and write `desired_replicas`:**
+
+  1. If `consecutive_launch_failures` exceeds `max_consecutive_launch_failures`,
+     set `desired_replicas = 0`. Skip to the next deployment. (This is a one-way
+     latch: with `desired_replicas = 0` nothing launches, so
+     `consecutive_launch_failures` cannot reset on its own. It clears only on
+     operator action — a spec edit — or via the reset paths described under
+     [Per-resource backoff](#per-resource-backoff-and-giving-up). This is
+     intended.)
+  2. If `scaling_strategy` is None: skip this deployment (manual scaling).
+  3. Parse/validate the `scaling_strategy` JSONB into a `DemandThresholdStrategy`.
+  4. Cold start: if `desired_replicas == 0` AND `immediate_cold_start` is True
+     AND (`now - last_capacity_reject < cold_start_reject_window` OR
+     instantaneous demand > 0), scale immediately to `max(1, ladder(ewma))` and
+     move on. (At `desired_replicas == 0` inflight is 0, so the demand signal at
+     cold start comes entirely from the reject rate.) `cold_start_reject_window`
+     defaults to 5 minutes.
+  5. Otherwise compute the target `desired_replicas` from the ladder (below).
+  6. If target > current `desired_replicas`: scale up immediately — the EWMA is
+     the only gate on scale-up.
+  7. If target < current `desired_replicas`: this is a candidate scale-down,
+     governed by the sustain window (below). Do not lower `desired_replicas`
+     yet.
+  8. If target == current: no change.
+
+Each deployment's `desired_replicas` write is its own premised update (see
+below); one deployment's stale premise doesn't block its siblings.
+
+#### Scaling threshold ladder
+
+`scaling_thresholds` is an ordered list of `(demand_lower_bound_exclusive,
+num_replicas)` rungs. The target is `scaling_thresholds[i][1]` for the rung
+where `scaling_thresholds[i][0] < ewma_demand <= scaling_thresholds[i+1][0]`.
+Above the top rung, target = `min(top_rung_replicas, deployment.max_replicas)`.
+Below the bottom rung, target = `deployment.min_replicas`.
+
+#### Scale-down sustain window
+
+Scale-down is damped so a brief dip doesn't tear down capacity. On every tick,
+after computing the ladder target for a deployment, maintain that deployment's
+list of `ScaledownCandidate(num_replicas, starting_from)` in the per-model
+Autoscaler runtime:
+
+- If the ladder target is **below** current `desired_replicas` and there is no
+  existing candidate at that target, append a candidate recording the target
+  and the timestamp (`starting_from`) at which demand first fell to that rung.
+- If the EWMA **lifts back above** a candidate's rung threshold, drop that
+  candidate — the sustain clock resets.
+- A scale-down becomes **eligible** once a candidate's target has been
+  continuously held for `scale_down_sustain_sec`
+  (`now - starting_from >= scale_down_sustain_sec`). When eligible, set
+  `desired_replicas` to that target, then clear every candidate whose target is
+  `>= desired_replicas` (they are either enacted or superseded).
+
+Multiple candidates may accumulate if demand steps down through several rungs
+during one sustain window; each carries its own `starting_from`, and the lowest
+eligible one wins.
+
+##### Worked example
+
+Config: `scaling_thresholds = [(0.0, 1), (10.0, 2), (25.0, 3)]`,
+`scale_down_sustain_sec = 120`, current `desired_replicas = 3`.
+
+| t (s) | ewma | ladder target | candidate list action | `desired_replicas` |
+|---|---|---|---|---|
+| 0 | 30 | 3 | — (target == current) | 3 |
+| 10 | 8 | 1 | append `(1, t=10)` | 3 |
+| 20 | 12 | 2 | ewma rose above rung-1 (10.0) → drop `(1,·)`; append `(2, t=20)` | 3 |
+| 30–120 | ~12 | 2 | `(2, t=20)` held | 3 |
+| 140 | 12 | 2 | `(2, t=20)` held ≥120s → **eligible**; set `desired=2`; clear candidates with target ≥ 2 | 2 |
+| 150 | 3 | 1 | append `(1, t=150)` | 2 |
+| 270 | 3 | 1 | `(1, t=150)` held ≥120s → **eligible**; set `desired=1`; clear | 1 |
+
+Note the drop-and-re-append at t=20: demand climbed from rung 1 back into rung
+2, which resets the sustain clock for the deeper scale-down. Had ewma instead
+fallen from 8 to 4 (still rung 1) at t=20, the `(1, t=10)` candidate would have
+survived and become eligible at t=130.
+
+#### Autoscaler runtime schema
+
+Autoscaler state is a **per-model** Redis key (`Keys.autoscaler_model(model)` →
+`rt:model:{model}:autoscaler`), a single JSON blob read and written through
+`RedisRepo` (`get_autoscaler_model_runtime` / `set_autoscaler_model_runtime`).
+One reconcile = one model = one read-modify-write of this key, so there is no
+contention. Shape (`first_common.schema.resources.runtime`):
+
+```python
+class RejectSample(NamedTuple):
+    ts: datetime
+    rejects_total: int
+
+class ScaledownCandidate(NamedTuple):
+    num_replicas: int
+    starting_from: datetime
+
+class AutoscalerModelRuntime(BaseModel):
+    """Per-model autoscaler state (one Redis key per model)."""
+    demand_ewma: float = 0.0
+    reject_window: list[RejectSample] = []
+    # keyed by deployment name: a model's deployments scale independently
+    scale_down_candidates: dict[str, list[ScaledownCandidate]] = {}
+```
+
+#### Premised writes
+
+Each `desired_replicas` write is premised on the inputs that deployment's
+decision was based on (`consecutive_launch_failures`, prior `desired_replicas`)
+so a concurrent operator edit through the API can't be silently clobbered; a
+stale premise yields a zero-row update for that deployment and is retried next
+tick.
 
 
 ### Retention Sweeper
