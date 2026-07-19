@@ -3,7 +3,7 @@
 import itertools
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -55,6 +55,7 @@ PILOT_SYSTEM: dict[str, Any] = {
 def _make_controller(db: async_sessionmaker[AsyncSession]) -> ReplicaPlacer:
     cs = MagicMock()
     cs.db_sessionmaker = db
+    cs.redis_pubsub.publish = AsyncMock()
     return ReplicaPlacer("replica-placer", cs, MagicMock())
 
 
@@ -242,6 +243,12 @@ async def test_place_on_existing_job(
     assert set(job.claimed_gpu_ids) == {(0, 0), (0, 1)}
     # No new job created.
     assert await _count_jobs(db) == 1
+
+    # Placement wakes the Launch controller.
+    from first_gateway.database.redis.pubsub import Channel
+
+    publish: AsyncMock = ctrl.client_state.redis_pubsub.publish  # type: ignore[assignment]
+    publish.assert_awaited_once_with(Channel.replica_placed, replica.name)
 
 
 async def test_place_fills_lowest_free_gpus(

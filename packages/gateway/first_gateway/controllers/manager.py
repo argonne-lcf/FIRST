@@ -15,6 +15,7 @@ from .workers.health_observer import HealthObserver
 from .workers.inflight_observer import InflightObserver
 from .workers.pilot_job_observer import PilotJobObserver
 from .workers.pilot_replica_observer import PilotReplicaObserver
+from .workers.replica_launcher import ReplicaLauncher
 from .workers.replica_placement import ReplicaPlacer
 from .workers.replica_reconciler import ReplicaReconciler
 from .workers.retention import RetentionSweeper
@@ -40,6 +41,7 @@ class ControllerManager:
             ),
             ReplicaReconciler("replica-reconciler", self.client_state, self.dispatcher),
             ReplicaPlacer("replica-placer", self.client_state, self.dispatcher),
+            ReplicaLauncher("replica-launcher", self.client_state, self.dispatcher),
             RetentionSweeper("retention-sweeper", self.client_state, self.dispatcher),
             RouterConfigObserver("router-config", self.client_state, self.dispatcher),
         ]

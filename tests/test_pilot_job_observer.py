@@ -19,6 +19,7 @@ from first_common.schema.pilot import AddressInfo
 from first_common.schema.types import HealthCheckResult, PilotConfig
 from first_gateway.controllers.workers.pilot_job_observer import PilotJobObserver
 from first_gateway.database.models import Cluster, PilotJob
+from first_gateway.database.redis.pubsub import Channel
 from first_gateway.services.pilot_submitter import PilotSubmitter
 
 _PATCH_BUILD = "first_gateway.controllers.workers.pilot_job_observer.build_scheduler"
@@ -88,6 +89,7 @@ def _make_client_state(
     cs = MagicMock()
     cs.db_sessionmaker = db
     cs.settings = settings
+    cs.redis_pubsub.publish = AsyncMock()
     return cs
 
 
@@ -184,6 +186,16 @@ async def test_submitted_to_running_and_endpoint_discovery(
     async with db() as sess:
         job = (await sess.scalars(select(PilotJob).where(PilotJob.uid == uid))).one()
     assert job.manager_url == "https://10.1.2.3:8443/control"
+
+    # Discovering the endpoint wakes the Launch controller exactly once.
+    publish: AsyncMock = observer.client_state.redis_pubsub.publish  # type: ignore[assignment]
+    publish.assert_awaited_once_with(Channel.pilot_job_ready, "job-alpha")
+
+    # A subsequent poll must NOT re-publish: manager_url is already set, so the
+    # premised UPDATE affects zero rows.
+    publish.reset_mock()
+    await observer._poll_cluster(submitter, "polaris")
+    publish.assert_not_awaited()
 
 
 async def test_orphan_scheduler_job_reaped(

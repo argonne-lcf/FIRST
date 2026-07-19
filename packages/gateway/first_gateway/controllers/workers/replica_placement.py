@@ -243,6 +243,9 @@ class ReplicaPlacer(Controller):
             job_name,
             sorted(requested_gpus),
         )
+        await self.client_state.redis_pubsub.publish(
+            Channel.replica_placed, replica_name
+        )
 
     async def _create_job_and_place(
         self,

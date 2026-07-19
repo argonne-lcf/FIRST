@@ -7,6 +7,7 @@ from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
 from first_common.schema.types import PilotConfig
 
 from ...database.models import Cluster, PilotJob
+from ...database.redis.pubsub import Channel
 from ...platforms.schedulers import build_scheduler
 from ...services.pilot_submitter import PilotSubmitter
 from ..worker import Worker
@@ -172,3 +173,7 @@ class PilotJobObserver(Worker):
                     )
                     .values(manager_url=addr.control_url)
                 )
+
+            await self.client_state.redis_pubsub.publish(
+                Channel.pilot_job_ready, job_name
+            )
