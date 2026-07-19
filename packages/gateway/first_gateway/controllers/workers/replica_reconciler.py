@@ -152,11 +152,17 @@ class ReplicaReconciler(Controller):
                 )
                 .values(scheduled_deletion_at=now)
             )
+        flagged = result.rowcount  # type: ignore[attr-defined]
         logger.info(
             "ReplicaReconciler: deployment %s flagged %d replica(s) for drain",
             dep.name,
-            result.rowcount,  # type: ignore[attr-defined]
+            flagged,
         )
+        if flagged:
+            # Wake the Drainer now that freshly-flagged replicas need teardown.
+            await self.client_state.redis_pubsub.publish(
+                Channel.replica_drain, dep.name
+            )
 
     async def _insert_replicas(self, dep: PilotDeployment, n_new: int) -> None:
         if n_new < 1:

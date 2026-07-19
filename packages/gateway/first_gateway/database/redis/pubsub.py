@@ -9,6 +9,7 @@ class Channel(str, Enum):
     desired_replicas_changed = "desired_replicas_changed"
     replica_created = "replica_created"
     replica_placed = "replica_placed"
+    replica_drain = "replica_drain"
     pilot_job_ready = "pilot_job_ready"
 
 
