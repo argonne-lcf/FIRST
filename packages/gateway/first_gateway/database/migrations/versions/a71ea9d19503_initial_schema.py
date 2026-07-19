@@ -104,6 +104,11 @@ def upgrade() -> None:
             "usage_limits", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
         sa.Column("overload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column(
+            "demand_signal",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+        ),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",

@@ -6,6 +6,7 @@ from typing import Any
 from redis.asyncio import Redis
 
 from first_common.schema.resources.runtime import (
+    AutoscalerModelRuntime,
     BackendRuntime,
     ModelRuntime,
     PilotJobRuntime,
@@ -153,3 +154,25 @@ class RedisRepo:
             PilotJobRuntime.model_validate_json(blob) if blob else None
             for blob in blobs
         ]
+
+    async def get_autoscaler_model_runtime(
+        self, model_name: str
+    ) -> AutoscalerModelRuntime:
+        raw = await self.client.get(Keys.autoscaler_model(model_name))
+        return (
+            AutoscalerModelRuntime.model_validate_json(raw)
+            if raw
+            else AutoscalerModelRuntime()
+        )
+
+    async def set_autoscaler_model_runtime(
+        self,
+        model_name: str,
+        rt: AutoscalerModelRuntime,
+        # This is durable controller state, not a cache; the TTL is only a
+        # garbage-collector for deleted models.
+        ttl: int = 30 * 24 * 60 * 60,
+    ) -> None:
+        await self.client.set(
+            Keys.autoscaler_model(model_name), rt.model_dump_json(), ex=ttl
+        )

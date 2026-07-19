@@ -6,6 +6,7 @@ from pydantic import (
 )
 
 from ..types import (
+    DemandSignalConfig,
     DemandThresholdStrategy,
     HealthCheckParams,
     OverloadPolicy,
@@ -63,6 +64,7 @@ class ModelSpec(ResourceSpec):
     aliases: list[str] = []
     usage_limits: UsagePolicy = UsagePolicy()
     overload: OverloadPolicy = OverloadPolicy()
+    demand_signal: DemandSignalConfig = DemandSignalConfig()
 
 
 class ClusterSpec(ResourceSpec):

@@ -98,3 +98,8 @@ class Keys:
     def pilot_job_resources(uid: int) -> str:
         """JSON Blob of serialized PilotResources"""
         return f"pilot_job:{uid}:resources"
+
+    @staticmethod
+    def autoscaler_model(model: str) -> str:
+        """JSON blob of AutoscalerModelRuntime (EWMA, reject window, scaledown candidates)."""
+        return f"rt:model:{model}:autoscaler"

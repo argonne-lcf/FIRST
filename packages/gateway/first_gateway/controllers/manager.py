@@ -11,6 +11,7 @@ from .lease import ManagerLease
 from .metrics_server import serve as serve_metrics
 from .wakeup import WakeupDispatcher
 from .worker import Worker
+from .workers.autoscaler import PilotAutoscaler
 from .workers.health_observer import HealthObserver
 from .workers.inflight_observer import InflightObserver
 from .workers.pilot_job_observer import PilotJobObserver
@@ -40,6 +41,7 @@ class ControllerManager:
             PilotReplicaObserver(
                 "pilot-replica-observer", self.client_state, self.dispatcher
             ),
+            PilotAutoscaler("pilot-autoscaler", self.client_state, self.dispatcher),
             ReplicaReconciler("replica-reconciler", self.client_state, self.dispatcher),
             ReplicaPlacer("replica-placer", self.client_state, self.dispatcher),
             ReplicaLauncher("replica-launcher", self.client_state, self.dispatcher),

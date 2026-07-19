@@ -25,14 +25,23 @@ class ModelRuntime(BaseModel):
     last_capacity_reject: datetime | None = None
 
 
+class RejectSample(NamedTuple):
+    ts: datetime
+    rejects_total: int
+
+
 class ScaledownCandidate(NamedTuple):
     num_replicas: int
     starting_from: datetime
 
 
-class AutoscalerRuntime(BaseModel):
-    demand_ewma: dict[str, float]
-    scale_down_candidates: dict[str, list[ScaledownCandidate]]
+class AutoscalerModelRuntime(BaseModel):
+    """Per-model autoscaler state (one Redis key per model)."""
+
+    demand_ewma: float = 0.0
+    reject_window: list[RejectSample] = []
+    # keyed by deployment name — deployments scale independently
+    scale_down_candidates: dict[str, list[ScaledownCandidate]] = {}
 
 
 class PilotJobRuntime(BaseModel):

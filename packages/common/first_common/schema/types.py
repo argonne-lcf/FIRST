@@ -175,9 +175,11 @@ class PilotConfig(BaseModel):
     job_name_prefix: str = "__FIRST_PILOT_"
 
 
-class DemandEstimate(BaseModel):
-    """
-    Combines in-flight request count with an estimate of
+class DemandSignalConfig(BaseModel):
+    """Model-level config for the shared demand signal all of a model's
+    pilot deployments scale from.
+
+    The demand signal combines in-flight request count with an estimate of
     rejected-but-would-be-inflight demand to produce a single demand metric.
 
     - `reject_window_sec`: rejection rate is obtained from the rise in total
@@ -185,10 +187,14 @@ class DemandEstimate(BaseModel):
     - `avg_request_duration_sec`: rejections/sec is multiplied by this duration
     to obtain the expected number of requests that would be running if the
     rejected traffic had been admitted.
+    - `ewma_alpha`: the autoscaler samples demand on a fixed ~10s clock and
+    smooths it into an exponentially weighted moving average
+    (`ewma = alpha*sample + (1-alpha)*ewma`).
     """
 
     reject_window_sec: int = 60
     avg_request_duration_sec: int = 30
+    ewma_alpha: float = Field(0.5, ge=0.01, le=1.0)
 
     def calculate_demand(self, inflight: float, reject_rate: float) -> float:
         return inflight + reject_rate * self.avg_request_duration_sec
@@ -196,19 +202,16 @@ class DemandEstimate(BaseModel):
 
 class DemandThresholdStrategy(BaseModel):
     """
-    A method for automatically scaling a PilotDeployment by tracking the average
-    demand (in-flight requests and rejections of would-be inflight requests) and
-    setting the desired number of replicas by a ladder of thresholds.
+    A per-deployment policy for automatically scaling a PilotDeployment from the
+    shared per-model demand signal, setting the desired number of replicas by a
+    ladder of thresholds.
+
+    The demand signal itself (EWMA, reject window) is configured on the parent
+    Model via `DemandSignalConfig`; this strategy only expresses how a single
+    deployment reacts to that signal.
     """
 
     strategy: Literal["DemandThresholdStrategy"] = "DemandThresholdStrategy"
-    demand: DemandEstimate = DemandEstimate()
-
-    # --- Scale-up policy ---
-    # Autoscaler samples demand every ~10s.
-    # Exponentially weighted moving average demand must exceed the threshold
-    # before scaling up (ewma = alpha*sample + (1-alpha)*ewma)
-    ewma_alpha: float = Field(0.5, ge=0.01, le=1.0)
 
     # Act immediately on first nonzero sample:
     immediate_cold_start: bool = True
@@ -223,6 +226,21 @@ class DemandThresholdStrategy(BaseModel):
         (0.0, 1),
         (10.0, 2),
     ]
+
+    @field_validator("scaling_thresholds")
+    @classmethod
+    def _check_thresholds(cls, v: list[tuple[float, int]]) -> list[tuple[float, int]]:
+        demands = [rung[0] for rung in v]
+        targets = [rung[1] for rung in v]
+        if demands != sorted(demands):
+            raise ValueError("scaling_thresholds demands must be in sorted order")
+        if targets != sorted(targets):
+            raise ValueError("scaling_thresholds targets must be in sorted order")
+        if len(demands) != len(set(demands)):
+            raise ValueError("scaling_thresholds demands must be unique")
+        if len(targets) != len(set(targets)):
+            raise ValueError("scaling_thresholds targets must be unique")
+        return v
 
 
 class ScriptTemplateContext(TypedDict):
