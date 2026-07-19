@@ -128,3 +128,4 @@ class PilotDeploymentSpec(ResourceSpec):
     max_replicas: int = 1
 
     launch_spec: PilotLaunchSpec
+    max_consecutive_launch_failures: int = 3

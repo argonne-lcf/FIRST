@@ -358,6 +358,7 @@ class PilotDeployment(ResourceRow):
     max_replicas: Mapped[int]
 
     launch_spec: Mapped[DictJsonb]
+    max_consecutive_launch_failures: Mapped[int] = mapped_column(default=3)
 
     desired_replicas: Mapped[int] = mapped_column(default=0)
     state: Mapped[str] = mapped_column(default=PilotDeploymentState.offline.value)

@@ -623,38 +623,30 @@ Deletion process:
   `consecutive_launch_failures`); the Autoscaler is what reads those
   and writes `desired_replicas`.
 
+All `PilotDeployment` are actionable.
+
 - Reconcile order:
-  1. If `consecutive_launch_failures` exceeds threshold, set
-     `desired_replicas = 0`. Done.
-  2. Otherwise, if autoscaling is enabled, sample demand
-     from Redis and compute target `desired_replicas` per the
-     deployment's `scaling_strategy`.
-  3. Otherwise (autoscaling disabled, healthy, not deleting), leave
-     `desired_replicas` at the operator-set value.
+  1. If `consecutive_launch_failures` exceeds `max_consecutive_launch_failures`, set `desired_replicas = 0`. Done.
+  2. If `scaling_strategy` is None: return, done.
+  3. Use `DemandThresholdStrategy` to validate `scaling_strategy` JSONB.
+  4. Sample model demand using `RedisRepo.get_model_runtime`.
+  5. For each model, maintain an in-memory ring buffer of capacity reject values along with timestamps `(sample_timestamp, capacity_rejects_total)`.  Grow the list of samples until the oldest timestamp is more than `reject_window_sec` in the past.
+  5. Take the current `(sample_timestamp, capacity_rejects_total)` and find the past sample closest to `reject_window_sec` ago.  Calculate the average per-model rejection rate (delta rejections divided by delta-time) in rejections per second.
+  6. Calculate the aggregate model demand using the `DemandEstimate` formula helper built into the `DemandThresholdStrategy`.
+  7. Update the exponentially weighted moving average of the aggregate demand estimate, using the current instantaneous value, `ewma_alpha`, and the previous EWMA stored in Redis.  Store the updated estimate using `RedisRepo` methods to set/get Autoscaler data.  You will need to implement the necessary getters/setters.  Use the existing `AutoscalerRuntime` schema as a starting point for the stored data.
+  8. If `desired_replicas=0` AND (`now - last_capacity_reject < 5min` OR `instantaneous demand > 0`) AND `immediate_cold_start=True`, then immediately scale to `max(1, ladder(ewma))` and return.
+  9. Otherwise, compute the target `desired_replicas` from the `scaling_thresholds` ladder.
+  10. If target > current desired, scale up immediately (EWMA is the gate)
+  11. If target < current desired, add the `ScaledownCandidate` to the Redis runtime state on `AutoscalerRuntime.scale_down_candidates[deployment_name]`. The candidate encodes `(target, starting_from)` so that we record the moment a deployment dropped to a lower scaling rung. The EWMA must stay belong the rung threshold for `scaledown_sustain_sec` before `desired_replicas` is updated to the new target.
+  12. scale_down_candidates should be updated on every EWMA update iteration: clear out candidates if the EWMA lifts above the threshold (resets the sustain waiting period).  Multiple candidates may be added to the list if the target drops multiple rungs over the waiting period.  When a scaledown event is finally eligible and `desired_replicas` is lowered, the candidates at or above `desired_replicas` are cleared out too (they've been enacted, no longer candidate state).
+
+The scaling threshold ladder compares the current EWMA value to the `scaling_thresholds`: this is an ordered
+ladder where each rung is `(demand_lower_bound_exclusive, num_replicas)`.  The target replica count is `scaling_thresholds[i][1]` if `scaling_thresholds[i][0] < ewma_demand <= scaling_thresholds[i+1][0]`. If above the top rung, the target should be `min(max_rung_replicas, deployment.max_replicas)`.  If below the bottom rung, the target should be `deployment.min_replicas`.
 
 - All writes are premised on the inputs above (`consecutive_launch_failures`,
 prior `desired_replicas`) so a concurrent operator edit through the API can't be
 silently clobbered.
 
-The demand threshold strategy pseudocode:
-
-```
-every 10s:
-    sample demand
-    if cold (0 replicas) and sample > 0 and immediate_cold_start:
-        scale to ladder(sample)
-        return
-
-    ewma = α * sample + (1-α) * ewma    # signal conditioning
-
-    target = ladder(ewma)
-
-    if target > current_replicas:
-        scale up                     # EWMA is the only gate
-    elif target < current_replicas:
-        if ewma has been below threshold for scale_down_sustain_sec:
-              scale down
-```
 
 ### Retention Sweeper
 - One small `Worker`, runs every ~5 minutes.

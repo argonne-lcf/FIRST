@@ -185,6 +185,7 @@ def upgrade() -> None:
         sa.Column(
             "launch_spec", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
+        sa.Column("max_consecutive_launch_failures", sa.Integer(), nullable=False),
         sa.Column("desired_replicas", sa.Integer(), nullable=False),
         sa.Column("state", sa.String(), nullable=False),
         sa.Column("consecutive_launch_failures", sa.Integer(), nullable=False),
