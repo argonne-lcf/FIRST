@@ -139,6 +139,7 @@ class ReplicaDrainer(Controller):
         # Any other non-2xx (or lingering transport error from the helper) is
         # transient: raise so the reconcile cooldown/retry kicks in.
         resp.raise_for_status()
+        logger.info("Stopped replica %s", replica_name)
 
     async def _finalize_deletion(self, replica: PilotReplica) -> None:
         now = datetime.now(timezone.utc)

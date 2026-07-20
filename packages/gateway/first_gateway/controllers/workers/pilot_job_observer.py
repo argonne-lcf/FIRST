@@ -110,6 +110,10 @@ class PilotJobObserver(Worker):
                         deleted_at=datetime.now(timezone.utc),
                     )
                 )
+            logger.warning(
+                f"PilotJob {db_job.name}: {db_job.scheduler_job_id!r} is no longer in the scheduler. "
+                "Assuming gone; marking terminated."
+            )
         elif (
             status.state != db_job.scheduler_state
             or status.started_at != db_job.time_started
@@ -131,6 +135,9 @@ class PilotJobObserver(Worker):
                         time_started=status.started_at,
                     )
                 )
+            logger.info(
+                f"PilotJob {db_job.name}: {db_job.scheduler_state} -> {status.state.value}"
+            )
 
     async def _discover_endpoints(
         self, submitter: PilotSubmitter, cluster_name: str

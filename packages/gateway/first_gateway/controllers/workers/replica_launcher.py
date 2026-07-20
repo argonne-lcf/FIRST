@@ -161,7 +161,7 @@ class ReplicaLauncher(Controller):
                 f"ReplicaLauncher: {replica_name} got 409 but is absent from "
                 f"pilot manager /status; will retry"
             )
-        logger.info(
+        logger.warning(
             "ReplicaLauncher: replica %s already registered (409); treating as "
             "launched",
             replica_name,

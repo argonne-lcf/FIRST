@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
+from prometheus_client import Gauge
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -35,6 +36,17 @@ logger = logging.getLogger(__name__)
 # At desired_replicas == 0 the cold-start signal is reject-driven: a capacity
 # rejection this recent counts as live demand.
 COLD_START_REJECT_WINDOW = timedelta(minutes=5)
+
+DESIRED_REPLICAS = Gauge(
+    "autoscaler_desired_replicas",
+    "Number of desired replicas set by autoscaler per pilot deployment",
+    ["model", "deployment"],
+)
+DEMAND_EWMA = Gauge(
+    "autoscaler_model_demand_ewma",
+    "Exponentially weighted moving average model demand signal",
+    ["model"],
+)
 
 
 def update_reject_window(
@@ -181,6 +193,7 @@ class PilotAutoscaler(Controller):
 
         rt.reject_window = window
         rt.demand_ewma = ewma
+        DEMAND_EWMA.labels(model.name).set(ewma)
 
         # -- B. Decide + write desired_replicas per child deployment --
         live_names: set[str] = set()
@@ -194,6 +207,7 @@ class PilotAutoscaler(Controller):
                 last_capacity_reject=model_rt.last_capacity_reject,
                 candidates=rt.scale_down_candidates,
             )
+            DESIRED_REPLICAS.labels(model.name, dep.name).set(new_desired)
             if new_desired != dep.desired_replicas:
                 await self._write_desired(dep, new_desired)
 

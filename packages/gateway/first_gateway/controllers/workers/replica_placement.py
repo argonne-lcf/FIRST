@@ -137,6 +137,10 @@ class ReplicaPlacer(Controller):
         if placement is not None:
             job, requested = placement
             await self._place(replica.uid, replica.name, job.uid, job.name, requested)
+            if job.scheduler_state == SchedulerJobState.running:
+                await self.client_state.redis_pubsub.publish(
+                    Channel.replica_placed, replica.name
+                )
             return
 
         # If no existing job fits, add one, if the cluster has headroom.
@@ -152,6 +156,9 @@ class ReplicaPlacer(Controller):
             )
         else:
             await self._mark_at_capacity(replica.uid)
+            logger.info(
+                "Replica %s cannot be placed: cluster is at capacity", replica.name
+            )
 
     @staticmethod
     def _select_best_fit_single_node(
@@ -243,9 +250,6 @@ class ReplicaPlacer(Controller):
             job_name,
             sorted(requested_gpus),
         )
-        await self.client_state.redis_pubsub.publish(
-            Channel.replica_placed, replica_name
-        )
 
     async def _create_job_and_place(
         self,
@@ -292,11 +296,13 @@ class ReplicaPlacer(Controller):
                 raise StaleReconcile(
                     f"ReplicaPlacer: {replica_name} no longer pending at placement"
                 )
-            job_name = job.name
         logger.info(
             "ReplicaPlacer: created job %s and placed replica %s",
-            job_name,
+            job.name,
             replica_name,
+        )
+        await self.client_state.redis_pubsub.publish(
+            Channel.pilot_job_created, job.name
         )
 
     async def _mark_at_capacity(self, replica_uid: int) -> None:

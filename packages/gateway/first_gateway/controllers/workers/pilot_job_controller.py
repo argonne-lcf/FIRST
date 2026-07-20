@@ -9,6 +9,7 @@ from first_common.schema.base_scheduler import JobSubmitResult, SchedulerJobStat
 from first_common.schema.types import HealthCheckResult, PilotConfig
 
 from ...database.models import Cluster, PilotJob
+from ...database.redis.pubsub import Channel
 from ...platforms.schedulers import build_scheduler
 from ...services.pilot_submitter import PilotSubmitter
 from ..controller import Controller, StaleReconcile
@@ -20,7 +21,6 @@ _TERMINAL_STATES = frozenset(
     {SchedulerJobState.exiting.value, SchedulerJobState.gone.value}
 )
 _ACTIVE_STATES = [
-    SchedulerJobState.pending_submit.value,
     SchedulerJobState.queued.value,
     SchedulerJobState.starting.value,
     SchedulerJobState.running.value,
@@ -29,6 +29,7 @@ _ACTIVE_STATES = [
 
 class PilotJobController(Controller):
     resource_type = PilotJob
+    wakeup_channels = [Channel.pilot_job_created]
 
     async def list_actionable(self, sess: AsyncSession) -> list[int]:
         stmt = sa.select(PilotJob.uid).where(
@@ -195,9 +196,9 @@ class PilotJobController(Controller):
                 )
             )
             assert active_jobs is not None
-            if active_jobs >= pilot_config.max_concurrent_jobs:
+            if active_jobs + 1 > pilot_config.max_concurrent_jobs:
                 logger.info(
-                    "PilotJob %s: cluster %s at max_concurrent_jobs (%d/%d)",
+                    "PilotJob %s: will not submit; would exceed cluster %s max_concurrent_jobs (%d/%d)",
                     job.name,
                     job.cluster_name,
                     active_jobs,
@@ -213,9 +214,9 @@ class PilotJobController(Controller):
                 )
             )
             assert active_nodes is not None
-            if active_nodes >= pilot_config.max_num_nodes:
+            if active_nodes + job.num_nodes > pilot_config.max_num_nodes:
                 logger.info(
-                    "PilotJob %s: cluster %s at max_num_nodes (%d/%d)",
+                    "PilotJob %s: will not submit; would exceed cluster %s max_num_nodes (%d/%d)",
                     job.name,
                     job.cluster_name,
                     active_nodes,
@@ -234,7 +235,7 @@ class PilotJobController(Controller):
 
         # Check if already queued to prevent duplicates on partial failure
         statuses = await asyncio.wait_for(
-            adapter.get_job_statuses(),
+            submitter.get_statuses(),
             timeout=_RPC_TIMEOUT,
         )
         existing_job = next((j for j in statuses if j.name == job.name), None)

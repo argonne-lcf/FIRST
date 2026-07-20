@@ -171,7 +171,7 @@ async def test_get_statuses_filters_by_prefix(
     submitter = PilotSubmitter(pilot_config, adapter, *ca_pair)
 
     statuses = await submitter.get_statuses()
-    assert [s.name for s in statuses] == [f"{pilot_config.job_name_prefix}mine"]
+    assert [s.name for s in statuses] == ["mine"]
 
 
 async def test_list_ready_endpoints_strips_suffix(

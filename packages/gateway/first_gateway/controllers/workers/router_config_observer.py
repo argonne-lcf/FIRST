@@ -9,6 +9,7 @@ from first_common.schema.types import (
 )
 
 from ...database import models as db
+from ...database.redis.pubsub import Channel
 from ...database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -26,7 +27,7 @@ class RouterConfigObserver(Worker):
     """
 
     poll_interval = 10.0
-    wakeup_channels = []  # Update config as backends come and go
+    wakeup_channels = [Channel.replica_started, Channel.replica_drain]
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from math import ceil
 from pathlib import Path
 
@@ -93,9 +94,14 @@ class PilotSubmitter:
 
     async def get_statuses(self) -> list[JobStatusInfo]:
         all_jobs = await self.adapter.get_job_statuses()
-        return [
-            j for j in all_jobs if j.name.startswith(self.pilot_config.job_name_prefix)
-        ]
+        result = []
+        for job in all_jobs:
+            if job.name.startswith(self.pilot_config.job_name_prefix):
+                job = replace(
+                    job, name=job.name.removeprefix(self.pilot_config.job_name_prefix)
+                )
+                result.append(job)
+        return result
 
     async def list_ready_endpoints(self) -> list[str]:
         files = await self.adapter.list_files(self._readyfile_dir)

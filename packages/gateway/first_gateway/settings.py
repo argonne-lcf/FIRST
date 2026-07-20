@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     globus: GlobusAuthSettings
     pilot_ca_crt: str
     pilot_ca_key: SecretStr
+    health_slack_webhook_url: str | None = None
 
     @asynccontextmanager
     async def build_clients(self) -> AsyncGenerator[ClientState, None]:

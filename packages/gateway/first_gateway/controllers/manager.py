@@ -12,8 +12,10 @@ from .metrics_server import serve as serve_metrics
 from .wakeup import WakeupDispatcher
 from .worker import Worker
 from .workers.autoscaler import PilotAutoscaler
+from .workers.health_alerter import HealthAlerter
 from .workers.health_observer import HealthObserver
 from .workers.inflight_observer import InflightObserver
+from .workers.pilot_job_controller import PilotJobController
 from .workers.pilot_job_observer import PilotJobObserver
 from .workers.pilot_replica_observer import PilotReplicaObserver
 from .workers.replica_drainer import ReplicaDrainer
@@ -38,6 +40,9 @@ class ControllerManager:
             HealthObserver("health-observer", self.client_state, self.dispatcher),
             InflightObserver("inflight-observer", self.client_state, self.dispatcher),
             PilotJobObserver("pilot-job-observer", self.client_state, self.dispatcher),
+            PilotJobController(
+                "pilot-job-controller", self.client_state, self.dispatcher
+            ),
             PilotReplicaObserver(
                 "pilot-replica-observer", self.client_state, self.dispatcher
             ),
@@ -48,6 +53,7 @@ class ControllerManager:
             ReplicaDrainer("replica-drainer", self.client_state, self.dispatcher),
             RetentionSweeper("retention-sweeper", self.client_state, self.dispatcher),
             RouterConfigObserver("router-config", self.client_state, self.dispatcher),
+            HealthAlerter("health-alerter", self.client_state, self.dispatcher),
         ]
 
     async def run(self) -> None:

@@ -33,4 +33,4 @@ class WakeupDispatcher:
                     self.wakeup(channel)
             except Exception:
                 logger.exception("error in WakeupDispatcher subscribe")
-                await asyncio.sleep(5)
+            await asyncio.sleep(5)

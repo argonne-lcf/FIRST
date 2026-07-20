@@ -16,6 +16,7 @@ from first_common.schema.types import (
 )
 
 from ...database.models import PilotDeployment, PilotJob, PilotReplica
+from ...database.redis.pubsub import Channel
 from ...services.pilot_control import PilotControlClient
 from ...settings import ClientState
 from ..wakeup import WakeupDispatcher
@@ -201,6 +202,8 @@ class PilotReplicaObserver(Worker):
                 )
             )
 
+        logger.info(f"Recorded PilotJob {job.name!r} manager_health=unhealthy")
+
     async def update_job_status(self, job: PilotJob, status: PilotJobStatus) -> None:
         id_clause = PilotJob.uid == job.uid
 
@@ -220,6 +223,7 @@ class PilotReplicaObserver(Worker):
                         manager_unhealthy_since=None,
                     )
                 )
+                logger.info(f"PilotJob {job.name!r} manager_health recovered")
 
         # Update Resources in DB on startup only (default empty dict):
         resources_dict = status.resources.model_dump(mode="json")
@@ -230,6 +234,7 @@ class PilotReplicaObserver(Worker):
                     .where(id_clause)
                     .values(resources=resources_dict)
                 )
+                logger.info(f"Recorded PilotJob {job.name!r} resources on startup")
 
         # Update in Redis unconditionally (tracking GPU memory usage # continuously)
         await self.client_state.redis_repo.set_pilot_job_runtime(
@@ -255,6 +260,7 @@ class PilotReplicaObserver(Worker):
                     .where(id_clause, PilotJob.idle_since.is_not(None))
                     .values(idle_since=None)
                 )
+            logger.info(f"PilotJob {job.name!r} has running replicas; no longer idle")
         elif not has_running and job.idle_since is None:
             async with self.client_state.db_sessionmaker.begin() as sess:
                 await sess.execute(
@@ -262,6 +268,7 @@ class PilotReplicaObserver(Worker):
                     .where(id_clause, PilotJob.idle_since.is_(None))
                     .values(idle_since=datetime.now(timezone.utc))
                 )
+            logger.info(f"PilotJob {job.name!r} has zero replicas; marking idle")
 
     async def sync_replicas(
         self,
@@ -272,6 +279,7 @@ class PilotReplicaObserver(Worker):
         """
         Update PilotReplica DB state and return (success_deployments, fail_counts).
         """
+        any_started = False
         for ri in remote_replicas:
             async with self.client_state.db_sessionmaker() as sess:
                 db_replica = await sess.scalar(
@@ -290,6 +298,12 @@ class PilotReplicaObserver(Worker):
 
             if ri.state.value != db_replica.state:
                 values["state"] = ri.state.value
+                logger.info(
+                    f"Replica {db_replica.name!r}: {db_replica.state} -> {ri.state.value} [{ri.state_message}]"
+                )
+
+                if ri.state == ReplicaState.ready:
+                    any_started = True
 
                 if ri.state in (
                     ReplicaState.error,
@@ -322,6 +336,9 @@ class PilotReplicaObserver(Worker):
                     .where(PilotReplica.uid == db_replica.uid)
                     .values(**values)
                 )
+
+        if any_started:
+            await self.client_state.redis_pubsub.publish(Channel.replica_started, "")
 
     async def reap_orphans(
         self, job: PilotJob, remote_replicas: list[ReplicaInfo]

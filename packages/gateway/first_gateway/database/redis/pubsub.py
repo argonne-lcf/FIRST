@@ -10,6 +10,8 @@ class Channel(str, Enum):
     replica_created = "replica_created"
     replica_placed = "replica_placed"
     replica_drain = "replica_drain"
+    replica_started = "replica_started"
+    pilot_job_created = "pilot_job_created"
     pilot_job_ready = "pilot_job_ready"
 
 
