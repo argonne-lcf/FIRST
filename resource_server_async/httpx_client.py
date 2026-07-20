@@ -15,6 +15,7 @@ def create_ssl_context(
         return True
 
     context = ssl.create_default_context(cafile=ca_cert_path)
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
     context.check_hostname = check_hostname
     if client_cert_path or client_key_path:
         if not client_cert_path or not client_key_path:

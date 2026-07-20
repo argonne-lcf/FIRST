@@ -61,7 +61,7 @@ server {
     listen 443 ssl http2;
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 }
 ```
@@ -513,4 +513,3 @@ Document step-by-step procedures for:
 - [Nginx Performance Tuning](https://www.nginx.com/blog/tuning-nginx/)
 - [PostgreSQL Performance Tips](https://wiki.postgresql.org/wiki/Performance_Optimization)
 - [Monitoring Guide](../monitoring.md)
-

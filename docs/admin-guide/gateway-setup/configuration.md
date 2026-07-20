@@ -243,7 +243,7 @@ server {
     # SSL Configuration
     ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     
     # File upload size limit
@@ -355,4 +355,3 @@ python manage.py diffsettings
 - [Docker Deployment](docker.md)
 - [Bare Metal Setup](bare-metal.md)
 - [Production Best Practices](../deployment/production.md)
-
