@@ -7,11 +7,13 @@ needed.
 """
 
 from datetime import datetime
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel
 
 from ..pilot import PilotResources
+
+Severity = Literal["info", "warn", "crit"]
 
 
 class BackendRuntime(BaseModel):
@@ -42,6 +44,31 @@ class AutoscalerModelRuntime(BaseModel):
     reject_window: list[RejectSample] = []
     # keyed by deployment name — deployments scale independently
     scale_down_candidates: dict[str, list[ScaledownCandidate]] = {}
+
+
+class StagedTransition(BaseModel):
+    status: str  # target status being confirmed ("" == recovering to ok)
+    severity: Severity = "crit"
+    summary: str = ""
+    group: str = ""  # Slack category, carried from the Observation
+    owner: str = ""  # check function that produced this, for recovery scoping
+    first_seen: datetime  # debounce timer start (reset when target changes)
+
+
+class CommittedAlert(BaseModel):
+    status: str
+    severity: Severity = "crit"
+    group: str = ""
+    owner: str = ""  # check function that owns this key
+
+
+class HealthAlertState(BaseModel):
+    """Singleton Redis blob for the health alerter (one key, not per-resource)."""
+
+    committed: dict[str, CommittedAlert] = {}
+    staging: dict[str, StagedTransition] = {}
+    last_daily_report: str | None = None  # "YYYY-MM-DD" (UTC) digest dedup
+    reported_failures: dict[str, str] = {}  # check_function -> error message
 
 
 class PilotJobRuntime(BaseModel):

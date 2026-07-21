@@ -49,6 +49,12 @@ services:
     networks:
       - gateway
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", ".venv/bin/python -c \"import urllib.request; assert urllib.request.urlopen('http://localhost:9100/healthz').status == 200\"" ]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   postgres:
     image: postgres:18
@@ -85,6 +91,18 @@ services:
     ports:
       - "6379:6379"
 
+  dozzle:
+    container_name: dozzle
+    image: amir20/dozzle:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dozzle_data:/data
+    ports:
+      - 8080:8080
+
 networks:
   gateway:
     driver: bridge
+
+volumes:
+  dozzle_data:

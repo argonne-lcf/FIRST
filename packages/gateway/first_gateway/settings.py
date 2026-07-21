@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     pilot_ca_crt: str
     pilot_ca_key: SecretStr
     health_slack_webhook_url: str | None = None
+    gateway_health_url: str = "http://127.0.0.1/health"
 
     @asynccontextmanager
     async def build_clients(self) -> AsyncGenerator[ClientState, None]:

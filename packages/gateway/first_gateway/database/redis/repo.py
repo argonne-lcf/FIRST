@@ -8,6 +8,7 @@ from redis.asyncio import Redis
 from first_common.schema.resources.runtime import (
     AutoscalerModelRuntime,
     BackendRuntime,
+    HealthAlertState,
     ModelRuntime,
     PilotJobRuntime,
 )
@@ -175,4 +176,17 @@ class RedisRepo:
     ) -> None:
         await self.client.set(
             Keys.autoscaler_model(model_name), rt.model_dump_json(), ex=ttl
+        )
+
+    async def get_health_alert_state(self) -> HealthAlertState:
+        raw = await self.client.get(Keys.health_alert_state())
+        return HealthAlertState.model_validate_json(raw) if raw else HealthAlertState()
+
+    async def set_health_alert_state(
+        self,
+        state: HealthAlertState,
+        ttl: int = 30 * 24 * 60 * 60,
+    ) -> None:
+        await self.client.set(
+            Keys.health_alert_state(), state.model_dump_json(), ex=ttl
         )

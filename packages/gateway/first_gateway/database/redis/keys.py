@@ -103,3 +103,8 @@ class Keys:
     def autoscaler_model(model: str) -> str:
         """JSON blob of AutoscalerModelRuntime (EWMA, reject window, scaledown candidates)."""
         return f"rt:model:{model}:autoscaler"
+
+    @staticmethod
+    def health_alert_state() -> str:
+        """Singleton JSON blob of HealthAlertState (committed + staging + timers)."""
+        return "health-alerter:state"

@@ -819,44 +819,32 @@ tick.
   retention window has elapsed.
 - Logs the count per table on each pass.
 
-### Health Alert Controller
-- Watches table changes to `Cluster`, `PilotJob`, `StaticDeployment`,
-  `PilotReplica`, `PilotDeployment`, plus periodic checks for things not
-  represented as `ResourceRow`s:
-  - The Gateway API server `/health` endpoint.
-  - Liveness of each `SchedulerAdapter` (for `GlobusComputePBSAdapter`,
-    verifying the endpoint is online).
-  - Postgres and Redis liveness.
-  - Worker liveness: a failed worker (terminal crash or heartbeat
-    timeout) is recorded by the manager into a small `worker_failures`
-    table that the Alert controller watches.
-- Owns its own table `alert_state(resource_table, resource_id,
-  last_alerted_status, last_alerted_at)`.
+### Health Alerter
 
-#### Debouncing and flap suppression
+A `Worker` (not a `Controller`) that polls Postgres and local host state every
+30 seconds, debounces status transitions to suppress flaps, and posts
+degradation/recovery batches to a Slack incoming webhook.
 
-Two windows interact:
+**Architecture:** observe → stage → flush. Each poll runs eight concurrent
+check functions that return `Observation`s for unhealthy resources. A single
+per-resource debounce window (45s) drives a pure state machine: a transition
+must hold steady past the window before it matures and is posted, which
+suppresses flapping while still alerting on sustained changes; transitions
+that mature together in one poll coalesce into a single message. Recovery is
+inferred by absence — a resource that was committed-unhealthy and is now
+absent from a successful check is recovering. Each committed alert records the
+check that produced it, so recovery is scoped to checks that actually ran and
+a failed check (e.g. DB unreachable) does not falsely recover its keys.
 
-1. **Per-resource debounce (60s default)**: after a resource changes
-   status, we wait this long before considering it stable. Only after the
-   status has held steady for the debounce window do we treat it as a
-   real transition worth alerting on.
-2. **Per-batch flush window (30s default)**: once at least one real
-   transition is staged, wait up to this much longer to coalesce more
-   transitions into one Slack message.
+**Persistence:** a single `HealthAlertState` Redis JSON blob stores committed
+alerts, in-flight staging, daily-digest dedup, and check-failure tracking.
+This state survives process restarts.
 
-Concretely, the staging dict keys by `(table, resource_id)` and stores
-`{first_seen_status, first_seen_at, latest_status, latest_seen_at}`. On
-flush:
+**Watched conditions:** Cluster and StaticDeployment health; PilotDeployment
+state and capacity; PilotJob reconcile failures, manager health, and idle
+status; PilotReplica bad states and reconcile failures; Postgres and Redis
+liveness; gateway and controller healthz endpoints; local disk usage.
 
-- If `latest_status == last_alerted_status` for that resource, **drop**
-  the entry — the resource flapped and returned. No alert sent.
-- Else if `latest_seen_at - first_seen_at >= debounce`, include in the
-  alert batch and update `last_alerted_status = latest_status`.
-- Else (status hasn't held long enough), keep in the staging dict and
-  re-evaluate on the next flush tick.
+**Daily digest:** a status snapshot of all resource categories, posted once
+per day at 13:00 UTC.
 
-A degraded->healthy flap shorter than the debounce sends nothing. A
-genuine degradation that holds for the debounce window sends one Slack
-message; if recovery happens before the next batch flush, the recovery
-piggy-backs into the same message; if after, it sends a separate one.

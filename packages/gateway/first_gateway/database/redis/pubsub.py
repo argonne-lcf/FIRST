@@ -30,8 +30,13 @@ class RedisPubSub:
         pubsub = self.client.pubsub()
         await pubsub.subscribe(*(s.value for s in channels))
         try:
-            async for event in pubsub.listen():
-                if event.get("type") != "message":
+            # Poll with an explicit read timeout instead of listen(): on a quiet
+            # socket redis-py returns None (retriable) rather than falling back to
+            # the client's socket_timeout and raising TimeoutError. This keeps the
+            # subscription alive indefinitely without loosening timeouts globally.
+            while True:
+                event = await pubsub.get_message(timeout=30.0)
+                if event is None or event.get("type") != "message":
                     continue
                 yield Channel(event["channel"]), self.to_str(event["data"])
         finally:
