@@ -5,3 +5,8 @@ scrape_configs:
   - job_name: controller-manager
     static_configs:
       - targets: ["controller-manager:9100"]
+
+  - job_name: model-backends
+    http_sd_configs:
+      - url: http://inference-gateway:7000/discovery/v1/prometheus
+        refresh_interval: 1m
