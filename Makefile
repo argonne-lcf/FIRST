@@ -51,3 +51,6 @@ prod-up:
 
 prod-down:
 	COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml docker compose down
+
+monitor-redis:
+	docker compose exec -it redis redis-cli monitor
