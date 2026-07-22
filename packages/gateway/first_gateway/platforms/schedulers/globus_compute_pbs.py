@@ -46,6 +46,9 @@ class FuncRegistry(TypedDict):
     read_file: str
 
 
+_func_registry: FuncRegistry | None = None
+
+
 def _qsub(args: list[str]) -> str:
     """
     Globus Compute Function to execute qsub and return Job ID from stdout
@@ -169,17 +172,28 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         Required config keys:
             endpoint_id: str — Globus Compute endpoint UUID for the target HPC system.
         """
-        endpoint_id = config["endpoint_id"]
+        global _func_registry
         client = deps.compute_client
-        func_ids = FuncRegistry(
-            qsub=await asyncio.to_thread(client.register_function, _qsub),
-            qstat=await asyncio.to_thread(client.register_function, _qstat),
-            qdel=await asyncio.to_thread(client.register_function, _qdel),
-            list_files=await asyncio.to_thread(client.register_function, _list_files),
-            put_file=await asyncio.to_thread(client.register_function, _put_file),
-            read_file=await asyncio.to_thread(client.register_function, _read_file),
-        )
-        return cls(client, endpoint_id, func_ids)
+
+        if _func_registry is None:
+            uuids = await asyncio.gather(
+                asyncio.to_thread(client.register_function, _qsub),
+                asyncio.to_thread(client.register_function, _qstat),
+                asyncio.to_thread(client.register_function, _qdel),
+                asyncio.to_thread(client.register_function, _list_files),
+                asyncio.to_thread(client.register_function, _put_file),
+                asyncio.to_thread(client.register_function, _read_file),
+            )
+            _func_registry = FuncRegistry(
+                qsub=uuids[0],
+                qstat=uuids[1],
+                qdel=uuids[2],
+                list_files=uuids[3],
+                put_file=uuids[4],
+                read_file=uuids[5],
+            )
+
+        return cls(client, config["endpoint_id"], _func_registry)
 
     async def _poll_for_result(
         self, task_id: str, *, timeout: int = 30, interval: float = 1.0

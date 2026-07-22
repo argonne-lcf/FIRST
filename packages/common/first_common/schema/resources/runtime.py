@@ -14,6 +14,14 @@ from pydantic import BaseModel
 from ..pilot import PilotResources
 
 Severity = Literal["info", "warn", "crit"]
+AlertGroup = Literal[
+    "Clusters",
+    "Deployments",
+    "Pilot Jobs",
+    "Pilot Replicas",
+    "Infrastructure",
+    "Other",
+]
 
 
 class BackendRuntime(BaseModel):
@@ -46,30 +54,40 @@ class AutoscalerModelRuntime(BaseModel):
     scale_down_candidates: dict[str, list[ScaledownCandidate]] = {}
 
 
+class PilotJobRuntime(BaseModel):
+    resources: PilotResources = PilotResources(hosts=[])
+
+
 class StagedTransition(BaseModel):
+    """
+    A health status transition pending flush to Slack
+    """
+
+    key: str
     status: str  # target status being confirmed ("" == recovering to ok)
     severity: Severity = "crit"
     summary: str = ""
-    group: str = ""  # Slack category, carried from the Observation
+    group: AlertGroup = "Other"  # Slack category, carried from the Observation
     owner: str = ""  # check function that produced this, for recovery scoping
     first_seen: datetime  # debounce timer start (reset when target changes)
 
 
 class CommittedAlert(BaseModel):
+    """
+    A health status transition that has been flushed to Slack
+    """
+
+    key: str
     status: str
     severity: Severity = "crit"
-    group: str = ""
+    group: AlertGroup = "Other"
     owner: str = ""  # check function that owns this key
 
 
 class HealthAlertState(BaseModel):
     """Singleton Redis blob for the health alerter (one key, not per-resource)."""
 
-    committed: dict[str, CommittedAlert] = {}
-    staging: dict[str, StagedTransition] = {}
+    committed: dict[str, CommittedAlert] = {}  # what has been confirmed sent to slack
+    staging: dict[str, StagedTransition] = {}  # upcoming flushes
     last_daily_report: str | None = None  # "YYYY-MM-DD" (UTC) digest dedup
     reported_failures: dict[str, str] = {}  # check_function -> error message
-
-
-class PilotJobRuntime(BaseModel):
-    resources: PilotResources = PilotResources(hosts=[])
