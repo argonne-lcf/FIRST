@@ -11,12 +11,24 @@ from first_common.schema.resources.spec import AccessGroupSpec
 
 from ..database.redis.pubsub import RedisPubSub as _RedisPubSub
 from ..database.redis.repo import RedisRepo as _RedisRepo
+from ..database.redis.router_config import RouterConfig as _RouterConfig
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
+from .router_config_manager import RouterConfigManager
 
 
 async def get_state(request: Request) -> ClientState:
     return cast(ClientState, request.app.state.client_state)
+
+
+async def get_router_config(request: Request) -> _RouterConfig:
+    """Return the current hot-swapped RouterConfig snapshot.
+
+    The reference is captured once per request; a swap mid-request rebinds the
+    manager's attribute but leaves this instance intact for the caller.
+    """
+    manager = cast(RouterConfigManager, request.app.state.router_config_manager)
+    return manager.current
 
 
 AppState = Annotated[ClientState, Depends(get_state)]
@@ -77,6 +89,7 @@ BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer()
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 RedisRepo = Annotated[_RedisRepo, Depends(get_redis_repo)]
 RedisPubSub = Annotated[_RedisPubSub, Depends(get_redis_pubsub)]
+RouterConfigDep = Annotated[_RouterConfig, Depends(get_router_config)]
 AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
 IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
