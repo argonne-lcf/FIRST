@@ -5,11 +5,12 @@ from fastapi.responses import StreamingResponse
 
 from first_common.schema.endpoints.openai import (
     OpenAIChatCompletionsPayload,
+    OpenAIEmbeddingsPayload,
     OpenAIResponsesPayload,
 )
 
 from ...dependencies import AuthUser
-from .dependencies import ChatCompletionsModel, ResponsesModel
+from .dependencies import ChatCompletionsModel, EmbeddingsModel, ResponsesModel
 
 router = APIRouter(prefix="/federated/v1")
 
@@ -24,5 +25,12 @@ async def chat_completions(
 @router.post("/responses")
 async def responses(
     user: AuthUser, payload: OpenAIResponsesPayload, model: ResponsesModel
+) -> StreamingResponse | dict[str, Any]:
+    raise NotImplementedError("Not implemented yet.")
+
+
+@router.post("/embeddings")
+async def embeddings(
+    user: AuthUser, payload: OpenAIEmbeddingsPayload, model: EmbeddingsModel
 ) -> StreamingResponse | dict[str, Any]:
     raise NotImplementedError("Not implemented yet.")
