@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Any, List
 
 from pydantic import (
@@ -13,6 +14,15 @@ class BaseModelAllowExtra(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
+
+
+class BasePayload(BaseModelAllowExtra):
+    """
+    Properties shared by all OpenAI endpoints
+    """
+
+    model: str = Field(..., min_length=1)
+    stream: bool | None = Field(default=False)
 
 
 class ChatCompletionsMessage(BaseModelAllowExtra):
@@ -31,22 +41,23 @@ class ResponsesInputItem(BaseModelAllowExtra):
 
 
 # https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
-class OpenAIChatCompletionsPayload(BaseModelAllowExtra):
+class OpenAIChatCompletionsPayload(BasePayload):
     """
     OpenAI chat/completions spec.
     """
 
     messages: list[ChatCompletionsMessage]
-    model: str = Field(..., min_length=1)
-    stream: bool | None = Field(default=False)
 
 
 # https://platform.openai.com/docs/api-reference/responses/create
-class OpenAIResponsesPayload(BaseModelAllowExtra):
+class OpenAIResponsesPayload(BasePayload):
     """
     OpenAI responses spec.
     """
 
     input: str | List[ResponsesInputItem] | List[dict[str, Any]]
-    model: str = Field(..., min_length=1)
-    stream: bool | None = Field(default=False)
+
+
+class OpenAIEndpoints(Enum):
+    chat_completions = "chat/completions"
+    responses = "response"
