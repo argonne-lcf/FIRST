@@ -1,0 +1,28 @@
+{
+  "name": "first-admin-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "gen-sdk": "openapi-ts -i http://localhost:8000/openapi.json -o ./src/lib/client/"
+  },
+  "dependencies": {
+    "@globus/react-auth-context": "^0.4.0",
+    "@globus/sdk": "^6.0.0",
+    "@tanstack/react-router": "^1.120.0",
+    "axios": "^1.8.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "^0.99.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0"
+  }
+}
