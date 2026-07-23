@@ -1,10 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { TriangleAlert } from "lucide-react";
-import {
-  type HealthCheckResult,
-  type PilotDeploymentState,
-} from "@/lib/client";
+import { Link } from "@tanstack/react-router";
+import { ArrowRight, TriangleAlert } from "lucide-react";
 import { clusterQueries, type ClusterOverview } from "@/queries/cluster";
+import { DeploymentCounts, HealthIndicator } from "@/components/ClusterStatus";
 import {
   Card,
   CardAction,
@@ -12,89 +10,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
-
-const HEALTH_DOT: Record<HealthCheckResult, string> = {
-  healthy: "bg-success",
-  unhealthy: "bg-destructive",
-  unknown: "bg-muted-foreground",
-};
-
-function HealthIndicator({ health }: { health: HealthCheckResult }) {
-  return (
-    <span className="flex items-center gap-1.5 text-xs text-muted-foreground capitalize">
-      <span className={cn("size-2 rounded-full", HEALTH_DOT[health])} />
-      {health}
-    </span>
-  );
-}
-
-/** Count occurrences of each key, preserving the given display order. */
-function tally<T extends string>(items: T[], order: readonly T[]) {
-  return order
-    .map((key) => ({ key, count: items.filter((i) => i === key).length }))
-    .filter((entry) => entry.count > 0);
-}
-
-const HEALTH_ORDER: readonly HealthCheckResult[] = [
-  "healthy",
-  "unhealthy",
-  "unknown",
-];
-const PILOT_STATE_ORDER: readonly PilotDeploymentState[] = [
-  "healthy",
-  "degraded",
-  "starting",
-  "stopping",
-  "awaiting_capacity",
-  "failed",
-  "offline",
-];
-
-function DeploymentCounts({ overview }: { overview: ClusterOverview }) {
-  const { staticDeployments, pilotDeployments } = overview;
-  const staticByHealth = tally(
-    staticDeployments.map((d) => d.health),
-    HEALTH_ORDER,
-  );
-  const pilotByState = tally(
-    pilotDeployments.map((d) => d.state),
-    PILOT_STATE_ORDER,
-  );
-
-  return (
-    <div className="space-y-1 text-xs text-muted-foreground">
-      <p>
-        {staticDeployments.length} StaticDeployment
-        {staticDeployments.length === 1 ? "" : "s"}
-        {staticByHealth.length > 0 && (
-          <>
-            {" ("}
-            {staticByHealth.map((e) => `${e.count} ${e.key}`).join(", ")}
-            {")"}
-          </>
-        )}
-      </p>
-      <p>
-        {pilotDeployments.length} PilotDeployment
-        {pilotDeployments.length === 1 ? "" : "s"}
-        {pilotByState.length > 0 && (
-          <>
-            {" ("}
-            {pilotByState
-              .map((e) => `${e.count} ${e.key.replace(/_/g, " ")}`)
-              .join(", ")}
-            {")"}
-          </>
-        )}
-      </p>
-    </div>
-  );
-}
 
 function ClusterCard({ overview }: { overview: ClusterOverview }) {
-  const { cluster } = overview;
+  const { cluster, staticDeployments, pilotDeployments } = overview;
   return (
     <Card>
       <CardHeader>
@@ -110,7 +30,21 @@ function ClusterCard({ overview }: { overview: ClusterOverview }) {
             <span>{cluster.maintenance_notice}</span>
           </div>
         )}
-        <DeploymentCounts overview={overview} />
+        <DeploymentCounts
+          staticDeployments={staticDeployments}
+          pilotDeployments={pilotDeployments}
+        />
+        <div className="flex justify-end">
+          <Button asChild variant="ghost" size="sm">
+            <Link
+              to="/clusters/$clusterSlug"
+              params={{ clusterSlug: cluster.slug }}
+            >
+              View
+              <ArrowRight data-icon="inline-end" />
+            </Link>
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

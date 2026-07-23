@@ -10,6 +10,7 @@ pg_backup/
 formatted_results.txt
 logs_march_20_21.json
 email.out
+.playwright-mcp/
 
 # VS code
 .vscode/

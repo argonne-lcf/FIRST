@@ -386,6 +386,10 @@ export type HealthCheckParams = {
    */
   url: string;
   /**
+   * Api Key
+   */
+  api_key?: string | null;
+  /**
    * Connect Timeout
    */
   connect_timeout?: number;

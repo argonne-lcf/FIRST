@@ -73,7 +73,7 @@ class PilotSubmitter:
 
         script = (
             f"{pc.submit_script_preamble}\n"
-            f"PILOT_CONFIG_FILE={config_path} uvx first-pilot@{pc.pilot_version}\n"
+            f"PILOT_CONFIG_FILE={config_path} {pc.pilot_path}\n"
         )
 
         await self.adapter.put_file(config_yaml, config_path, mode=0o600)

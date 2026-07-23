@@ -125,7 +125,7 @@ def pilot_config(workdir: Path) -> PilotConfig:
             "ip_allowlist": ["127.0.0.1/32"],
             "node_file_env": "TEST_PILOT_NODEFILE_UNSET",
             "submit_script_preamble": "#!/bin/bash\nset -eu",
-            "pilot_version": "0.0.0-test",
+            "pilot_path": "/test/first-pilot",
         }
     )
 

@@ -5,7 +5,26 @@ spec:
     url: "https://api.alcf.anl.gov/api/v1/status/resources/9674c7e1-aecc-4dbb-bf01-c9197e027cd6"
     match_pattern: '"current_status":\s*"up"'
   maintenance_notice: null
-  pilot_system: null
+  pilot_system:
+    submit_script_preamble: |
+      source /home/openinference_svc/service_account.env
+    scheduler_adapter: first_gateway.platforms.schedulers.GlobusComputePBSAdapter
+    scheduler_config:
+      # /eagle/inference_service/firstv2-pilot/sophia-pbs-adapter
+      endpoint_id: 0a1ac3a3-f806-43a9-8d61-a8c71735c853
+    job_walltime_min: 10080
+    max_concurrent_jobs: 3
+    max_num_nodes: 3
+    queue: infer-svc-test
+    account: inference_service
+    scheduler_flags: "-l filesystems=home:eagle"
+    workdir: /eagle/inference_service/firstv2-pilot/workdir
+    external_port: 8000
+    nginx_path: /eagle/inference_service/nginx/sbin/nginx
+    ip_allowlist: ["0.0.0.0/32"]
+    node_file_env: PBS_NODEFILE
+    pilot_path: /eagle/inference_service/env/firstv2-pilot/bin/first-pilot
+    job_name_prefix: __FIRST_PILOT_MISHADEV_
 
 ---
 
@@ -102,3 +121,73 @@ spec:
     attempt_delay: 3.0
     debounce: 2
   prometheus_metrics_path: null
+
+---
+
+kind: PilotDeployment
+name: sophia/openai/gpt-oss-120b
+spec:
+  cluster_name: sophia
+  model_name: openai/gpt-oss-120b
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path:  "/metrics"
+  prometheus_scrape_interval_sec: 30
+
+  min_replicas: 0
+  max_replicas: 2
+  scaling_strategy:
+    immediate_cold_start: true
+    scale_down_sustain_sec: 900
+    scaling_thresholds:
+      - [0.0, 1]
+      - [5.0, 2]
+
+  max_consecutive_launch_failures: 2
+  launch_spec:
+    served_model_name: openai/gpt-oss-120b
+    gpus_per_node: 4
+    num_nodes: 1
+    venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+    weights_path: /eagle/inference_service/model_weights/openai/gpt-oss-120b/
+    weights_cache_path: /raid/scratch/inference_service/model_weights/openai/gpt-oss-120b/
+    max_startup_sec: 600
+    health_check:
+      url: /health
+
+    env:
+      TRANSFORMERS_OFFLINE: "1"
+      OMP_NUM_THREADS: "4"
+      VLLM_LOG_LEVEL: "WARN"
+      USE_FASTSAFETENSOR: "true"
+      VLLM_IMAGE_FETCH_TIMEOUT: "60"
+      VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
+      TORCHINDUCTOR_CACHE_DIR: /raid/scratch/inference_service/model_weights/.cache/torch_inductor
+      VLLM_CACHE_ROOT: /raid/scratch/inference_service/model_weights/.cache/vllm
+      TRITON_CACHE_DIR: /raid/scratch/inference_service/model_weights/.cache/triton
+      VLLM_ATTENTION_BACKEND: TRITON_ATTN
+
+    serve_script_template: |
+      ulimit -c unlimited
+
+      mkdir -p $TORCHINDUCTOR_CACHE_DIR
+      mkdir -p $VLLM_CACHE_ROOT
+      mkdir -p $TRITON_CACHE_DIR
+
+      ./sync_model_weights_on_scratch.sh {{served_model_name}} \
+        --source /eagle/inference_service/model_weights \
+        --dest /raid/scratch/inference_service/model_weights \
+        --ext "safetensors json txt py model jinja yaml"
+
+      source {{venv_path}}/bin/activate
+      which python
+      export CUDA_VISIBLE_DEVICES={{ gpus_by_host.values() | first | join(',') }}
+
+      vllm serve {{weights_cache_path}} \
+        --served-model-name {{served_model_name}} \
+        --host 127.0.0.1 --port {{port}} \
+        --tool-call-parser openai \
+        --enable-auto-tool-choice \
+        --tensor-parallel-size 4 \
+        --max-model-len 65536 \
+        --max-num-seqs 32

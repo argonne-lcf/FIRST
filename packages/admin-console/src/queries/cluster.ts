@@ -23,7 +23,42 @@ export const clusterQueries = {
   all: () => queryOptions(listClustersCatalogV1ClustersGetOptions()),
 
   detail: (name: string) =>
-    queryOptions(getClusterCatalogV1ClustersNameGetOptions({ path: { name } })),
+    queryOptions({
+      ...getClusterCatalogV1ClustersNameGetOptions({ path: { name } }),
+      refetchInterval: 15_000,
+    }),
+
+  /** The StaticDeployments and PilotDeployments that reference one cluster. */
+  deploymentsFor: (clusterName: string) =>
+    queryOptions({
+      queryKey: ["clusterDeployments", clusterName],
+      refetchInterval: 15_000,
+      queryFn: async ({
+        signal,
+      }): Promise<{
+        staticDeployments: StaticDeploymentSummary[];
+        pilotDeployments: PilotDeploymentSummary[];
+      }> => {
+        const [statics, pilots] = await Promise.all([
+          listStaticDeploymentsCatalogV1DeploymentsStaticGet({
+            signal,
+            throwOnError: true,
+          }),
+          listPilotDeploymentsCatalogV1DeploymentsPilotGet({
+            signal,
+            throwOnError: true,
+          }),
+        ]);
+        return {
+          staticDeployments: statics.data.filter(
+            (d) => d.cluster_name === clusterName,
+          ),
+          pilotDeployments: pilots.data.filter(
+            (d) => d.cluster_name === clusterName,
+          ),
+        };
+      },
+    }),
 
   /**
    * Live status dashboard feed: every cluster with its child StaticDeployments

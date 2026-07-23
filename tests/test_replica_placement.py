@@ -48,7 +48,7 @@ PILOT_SYSTEM: dict[str, Any] = {
     "ip_allowlist": ["10.0.0.0/8"],
     "node_file_env": "PBS_NODEFILE",
     "submit_script_preamble": "#!/bin/bash",
-    "pilot_version": "0.1.0",
+    "pilot_path": "/test/first-pilot",
 }
 
 

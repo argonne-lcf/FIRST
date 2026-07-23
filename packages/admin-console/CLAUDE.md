@@ -156,5 +156,5 @@ Pages compose: `src/queries/` for data, `@/components/ui/` for presentation.
 ### Live Testing with Playwright MCP
 
 - `npm run dev`: start background vite dev server on http://localhost:4040
-(already proxies API calls to localhost:8000 correctly)
+  (already proxies API calls to localhost:8000 correctly)
 - Use Playwright MCP to interact with this dev deployment

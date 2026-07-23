@@ -75,7 +75,7 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
             "ip_allowlist": ["10.0.0.0/8"],
             "node_file_env": "PBS_NODEFILE",
             "submit_script_preamble": "#!/bin/bash\nset -eu\nmodule load python",
-            "pilot_version": "0.1.2",
+            "pilot_path": "/test/first-pilot",
         }
     )
 
@@ -127,7 +127,7 @@ async def test_submit_renders_config_and_script(
     assert "BEGIN" in parsed["server_key"]
 
     assert script_content.startswith(pilot_config.submit_script_preamble)
-    assert f"PILOT_CONFIG_FILE={config_path} uvx first-pilot@0.1.2" in script_content
+    assert f"PILOT_CONFIG_FILE={config_path} /test/first-pilot" in script_content
 
     assert len(adapter.submitted) == 1
     payload = adapter.submitted[0]

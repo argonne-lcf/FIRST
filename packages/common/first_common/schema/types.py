@@ -173,7 +173,7 @@ class PilotConfig(BaseModel):
     ip_allowlist: list[str]
     node_file_env: str
     submit_script_preamble: str
-    pilot_version: str
+    pilot_path: Path
     job_name_prefix: str = "__FIRST_PILOT_"
 
 
@@ -373,10 +373,9 @@ class SecretRef(str):
             **(dotenv_values(".env.secret")),
             **os.environ,
         }
-        try:
-            return envs[name]
-        except KeyError:
-            raise ValueError(f"environment variable {name!r} is not set")
+        if (val := envs.get(name)) is not None:
+            return val
+        raise ValueError(f"environment variable {name!r} is not set")
 
     @classmethod
     def __get_pydantic_core_schema__(

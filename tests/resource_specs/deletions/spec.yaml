@@ -31,7 +31,7 @@ spec:
       #!/bin/bash
       set -eu
       module load python
-    pilot_version: "0.1.0"
+    pilot_path: "/test/first-pilot"
 
 ---
 
