@@ -13,10 +13,15 @@ FastAPI gateway, so the app and API share an origin.
 
 ## Commands (run inside this package dir)
 
+- `npm run lint` — ESLint
+- `npm run format` — Prettier
+- `npm run check` — Typescript->ESLint->Prettier
 - `npm run dev` — Vite dev server on **port 4040** (strict), base path `/admin-console`
 - `npm run build` — `tsc --noEmit` then `vite build`
 - `npm run gen-sdk` — regenerate the API client from the gateway's OpenAPI
-- `npx tsc --noEmit` — type-check
+
+Always run `npm run format` to standardize formatting and `npm run check` to
+verify lints/types.
 
 ## Regenerating the SDK (`npm run gen-sdk`)
 

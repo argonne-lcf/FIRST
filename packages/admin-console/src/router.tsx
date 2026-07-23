@@ -30,7 +30,11 @@ const dashboardRoute = createRoute({
   component: Dashboard,
 });
 
-const routeTree = rootRoute.addChildren([loginRoute, callbackRoute, dashboardRoute]);
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  callbackRoute,
+  dashboardRoute,
+]);
 
 export const router = createRouter({ routeTree, basepath: "/admin-console" });
 

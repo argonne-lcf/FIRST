@@ -21,5 +21,5 @@ createRoot(document.getElementById("root")!).render(
       <AuthBinding />
       <RouterProvider router={router} />
     </Provider>
-  </StrictMode>
+  </StrictMode>,
 );

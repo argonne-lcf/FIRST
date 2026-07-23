@@ -52,7 +52,8 @@ export function Dashboard() {
   }
 
   const user = authorization.user;
-  const gatewayToken = authorization.tokens.getByResourceServer(GATEWAY_CLIENT_ID);
+  const gatewayToken =
+    authorization.tokens.getByResourceServer(GATEWAY_CLIENT_ID);
 
   const logout = async () => {
     await authorization.revoke();

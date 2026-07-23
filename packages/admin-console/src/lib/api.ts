@@ -13,7 +13,8 @@ export function bindAuthorization(instance: AuthorizationManager | undefined) {
 
 client.setConfig({
   baseUrl: "",
-  auth: () => manager?.tokens.getByResourceServer(GATEWAY_CLIENT_ID)?.access_token,
+  auth: () =>
+    manager?.tokens.getByResourceServer(GATEWAY_CLIENT_ID)?.access_token,
 });
 
 export { client };
