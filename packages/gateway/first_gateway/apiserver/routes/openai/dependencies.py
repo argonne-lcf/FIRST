@@ -49,3 +49,8 @@ ResponsesModel = Annotated[
     ModelConfig,
     Depends(model_dependency(OpenAIEndpoints.responses.value)),
 ]
+
+EmbeddingsModel = Annotated[
+    ModelConfig,
+    Depends(model_dependency(OpenAIEndpoints.embeddings.value)),
+]
