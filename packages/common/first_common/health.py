@@ -41,9 +41,17 @@ def _check_once(client: Client, params: HealthCheckParams) -> HealthCheckResult:
     if not params.url:
         return HealthCheckResult.unknown
 
+    if params.api_key:
+        headers = {
+            "Authorization": f"Bearer {params.api_key.resolve().get_secret_value()}"
+        }
+    else:
+        headers = None
+
     try:
         resp = client.request(
             method=params.http_method,
+            headers=headers,
             url=params.url,
             timeout=Timeout(params.read_timeout, connect=params.connect_timeout),
             json=params.json_body,

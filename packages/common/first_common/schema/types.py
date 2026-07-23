@@ -4,6 +4,7 @@ from http import HTTPMethod
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Literal, NewType, TypedDict
 
+from dotenv import dotenv_values
 from jinja2 import Environment, TemplateSyntaxError, meta
 from pydantic import (
     BaseModel,
@@ -29,6 +30,7 @@ class HealthCheckParams(BaseModel):
     """
 
     url: str
+    api_key: "SecretRef | None" = None
     connect_timeout: float = 3.1
     read_timeout: float = 12
     http_method: HTTPMethod = HTTPMethod.GET
@@ -366,8 +368,13 @@ class SecretRef(str):
 
     @staticmethod
     def _from_env_var(name: str) -> str:
+        envs = {
+            **(dotenv_values(".env")),
+            **(dotenv_values(".env.secret")),
+            **os.environ,
+        }
         try:
-            return os.environ[name]
+            return envs[name]
         except KeyError:
             raise ValueError(f"environment variable {name!r} is not set")
 

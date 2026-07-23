@@ -41,6 +41,8 @@ class ClientState:
 class GlobusAuthSettings(BaseSettings):
     app_id: str
     app_secret: SecretStr
+    compute_client_id: str
+    compute_client_secret: SecretStr
     policies: list[str] = []
     authorized_idp_domains: list[str] = []
     user_groups: list[str] = []
@@ -126,8 +128,8 @@ class Settings(BaseSettings):
                 ),
                 compute_client=ComputeClient(
                     app=ClientApp(
-                        client_id=self.globus.app_id,
-                        client_secret=self.globus.app_secret.get_secret_value(),
+                        client_id=self.globus.compute_client_id,
+                        client_secret=self.globus.compute_client_secret.get_secret_value(),
                     ),
                     do_version_check=False,
                 ),

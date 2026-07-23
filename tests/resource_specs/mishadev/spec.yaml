@@ -1,0 +1,104 @@
+kind: Cluster
+name: sophia
+spec:
+  health_check:
+    url: "https://api.alcf.anl.gov/api/v1/status/resources/9674c7e1-aecc-4dbb-bf01-c9197e027cd6"
+    match_pattern: '"current_status":\s*"up"'
+  maintenance_notice: null
+  pilot_system: null
+
+---
+
+kind: Cluster
+name: metis
+spec:
+  health_check:
+    url: "https://metis.alcf.anl.gov/status"
+    match_pattern: '"status":\s*"Live"'
+  maintenance_notice: null
+  pilot_system: null
+
+---
+
+kind: AccessGroup
+name: public
+spec:
+    allowed_groups: []
+    allowed_domains: []
+
+---
+
+kind: Model
+name: openai/gpt-oss-120b
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - /chat/completions
+    - /messages
+    - /responses
+  aliases:
+    - gpt-oss-120b
+  usage_limits:
+    default:
+      tpm: 64000
+      burst_tokens: 128000
+      rpm: 120
+      burst_requests: 10
+      max_user_concurrency: 5
+    overrides:
+      "msalim@anl.gov":
+        tpm: 0
+        burst_tokens: 0
+        rpm: 0
+        burst_requests: 0
+        max_user_concurrency: 100
+  overload:
+    short_retry_sec: 10
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 60
+    ewma_alpha: 0.4
+
+---
+
+kind: Model
+name: google/gemma-4-31B-it
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - /chat/completions
+    - /messages
+    - /responses
+
+---
+
+kind: StaticDeployment
+name: metis/google/gemma-4-31B-it
+spec:
+  cluster_name: metis
+  model_name: google/gemma-4-31B-it
+  api_url: "https://metis.alcf.anl.gov/v1"
+  api_key: env_var://METIS_API_KEY
+  upstream_model_name: gemma-4-31B-it
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://metis.alcf.anl.gov/v1/chat/completions"
+    api_key: env_var://METIS_API_KEY
+    http_method: POST
+    json_body:
+      model: gemma-4-31B-it
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "OK"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 2
+  prometheus_metrics_path: null

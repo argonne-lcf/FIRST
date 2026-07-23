@@ -109,7 +109,8 @@ async def check_schedulers(client_state: ClientState) -> list[Observation]:
     observations: list[Observation] = []
     async with client_state.db_sessionmaker() as sess:
         q = sa.select(Cluster.uid, Cluster.name, Cluster.pilot_system).where(
-            Cluster.pilot_system.is_not(None)
+            Cluster.pilot_system.is_not(None),
+            Cluster.pilot_system != sa.JSON.NULL,
         )
         clusters = await sess.execute(q)
 
