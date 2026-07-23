@@ -2,9 +2,10 @@ services:
   nginx:
     image: nginx:latest
     ports:
-      - "8000:80"
+      - "8000:8000"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../packages/admin-console/dist:/usr/share/nginx/html/admin-console:ro
     depends_on:
       - inference-gateway
     networks:

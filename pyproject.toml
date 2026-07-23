@@ -1,5 +1,11 @@
 [tool.uv.workspace]
-members = ["packages/*"]
+members = [
+    "packages/client",
+    "packages/common",
+    "packages/dashboard",
+    "packages/gateway",
+    "packages/pilot",
+]
 
 [dependency-groups]
 
