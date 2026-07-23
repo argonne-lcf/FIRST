@@ -24,4 +24,8 @@ export default tseslint.config(
       "react-refresh/only-export-components": "warn",
     },
   },
+  {
+    files: ["**/*.{js,mjs,cjs}"],
+    extends: [tseslint.configs.disableTypeChecked],
+  },
 );

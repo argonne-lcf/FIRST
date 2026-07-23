@@ -1,44 +1,20 @@
-import { useEffect, useState } from "react";
 import { Navigate, useNavigate } from "@tanstack/react-router";
 import { useGlobusAuth } from "@globus/react-auth-context";
-import { whoamiWhoamiGet, type UserAuthEvent } from "../lib/client";
+import { useQuery } from "@tanstack/react-query";
+import { userQueries } from "../queries/user";
 import { GATEWAY_CLIENT_ID } from "../config";
 
 // Demo: call the authenticated /whoami route through the generated SDK.
 // The bearer token is attached automatically (see lib/api.ts).
 function WhoamiDemo() {
-  const [state, setState] = useState<
-    | { status: "loading" }
-    | { status: "error"; message: string }
-    | { status: "ok"; user: UserAuthEvent }
-  >({ status: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const { data, error } = await whoamiWhoamiGet();
-      if (cancelled) return;
-      if (error || !data) {
-        setState({ status: "error", message: JSON.stringify(error) });
-      } else {
-        setState({ status: "ok", user: data });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { data, error, isPending } = useQuery(userQueries.whoami());
 
   return (
     <section>
       <h2>/whoami (SDK demo)</h2>
-      {state.status === "loading" && <p className="muted">Loading…</p>}
-      {state.status === "error" && (
-        <p className="muted">Request failed: {state.message}</p>
-      )}
-      {state.status === "ok" && (
-        <pre>{JSON.stringify(state.user, null, 2)}</pre>
-      )}
+      {isPending && <p className="muted">Loading…</p>}
+      {error && <p className="muted">Request failed: {String(error)}</p>}
+      {data && <pre>{JSON.stringify(data, null, 2)}</pre>}
     </section>
   );
 }

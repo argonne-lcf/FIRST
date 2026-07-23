@@ -5,7 +5,18 @@ import { Provider } from "@globus/react-auth-context";
 import { router } from "./router";
 import { AuthBinding } from "./lib/AuthBinding";
 import { AUTH_CLIENT_ID, GATEWAY_SCOPE, REDIRECT_URI } from "./config";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import "./styles.css";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      retry: 1,
+    },
+  },
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -18,8 +29,11 @@ createRoot(document.getElementById("root")!).render(
       // already requested by default (useRefreshTokens: true)
       storage={localStorage}
     >
-      <AuthBinding />
-      <RouterProvider router={router} />
+      <QueryClientProvider client={queryClient}>
+        <AuthBinding />
+        <RouterProvider router={router} />
+        <ReactQueryDevtools initialIsOpen={false} />
+      </QueryClientProvider>
     </Provider>
   </StrictMode>,
 );

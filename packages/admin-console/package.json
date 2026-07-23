@@ -10,11 +10,12 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "gen-sdk": "openapi-ts -i http://localhost:8000/openapi.json -o ./src/lib/client/"
+    "gen-sdk": "openapi-ts && prettier --write ./src/lib/client/"
   },
   "dependencies": {
     "@globus/react-auth-context": "^0.4.0",
     "@globus/sdk": "^6.0.0",
+    "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-router": "^1.120.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@hey-api/openapi-ts": "^0.99.0",
+    "@tanstack/react-query-devtools": "^5.101.4",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
