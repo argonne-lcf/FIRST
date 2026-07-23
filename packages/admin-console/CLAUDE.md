@@ -6,7 +6,7 @@ FastAPI gateway, so the app and API share an origin.
 
 ## Stack
 
-- Vite + React 18 + TypeScript (`type: module`, ESM only)
+- Vite + React 19 + TypeScript (`type: module`, ESM only)
 - Routing: `@tanstack/react-router` — **code-defined routes in `src/router.tsx`**.
   No file-based routing: do not scaffold a `routes/` directory or
   `routeTree.gen.ts`; add routes directly in `router.tsx`.
@@ -135,6 +135,7 @@ Pages compose: `src/queries/` for data, `@/components/ui/` for presentation.
   variant props (`cva`) over one-off overrides. If you need a new visual
   variant of Button/Badge, add it to the variants definition in the
   component file so it's reusable.
+- components use React 19 ref-as-prop; do not add forwardRef
 
 ### Layout conventions
 

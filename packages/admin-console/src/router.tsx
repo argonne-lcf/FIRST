@@ -6,7 +6,10 @@ import {
 } from "@tanstack/react-router";
 import { Login } from "./pages/Login";
 import { Callback } from "./pages/Callback";
-import { Dashboard } from "./pages/Dashboard";
+import { AppLayout } from "./pages/AppLayout";
+import { Health } from "./pages/Health";
+import { Deployments } from "./pages/Deployments";
+import { Clusters } from "./pages/Clusters";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -24,16 +27,35 @@ const callbackRoute = createRoute({
   component: Callback,
 });
 
-const dashboardRoute = createRoute({
+// Layout route: the tabbed app shell. Its children render inside <Outlet />.
+const shellRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/dashboard",
-  component: Dashboard,
+  id: "shell",
+  component: AppLayout,
+});
+
+const healthRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/health",
+  component: Health,
+});
+
+const deploymentsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/deployments",
+  component: Deployments,
+});
+
+const clustersRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/clusters",
+  component: Clusters,
 });
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
   callbackRoute,
-  dashboardRoute,
+  shellRoute.addChildren([healthRoute, deploymentsRoute, clustersRoute]),
 ]);
 
 export const router = createRouter({ routeTree, basepath: "/admin-console" });

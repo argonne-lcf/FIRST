@@ -4,7 +4,7 @@ import { useGlobusAuth } from "@globus/react-auth-context";
 
 /**
  * Globus Auth redirects here with ?code=...&state=... — exchange the
- * code for tokens (PKCE), then move on to the dashboard.
+ * code for tokens (PKCE), then move on to the app.
  */
 export function Callback() {
   const { isAuthenticated, authorization } = useGlobusAuth();
@@ -15,7 +15,7 @@ export function Callback() {
     if (!authorization) return;
 
     if (isAuthenticated) {
-      void navigate({ to: "/dashboard", replace: true });
+      void navigate({ to: "/health", replace: true });
       return;
     }
 
@@ -30,9 +30,9 @@ export function Callback() {
   }, [authorization, isAuthenticated, navigate]);
 
   return (
-    <main className="page">
+    <main className="mx-auto mt-[18vh] max-w-md space-y-2 px-6">
       <p>Completing sign-in…</p>
-      <p className="muted">
+      <p className="text-sm text-muted-foreground">
         Stuck here? <Link to="/">Return to login</Link>
       </p>
     </main>
