@@ -1,4 +1,5 @@
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, Awaitable
 
 from fastapi import Depends
 
@@ -24,7 +25,7 @@ async def resolve_model(
     return model
 
 
-def model_dependency(endpoint: str):
+def model_dependency(endpoint: str) -> Callable[..., Awaitable[ModelConfig]]:
     async def dependency(
         router_config: RouterConfigDep,
         user: AuthUser,
