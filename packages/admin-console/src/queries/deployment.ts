@@ -3,7 +3,7 @@ import {
   listPilotDeploymentsCatalogV1DeploymentsPilotGetOptions,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGetOptions,
   listStaticDeploymentsCatalogV1DeploymentsStaticGetOptions,
-} from "../lib/client/@tanstack/react-query.gen";
+} from "@/lib/client/@tanstack/react-query.gen";
 
 export const deploymentQueries = {
   pilots: () =>

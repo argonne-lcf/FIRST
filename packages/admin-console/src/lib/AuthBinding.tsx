@@ -4,7 +4,7 @@ import { bindAuthorization } from "./api";
 
 /**
  * Bridges the AuthorizationManager (created inside <Provider>) to the
- * module-scoped axios client. Renders nothing.
+ * codegen client. Renders nothing.
  */
 export function AuthBinding() {
   const { authorization } = useGlobusAuth();

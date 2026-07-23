@@ -1,6 +1,6 @@
 import type { AuthorizationManager } from "@globus/sdk/core/authorization/AuthorizationManager";
 import { client } from "./client/client.gen";
-import { GATEWAY_CLIENT_ID } from "../config";
+import { GATEWAY_CLIENT_ID } from "@/config";
 
 let manager: AuthorizationManager | undefined;
 

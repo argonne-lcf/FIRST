@@ -6,11 +6,11 @@ import {
   listClustersCatalogV1ClustersGet,
   listStaticDeploymentsCatalogV1DeploymentsStaticGet,
   listPilotDeploymentsCatalogV1DeploymentsPilotGet,
-} from "../lib/client";
+} from "@/lib/client";
 import {
   listClustersCatalogV1ClustersGetOptions,
   getClusterCatalogV1ClustersNameGetOptions,
-} from "../lib/client/@tanstack/react-query.gen";
+} from "@/lib/client/@tanstack/react-query.gen";
 
 /** A cluster joined with the deployments that reference it by name. */
 export type ClusterOverview = {

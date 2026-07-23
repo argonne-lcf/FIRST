@@ -152,3 +152,9 @@ Pages compose: `src/queries/` for data, `@/components/ui/` for presentation.
 - UI components: `import { Button } from '@/components/ui/button'`
 - Never import from Radix (`@radix-ui/*`) directly in pages;
   go through `components/ui/`.
+
+### Live Testing with Playwright MCP
+
+- `npm run dev`: start background vite dev server on http://localhost:4040
+(already proxies API calls to localhost:8000 correctly)
+- Use Playwright MCP to interact with this dev deployment
