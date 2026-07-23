@@ -5,13 +5,13 @@ from fastapi import Depends
 from first_common.errors import InvalidSpecError, NotFound
 from first_common.schema.endpoints.openai import BasePayload, OpenAIEndpoints
 
-from ....database.redis.router_config import ModelConfig, RouterConfig
+from ....database.redis.router_config import ModelConfig
 from ...auth import enforce_permission
-from ...dependencies import AuthUser
+from ...dependencies import AuthUser, RouterConfigDep
 
 
 async def resolve_model(
-    *, router_config: RouterConfig, user: AuthUser, model_name: str, endpoint: str
+    *, router_config: RouterConfigDep, user: AuthUser, model_name: str, endpoint: str
 ) -> ModelConfig:
     model = router_config.models_by_name.get(model_name)
     if model is None:
@@ -26,14 +26,14 @@ async def resolve_model(
 
 def model_dependency(endpoint: str):
     async def dependency(
-        router_config: RouterConfig,
+        router_config: RouterConfigDep,
         user: AuthUser,
         payload: BasePayload,
     ) -> ModelConfig:
         return await resolve_model(
             router_config=router_config,
             user=user,
-            model=payload.model,
+            model_name=payload.model,
             endpoint=endpoint,
         )
 
