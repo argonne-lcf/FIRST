@@ -10,27 +10,27 @@ from first_common.schema.endpoints.openai import (
 )
 
 from ...dependencies import AuthUser
-from .dependencies import ChatCompletionsModel, EmbeddingsModel, ResponsesModel
+from .dependencies import AuthorizedModel
 
 router = APIRouter(prefix="/federated/v1")
 
 
 @router.post("/chat/completions", response_model=None)
 async def chat_completions(
-    user: AuthUser, payload: OpenAIChatCompletionsPayload, model: ChatCompletionsModel
+    user: AuthUser, payload: OpenAIChatCompletionsPayload, model: AuthorizedModel
 ) -> StreamingResponse | dict[str, Any]:
     raise NotImplementedError("Not implemented yet.")
 
 
 @router.post("/responses", response_model=None)
 async def responses(
-    user: AuthUser, payload: OpenAIResponsesPayload, model: ResponsesModel
+    user: AuthUser, payload: OpenAIResponsesPayload, model: AuthorizedModel
 ) -> StreamingResponse | dict[str, Any]:
     raise NotImplementedError("Not implemented yet.")
 
 
 @router.post("/embeddings", response_model=None)
 async def embeddings(
-    user: AuthUser, payload: OpenAIEmbeddingsPayload, model: EmbeddingsModel
+    user: AuthUser, payload: OpenAIEmbeddingsPayload, model: AuthorizedModel
 ) -> StreamingResponse | dict[str, Any]:
     raise NotImplementedError("Not implemented yet.")
