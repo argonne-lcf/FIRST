@@ -9,6 +9,8 @@ import { Callback } from "./pages/Callback";
 import { AppLayout } from "./pages/AppLayout";
 import { TabsLayout } from "./pages/TabsLayout";
 import { Health } from "./pages/Health";
+import { Models } from "./pages/Models";
+import { ModelDetail } from "./pages/ModelDetail";
 import { Deployments } from "./pages/Deployments";
 import { DeploymentDetail } from "./pages/DeploymentDetail";
 import { Clusters } from "./pages/Clusters";
@@ -52,6 +54,12 @@ const healthRoute = createRoute({
   component: Health,
 });
 
+const modelsRoute = createRoute({
+  getParentRoute: () => tabsLayoutRoute,
+  path: "/models",
+  component: Models,
+});
+
 const deploymentsRoute = createRoute({
   getParentRoute: () => tabsLayoutRoute,
   path: "/deployments",
@@ -65,6 +73,12 @@ const clustersRoute = createRoute({
 });
 
 // Detail views render their own breadcrumb bar instead of the tab bar.
+const modelDetailRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/models/$modelSlug",
+  component: ModelDetail,
+});
+
 const deploymentDetailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/deployments/$kind/$deploymentSlug",
@@ -87,7 +101,13 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   callbackRoute,
   shellRoute.addChildren([
-    tabsLayoutRoute.addChildren([healthRoute, deploymentsRoute, clustersRoute]),
+    tabsLayoutRoute.addChildren([
+      healthRoute,
+      modelsRoute,
+      deploymentsRoute,
+      clustersRoute,
+    ]),
+    modelDetailRoute,
     deploymentDetailRoute,
     clusterDetailRoute,
     pilotJobDetailRoute,

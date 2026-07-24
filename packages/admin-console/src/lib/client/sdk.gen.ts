@@ -27,6 +27,8 @@ import type {
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
+  GetRouterConfigCatalogV1RouterConfigGetData,
+  GetRouterConfigCatalogV1RouterConfigGetResponses,
   GetSystemHealthCatalogV1SystemHealthGetData,
   GetSystemHealthCatalogV1SystemHealthGetResponses,
   HealthHealthGetData,
@@ -387,6 +389,31 @@ export const embeddingsFederatedV1EmbeddingsPost = <
   });
 
 /**
+ * Get Cluster
+ *
+ * Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
+ * sensitive operational state.
+ */
+export const getClusterCatalogV1ClustersNameGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetClusterCatalogV1ClustersNameGetData, ThrowOnError>,
+): RequestResult<
+  GetClusterCatalogV1ClustersNameGetResponses,
+  GetClusterCatalogV1ClustersNameGetErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetClusterCatalogV1ClustersNameGetResponses,
+    GetClusterCatalogV1ClustersNameGetErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/catalog/v1/clusters/{name}",
+    ...options,
+  });
+
+/**
  * Get System Health
  *
  * One-glance operational snapshot: the health/state and any reconcile error
@@ -412,27 +439,24 @@ export const getSystemHealthCatalogV1SystemHealthGet = <
   });
 
 /**
- * Get Cluster
- *
- * Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
- * sensitive operational state.
+ * Get Router Config
  */
-export const getClusterCatalogV1ClustersNameGet = <
+export const getRouterConfigCatalogV1RouterConfigGet = <
   ThrowOnError extends boolean = false,
 >(
-  options: Options<GetClusterCatalogV1ClustersNameGetData, ThrowOnError>,
+  options?: Options<GetRouterConfigCatalogV1RouterConfigGetData, ThrowOnError>,
 ): RequestResult<
-  GetClusterCatalogV1ClustersNameGetResponses,
-  GetClusterCatalogV1ClustersNameGetErrors,
+  GetRouterConfigCatalogV1RouterConfigGetResponses,
+  unknown,
   ThrowOnError
 > =>
-  (options.client ?? client).get<
-    GetClusterCatalogV1ClustersNameGetResponses,
-    GetClusterCatalogV1ClustersNameGetErrors,
+  (options?.client ?? client).get<
+    GetRouterConfigCatalogV1RouterConfigGetResponses,
+    unknown,
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/catalog/v1/clusters/{name}",
+    url: "/catalog/v1/router-config",
     ...options,
   });
 

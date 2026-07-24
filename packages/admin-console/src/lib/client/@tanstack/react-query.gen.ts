@@ -14,6 +14,7 @@ import {
   getClusterCatalogV1ClustersNameGet,
   getConfigVersionControlV1ConfigVersionsUidGet,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGet,
+  getRouterConfigCatalogV1RouterConfigGet,
   getSystemHealthCatalogV1SystemHealthGet,
   healthHealthGet,
   listAccessGroupsCatalogV1AccessGroupsGet,
@@ -48,6 +49,8 @@ import type {
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetError,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponse,
+  GetRouterConfigCatalogV1RouterConfigGetData,
+  GetRouterConfigCatalogV1RouterConfigGetResponse,
   GetSystemHealthCatalogV1SystemHealthGetData,
   GetSystemHealthCatalogV1SystemHealthGetResponse,
   HealthHealthGetData,
@@ -509,6 +512,37 @@ export const embeddingsFederatedV1EmbeddingsPostMutation = (
   return mutationOptions;
 };
 
+export const getClusterCatalogV1ClustersNameGetQueryKey = (
+  options: Options<GetClusterCatalogV1ClustersNameGetData>,
+) => createQueryKey("getClusterCatalogV1ClustersNameGet", options);
+
+/**
+ * Get Cluster
+ *
+ * Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
+ * sensitive operational state.
+ */
+export const getClusterCatalogV1ClustersNameGetOptions = (
+  options: Options<GetClusterCatalogV1ClustersNameGetData>,
+) =>
+  queryOptions<
+    GetClusterCatalogV1ClustersNameGetResponse,
+    GetClusterCatalogV1ClustersNameGetError,
+    GetClusterCatalogV1ClustersNameGetResponse,
+    ReturnType<typeof getClusterCatalogV1ClustersNameGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await getClusterCatalogV1ClustersNameGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: getClusterCatalogV1ClustersNameGetQueryKey(options),
+  });
+
 export const getSystemHealthCatalogV1SystemHealthGetQueryKey = (
   options?: Options<GetSystemHealthCatalogV1SystemHealthGetData>,
 ) => createQueryKey("getSystemHealthCatalogV1SystemHealthGet", options);
@@ -540,27 +574,24 @@ export const getSystemHealthCatalogV1SystemHealthGetOptions = (
     queryKey: getSystemHealthCatalogV1SystemHealthGetQueryKey(options),
   });
 
-export const getClusterCatalogV1ClustersNameGetQueryKey = (
-  options: Options<GetClusterCatalogV1ClustersNameGetData>,
-) => createQueryKey("getClusterCatalogV1ClustersNameGet", options);
+export const getRouterConfigCatalogV1RouterConfigGetQueryKey = (
+  options?: Options<GetRouterConfigCatalogV1RouterConfigGetData>,
+) => createQueryKey("getRouterConfigCatalogV1RouterConfigGet", options);
 
 /**
- * Get Cluster
- *
- * Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
- * sensitive operational state.
+ * Get Router Config
  */
-export const getClusterCatalogV1ClustersNameGetOptions = (
-  options: Options<GetClusterCatalogV1ClustersNameGetData>,
+export const getRouterConfigCatalogV1RouterConfigGetOptions = (
+  options?: Options<GetRouterConfigCatalogV1RouterConfigGetData>,
 ) =>
   queryOptions<
-    GetClusterCatalogV1ClustersNameGetResponse,
-    GetClusterCatalogV1ClustersNameGetError,
-    GetClusterCatalogV1ClustersNameGetResponse,
-    ReturnType<typeof getClusterCatalogV1ClustersNameGetQueryKey>
+    GetRouterConfigCatalogV1RouterConfigGetResponse,
+    DefaultError,
+    GetRouterConfigCatalogV1RouterConfigGetResponse,
+    ReturnType<typeof getRouterConfigCatalogV1RouterConfigGetQueryKey>
   >({
     queryFn: async ({ queryKey, signal }) => {
-      const { data } = await getClusterCatalogV1ClustersNameGet({
+      const { data } = await getRouterConfigCatalogV1RouterConfigGet({
         ...options,
         ...queryKey[0],
         signal,
@@ -568,7 +599,7 @@ export const getClusterCatalogV1ClustersNameGetOptions = (
       });
       return data;
     },
-    queryKey: getClusterCatalogV1ClustersNameGetQueryKey(options),
+    queryKey: getRouterConfigCatalogV1RouterConfigGetQueryKey(options),
   });
 
 /**

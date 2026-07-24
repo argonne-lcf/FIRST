@@ -58,6 +58,28 @@ export type AccessGroup = {
 };
 
 /**
+ * BackendConfig
+ */
+export type BackendConfig = {
+  /**
+   * Id
+   */
+  id: string;
+  /**
+   * Model Url
+   */
+  model_url: string;
+  /**
+   * Backend Model Name
+   */
+  backend_model_name: string;
+  /**
+   * Api Key
+   */
+  api_key: string | null;
+};
+
+/**
  * BackendRuntime
  */
 export type BackendRuntime = {
@@ -333,6 +355,33 @@ export type DemandThresholdStrategy = {
   scaling_thresholds?: Array<[number, number]>;
 };
 
+/**
+ * DeploymentConfig
+ */
+export type DeploymentConfig = {
+  /**
+   * Kind
+   */
+  kind: "pilot" | "static";
+  /**
+   * Name
+   */
+  name: string;
+  router_params: RouterParams;
+  /**
+   * Prometheus Metrics Path
+   */
+  prometheus_metrics_path: string | null;
+  /**
+   * Prometheus Scrape Interval Sec
+   */
+  prometheus_scrape_interval_sec: number;
+  /**
+   * Backends
+   */
+  backends: Array<BackendConfig>;
+};
+
 export type FieldChange = [unknown, unknown];
 
 /**
@@ -481,6 +530,38 @@ export type HostGpus = {
    * Gpus
    */
   gpus: Array<GpuInfo>;
+};
+
+/**
+ * ModelConfig
+ */
+export type ModelConfig = {
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Aliases
+   */
+  aliases: Array<string>;
+  /**
+   * Allowed Groups
+   */
+  allowed_groups: Array<string>;
+  /**
+   * Allowed Domains
+   */
+  allowed_domains: Array<string>;
+  /**
+   * Supported Endpoints
+   */
+  supported_endpoints: Array<string>;
+  usage_limits: UsagePolicy;
+  overload: OverloadPolicy;
+  /**
+   * Deployments
+   */
+  deployments: Array<DeploymentConfig>;
 };
 
 /**
@@ -1330,6 +1411,28 @@ export type ResourceRef = {
  */
 export type ResourceSpec = {
   [key: string]: unknown;
+};
+
+/**
+ * RouterConfig
+ *
+ * The contract between the control plane and data plane.
+ *
+ * The Control Plane is the sole writer of the RouterConfig: it coalesces
+ * information about all model instances that are running and routeable.
+ *
+ * The apiserver is the sole reader of the RouterConfig: it uses this
+ * live-updating configuration snapshot to route incoming traffic to model backends.
+ */
+export type RouterConfig = {
+  /**
+   * Version
+   */
+  version?: number;
+  /**
+   * Models
+   */
+  models?: Array<ModelConfig>;
 };
 
 /**
@@ -2584,23 +2687,6 @@ export type EmbeddingsFederatedV1EmbeddingsPostResponses = {
   200: unknown;
 };
 
-export type GetSystemHealthCatalogV1SystemHealthGetData = {
-  body?: never;
-  path?: never;
-  query?: never;
-  url: "/catalog/v1/system-health";
-};
-
-export type GetSystemHealthCatalogV1SystemHealthGetResponses = {
-  /**
-   * Successful Response
-   */
-  200: SystemHealth;
-};
-
-export type GetSystemHealthCatalogV1SystemHealthGetResponse =
-  GetSystemHealthCatalogV1SystemHealthGetResponses[keyof GetSystemHealthCatalogV1SystemHealthGetResponses];
-
 export type GetClusterCatalogV1ClustersNameGetData = {
   body?: never;
   path: {
@@ -2632,6 +2718,40 @@ export type GetClusterCatalogV1ClustersNameGetResponses = {
 
 export type GetClusterCatalogV1ClustersNameGetResponse =
   GetClusterCatalogV1ClustersNameGetResponses[keyof GetClusterCatalogV1ClustersNameGetResponses];
+
+export type GetSystemHealthCatalogV1SystemHealthGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/catalog/v1/system-health";
+};
+
+export type GetSystemHealthCatalogV1SystemHealthGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: SystemHealth;
+};
+
+export type GetSystemHealthCatalogV1SystemHealthGetResponse =
+  GetSystemHealthCatalogV1SystemHealthGetResponses[keyof GetSystemHealthCatalogV1SystemHealthGetResponses];
+
+export type GetRouterConfigCatalogV1RouterConfigGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/catalog/v1/router-config";
+};
+
+export type GetRouterConfigCatalogV1RouterConfigGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: RouterConfig;
+};
+
+export type GetRouterConfigCatalogV1RouterConfigGetResponse =
+  GetRouterConfigCatalogV1RouterConfigGetResponses[keyof GetRouterConfigCatalogV1RouterConfigGetResponses];
 
 export type PlanResourcesControlV1PlanPostData = {
   body: BodyPlanResourcesControlV1PlanPost;

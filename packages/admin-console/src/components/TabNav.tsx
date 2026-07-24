@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 
 const TABS = [
   { to: "/health", label: "Health" },
+  { to: "/models", label: "Models" },
   { to: "/deployments", label: "Deployments" },
   { to: "/clusters", label: "Clusters" },
 ] as const;
