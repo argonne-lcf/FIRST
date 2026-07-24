@@ -20,6 +20,18 @@ from .certmanager import generate_server_cert
 _READY_SUFFIX = ".ready.json"
 
 
+class _BlockStringDumper(yaml.SafeDumper):
+    """SafeDumper that emits multi-line strings as block literals (|)."""
+
+
+def _str_representer(dumper: _BlockStringDumper, data: str) -> yaml.ScalarNode:
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_BlockStringDumper.add_representer(str, _str_representer)
+
+
 class PilotSubmitter:
     """
     Manages PilotJob lifecycles on top of a SchedulerAdapter.
@@ -65,7 +77,9 @@ class PilotSubmitter:
             node_file_env=pc.node_file_env,
             job_name=name,
         )
-        config_yaml = yaml.safe_dump(runtime_cfg.model_dump(mode="json"))
+        config_yaml = yaml.dump(
+            runtime_cfg.model_dump(mode="json"), Dumper=_BlockStringDumper
+        )
 
         config_path = pc.workdir / "submit_scripts" / f"{name}.config.yaml"
         script_path = pc.workdir / "submit_scripts" / f"{name}.sh"
