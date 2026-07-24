@@ -35,6 +35,18 @@ export type AccessGroup = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Slug
    *
    * Case-sensitive slug, safe for use in a URL path segment.
@@ -130,6 +142,18 @@ export type ClusterDetail = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   /**
    * Pilot Jobs
@@ -176,6 +200,18 @@ export type ClusterSummary = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   /**
    * Slug
@@ -508,6 +544,18 @@ export type ModelSummary = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Pilot Deployments
    */
   pilot_deployments: Array<PilotDeploymentSummary>;
@@ -525,6 +573,59 @@ export type ModelSummary = {
    * obtain a bijective mapping (~ is disallowed in name but slug-safe).
    */
   readonly slug: string;
+};
+
+/**
+ * OpenAIChatCompletionsPayload
+ */
+export type OpenAiChatCompletionsPayload = {
+  /**
+   * Model
+   */
+  model: string;
+  /**
+   * Messages
+   */
+  messages: Array<unknown>;
+  /**
+   * Stream
+   */
+  stream?: boolean | null;
+  [key: string]: unknown;
+};
+
+/**
+ * OpenAIEmbeddingsPayload
+ */
+export type OpenAiEmbeddingsPayload = {
+  /**
+   * Model
+   */
+  model: string;
+  /**
+   * Input
+   */
+  input: string | Array<string> | Array<number> | Array<Array<number>>;
+  [key: string]: unknown;
+};
+
+/**
+ * OpenAIResponsesPayload
+ */
+export type OpenAiResponsesPayload = {
+  /**
+   * Model
+   */
+  model: string;
+  /**
+   * Input
+   */
+  input: unknown;
+  /**
+   * Stream
+   */
+  stream?: boolean | null;
+  [key: string]: unknown;
 };
 
 /**
@@ -622,9 +723,9 @@ export type PilotConfig = {
    */
   submit_script_preamble: string;
   /**
-   * Pilot Version
+   * Pilot Path
    */
-  pilot_version: string;
+  pilot_path: string;
   /**
    * Job Name Prefix
    */
@@ -684,6 +785,18 @@ export type PilotDeploymentDetail = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   /**
    * Desired Replicas
    */
@@ -749,6 +862,18 @@ export type PilotDeploymentSummary = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Cluster Name
    */
   cluster_name: string;
@@ -805,9 +930,21 @@ export type PilotJob = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Scheduler Job Id
    */
-  scheduler_job_id: string;
+  scheduler_job_id: string | null;
   /**
    * Cluster Name
    */
@@ -847,6 +984,10 @@ export type PilotJob = {
    * Gpus Per Node
    */
   gpus_per_node: number;
+  /**
+   * Deleted At
+   */
+  deleted_at?: string | null;
   runtime?: PilotJobRuntime | null;
   /**
    * Slug
@@ -944,6 +1085,18 @@ export type PilotReplica = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Pilot Deployment Name
    */
   pilot_deployment_name: string;
@@ -966,7 +1119,7 @@ export type PilotReplica = {
   /**
    * Observed Served Name
    */
-  observed_served_name: string;
+  observed_served_name?: string | null;
   state: ReplicaState;
   /**
    * State Message
@@ -980,6 +1133,10 @@ export type PilotReplica = {
    * Stopped At
    */
   stopped_at?: string | null;
+  /**
+   * Deleted At
+   */
+  deleted_at?: string | null;
   runtime?: BackendRuntime;
   /**
    * Slug
@@ -1001,7 +1158,7 @@ export type PilotResources = {
   /**
    * Hosts
    */
-  hosts: Array<HostGpus>;
+  hosts?: Array<HostGpus>;
 };
 
 /**
@@ -1228,6 +1385,18 @@ export type StaticDeploymentDetail = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   runtime?: BackendRuntime;
   /**
@@ -1294,6 +1463,18 @@ export type StaticDeploymentSummary = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   /**
    * Slug
@@ -1460,6 +1641,18 @@ export type AccessGroupWritable = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
 };
 
 /**
@@ -1491,6 +1684,18 @@ export type ClusterDetailWritable = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   /**
    * Pilot Jobs
@@ -1528,6 +1733,18 @@ export type ClusterSummaryWritable = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
 };
 
@@ -1573,6 +1790,18 @@ export type ModelSummaryWritable = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   /**
    * Pilot Deployments
    */
@@ -1638,6 +1867,18 @@ export type PilotDeploymentDetailWritable = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Desired Replicas
    */
   desired_replicas: number;
@@ -1675,6 +1916,18 @@ export type PilotDeploymentSummaryWritable = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   /**
    * Cluster Name
    */
@@ -1723,9 +1976,21 @@ export type PilotJobWritable = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Scheduler Job Id
    */
-  scheduler_job_id: string;
+  scheduler_job_id: string | null;
   /**
    * Cluster Name
    */
@@ -1765,6 +2030,10 @@ export type PilotJobWritable = {
    * Gpus Per Node
    */
   gpus_per_node: number;
+  /**
+   * Deleted At
+   */
+  deleted_at?: string | null;
   runtime?: PilotJobRuntime | null;
 };
 
@@ -1794,6 +2063,18 @@ export type PilotReplicaWritable = {
    */
   created_at: string;
   /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
    * Pilot Deployment Name
    */
   pilot_deployment_name: string;
@@ -1816,7 +2097,7 @@ export type PilotReplicaWritable = {
   /**
    * Observed Served Name
    */
-  observed_served_name: string;
+  observed_served_name?: string | null;
   state: ReplicaState;
   /**
    * State Message
@@ -1830,6 +2111,10 @@ export type PilotReplicaWritable = {
    * Stopped At
    */
   stopped_at?: string | null;
+  /**
+   * Deleted At
+   */
+  deleted_at?: string | null;
   runtime?: BackendRuntime;
 };
 
@@ -1895,6 +2180,18 @@ export type StaticDeploymentDetailWritable = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   runtime?: BackendRuntime;
 };
@@ -1952,6 +2249,18 @@ export type StaticDeploymentSummaryWritable = {
    * Created At
    */
   created_at: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
   health: HealthCheckResult;
 };
 
@@ -2138,6 +2447,78 @@ export type ListClustersCatalogV1ClustersGetResponses = {
 
 export type ListClustersCatalogV1ClustersGetResponse =
   ListClustersCatalogV1ClustersGetResponses[keyof ListClustersCatalogV1ClustersGetResponses];
+
+export type ChatCompletionsFederatedV1ChatCompletionsPostData = {
+  body: OpenAiChatCompletionsPayload;
+  path?: never;
+  query?: never;
+  url: "/federated/v1/chat/completions";
+};
+
+export type ChatCompletionsFederatedV1ChatCompletionsPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ChatCompletionsFederatedV1ChatCompletionsPostError =
+  ChatCompletionsFederatedV1ChatCompletionsPostErrors[keyof ChatCompletionsFederatedV1ChatCompletionsPostErrors];
+
+export type ChatCompletionsFederatedV1ChatCompletionsPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type ResponsesFederatedV1ResponsesPostData = {
+  body: OpenAiResponsesPayload;
+  path?: never;
+  query?: never;
+  url: "/federated/v1/responses";
+};
+
+export type ResponsesFederatedV1ResponsesPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type ResponsesFederatedV1ResponsesPostError =
+  ResponsesFederatedV1ResponsesPostErrors[keyof ResponsesFederatedV1ResponsesPostErrors];
+
+export type ResponsesFederatedV1ResponsesPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type EmbeddingsFederatedV1EmbeddingsPostData = {
+  body: OpenAiEmbeddingsPayload;
+  path?: never;
+  query?: never;
+  url: "/federated/v1/embeddings";
+};
+
+export type EmbeddingsFederatedV1EmbeddingsPostErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type EmbeddingsFederatedV1EmbeddingsPostError =
+  EmbeddingsFederatedV1EmbeddingsPostErrors[keyof EmbeddingsFederatedV1EmbeddingsPostErrors];
+
+export type EmbeddingsFederatedV1EmbeddingsPostResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
 
 export type GetClusterCatalogV1ClustersNameGetData = {
   body?: never;

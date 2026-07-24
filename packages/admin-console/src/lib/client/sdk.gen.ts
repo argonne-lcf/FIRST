@@ -12,6 +12,12 @@ import type {
   ApplyResourcesControlV1ApplyPostData,
   ApplyResourcesControlV1ApplyPostErrors,
   ApplyResourcesControlV1ApplyPostResponses,
+  ChatCompletionsFederatedV1ChatCompletionsPostData,
+  ChatCompletionsFederatedV1ChatCompletionsPostErrors,
+  ChatCompletionsFederatedV1ChatCompletionsPostResponses,
+  EmbeddingsFederatedV1EmbeddingsPostData,
+  EmbeddingsFederatedV1EmbeddingsPostErrors,
+  EmbeddingsFederatedV1EmbeddingsPostResponses,
   GetClusterCatalogV1ClustersNameGetData,
   GetClusterCatalogV1ClustersNameGetErrors,
   GetClusterCatalogV1ClustersNameGetResponses,
@@ -43,6 +49,9 @@ import type {
   ReconcileResetControlV1ReconcileResetPostData,
   ReconcileResetControlV1ReconcileResetPostErrors,
   ReconcileResetControlV1ReconcileResetPostResponses,
+  ResponsesFederatedV1ResponsesPostData,
+  ResponsesFederatedV1ResponsesPostErrors,
+  ResponsesFederatedV1ResponsesPostResponses,
   SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
   SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors,
   SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses,
@@ -292,6 +301,87 @@ export const listClustersCatalogV1ClustersGet = <
     security: [{ scheme: "bearer", type: "http" }],
     url: "/catalog/v1/clusters",
     ...options,
+  });
+
+/**
+ * Chat Completions
+ */
+export const chatCompletionsFederatedV1ChatCompletionsPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    ChatCompletionsFederatedV1ChatCompletionsPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ChatCompletionsFederatedV1ChatCompletionsPostResponses,
+  ChatCompletionsFederatedV1ChatCompletionsPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    ChatCompletionsFederatedV1ChatCompletionsPostResponses,
+    ChatCompletionsFederatedV1ChatCompletionsPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/federated/v1/chat/completions",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Responses
+ */
+export const responsesFederatedV1ResponsesPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ResponsesFederatedV1ResponsesPostData, ThrowOnError>,
+): RequestResult<
+  ResponsesFederatedV1ResponsesPostResponses,
+  ResponsesFederatedV1ResponsesPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    ResponsesFederatedV1ResponsesPostResponses,
+    ResponsesFederatedV1ResponsesPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/federated/v1/responses",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Embeddings
+ */
+export const embeddingsFederatedV1EmbeddingsPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<EmbeddingsFederatedV1EmbeddingsPostData, ThrowOnError>,
+): RequestResult<
+  EmbeddingsFederatedV1EmbeddingsPostResponses,
+  EmbeddingsFederatedV1EmbeddingsPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    EmbeddingsFederatedV1EmbeddingsPostResponses,
+    EmbeddingsFederatedV1EmbeddingsPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/federated/v1/embeddings",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
   });
 
 /**

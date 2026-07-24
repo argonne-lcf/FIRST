@@ -54,6 +54,9 @@ class ResourceMeta(BaseModel):
     )
     uid: int
     created_at: datetime
+    reconcile_failures: int = 0
+    reconcile_last_error: str | None = None
+    reconcile_retry_at: datetime | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -140,6 +143,7 @@ class PilotReplica(ResourceMeta):
     state_message: str
     started_at: datetime | None = None
     stopped_at: datetime | None = None
+    deleted_at: datetime | None = None
 
     runtime: BackendRuntime = BackendRuntime()
 
@@ -192,6 +196,7 @@ class PilotJob(ResourceMeta):
     walltime_min: int
     num_nodes: int
     gpus_per_node: int
+    deleted_at: datetime | None = None
 
     runtime: PilotJobRuntime | None = None
 

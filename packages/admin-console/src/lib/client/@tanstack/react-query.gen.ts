@@ -9,6 +9,8 @@ import {
 import { client } from "../client.gen";
 import {
   applyResourcesControlV1ApplyPost,
+  chatCompletionsFederatedV1ChatCompletionsPost,
+  embeddingsFederatedV1EmbeddingsPost,
   getClusterCatalogV1ClustersNameGet,
   getConfigVersionControlV1ConfigVersionsUidGet,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGet,
@@ -23,6 +25,7 @@ import {
   planResourcesControlV1PlanPost,
   prometheusServiceDiscoveryDiscoveryV1PrometheusGet,
   reconcileResetControlV1ReconcileResetPost,
+  responsesFederatedV1ResponsesPost,
   setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut,
   tailReplicaLogsControlV1PilotReplicasNameLogsGet,
   whoamiWhoamiGet,
@@ -31,6 +34,10 @@ import type {
   ApplyResourcesControlV1ApplyPostData,
   ApplyResourcesControlV1ApplyPostError,
   ApplyResourcesControlV1ApplyPostResponse,
+  ChatCompletionsFederatedV1ChatCompletionsPostData,
+  ChatCompletionsFederatedV1ChatCompletionsPostError,
+  EmbeddingsFederatedV1EmbeddingsPostData,
+  EmbeddingsFederatedV1EmbeddingsPostError,
   GetClusterCatalogV1ClustersNameGetData,
   GetClusterCatalogV1ClustersNameGetError,
   GetClusterCatalogV1ClustersNameGetResponse,
@@ -62,6 +69,8 @@ import type {
   ReconcileResetControlV1ReconcileResetPostData,
   ReconcileResetControlV1ReconcileResetPostError,
   ReconcileResetControlV1ReconcileResetPostResponse,
+  ResponsesFederatedV1ResponsesPostData,
+  ResponsesFederatedV1ResponsesPostError,
   SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
   SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError,
   SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse,
@@ -415,6 +424,87 @@ export const listClustersCatalogV1ClustersGetOptions = (
     },
     queryKey: listClustersCatalogV1ClustersGetQueryKey(options),
   });
+
+/**
+ * Chat Completions
+ */
+export const chatCompletionsFederatedV1ChatCompletionsPostMutation = (
+  options?: Partial<Options<ChatCompletionsFederatedV1ChatCompletionsPostData>>,
+): UseMutationOptions<
+  unknown,
+  ChatCompletionsFederatedV1ChatCompletionsPostError,
+  Options<ChatCompletionsFederatedV1ChatCompletionsPostData>
+> => {
+  const mutationOptions: UseMutationOptions<
+    unknown,
+    ChatCompletionsFederatedV1ChatCompletionsPostError,
+    Options<ChatCompletionsFederatedV1ChatCompletionsPostData>
+  > = {
+    mutationFn: async (fnOptions) => {
+      const { data } = await chatCompletionsFederatedV1ChatCompletionsPost({
+        ...options,
+        ...fnOptions,
+        throwOnError: true,
+      });
+      return data;
+    },
+  };
+  return mutationOptions;
+};
+
+/**
+ * Responses
+ */
+export const responsesFederatedV1ResponsesPostMutation = (
+  options?: Partial<Options<ResponsesFederatedV1ResponsesPostData>>,
+): UseMutationOptions<
+  unknown,
+  ResponsesFederatedV1ResponsesPostError,
+  Options<ResponsesFederatedV1ResponsesPostData>
+> => {
+  const mutationOptions: UseMutationOptions<
+    unknown,
+    ResponsesFederatedV1ResponsesPostError,
+    Options<ResponsesFederatedV1ResponsesPostData>
+  > = {
+    mutationFn: async (fnOptions) => {
+      const { data } = await responsesFederatedV1ResponsesPost({
+        ...options,
+        ...fnOptions,
+        throwOnError: true,
+      });
+      return data;
+    },
+  };
+  return mutationOptions;
+};
+
+/**
+ * Embeddings
+ */
+export const embeddingsFederatedV1EmbeddingsPostMutation = (
+  options?: Partial<Options<EmbeddingsFederatedV1EmbeddingsPostData>>,
+): UseMutationOptions<
+  unknown,
+  EmbeddingsFederatedV1EmbeddingsPostError,
+  Options<EmbeddingsFederatedV1EmbeddingsPostData>
+> => {
+  const mutationOptions: UseMutationOptions<
+    unknown,
+    EmbeddingsFederatedV1EmbeddingsPostError,
+    Options<EmbeddingsFederatedV1EmbeddingsPostData>
+  > = {
+    mutationFn: async (fnOptions) => {
+      const { data } = await embeddingsFederatedV1EmbeddingsPost({
+        ...options,
+        ...fnOptions,
+        throwOnError: true,
+      });
+      return data;
+    },
+  };
+  return mutationOptions;
+};
 
 export const getClusterCatalogV1ClustersNameGetQueryKey = (
   options: Options<GetClusterCatalogV1ClustersNameGetData>,
