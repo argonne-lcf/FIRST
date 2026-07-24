@@ -98,7 +98,7 @@ async def _check_scheduler(
         return Observation(
             key=key,
             status="error",
-            summary=f"Cluster {name}: scheduler check failed: {str(e)[:200]}",
+            summary=f"Cluster {name}: scheduler check failed: {str(e)[:600]}",
             severity="crit",
         )
     else:
@@ -199,7 +199,7 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
 
     for j in jobs:
         if j.reconcile_failures > 0:
-            err = (j.reconcile_last_error or "")[:300]
+            err = (j.reconcile_last_error or "")[:600]
             obs.append(
                 Observation(
                     key=f"pilotjob/{j.uid}/reconcile",
@@ -255,7 +255,7 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
                 )
             )
         if r.reconcile_failures > 0:
-            err = (r.reconcile_last_error or "")[:300]
+            err = (r.reconcile_last_error or "")[:600]
             obs.append(
                 Observation(
                     key=f"pilotreplica/{r.uid}/reconcile",
@@ -278,7 +278,7 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="postgres",
                 status="down",
-                summary=f"Postgres unreachable: {str(e)[:200]}",
+                summary=f"Postgres unreachable: {str(e)[:600]}",
                 severity="crit",
             )
         )
@@ -289,7 +289,7 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="redis",
                 status="down",
-                summary=f"Redis unreachable: {str(e)[:200]}",
+                summary=f"Redis unreachable: {str(e)[:600]}",
                 severity="crit",
             )
         )
@@ -317,7 +317,7 @@ async def check_host(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="gateway_health",
                 status="unreachable",
-                summary=f"Gateway /health unreachable: {str(e)[:200]}",
+                summary=f"Gateway /health unreachable: {str(e)[:600]}",
                 severity="crit",
             )
         )
@@ -329,7 +329,7 @@ async def check_host(client_state: ClientState) -> list[Observation]:
                 Observation(
                     key="controller_healthz",
                     status="stale",
-                    summary=f"Controller /healthz: {resp.text[:200]}",
+                    summary=f"Controller /healthz: {resp.text[:600]}",
                     severity="crit",
                 )
             )
@@ -338,7 +338,7 @@ async def check_host(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="controller_healthz",
                 status="stale",
-                summary=f"Controller /healthz unreachable: {str(e)[:200]}",
+                summary=f"Controller /healthz unreachable: {str(e)[:600]}",
                 severity="crit",
             )
         )

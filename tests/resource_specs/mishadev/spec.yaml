@@ -10,8 +10,8 @@ spec:
       source /home/openinference_svc/service_account.env
     scheduler_adapter: first_gateway.platforms.schedulers.GlobusComputePBSAdapter
     scheduler_config:
-      # /eagle/inference_service/firstv2-pilot/sophia-pbs-adapter
-      endpoint_id: 0a1ac3a3-f806-43a9-8d61-a8c71735c853
+      # /eagle/inference_service/firstv2-pilot/globus_compute/sophia-pbs-adapter
+      endpoint_id: 508cbb33-145f-40e4-9f67-1e99660f6a78
     job_walltime_min: 10080
     max_concurrent_jobs: 3
     max_num_nodes: 3

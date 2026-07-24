@@ -60,7 +60,7 @@ def build_alert_blocks(
 
     if failed_checks:
         lines = ["*Check execution failures:*"]
-        lines.extend([f"  • {fn}: {msg[:200]}" for fn, msg in failed_checks])
+        lines.extend([f"  • {fn}: {msg[:600]}" for fn, msg in failed_checks])
         text = "\n".join(lines)
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
 
