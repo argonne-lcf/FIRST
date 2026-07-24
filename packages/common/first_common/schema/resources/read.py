@@ -134,7 +134,7 @@ class PilotReplica(ResourceMeta):
     claimed_gpu_ids: list[tuple[int, int]]
     resources: list[GpuClaim]
     model_url: str | None
-    observed_served_name: str
+    observed_served_name: str | None = None
 
     state: ReplicaState
     state_message: str
@@ -179,7 +179,7 @@ class PilotJob(ResourceMeta):
     """
 
     kind: Literal["PilotJob"] = "PilotJob"
-    scheduler_job_id: str
+    scheduler_job_id: str | None
     cluster_name: str
     scheduler_state: SchedulerJobState
     manager_url: str | None

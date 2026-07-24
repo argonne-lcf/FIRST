@@ -25,6 +25,10 @@ def _run(*args: str, stdin: str | None = None) -> str:
     return proc.stdout
 
 
+def _escape_subj_value(v: str) -> str:
+    return v.replace("\\", "\\\\").replace("/", "\\/")
+
+
 def gen_key_pem() -> str:
     """Generate a new EC P-256 private key and return it as PEM."""
     return _run(
@@ -91,7 +95,7 @@ def _issue_leaf_pem(
             "-key",
             str(key_path),
             "-subj",
-            f"/CN={cn}",
+            f"/CN={_escape_subj_value(cn)}",
             "-addext",
             "basicConstraints=critical,CA:FALSE",
             "-addext",

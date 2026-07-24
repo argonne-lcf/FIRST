@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import shlex
 import time
@@ -8,7 +7,7 @@ from pathlib import Path
 from typing import Any, Self, TypedDict
 
 from globus_compute_sdk import Client
-from globus_compute_sdk.errors import TaskPending
+from globus_compute_sdk.errors import TaskExecutionFailed, TaskPending
 
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
@@ -18,6 +17,8 @@ from first_common.schema.base_scheduler import (
     SchedulerJobState,
 )
 from first_gateway.settings import ClientState
+
+from . import globus_compute_functions as fns
 
 logger = logging.getLogger(__name__)
 
@@ -47,66 +48,6 @@ class FuncRegistry(TypedDict):
 
 
 _func_registry: FuncRegistry | None = None
-
-
-def _qsub(args: list[str]) -> str:
-    """
-    Globus Compute Function to execute qsub and return Job ID from stdout
-    """
-    import subprocess
-
-    p = subprocess.run(
-        ["qsub", *args], text=True, check=True, capture_output=True, timeout=15
-    )
-    return p.stdout
-
-
-def _qstat() -> dict[str, Any]:
-    """
-    Globus Compute Function to execute qstat and capture JSON Jobs output.
-    """
-    import subprocess
-
-    p = subprocess.run(
-        ["qstat", "-fF", "JSON"], text=True, check=True, capture_output=True, timeout=15
-    )
-    jobs: dict[str, Any] = json.loads(p.stdout)["Jobs"]
-    assert isinstance(jobs, dict)
-    return jobs
-
-
-def _qdel(job_id: str) -> None:
-    """Globus Compute function to qdel a job"""
-    import subprocess
-
-    subprocess.run(
-        ["qdel", str(job_id)], text=True, check=True, capture_output=True, timeout=15
-    )
-
-
-def _list_files(directory: str) -> list[str]:
-    """Globus Compute function to list files in a directory"""
-    from pathlib import Path
-
-    return [f.name for f in Path(directory).iterdir() if f.is_file()]
-
-
-def _put_file(content: str, path: str, mode: int) -> None:
-    """Globus Compute function to write file"""
-    from pathlib import Path
-
-    dest = Path(path)
-    dest.parent.mkdir(exist_ok=True, parents=True)
-    dest.touch(mode=mode)
-    dest.chmod(mode)
-    dest.write_text(content)
-
-
-def _read_file(path: str) -> str:
-    """Globus Compute function to read file content"""
-    from pathlib import Path
-
-    return Path(path).read_text()
 
 
 def _parse_utc_timestamp(raw: str) -> datetime:
@@ -146,7 +87,9 @@ def _parse_qstat(jobs: dict[str, Any]) -> list[JobStatusInfo]:
                 name=attrs["Job_Name"],
                 state=state,
                 created_at=_parse_utc_timestamp(attrs["ctime"]),
-                started_at=_parse_utc_timestamp(attrs["stime"]),
+                started_at=_parse_utc_timestamp(attrs.get("stime"))
+                if attrs.get("stime")
+                else None,
                 walltime_minutes=_parse_walltime_minutes(
                     attrs["Resource_List"]["walltime"]
                 ),
@@ -177,12 +120,12 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
 
         if _func_registry is None:
             uuids = await asyncio.gather(
-                asyncio.to_thread(client.register_function, _qsub),
-                asyncio.to_thread(client.register_function, _qstat),
-                asyncio.to_thread(client.register_function, _qdel),
-                asyncio.to_thread(client.register_function, _list_files),
-                asyncio.to_thread(client.register_function, _put_file),
-                asyncio.to_thread(client.register_function, _read_file),
+                asyncio.to_thread(client.register_function, fns.qsub),
+                asyncio.to_thread(client.register_function, fns.qstat),
+                asyncio.to_thread(client.register_function, fns.qdel),
+                asyncio.to_thread(client.register_function, fns.list_files),
+                asyncio.to_thread(client.register_function, fns.put_file),
+                asyncio.to_thread(client.register_function, fns.read_file),
             )
             _func_registry = FuncRegistry(
                 qsub=uuids[0],
@@ -223,7 +166,10 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             function_id=self.func_ids["qsub"],
             args=args,
         )
-        scheduler_id: str = await self._poll_for_result(task_id)
+        try:
+            scheduler_id: str = await self._poll_for_result(task_id)
+        except TaskExecutionFailed as e:
+            raise RuntimeError(f"GlobusCompute qsub failed:\n{e.remote_data}") from None
         return JobSubmitResult(job_name=job.name, scheduler_id=scheduler_id)
 
     async def get_job_statuses(self) -> list[JobStatusInfo]:
@@ -232,7 +178,12 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             endpoint_id=self.endpoint_id,
             function_id=self.func_ids["qstat"],
         )
-        raw: dict[str, Any] = await self._poll_for_result(task_id)
+        try:
+            raw: dict[str, Any] = await self._poll_for_result(task_id)
+        except TaskExecutionFailed as e:
+            raise RuntimeError(
+                f"GlobusCompute qstat failed:\n{e.remote_data}"
+            ) from None
         return _parse_qstat(raw)
 
     async def terminate_job(self, job_id: str) -> None:
@@ -242,7 +193,10 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             function_id=self.func_ids["qdel"],
             job_id=job_id,
         )
-        await self._poll_for_result(task_id)
+        try:
+            await self._poll_for_result(task_id)
+        except TaskExecutionFailed as e:
+            raise RuntimeError(f"GlobusCompute qdel failed:\n{e.remote_data}") from None
 
     async def put_file(self, content: str, path: Path, mode: int) -> None:
         task_id = await asyncio.to_thread(
@@ -253,7 +207,12 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             path=path.as_posix(),
             mode=mode,
         )
-        await self._poll_for_result(task_id)
+        try:
+            await self._poll_for_result(task_id)
+        except TaskExecutionFailed as e:
+            raise RuntimeError(
+                f"GlobusCompute put_file failed:\n{e.remote_data}"
+            ) from None
 
     async def list_files(self, directory: Path) -> list[str]:
         task_id = await asyncio.to_thread(
@@ -262,7 +221,12 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             function_id=self.func_ids["list_files"],
             directory=directory.as_posix(),
         )
-        filenames: list[str] = await self._poll_for_result(task_id)
+        try:
+            filenames: list[str] = await self._poll_for_result(task_id)
+        except TaskExecutionFailed as e:
+            raise RuntimeError(
+                f"GlobusCompute list_files failed:\n{e.remote_data}"
+            ) from None
         return filenames
 
     async def read_file(self, path: Path) -> str:
@@ -272,5 +236,10 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             function_id=self.func_ids["read_file"],
             path=path.as_posix(),
         )
-        content: str = await self._poll_for_result(task_id)
+        try:
+            content: str = await self._poll_for_result(task_id)
+        except TaskExecutionFailed as e:
+            raise RuntimeError(
+                f"GlobusCompute read_file failed:\n{e.remote_data}"
+            ) from None
         return content

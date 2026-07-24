@@ -86,7 +86,7 @@ class PilotResources(BaseModel):
     Information about all hosts/GPUs managed under a pilot.
     """
 
-    hosts: list[HostGpus]
+    hosts: list[HostGpus] = []
 
 
 class PilotJobStatus(BaseModel):

@@ -62,12 +62,14 @@ class JobStatusInfo:
     name: str
     state: SchedulerJobState
     created_at: datetime
-    started_at: datetime
+    started_at: datetime | None
     walltime_minutes: int
 
     @property
-    def deadline(self) -> datetime:
+    def deadline(self) -> datetime | None:
         """The time at which the job's walltime allocation expires."""
+        if self.started_at is None:
+            return None
         return self.started_at + timedelta(minutes=self.walltime_minutes)
 
 
