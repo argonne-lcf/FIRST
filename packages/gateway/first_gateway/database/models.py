@@ -159,6 +159,10 @@ class ResourceRow(Base):
         return res
 
     @classmethod
+    async def get_by_slug(cls, sess: AsyncSession, slug: str) -> Self:
+        return await cls.get_by_name(sess, slug.replace("~", "/"))
+
+    @classmethod
     def create_from_spec(
         cls, sess: AsyncSession, name: str, spec: "spec.ResourceSpec"
     ) -> Self:

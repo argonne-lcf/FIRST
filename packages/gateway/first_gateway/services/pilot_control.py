@@ -134,3 +134,8 @@ class PilotControlClient:
     ) -> httpx.Response:
         """POST /stop-replica/{name}. Returns the raw response (404 is tolerable)."""
         return await self._request("POST", f"{manager_url}/stop-replica/{replica_name}")
+
+    async def get_logs(self, manager_url: str, replica_name: str) -> str:
+        resp = await self._request("GET", f"{manager_url}/logs/{replica_name}")
+        resp.raise_for_status()
+        return resp.text
