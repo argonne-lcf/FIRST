@@ -465,8 +465,10 @@ class PilotJob(ResourceRow, SoftDeletable):
     def create(
         cls, cluster_name: str, walltime_min: int, num_nodes: int, gpus_per_node: int
     ) -> Self:
+        # PBS Pro: qsub rejects '~' and '/' characters but allows '.-_'
+        name = cluster_name.replace("/", "-") + f"-pilot-{secrets.token_hex(4)}"
         return cls(
-            name=f"{cluster_name}/pilot-job/{secrets.token_hex(4)}",
+            name=name,
             cluster_name=cluster_name,
             walltime_min=walltime_min,
             num_nodes=num_nodes,

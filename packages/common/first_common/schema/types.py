@@ -174,7 +174,7 @@ class PilotConfig(BaseModel):
     node_file_env: str
     submit_script_preamble: str
     pilot_path: Path
-    job_name_prefix: str = "__FIRST_PILOT_"
+    job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
 
 
 class DemandSignalConfig(BaseModel):
