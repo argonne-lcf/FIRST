@@ -18,7 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { cn, humanize } from "@/lib/utils";
 
 type Severity = "ok" | "warning" | "critical" | "info";
 
@@ -122,10 +122,6 @@ function worst(severities: Severity[]): Severity {
     (acc, s) => (SEVERITY_RANK[s] > SEVERITY_RANK[acc] ? s : acc),
     "ok",
   );
-}
-
-function humanize(status: string): string {
-  return status.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
 /** Grouped status counts, sorted worst-severity first. */

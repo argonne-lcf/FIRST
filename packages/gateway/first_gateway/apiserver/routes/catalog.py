@@ -17,12 +17,14 @@ from first_common.schema.resources.read import (
 )
 
 from ...database import models as db
+from ...database.redis.router_config import RouterConfig
 from ..auth import user_can_access_group
 from ..dependencies import (
     AuthUser,
     DbSession,
     IsUserAdmin,
     RedisRepo,
+    RouterConfigDep,
 )
 
 admin_router = APIRouter(prefix="/catalog/v1")
@@ -185,3 +187,8 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
         pilot_jobs=await fetch(db.PilotJob, db.PilotJob.manager_health),
         pilot_replicas=await fetch(db.PilotReplica, db.PilotReplica.state),
     )
+
+
+@admin_router.get("/router-config", response_model=RouterConfig)
+async def get_router_config(cfg: RouterConfigDep) -> RouterConfig:
+    return cfg

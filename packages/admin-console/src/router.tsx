@@ -10,6 +10,7 @@ import { AppLayout } from "./pages/AppLayout";
 import { TabsLayout } from "./pages/TabsLayout";
 import { Health } from "./pages/Health";
 import { Deployments } from "./pages/Deployments";
+import { DeploymentDetail } from "./pages/DeploymentDetail";
 import { Clusters } from "./pages/Clusters";
 import { ClusterDetail } from "./pages/ClusterDetail";
 import { PilotJobDetail } from "./pages/PilotJobDetail";
@@ -64,6 +65,12 @@ const clustersRoute = createRoute({
 });
 
 // Detail views render their own breadcrumb bar instead of the tab bar.
+const deploymentDetailRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/deployments/$kind/$deploymentSlug",
+  component: DeploymentDetail,
+});
+
 const clusterDetailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/clusters/$clusterSlug",
@@ -81,6 +88,7 @@ const routeTree = rootRoute.addChildren([
   callbackRoute,
   shellRoute.addChildren([
     tabsLayoutRoute.addChildren([healthRoute, deploymentsRoute, clustersRoute]),
+    deploymentDetailRoute,
     clusterDetailRoute,
     pilotJobDetailRoute,
   ]),

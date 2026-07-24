@@ -19,6 +19,11 @@ export function formatTimestamp(iso: string | null | undefined): string {
   return new Date(iso).toLocaleString();
 }
 
+/** Turn a snake_case status/state token into "Title case" prose. */
+export function humanize(token: string): string {
+  return token.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+}
+
 /** Compact elapsed time since an ISO timestamp, e.g. "2h 14m", or "—". */
 export function formatSince(iso: string | null | undefined): string {
   if (!iso) return "—";
