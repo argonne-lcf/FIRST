@@ -3,7 +3,6 @@ from typing import Any
 
 from ninja import Router
 
-from ..errors import UnsupportedEndpoint
 from ..logging import get_request_context
 from ..schemas.anthropic_messages import AnthropicMessagesPydantic
 from ..schemas.auth import AuthedRequest
@@ -22,13 +21,6 @@ async def create_message(
     framework: str,
     payload: AnthropicMessagesPydantic,
 ) -> Any:
-
-    if payload.stream:
-        raise UnsupportedEndpoint(
-            "Streaming is not supported for the Anthropic Messages API on "
-            "this gateway. Re-issue the request with 'stream': false."
-        )
-
     return await submit_openai_inference_request(
         get_request_context(), cluster_name, framework, payload
     )

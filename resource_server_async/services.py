@@ -22,7 +22,7 @@ from resource_server_async.schemas.structured_logs import (
 )
 
 from .clusters import BaseCluster
-from .endpoints import BaseEndpoint
+from .endpoints import BaseEndpoint, DirectAPIEndpoint
 from .errors import (
     BatchOngoing,
     BatchUnavailable,
@@ -243,6 +243,8 @@ async def submit_openai_inference_request(
     framework: str,
     payload: OpenAIRequestPayload,
 ) -> StreamingHttpResponse | Any:
+    is_openai_responses = isinstance(payload, OpenAIResponsesPydantic)
+    is_anthropic_messages = isinstance(payload, AnthropicMessagesPydantic)
     if isinstance(payload, OpenAIChatCompletionsPydantic):
         stream = payload.stream or False
         prompt = payload.model_dump(include={"messages"})["messages"]
@@ -252,10 +254,10 @@ async def submit_openai_inference_request(
     elif isinstance(payload, OpenAIEmbeddingsPydantic):
         stream = False
         prompt = payload.input
-    elif isinstance(payload, OpenAIResponsesPydantic):
+    elif is_openai_responses:
         stream = payload.stream or False
         prompt = payload.model_dump(include={"input"}, mode="json")["input"]
-    elif isinstance(payload, AnthropicMessagesPydantic):
+    elif is_anthropic_messages:
         stream = payload.stream or False
         prompt = payload.model_dump(include={"messages"}, mode="json")["messages"]
     else:
@@ -287,6 +289,18 @@ async def submit_openai_inference_request(
     logger.debug(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
     )
+
+    if (
+        stream
+        and (is_openai_responses or is_anthropic_messages)
+        and not isinstance(endpoint, DirectAPIEndpoint)
+    ):
+        # We don't support streaming on non-DirectAPI backed endpoints currently
+        raise UnsupportedEndpoint(
+            "Streaming is not supported for the "
+            f"{'OpenAI Responses' if is_openai_responses else 'Anthropic Messages'}"
+            " API on this endpoint. Re-issue this request with 'stream': false."
+        )
 
     # Overwrite model name in case it has been updated via endpoint slug mapping
     payload.model = endpoint.model

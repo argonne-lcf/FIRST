@@ -3,7 +3,6 @@ from typing import Any
 
 from ninja import Router
 
-from ..errors import UnsupportedEndpoint
 from ..logging import get_request_context
 from ..schemas.auth import AuthedRequest
 from ..schemas.openai_chat_completions import (
@@ -65,11 +64,6 @@ async def create_response(
     framework: str,
     payload: OpenAIResponsesPydantic,
 ) -> Any:
-    if payload.stream:
-        raise UnsupportedEndpoint(
-            "Streaming is not supported for the OpenAI Responses API on this "
-            "gateway. Re-issue the request with 'stream': false."
-        )
     return await submit_openai_inference_request(
         get_request_context(), cluster_name, framework, payload
     )
