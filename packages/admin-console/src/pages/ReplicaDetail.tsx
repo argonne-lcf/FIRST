@@ -1,0 +1,208 @@
+import { useQuery } from "@tanstack/react-query";
+import { useParams } from "@tanstack/react-router";
+import { RefreshCw, TriangleAlert } from "lucide-react";
+import { type PilotReplica } from "@/lib/client";
+import { deploymentQueries } from "@/queries/deployment";
+import { Breadcrumb } from "@/components/Breadcrumb";
+import { FieldValueTable } from "@/components/FieldValueTable";
+import { ReplicaRuntime, ReplicaStateBadge } from "@/components/ReplicaStatus";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn, unslug } from "@/lib/utils";
+
+function DetailShell({
+  deploymentSlug,
+  deploymentName,
+  replicaName,
+  children,
+}: {
+  deploymentSlug: string;
+  deploymentName: string;
+  replicaName: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <Breadcrumb
+        items={[
+          { label: "Deployments", link: { to: "/deployments" } },
+          {
+            label: deploymentName,
+            link: {
+              to: "/deployments/$kind/$deploymentSlug",
+              params: { kind: "pilot", deploymentSlug },
+            },
+          },
+          { label: replicaName },
+        ]}
+      />
+      <main className="flex-1 space-y-6 p-6">{children}</main>
+    </>
+  );
+}
+
+function ReconcileBanner({ replica }: { replica: PilotReplica }) {
+  if (!replica.reconcile_failures) return null;
+  return (
+    <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+      <div className="space-y-1">
+        <p className="font-medium">
+          {replica.reconcile_failures} reconcile failure
+          {replica.reconcile_failures === 1 ? "" : "s"}
+        </p>
+        {replica.reconcile_last_error && (
+          <p className="font-mono text-xs">{replica.reconcile_last_error}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** TTY-styled, scrollable viewer that fetches the log tail on demand. */
+function LogViewer({ replicaName }: { replicaName: string }) {
+  const query = useQuery(deploymentQueries.replicaLogs(replicaName));
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between">
+        <CardTitle>Logs</CardTitle>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={query.isFetching}
+          onClick={() => void query.refetch()}
+        >
+          <RefreshCw className={cn(query.isFetching && "animate-spin")} />
+          {query.isFetching ? "Fetching…" : "Fetch tail"}
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-hidden rounded-lg border border-border bg-zinc-950">
+          <div className="flex items-center gap-1.5 border-b border-white/10 px-3 py-2">
+            <span className="size-3 rounded-full bg-red-500" />
+            <span className="size-3 rounded-full bg-yellow-500" />
+            <span className="size-3 rounded-full bg-green-500" />
+            <span className="ml-2 font-mono text-xs text-zinc-400">
+              {replicaName} — last 300 lines
+            </span>
+          </div>
+          <pre className="max-h-96 overflow-auto p-4 font-mono text-xs leading-relaxed text-zinc-100">
+            {query.isError
+              ? `Failed to fetch logs: ${
+                  query.error instanceof Error
+                    ? query.error.message
+                    : "unknown error"
+                }`
+              : query.data
+                ? query.data
+                : query.isFetching
+                  ? "Fetching logs…"
+                  : "Press “Fetch tail” to load the latest logs."}
+          </pre>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function ReplicaDetail() {
+  const { deploymentSlug, replicaSlug } = useParams({
+    from: "/shell/deployments/pilot/$deploymentSlug/replicas/$replicaSlug",
+  });
+  const deploymentName = unslug(deploymentSlug);
+  const replicaName = unslug(replicaSlug);
+
+  const query = useQuery(deploymentQueries.pilot(deploymentName));
+
+  if (query.isPending) {
+    return (
+      <DetailShell
+        deploymentSlug={deploymentSlug}
+        deploymentName={deploymentName}
+        replicaName={replicaName}
+      >
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-64" />
+      </DetailShell>
+    );
+  }
+
+  if (query.isError) {
+    return (
+      <DetailShell
+        deploymentSlug={deploymentSlug}
+        deploymentName={deploymentName}
+        replicaName={replicaName}
+      >
+        <Card>
+          <CardHeader>
+            <CardTitle>Replica</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-destructive">
+            Failed to load deployment:{" "}
+            {query.error instanceof Error
+              ? query.error.message
+              : "unknown error"}
+          </CardContent>
+        </Card>
+      </DetailShell>
+    );
+  }
+
+  const replica = query.data.replicas.find((r) => r.slug === replicaSlug);
+  if (!replica) {
+    return (
+      <DetailShell
+        deploymentSlug={deploymentSlug}
+        deploymentName={deploymentName}
+        replicaName={replicaName}
+      >
+        <Card>
+          <CardHeader>
+            <CardTitle>Replica</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-destructive">
+            Replica not found.
+          </CardContent>
+        </Card>
+      </DetailShell>
+    );
+  }
+
+  return (
+    <DetailShell
+      deploymentSlug={deploymentSlug}
+      deploymentName={query.data.name}
+      replicaName={replica.name}
+    >
+      <div className="flex items-center gap-3">
+        <h1 className="text-2xl font-semibold">{replica.name}</h1>
+        <ReplicaStateBadge state={replica.state} />
+      </div>
+
+      <ReconcileBanner replica={replica} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Details</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldValueTable obj={replica} omit={["runtime"]} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Runtime</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm">
+          <ReplicaRuntime runtime={replica.runtime} />
+        </CardContent>
+      </Card>
+
+      <LogViewer replicaName={replica.name} />
+    </DetailShell>
+  );
+}

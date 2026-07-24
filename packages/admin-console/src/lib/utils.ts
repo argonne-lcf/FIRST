@@ -24,6 +24,16 @@ export function humanize(token: string): string {
   return token.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
+/** Elapsed time since an ISO timestamp in prose, e.g. "2 hours ago". */
+export function formatAgo(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  const hours = Math.floor(seconds / 3600);
+  if (hours > 0) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+}
+
 /** Compact elapsed time since an ISO timestamp, e.g. "2h 14m", or "—". */
 export function formatSince(iso: string | null | undefined): string {
   if (!iso) return "—";

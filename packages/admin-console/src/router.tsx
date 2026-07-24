@@ -13,6 +13,7 @@ import { Models } from "./pages/Models";
 import { ModelDetail } from "./pages/ModelDetail";
 import { Deployments } from "./pages/Deployments";
 import { DeploymentDetail } from "./pages/DeploymentDetail";
+import { ReplicaDetail } from "./pages/ReplicaDetail";
 import { Clusters } from "./pages/Clusters";
 import { ClusterDetail } from "./pages/ClusterDetail";
 import { PilotJobDetail } from "./pages/PilotJobDetail";
@@ -85,6 +86,12 @@ const deploymentDetailRoute = createRoute({
   component: DeploymentDetail,
 });
 
+const replicaDetailRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/deployments/pilot/$deploymentSlug/replicas/$replicaSlug",
+  component: ReplicaDetail,
+});
+
 const clusterDetailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/clusters/$clusterSlug",
@@ -109,6 +116,7 @@ const routeTree = rootRoute.addChildren([
     ]),
     modelDetailRoute,
     deploymentDetailRoute,
+    replicaDetailRoute,
     clusterDetailRoute,
     pilotJobDetailRoute,
   ]),
