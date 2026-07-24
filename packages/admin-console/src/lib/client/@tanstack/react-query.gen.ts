@@ -14,6 +14,7 @@ import {
   getClusterCatalogV1ClustersNameGet,
   getConfigVersionControlV1ConfigVersionsUidGet,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGet,
+  getSystemHealthCatalogV1SystemHealthGet,
   healthHealthGet,
   listAccessGroupsCatalogV1AccessGroupsGet,
   listClustersCatalogV1ClustersGet,
@@ -47,6 +48,8 @@ import type {
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetError,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponse,
+  GetSystemHealthCatalogV1SystemHealthGetData,
+  GetSystemHealthCatalogV1SystemHealthGetResponse,
   HealthHealthGetData,
   HealthHealthGetResponse,
   ListAccessGroupsCatalogV1AccessGroupsGetData,
@@ -505,6 +508,37 @@ export const embeddingsFederatedV1EmbeddingsPostMutation = (
   };
   return mutationOptions;
 };
+
+export const getSystemHealthCatalogV1SystemHealthGetQueryKey = (
+  options?: Options<GetSystemHealthCatalogV1SystemHealthGetData>,
+) => createQueryKey("getSystemHealthCatalogV1SystemHealthGet", options);
+
+/**
+ * Get System Health
+ *
+ * One-glance operational snapshot: the health/state and any reconcile error
+ * of every operational resource, grouped by type.  Admin-only.
+ */
+export const getSystemHealthCatalogV1SystemHealthGetOptions = (
+  options?: Options<GetSystemHealthCatalogV1SystemHealthGetData>,
+) =>
+  queryOptions<
+    GetSystemHealthCatalogV1SystemHealthGetResponse,
+    DefaultError,
+    GetSystemHealthCatalogV1SystemHealthGetResponse,
+    ReturnType<typeof getSystemHealthCatalogV1SystemHealthGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await getSystemHealthCatalogV1SystemHealthGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: getSystemHealthCatalogV1SystemHealthGetQueryKey(options),
+  });
 
 export const getClusterCatalogV1ClustersNameGetQueryKey = (
   options: Options<GetClusterCatalogV1ClustersNameGetData>,

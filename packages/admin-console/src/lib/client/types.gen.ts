@@ -1225,6 +1225,41 @@ export type ResourceChangePlan = {
 };
 
 /**
+ * ResourceHealth
+ *
+ * A single resource's health/state plus any reconcile error from the control
+ * plane.  `status` carries the resource's health or state enum value verbatim
+ * (e.g. HealthCheckResult, PilotDeploymentState, or ReplicaState); callers
+ * interpret criticality per resource type.
+ */
+export type ResourceHealth = {
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Uid
+   */
+  uid: number;
+  /**
+   * Status
+   */
+  status: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+};
+
+/**
  * ResourceManifest
  *
  * Validator of declarative YAML resource specs.
@@ -1485,6 +1520,35 @@ export type StaticDeploymentSummary = {
    * obtain a bijective mapping (~ is disallowed in name but slug-safe).
    */
   readonly slug: string;
+};
+
+/**
+ * SystemHealth
+ *
+ * One-glance operational snapshot: the health/state of every operational
+ * resource, grouped by type, with reconcile errors bundled in.
+ */
+export type SystemHealth = {
+  /**
+   * Clusters
+   */
+  clusters: Array<ResourceHealth>;
+  /**
+   * Static Deployments
+   */
+  static_deployments: Array<ResourceHealth>;
+  /**
+   * Pilot Deployments
+   */
+  pilot_deployments: Array<ResourceHealth>;
+  /**
+   * Pilot Jobs
+   */
+  pilot_jobs: Array<ResourceHealth>;
+  /**
+   * Pilot Replicas
+   */
+  pilot_replicas: Array<ResourceHealth>;
 };
 
 /**
@@ -2519,6 +2583,23 @@ export type EmbeddingsFederatedV1EmbeddingsPostResponses = {
    */
   200: unknown;
 };
+
+export type GetSystemHealthCatalogV1SystemHealthGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/catalog/v1/system-health";
+};
+
+export type GetSystemHealthCatalogV1SystemHealthGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: SystemHealth;
+};
+
+export type GetSystemHealthCatalogV1SystemHealthGetResponse =
+  GetSystemHealthCatalogV1SystemHealthGetResponses[keyof GetSystemHealthCatalogV1SystemHealthGetResponses];
 
 export type GetClusterCatalogV1ClustersNameGetData = {
   body?: never;

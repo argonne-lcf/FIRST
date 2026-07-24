@@ -1,3 +1,4 @@
+import sqlalchemy as sa
 from fastapi import APIRouter
 
 from first_common.errors import AccessDenied
@@ -10,7 +11,9 @@ from first_common.schema.resources.read import (
     PilotDeploymentSummary,
     PilotJob,
     PilotReplica,
+    ResourceHealth,
     StaticDeploymentDetail,
+    SystemHealth,
 )
 
 from ...database import models as db
@@ -148,4 +151,37 @@ async def get_cluster(sess: DbSession, name: str, repo: RedisRepo) -> ClusterDet
             PilotJob.merge(job, runtime=rt)
             for job, rt in zip(cluster.pilot_jobs, runtimes)
         ],
+    )
+
+
+@admin_router.get("/system-health", response_model=SystemHealth)
+async def get_system_health(sess: DbSession) -> SystemHealth:
+    """
+    One-glance operational snapshot: the health/state and any reconcile error
+    of every operational resource, grouped by type.  Admin-only.
+    """
+
+    async def fetch(
+        model: type[db.ResourceRow], status_col: sa.orm.Mapped[str]
+    ) -> list[ResourceHealth]:
+        return [  # type: ignore[var-annotated]
+            ResourceHealth.model_validate(row, from_attributes=True)
+            for row in await sess.execute(
+                sa.select(
+                    model.name,
+                    model.uid,
+                    status_col.label("status"),
+                    model.reconcile_failures,
+                    model.reconcile_last_error,
+                    model.reconcile_retry_at,
+                )
+            )
+        ]
+
+    return SystemHealth(
+        clusters=await fetch(db.Cluster, db.Cluster.health),
+        static_deployments=await fetch(db.StaticDeployment, db.StaticDeployment.health),
+        pilot_deployments=await fetch(db.PilotDeployment, db.PilotDeployment.state),
+        pilot_jobs=await fetch(db.PilotJob, db.PilotJob.manager_health),
+        pilot_replicas=await fetch(db.PilotReplica, db.PilotReplica.state),
     )

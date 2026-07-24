@@ -220,3 +220,32 @@ class ClusterDetail(ClusterSummary):
 
     kind: Literal["Cluster"] = "Cluster"
     pilot_jobs: list[PilotJob]
+
+
+class ResourceHealth(BaseModel):
+    """
+    A single resource's health/state plus any reconcile error from the control
+    plane.  `status` carries the resource's health or state enum value verbatim
+    (e.g. HealthCheckResult, PilotDeploymentState, or ReplicaState); callers
+    interpret criticality per resource type.
+    """
+
+    name: str
+    uid: int
+    status: str
+    reconcile_failures: int = 0
+    reconcile_last_error: str | None = None
+    reconcile_retry_at: datetime | None = None
+
+
+class SystemHealth(BaseModel):
+    """
+    One-glance operational snapshot: the health/state of every operational
+    resource, grouped by type, with reconcile errors bundled in.
+    """
+
+    clusters: list[ResourceHealth]
+    static_deployments: list[ResourceHealth]
+    pilot_deployments: list[ResourceHealth]
+    pilot_jobs: list[ResourceHealth]
+    pilot_replicas: list[ResourceHealth]

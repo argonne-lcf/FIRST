@@ -27,6 +27,8 @@ import type {
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
+  GetSystemHealthCatalogV1SystemHealthGetData,
+  GetSystemHealthCatalogV1SystemHealthGetResponses,
   HealthHealthGetData,
   HealthHealthGetResponses,
   ListAccessGroupsCatalogV1AccessGroupsGetData,
@@ -382,6 +384,31 @@ export const embeddingsFederatedV1EmbeddingsPost = <
       "Content-Type": "application/json",
       ...options.headers,
     },
+  });
+
+/**
+ * Get System Health
+ *
+ * One-glance operational snapshot: the health/state and any reconcile error
+ * of every operational resource, grouped by type.  Admin-only.
+ */
+export const getSystemHealthCatalogV1SystemHealthGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<GetSystemHealthCatalogV1SystemHealthGetData, ThrowOnError>,
+): RequestResult<
+  GetSystemHealthCatalogV1SystemHealthGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    GetSystemHealthCatalogV1SystemHealthGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/catalog/v1/system-health",
+    ...options,
   });
 
 /**
