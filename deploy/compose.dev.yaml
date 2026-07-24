@@ -1,8 +1,7 @@
 services:
   postgres:
     volumes:
-      - type: tmpfs
-        target: /var/lib/postgresql
+      - postgres-dev:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U first_gateway -d first_gateway_dev" ]
       interval: 5s
@@ -31,8 +30,7 @@ services:
 
   redis:
     volumes:
-      - type: tmpfs
-        target: /data
+      - redis-dev:/data
 
   prometheus:
     image: prom/prometheus:latest
@@ -59,3 +57,5 @@ services:
 
 volumes:
   grafana-storage:
+  postgres-dev:
+  redis-dev:

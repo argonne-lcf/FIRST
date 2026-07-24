@@ -37,6 +37,13 @@ db-up:
 db-down:
 	docker compose down postgres redis
 
+db-reset:
+	docker compose down postgres redis
+	docker volume rm first_postgres-dev
+	docker volume rm first_redis-dev
+	docker compose up -d postgres redis migration
+	docker compose restart inference-gateway controller-manager
+
 compose-down:
 	docker compose down
 
