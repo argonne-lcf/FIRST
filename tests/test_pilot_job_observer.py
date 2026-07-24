@@ -1,6 +1,6 @@
 """Tests for PilotJobObserver: scheduler state sync and endpoint discovery."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -213,7 +213,7 @@ async def test_orphan_scheduler_job_reaped(
             id="999.pbs",
             name=f"{prefix}orphan-job",
             state=SchedulerJobState.running,
-            created_at=NOW,
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=4),
             started_at=NOW,
             walltime_minutes=60,
         ),

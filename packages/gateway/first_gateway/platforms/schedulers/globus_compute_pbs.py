@@ -83,7 +83,7 @@ def _parse_qstat(jobs: dict[str, Any]) -> list[JobStatusInfo]:
 
         results.append(
             JobStatusInfo(
-                id=job_id,
+                id=job_id.strip(),
                 name=attrs["Job_Name"],
                 state=state,
                 created_at=_parse_utc_timestamp(attrs["ctime"]),
@@ -170,6 +170,9 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             scheduler_id: str = await self._poll_for_result(task_id)
         except TaskExecutionFailed as e:
             raise RuntimeError(f"GlobusCompute qsub failed:\n{e.remote_data}") from None
+        scheduler_id = scheduler_id.strip()
+        if not scheduler_id:
+            raise RuntimeError("GlobusCompute qsub got an empty scheduler_id")
         return JobSubmitResult(job_name=job.name, scheduler_id=scheduler_id)
 
     async def get_job_statuses(self) -> list[JobStatusInfo]:

@@ -81,9 +81,14 @@ class PilotJobObserver(Worker):
             status = statuses.get(job.scheduler_job_id)
             await self._update_job(job, status)
 
-        orphan_job_ids = set(statuses) - set(
-            db_job.scheduler_job_id for db_job in db_jobs
+        now = datetime.now(timezone.utc)
+        queued_steady = set(
+            jobid
+            for jobid, status in statuses.items()
+            if (now - status.created_at).total_seconds() > 180
         )
+        orphan_job_ids = queued_steady - {db_job.scheduler_job_id for db_job in db_jobs}
+
         for orphan_id in orphan_job_ids:
             logger.warning("Reaping orphan scheduler job id=%s", orphan_id)
             try:

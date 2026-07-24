@@ -15,7 +15,7 @@ def qsub(args: list[str]) -> str:
         raise RuntimeError(
             f"{e.cmd!r} failed (returncode {e.returncode}):\nStderr:\n{e.stderr.strip()}"
         ) from None
-    return p.stdout
+    return p.stdout.strip()
 
 
 def qstat() -> dict[str, Any]:
