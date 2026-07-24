@@ -55,6 +55,21 @@ class NotImplemented(FirstError):
     code: str = "not_implemented"
 
 
+class TooManyRequests(FirstError):
+    status_code = HTTPStatus.TOO_MANY_REQUESTS
+    code: str = "too_many_requests"
+
+
+class ServiceUnavailable(FirstError):
+    status_code = HTTPStatus.SERVICE_UNAVAILABLE
+    code: str = "service_unavailable"
+
+
+class InternalServerError(FirstError):
+    status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+    code: str = "internal_server_error"
+
+
 class InvalidSpecError(FirstError):
     status_code = HTTPStatus.BAD_REQUEST
     code: str = "resource_spec_invalid"
