@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from first_common.schema.auth import UserAuthEvent
 
 from ..dependencies import AuthUser, get_admin_user, get_auth_user
-from . import catalog, control, discovery
+from . import catalog, control, discovery, openai
 
 # Allows public access:
 anon = APIRouter()
@@ -31,3 +31,4 @@ anon.include_router(discovery.router)
 admin.include_router(catalog.admin_router)
 admin.include_router(control.admin_router)
 auth.include_router(catalog.user_router)
+auth.include_router(openai.router)

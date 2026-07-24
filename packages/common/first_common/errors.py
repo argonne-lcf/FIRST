@@ -50,6 +50,11 @@ class NotFound(FirstError):
     code: str = "not_found"
 
 
+class NotImplemented(FirstError):
+    status_code = HTTPStatus.NOT_IMPLEMENTED
+    code: str = "not_implemented"
+
+
 class InvalidSpecError(FirstError):
     status_code = HTTPStatus.BAD_REQUEST
     code: str = "resource_spec_invalid"
