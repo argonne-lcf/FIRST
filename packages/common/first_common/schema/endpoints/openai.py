@@ -35,5 +35,5 @@ class OpenAIEmbeddingsPayload(BasePayload):
 
 class OpenAIEndpoints(str, Enum):
     chat_completions = "chat/completions"
-    responses = "response"
+    responses = "responses"
     embeddings = "embeddings"
