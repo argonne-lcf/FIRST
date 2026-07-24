@@ -33,7 +33,7 @@ class OpenAIEmbeddingsPayload(BasePayload):
     input: str | list[str] | list[int] | list[list[int]]
 
 
-class OpenAIEndpoints(Enum):
+class OpenAIEndpoints(str, Enum):
     chat_completions = "chat/completions"
     responses = "response"
     embeddings = "embeddings"
