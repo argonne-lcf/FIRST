@@ -16,7 +16,9 @@ async def resolve_model(
 ) -> ModelConfig:
     model = router_config.models_by_name.get(model_name)
     if model is None:
-        raise NotFound(f"Model {model_name} does not exist.")
+        model = router_config.models_by_alias.get(model_name)
+        if model is None:
+            raise NotFound(f"Model {model_name} does not exist.")
 
     enforce_permission(user, model)
 
