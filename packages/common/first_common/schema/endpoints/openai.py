@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, List
+from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -39,7 +39,7 @@ class OpenAIChatCompletionsPayload(BasePayload):
 class OpenAIResponsesPayload(BasePayload):
     """OpenAI responses spec."""
 
-    input: str | List[ResponsesInputItem] | List[dict[str, Any]]
+    input: str | list[ResponsesInputItem] | list[dict[str, Any]]
     stream: bool | None = Field(default=False)
 
 
@@ -47,7 +47,7 @@ class OpenAIResponsesPayload(BasePayload):
 class OpenAIEmbeddingsPayload(BasePayload):
     """OpenAI embeddings spec."""
 
-    input: str | List[str] | List[int] | List[List[int]]
+    input: str | list[str] | list[int] | list[list[int]]
 
 
 class OpenAIEndpoints(Enum):
