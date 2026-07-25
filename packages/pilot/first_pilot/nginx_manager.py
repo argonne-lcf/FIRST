@@ -114,6 +114,8 @@ class NginxManager:
     def start(self) -> None:
         args = [
             self.pilot_config.nginx_path.as_posix(),
+            "-e",
+            f"{self.tmpdir}/nginx-error.log",
             "-c",
             self.config_path.as_posix(),
             "-g",
@@ -147,6 +149,8 @@ class NginxManager:
             [
                 self.pilot_config.nginx_path,
                 "-t",
+                "-e",
+                f"{self.tmpdir}/nginx-error.log",
                 "-c",
                 new_config.as_posix(),
             ],
