@@ -1,3 +1,5 @@
+from typing import Any
+
 import sqlalchemy as sa
 from fastapi import APIRouter
 
@@ -164,7 +166,7 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
     """
 
     async def fetch(
-        model: type[db.ResourceRow], status_col: sa.orm.Mapped[str]
+        model: type[db.ResourceRow], status_col: sa.orm.Mapped[str], *where: Any
     ) -> list[ResourceHealth]:
         return [  # type: ignore[var-annotated]
             ResourceHealth.model_validate(row, from_attributes=True)
@@ -176,7 +178,7 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
                     model.reconcile_failures,
                     model.reconcile_last_error,
                     model.reconcile_retry_at,
-                )
+                ).where(*where)
             )
         ]
 
@@ -184,8 +186,12 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
         clusters=await fetch(db.Cluster, db.Cluster.health),
         static_deployments=await fetch(db.StaticDeployment, db.StaticDeployment.health),
         pilot_deployments=await fetch(db.PilotDeployment, db.PilotDeployment.state),
-        pilot_jobs=await fetch(db.PilotJob, db.PilotJob.manager_health),
-        pilot_replicas=await fetch(db.PilotReplica, db.PilotReplica.state),
+        pilot_jobs=await fetch(
+            db.PilotJob, db.PilotJob.manager_health, db.PilotJob.deleted_at.is_(None)
+        ),
+        pilot_replicas=await fetch(
+            db.PilotReplica, db.PilotReplica.state, db.PilotReplica.deleted_at.is_(None)
+        ),
     )
 
 

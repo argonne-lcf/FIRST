@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { RefreshCw, TriangleAlert } from "lucide-react";
-import { type PilotReplica } from "@/lib/client";
+import { RefreshCw } from "lucide-react";
 import { deploymentQueries } from "@/queries/deployment";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { FieldValueTable } from "@/components/FieldValueTable";
+import { ReconcileBanner } from "@/components/ReconcileBanner";
 import { ReplicaRuntime, ReplicaStateBadge } from "@/components/ReplicaStatus";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -42,27 +42,15 @@ function DetailShell({
   );
 }
 
-function ReconcileBanner({ replica }: { replica: PilotReplica }) {
-  if (!replica.reconcile_failures) return null;
-  return (
-    <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-      <div className="space-y-1">
-        <p className="font-medium">
-          {replica.reconcile_failures} reconcile failure
-          {replica.reconcile_failures === 1 ? "" : "s"}
-        </p>
-        {replica.reconcile_last_error && (
-          <p className="font-mono text-xs">{replica.reconcile_last_error}</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /** TTY-styled, scrollable viewer that fetches the log tail on demand. */
-function LogViewer({ replicaName }: { replicaName: string }) {
-  const query = useQuery(deploymentQueries.replicaLogs(replicaName));
+function LogViewer({
+  replicaName,
+  replicaSlug,
+}: {
+  replicaName: string;
+  replicaSlug: string;
+}) {
+  const query = useQuery(deploymentQueries.replicaLogs(replicaSlug));
 
   return (
     <Card>
@@ -182,7 +170,7 @@ export function ReplicaDetail() {
         <ReplicaStateBadge state={replica.state} />
       </div>
 
-      <ReconcileBanner replica={replica} />
+      <ReconcileBanner resource={replica} />
 
       <Card>
         <CardHeader>
@@ -202,7 +190,7 @@ export function ReplicaDetail() {
         </CardContent>
       </Card>
 
-      <LogViewer replicaName={replica.name} />
+      <LogViewer replicaName={replica.name} replicaSlug={replica.slug} />
     </DetailShell>
   );
 }

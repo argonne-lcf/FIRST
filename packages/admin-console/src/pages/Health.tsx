@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link, type LinkProps } from "@tanstack/react-router";
 import {
+  ArrowRight,
   CircleCheck,
   CircleX,
   Info,
@@ -17,8 +19,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn, humanize } from "@/lib/utils";
+import { cn, humanize, slugify } from "@/lib/utils";
 
 type Severity = "ok" | "warning" | "critical" | "info";
 
@@ -56,24 +67,78 @@ type GroupKey =
   | "pilot_jobs"
   | "pilot_replicas";
 
+/**
+ * Build the detail-view link for a resource in a given group. `ResourceHealth`
+ * carries only name/uid/status, so parent slugs are recovered from the name:
+ * - replicas are named `{deployment}/replica/{token}` → deployment is the head.
+ * - pilot jobs are named `{cluster}-pilot-{token}` (cluster '/' mangled to '-'),
+ *   so we strip the suffix; correct when cluster names contain no '/'.
+ */
+type LinkFor = (r: ResourceHealth) => LinkProps;
+
+const clusterLink: LinkFor = (r) => ({
+  to: "/clusters/$clusterSlug",
+  params: { clusterSlug: slugify(r.name) },
+});
+const staticDeploymentLink: LinkFor = (r) => ({
+  to: "/deployments/$kind/$deploymentSlug",
+  params: { kind: "static", deploymentSlug: slugify(r.name) },
+});
+const pilotDeploymentLink: LinkFor = (r) => ({
+  to: "/deployments/$kind/$deploymentSlug",
+  params: { kind: "pilot", deploymentSlug: slugify(r.name) },
+});
+const pilotJobLink: LinkFor = (r) => ({
+  to: "/clusters/$clusterSlug/jobs/$jobSlug",
+  params: {
+    clusterSlug: slugify(r.name.replace(/-pilot-[^-]+$/, "")),
+    jobSlug: slugify(r.name),
+  },
+});
+const pilotReplicaLink: LinkFor = (r) => ({
+  to: "/deployments/pilot/$deploymentSlug/replicas/$replicaSlug",
+  params: {
+    deploymentSlug: slugify(r.name.split("/replica/")[0]),
+    replicaSlug: slugify(r.name),
+  },
+});
+
 const GROUPS: {
   key: GroupKey;
   label: string;
   severityOf: Record<string, Severity>;
+  linkFor: LinkFor;
 }[] = [
-  { key: "clusters", label: "Clusters", severityOf: HEALTH },
+  {
+    key: "clusters",
+    label: "Clusters",
+    severityOf: HEALTH,
+    linkFor: clusterLink,
+  },
   {
     key: "static_deployments",
     label: "Static Deployments",
     severityOf: HEALTH,
+    linkFor: staticDeploymentLink,
   },
   {
     key: "pilot_deployments",
     label: "Pilot Deployments",
     severityOf: PILOT_STATE,
+    linkFor: pilotDeploymentLink,
   },
-  { key: "pilot_jobs", label: "Pilot Jobs", severityOf: HEALTH },
-  { key: "pilot_replicas", label: "Pilot Replicas", severityOf: REPLICA_STATE },
+  {
+    key: "pilot_jobs",
+    label: "Pilot Jobs",
+    severityOf: HEALTH,
+    linkFor: pilotJobLink,
+  },
+  {
+    key: "pilot_replicas",
+    label: "Pilot Replicas",
+    severityOf: REPLICA_STATE,
+    linkFor: pilotReplicaLink,
+  },
 ];
 
 const SEVERITY_RANK: Record<Severity, number> = {
@@ -124,18 +189,21 @@ function worst(severities: Severity[]): Severity {
   );
 }
 
-/** Grouped status counts, sorted worst-severity first. */
+/** Resources grouped by status, sorted worst-severity first. */
 function tally(
   resources: ResourceHealth[],
   severityOf: Record<string, Severity>,
 ) {
-  const counts = new Map<string, number>();
-  for (const r of resources)
-    counts.set(r.status, (counts.get(r.status) ?? 0) + 1);
-  return [...counts.entries()]
-    .map(([status, count]) => ({
+  const byStatus = new Map<string, ResourceHealth[]>();
+  for (const r of resources) {
+    const bucket = byStatus.get(r.status);
+    if (bucket) bucket.push(r);
+    else byStatus.set(r.status, [r]);
+  }
+  return [...byStatus.entries()]
+    .map(([status, items]) => ({
       status,
-      count,
+      items,
       severity: severityOf[status] ?? "info",
     }))
     .sort(
@@ -145,14 +213,69 @@ function tally(
     );
 }
 
+/** Dialog listing the resources in one status; each item links to its detail. */
+function StatusDialog({
+  label,
+  status,
+  severity,
+  items,
+  linkFor,
+}: {
+  label: string;
+  status: string;
+  severity: Severity;
+  items: ResourceHealth[];
+  linkFor: LinkFor;
+}) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Badge variant={SEVERITY_BADGE[severity]} className="cursor-pointer">
+          {items.length} {humanize(status)}
+        </Badge>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {label} — {humanize(status)}
+          </DialogTitle>
+          <DialogDescription>
+            {items.length} resource{items.length === 1 ? "" : "s"}
+          </DialogDescription>
+        </DialogHeader>
+        <ul className="-mx-1 max-h-96 overflow-auto">
+          {items.map((r) => (
+            <li key={r.uid}>
+              <DialogClose asChild>
+                <Link
+                  {...linkFor(r)}
+                  className="flex items-center gap-2 rounded-md px-1 py-1.5 text-sm hover:bg-muted"
+                >
+                  <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    #{r.uid}
+                  </span>
+                  <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+                </Link>
+              </DialogClose>
+            </li>
+          ))}
+        </ul>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function GroupCard({
   label,
   resources,
   severityOf,
+  linkFor,
 }: {
   label: string;
   resources: ResourceHealth[];
   severityOf: Record<string, Severity>;
+  linkFor: LinkFor;
 }) {
   const overall = worst(resources.map((r) => resourceSeverity(r, severityOf)));
   const Icon = SEVERITY_ICON[overall];
@@ -176,9 +299,14 @@ function GroupCard({
       {groups.length > 0 && (
         <CardContent className="flex flex-wrap gap-1.5">
           {groups.map((g) => (
-            <Badge key={g.status} variant={SEVERITY_BADGE[g.severity]}>
-              {g.count} {humanize(g.status)}
-            </Badge>
+            <StatusDialog
+              key={g.status}
+              label={label}
+              status={g.status}
+              severity={g.severity}
+              items={g.items}
+              linkFor={linkFor}
+            />
           ))}
         </CardContent>
       )}
@@ -318,6 +446,7 @@ export function Health() {
             label={g.label}
             resources={data[g.key]}
             severityOf={g.severityOf}
+            linkFor={g.linkFor}
           />
         ))}
       </div>

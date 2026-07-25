@@ -46,6 +46,9 @@ class ResourceManifest(BaseModel):
         if not kind:
             raise ValueError("resource kind must be specified")
 
+        if kind == "Cluster" and "/" in data.get("name", ""):
+            raise ValueError("Cluster name cannot contain '/' character")
+
         spec_cls = ResourceSpec.registry.get(kind)
         if spec_cls is None:
             raise ValueError(

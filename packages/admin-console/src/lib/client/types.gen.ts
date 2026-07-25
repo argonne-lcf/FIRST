@@ -2926,36 +2926,36 @@ export type ReconcileResetControlV1ReconcileResetPostResponses = {
 export type ReconcileResetControlV1ReconcileResetPostResponse =
   ReconcileResetControlV1ReconcileResetPostResponses[keyof ReconcileResetControlV1ReconcileResetPostResponses];
 
-export type TailReplicaLogsControlV1PilotReplicasNameLogsGetData = {
+export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetData = {
   body?: never;
   path: {
     /**
-     * Name
+     * Slug
      */
-    name: string;
+    slug: string;
   };
   query?: never;
-  url: "/control/v1/pilot-replicas/{name}/logs";
+  url: "/control/v1/pilot-replicas/{slug}/logs";
 };
 
-export type TailReplicaLogsControlV1PilotReplicasNameLogsGetErrors = {
+export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors = {
   /**
    * Validation Error
    */
   422: HttpValidationError;
 };
 
-export type TailReplicaLogsControlV1PilotReplicasNameLogsGetError =
-  TailReplicaLogsControlV1PilotReplicasNameLogsGetErrors[keyof TailReplicaLogsControlV1PilotReplicasNameLogsGetErrors];
+export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetError =
+  TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors[keyof TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors];
 
-export type TailReplicaLogsControlV1PilotReplicasNameLogsGetResponses = {
+export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses = {
   /**
-   * Response Tail Replica Logs Control V1 Pilot Replicas  Name  Logs Get
+   * Response Tail Replica Logs Control V1 Pilot Replicas  Slug  Logs Get
    *
    * Successful Response
    */
   200: string;
 };
 
-export type TailReplicaLogsControlV1PilotReplicasNameLogsGetResponse =
-  TailReplicaLogsControlV1PilotReplicasNameLogsGetResponses[keyof TailReplicaLogsControlV1PilotReplicasNameLogsGetResponses];
+export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponse =
+  TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses[keyof TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses];

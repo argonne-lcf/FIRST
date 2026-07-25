@@ -13,6 +13,11 @@ export function unslug(slug: string): string {
   return slug.split("~").join("/");
 }
 
+/** Turn a resource `name` into its URL-safe `slug`. Inverse of {@link unslug}. */
+export function slugify(name: string): string {
+  return name.split("/").join("~");
+}
+
 /** Format an ISO timestamp for display, or "—" when absent. */
 export function formatTimestamp(iso: string | null | undefined): string {
   if (!iso) return "—";

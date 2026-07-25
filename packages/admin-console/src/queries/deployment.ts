@@ -3,7 +3,7 @@ import {
   listPilotDeploymentsCatalogV1DeploymentsPilotGetOptions,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGetOptions,
   listStaticDeploymentsCatalogV1DeploymentsStaticGetOptions,
-  tailReplicaLogsControlV1PilotReplicasNameLogsGetOptions,
+  tailReplicaLogsControlV1PilotReplicasSlugLogsGetOptions,
 } from "@/lib/client/@tanstack/react-query.gen";
 
 export const deploymentQueries = {
@@ -29,10 +29,10 @@ export const deploymentQueries = {
    * from a button to fetch the current tail. `staleTime: 0` so each refetch
    * hits the network for a fresh tail.
    */
-  replicaLogs: (name: string) =>
+  replicaLogs: (slug: string) =>
     queryOptions({
-      ...tailReplicaLogsControlV1PilotReplicasNameLogsGetOptions({
-        path: { name },
+      ...tailReplicaLogsControlV1PilotReplicasSlugLogsGetOptions({
+        path: { slug },
       }),
       enabled: false,
       staleTime: 0,

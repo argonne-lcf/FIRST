@@ -11,7 +11,7 @@ export function Login() {
 
   return (
     <main className="mx-auto mt-[18vh] max-w-md space-y-4 px-6">
-      <h1 className="text-2xl font-semibold">Inference Gateway</h1>
+      <h1 className="text-2xl font-semibold">FIRST Admin Console</h1>
       <p className="text-muted-foreground">
         Log in with your Globus identity to request access to the console.
       </p>
