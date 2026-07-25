@@ -30,6 +30,9 @@ _conf_template_str = """
         proxy_temp_path {{nginx_tmpdir}}/proxy;
         fastcgi_temp_path {{nginx_tmpdir}}/fastcgi;
         access_log {{nginx_tmpdir}}/access.log;
+        uwsgi_temp_path {{nginx_tmpdir}}/uwsgi;
+        scgi_temp_path {{nginx_tmpdir}}/scgi;
+
 
         server {
             listen {{config.external_port}} ssl;
@@ -79,7 +82,7 @@ class NginxManager:
 
     def __init__(self, config: PilotRuntimeConfig, tmpdir: str | Path) -> None:
         self.pilot_config = config
-        self.tmpdir = Path(tmpdir)
+        self.tmpdir = Path(tmpdir).resolve()
         self.tmpdir.mkdir(parents=True, exist_ok=True)
 
         # Materialize cert/key PEMs from the config
