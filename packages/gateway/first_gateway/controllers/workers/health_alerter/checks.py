@@ -66,7 +66,7 @@ async def check_cluster_health(client_state: ClientState) -> list[Observation]:
         q = sa.select(Cluster.uid, Cluster.name).where(
             Cluster.health == HealthCheckResult.unhealthy.value
         )
-        clusters = await sess.execute(q)
+        clusters = (await sess.execute(q)).all()
 
     return [
         Observation(
@@ -112,7 +112,7 @@ async def check_schedulers(client_state: ClientState) -> list[Observation]:
             Cluster.pilot_system.is_not(None),
             Cluster.pilot_system != sa.JSON.NULL,
         )
-        clusters = await sess.execute(q)
+        clusters = (await sess.execute(q)).all()
 
     for c in clusters:
         assert c.pilot_system is not None
@@ -129,7 +129,7 @@ async def check_static_deployment(client_state: ClientState) -> list[Observation
         q = sa.select(StaticDeployment.uid, StaticDeployment.name).where(
             StaticDeployment.health == HealthCheckResult.unhealthy.value
         )
-        deps = await sess.execute(q)
+        deps = (await sess.execute(q)).all()
 
     return [
         Observation(

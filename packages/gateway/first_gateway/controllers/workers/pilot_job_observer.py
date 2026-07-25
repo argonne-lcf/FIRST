@@ -66,13 +66,15 @@ class PilotJobObserver(Worker):
         cluster_name: str,
     ) -> None:
         async with self.client_state.db_sessionmaker() as sess:
-            db_jobs = await sess.scalars(
-                sa.select(PilotJob).where(
-                    PilotJob.cluster_name == cluster_name,
-                    PilotJob.scheduler_job_id.is_not(None),
-                    PilotJob.scheduler_state.not_in([SchedulerJobState.gone.value]),
+            db_jobs = (
+                await sess.scalars(
+                    sa.select(PilotJob).where(
+                        PilotJob.cluster_name == cluster_name,
+                        PilotJob.scheduler_job_id.is_not(None),
+                        PilotJob.scheduler_state.not_in([SchedulerJobState.gone.value]),
+                    )
                 )
-            )
+            ).all()
 
         statuses = {s.id: s for s in await submitter.get_statuses()}
 
