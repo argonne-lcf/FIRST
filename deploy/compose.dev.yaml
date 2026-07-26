@@ -41,6 +41,10 @@ services:
     networks:
       - gateway
 
+  controller-manager:
+    environment:
+      - ALL_PROXY=socks5h://host.docker.internal:1080
+
   grafana:
     image: grafana/grafana:latest
     environment:

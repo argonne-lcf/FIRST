@@ -75,7 +75,7 @@ class Replica:
         self.launch_spec = launch_spec
         self.workdir = workdir
 
-        self.log_path = workdir / f"{self.name}.log"
+        self.log_path = workdir / "out.log"
 
         script_path = self.workdir / "serve.sh"
         script_path.write_text(self._render_script())

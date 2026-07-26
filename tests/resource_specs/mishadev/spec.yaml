@@ -15,13 +15,13 @@ spec:
     job_walltime_min: 10080
     max_concurrent_jobs: 3
     max_num_nodes: 3
-    queue: infer-svc-test
+    queue: "infer-bigmem"
     account: inference_service
     scheduler_flags: "-l filesystems=home:eagle"
     workdir: /eagle/inference_service/firstv2-pilot/workdir
     external_port: 8000
     nginx_path: /eagle/inference_service/nginx/sbin/nginx
-    ip_allowlist: ["0.0.0.0/32"]
+    ip_allowlist: ["0.0.0.0/0"]
     node_file_env: PBS_NODEFILE
     pilot_path: /eagle/inference_service/env/firstv2-pilot/bin/first-pilot
     job_name_prefix: __FIRST_PILOT_MISHADEV_

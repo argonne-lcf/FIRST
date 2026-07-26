@@ -265,9 +265,7 @@ class ReplicaManager:
             self._replicas[replica.name] = _RESERVED
 
         try:
-            workdir = (
-                self.config.replica_base_dir / replica.deployment_name / replica.name
-            )
+            workdir = self.config.replica_base_dir / replica.name
             workdir.mkdir(parents=True, exist_ok=True)
 
             r = Replica(
