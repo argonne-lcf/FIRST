@@ -174,7 +174,7 @@ spec:
       mkdir -p $VLLM_CACHE_ROOT
       mkdir -p $TRITON_CACHE_DIR
 
-      ./sync_model_weights_on_scratch.sh {{served_model_name}} \
+      ~/sync_model_weights_on_scratch.sh {{served_model_name}} \
         --source /eagle/inference_service/model_weights \
         --dest /raid/scratch/inference_service/model_weights \
         --ext "safetensors json txt py model jinja yaml"

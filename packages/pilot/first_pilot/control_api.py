@@ -142,7 +142,7 @@ def start_replica(replica: ReplicaStartRequest, manager: PilotManager) -> None:
     manager.start_replica(replica)
 
 
-@app.post("/stop-replica/{replica_name}")
+@app.post("/stop-replica/{replica_name:path}")
 def stop_replica(replica_name: str, manager: PilotManager) -> None:
     manager.stop_replica(replica_name)
 
@@ -152,7 +152,7 @@ def get_status(manager: PilotManager) -> PilotJobStatus:
     return manager.get_status()
 
 
-@app.get("/logs/{replica_name}")
+@app.get("/logs/{replica_name:path}")
 def get_replica_logs(replica_name: str, manager: PilotManager) -> str:
     return manager.get_replica_logs(replica_name)
 

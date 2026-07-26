@@ -354,6 +354,7 @@ class PilotReplicaObserver(Worker):
                         sa.exists().where(
                             PilotReplica.name == ri.name,
                             PilotReplica.pilot_job_name == job.name,
+                            PilotReplica.deleted_at.is_(None),
                         )
                     )
                 )
