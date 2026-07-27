@@ -64,9 +64,9 @@ async def get_backend_id(
     else:
         deployments = model.deployments
 
-    backend_candidates = await get_candidates_from_deployments(deployments)
+    backend_candidates = get_candidates_from_deployments(deployments)
 
-    usage_limits = await get_usage_limits(user, model.usage_limits)
+    usage_limits = get_usage_limits(user, model.usage_limits)
 
     # TODO: find where the request id is
     # TODO: calculate estimated_tokens
@@ -108,7 +108,7 @@ def get_candidates_from_deployments(
 
     return [
         CandidateBackend(
-            uid=backends[i].uid,
+            uid=backends[i].id,
             max_backend_concurrency=router_params[i].max_backend_concurrency,
             cooldown_threshold=router_params[i].cooldown_threshold,
         )
@@ -116,7 +116,7 @@ def get_candidates_from_deployments(
     ]
 
 
-async def get_usage_limits(user: AuthUser, usage_policy: UsagePolicy) -> UsageLimits:
+def get_usage_limits(user: AuthUser, usage_policy: UsagePolicy) -> UsageLimits:
     # TODO: check groups too, but what happen if more than 1 user groups are in overrides?
     if user.id in usage_policy.overrides:
         return usage_policy.overrides[user.id]
