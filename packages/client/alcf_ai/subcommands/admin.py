@@ -1,10 +1,14 @@
+import difflib
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import typer
 from pydantic import ValidationError
 from rich.console import Console
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.pretty import Pretty, pretty_repr
 from rich.table import Table
@@ -112,6 +116,91 @@ AUDIT_LABELS = _ChangeLabels(
 )
 
 
+def _flatten_changes(
+    old: Any, new: Any, prefix: str = ""
+) -> list[tuple[str, Any, Any]]:
+    """
+    Recursively diff two JSON-like values, returning only the leaf paths that
+    actually differ as ``(dotted_path, old_leaf, new_leaf)`` tuples.
+
+    Nested dicts are descended into so that reordered-but-equal sub-objects and
+    unchanged sibling keys produce no output. Lists and scalars are compared
+    whole (a changed list is reported as a single leaf change).
+    """
+    if old == new:
+        return []
+
+    if isinstance(old, dict) and isinstance(new, dict):
+        changes: list[tuple[str, Any, Any]] = []
+        for key in dict.fromkeys([*old, *new]):  # preserve order, dedup
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if key not in old:
+                changes.append((path, _MISSING, new[key]))
+            elif key not in new:
+                changes.append((path, old[key], _MISSING))
+            else:
+                changes.extend(_flatten_changes(old[key], new[key], path))
+        return changes
+
+    return [(prefix, old, new)]
+
+
+class _Missing:
+    def __repr__(self) -> str:
+        return "(absent)"
+
+
+_MISSING = _Missing()
+
+_WORD_RE = re.compile(r"\s+|\S+")
+
+
+def _tokenize(text: str) -> list[str]:
+    """Split into words and whitespace runs, keeping newlines visible."""
+    return _WORD_RE.findall(text)
+
+
+def _word_diff(old: str, new: str) -> Text:
+    """Render a git-``--color-words``-style inline diff of two text blobs."""
+    old_toks = _tokenize(old)
+    new_toks = _tokenize(new)
+    result = Text()
+    matcher = difflib.SequenceMatcher(a=old_toks, b=new_toks, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            result.append("".join(old_toks[i1:i2]), style="dim")
+        else:
+            if i1 != i2:
+                result.append("".join(old_toks[i1:i2]), style="red strike")
+            if j1 != j2:
+                result.append("".join(new_toks[j1:j2]), style="green")
+    return result
+
+
+def _render_leaf_change(console: Console, path: str, old: Any, new: Any) -> None:
+    """Print a single changed leaf, choosing an appropriate diff style."""
+    is_multiline = (isinstance(old, str) and "\n" in old) or (
+        isinstance(new, str) and "\n" in new
+    )
+
+    if is_multiline:
+        console.print(f"        [bold]{path}[/]:")
+        body = _word_diff(
+            old if isinstance(old, str) else "",
+            new if isinstance(new, str) else "",
+        )
+        console.print(Padding(body, (0, 0, 0, 12)))
+        return
+
+    line = Text()
+    line.append("        ")
+    line.append(f"{path}: ", style="bold")
+    line.append(repr(old), style="red strike")
+    line.append(" → ", style="dim")
+    line.append(repr(new), style="green")
+    console.print(line)
+
+
 def print_plan(plan: ResourceChangePlan, labels: _ChangeLabels = PLAN_LABELS) -> None:
     """Print a terraform-plan-inspired summary of *plan* to *console*."""
     console = Console()
@@ -178,16 +267,9 @@ def print_plan(plan: ResourceChangePlan, labels: _ChangeLabels = PLAN_LABELS) ->
             rid = f"{patch.kind}.{patch.name}"
             console.print(f"    [yellow]~[/] [bold]{rid}[/]")
             for field, change in patch.patch.items():
-                old_repr = repr(change.old)
-                new_repr = repr(change.new)
-
-                line = Text()
-                line.append("        ")
-                line.append(f"{field}: ", style="bold")
-                line.append(old_repr, style="red strike")
-                line.append(" → ", style="dim")
-                line.append(new_repr, style="green")
-                console.print(line)
+                leaves = _flatten_changes(change.old, change.new, field)
+                for path, old, new in leaves:
+                    _render_leaf_change(console, path, old, new)
 
     # Deletes
     if plan.to_delete:
