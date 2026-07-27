@@ -102,6 +102,8 @@ def _issue_leaf_pem(
             "keyUsage=critical,digitalSignature",
             "-addext",
             f"extendedKeyUsage={eku}",
+            "-addext",
+            "subjectAltName=DNS:first-pilot.internal",
         )
         cert_pem = _run(
             "x509",

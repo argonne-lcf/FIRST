@@ -11,3 +11,8 @@ scrape_configs:
       - url: http://inference-gateway:7000/discovery/v1/prometheus
         refresh_interval: 1m
         proxy_from_environment: true
+    tls_config:
+      ca_file: /etc/prometheus/certs/ca.crt
+      cert_file: /etc/prometheus/certs/first-pilot.crt
+      key_file: /etc/prometheus/certs/first-pilot.key
+      server_name: first-pilot.internal

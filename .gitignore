@@ -1,4 +1,5 @@
 __pycache__/
+pki/
 .DS_Store
 .env
 .env.secret
