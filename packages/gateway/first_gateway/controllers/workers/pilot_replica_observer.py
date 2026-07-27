@@ -223,7 +223,7 @@ class PilotReplicaObserver(Worker):
                         manager_unhealthy_since=None,
                     )
                 )
-                logger.info(f"PilotJob {job.name!r} manager_health recovered")
+                logger.info(f"PilotJob {job.name!r} manager is healthy")
 
         # Update Resources in DB on startup only (default empty dict):
         resources_dict = status.resources.model_dump(mode="json")
