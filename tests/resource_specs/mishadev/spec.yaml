@@ -4,6 +4,7 @@ spec:
   health_check:
     url: "https://api.alcf.anl.gov/api/v1/status/resources/9674c7e1-aecc-4dbb-bf01-c9197e027cd6"
     match_pattern: '"current_status":\s*"up"'
+    attempts_per_check: 1
   maintenance_notice: null
   pilot_system:
     submit_script_preamble: |
@@ -158,7 +159,7 @@ spec:
     env:
       TRANSFORMERS_OFFLINE: "1"
       OMP_NUM_THREADS: "4"
-      VLLM_LOG_LEVEL: "WARN"
+      VLLM_LOGGING_LEVEL: "INFO"
       USE_FASTSAFETENSOR: "true"
       VLLM_IMAGE_FETCH_TIMEOUT: "60"
       VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
@@ -166,6 +167,8 @@ spec:
       VLLM_CACHE_ROOT: /raid/scratch/inference_service/model_weights/.cache/vllm
       TRITON_CACHE_DIR: /raid/scratch/inference_service/model_weights/.cache/triton
       VLLM_ATTENTION_BACKEND: TRITON_ATTN
+      HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+      HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
 
     serve_script_template: |
       ulimit -c unlimited
@@ -186,6 +189,8 @@ spec:
       vllm serve {{weights_cache_path}} \
         --served-model-name {{served_model_name}} \
         --host 127.0.0.1 --port {{port}} \
+        --disable-access-log-for-endpoints /health,/metrics \
+        --enable-log-requests \
         --tool-call-parser openai \
         --enable-auto-tool-choice \
         --tensor-parallel-size 4 \

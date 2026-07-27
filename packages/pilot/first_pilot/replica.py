@@ -56,7 +56,7 @@ class Replica:
     Handle to a model replica subprocess and its health-monitor daemon thread.
     """
 
-    _HEALTH_INTERVAL = 0.4
+    _HEALTH_INTERVAL = 2.0
     _TERM_GRACE = 8.0
     _KILL_GRACE = 5.0
     _GROUP_POLL_INTERVAL = 0.2
