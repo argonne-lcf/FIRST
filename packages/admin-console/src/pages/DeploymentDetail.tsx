@@ -5,6 +5,7 @@ import { deploymentQueries } from "@/queries/deployment";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { FieldValueTable } from "@/components/FieldValueTable";
 import { ReplicaCards } from "@/components/ReplicaCards";
+import { ResourceHeader } from "@/components/ResourceHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { unslug } from "@/lib/utils";
@@ -97,8 +98,16 @@ function PilotDeploymentDetail({ name }: { name: string }) {
   const deployment = query.data;
   return (
     <DetailShell name={deployment.name}>
-      <h1 className="text-2xl font-semibold">{deployment.name}</h1>
-      <DetailsCard title="Details" obj={deployment} omit={["replicas"]} />
+      <ResourceHeader
+        kind={deployment.kind}
+        name={deployment.name}
+        uid={deployment.uid}
+      />
+      <DetailsCard
+        title="Details"
+        obj={deployment}
+        omit={["kind", "name", "uid", "replicas"]}
+      />
       <ReplicaGrid deployment={deployment} />
     </DetailShell>
   );
@@ -116,8 +125,16 @@ function StaticDeploymentDetail({ name }: { name: string }) {
   }
   return (
     <DetailShell name={deployment.name}>
-      <h1 className="text-2xl font-semibold">{deployment.name}</h1>
-      <DetailsCard title="Details" obj={deployment} />
+      <ResourceHeader
+        kind={deployment.kind}
+        name={deployment.name}
+        uid={deployment.uid}
+      />
+      <DetailsCard
+        title="Details"
+        obj={deployment}
+        omit={["kind", "name", "uid"]}
+      />
     </DetailShell>
   );
 }

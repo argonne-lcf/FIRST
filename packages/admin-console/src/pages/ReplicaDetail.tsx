@@ -6,6 +6,7 @@ import { Breadcrumb } from "@/components/Breadcrumb";
 import { FieldValueTable } from "@/components/FieldValueTable";
 import { ReconcileBanner } from "@/components/ReconcileBanner";
 import { ReplicaRuntime, ReplicaStateBadge } from "@/components/ReplicaStatus";
+import { ResourceHeader } from "@/components/ResourceHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -165,10 +166,9 @@ export function ReplicaDetail() {
       deploymentName={query.data.name}
       replicaName={replica.name}
     >
-      <div className="flex items-center gap-3">
-        <h1 className="text-2xl font-semibold">{replica.name}</h1>
+      <ResourceHeader kind={replica.kind} name={replica.name} uid={replica.uid}>
         <ReplicaStateBadge state={replica.state} />
-      </div>
+      </ResourceHeader>
 
       <ReconcileBanner resource={replica} />
 
@@ -177,7 +177,10 @@ export function ReplicaDetail() {
           <CardTitle>Details</CardTitle>
         </CardHeader>
         <CardContent>
-          <FieldValueTable obj={replica} omit={["runtime"]} />
+          <FieldValueTable
+            obj={replica}
+            omit={["kind", "name", "uid", "runtime"]}
+          />
         </CardContent>
       </Card>
 

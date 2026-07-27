@@ -4,6 +4,7 @@ import { modelQueries } from "@/queries/models";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { DeploymentRow, type Deployment } from "@/components/DeploymentRow";
 import { JsonBlock } from "@/components/JsonBlock";
+import { ResourceHeader } from "@/components/ResourceHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { unslug } from "@/lib/utils";
@@ -99,7 +100,7 @@ export function ModelDetail() {
 
   return (
     <DetailShell modelName={model.name}>
-      <h1 className="text-2xl font-semibold">{model.name}</h1>
+      <ResourceHeader kind={model.kind} name={model.name} uid={model.uid} />
 
       <Card>
         <CardHeader>

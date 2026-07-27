@@ -10,6 +10,7 @@ import { clusterQueries } from "@/queries/cluster";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { DeploymentCounts, HealthIndicator } from "@/components/ClusterStatus";
 import { JsonBlock } from "@/components/JsonBlock";
+import { ResourceHeader } from "@/components/ResourceHeader";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -287,11 +288,14 @@ export function ClusterDetail() {
 
   return (
     <DetailShell clusterName={cluster.name}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold">{cluster.name}</h1>
+      <div className="flex items-start justify-between">
+        <ResourceHeader
+          kind={cluster.kind}
+          name={cluster.name}
+          uid={cluster.uid}
+        >
           <HealthIndicator health={cluster.health} />
-        </div>
+        </ResourceHeader>
         {deploymentsQuery.data && (
           <DeploymentCounts
             staticDeployments={deploymentsQuery.data.staticDeployments}

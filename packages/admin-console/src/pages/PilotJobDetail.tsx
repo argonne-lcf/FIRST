@@ -6,6 +6,7 @@ import { Breadcrumb } from "@/components/Breadcrumb";
 import { FieldValueTable } from "@/components/FieldValueTable";
 import { ReconcileBanner } from "@/components/ReconcileBanner";
 import { ReplicaCards } from "@/components/ReplicaCards";
+import { ResourceHeader } from "@/components/ResourceHeader";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -277,12 +278,11 @@ export function PilotJobDetail() {
       clusterName={query.data.name}
       jobName={job.name}
     >
-      <div className="flex items-center gap-3">
-        <h1 className="text-2xl font-semibold">{job.name}</h1>
+      <ResourceHeader kind={job.kind} name={job.name} uid={job.uid}>
         <Badge variant="outline">
           {job.scheduler_state.replace(/_/g, " ")}
         </Badge>
-      </div>
+      </ResourceHeader>
 
       <ReconcileBanner resource={job} />
 
@@ -300,7 +300,14 @@ export function PilotJobDetail() {
         <CardContent>
           <FieldValueTable
             obj={job}
-            omit={["assigned_replicas", "resources", "runtime"]}
+            omit={[
+              "kind",
+              "name",
+              "uid",
+              "assigned_replicas",
+              "resources",
+              "runtime",
+            ]}
           />
         </CardContent>
       </Card>

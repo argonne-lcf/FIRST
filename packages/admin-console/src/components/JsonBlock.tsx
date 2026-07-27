@@ -1,6 +1,56 @@
 import { Fragment } from "react";
 import { cn } from "@/lib/utils";
 
+/** Longest one-line rendering of a subtree before it gets broken across lines. */
+const WRAP_WIDTH = 60;
+
+/** Long string leaves with embedded newlines expand once they exceed this. */
+const STRING_WRAP_WIDTH = 64;
+
+/**
+ * Pretty-print like `JSON.stringify(v, null, 2)`, except any object or array
+ * whose compact form fits on one line (<= WRAP_WIDTH chars) is kept inline
+ * rather than exploded. Keeps small tuples like [1, 2] together while still
+ * expanding large nested structures. Long multi-line string leaves (e.g. shell
+ * scripts) are rendered across real lines instead of one `\n`-laden line.
+ */
+function prettyJson(value: unknown, indent = ""): string {
+  if (
+    typeof value === "string" &&
+    value.length > STRING_WRAP_WIDTH &&
+    value.includes("\n")
+  ) {
+    // Escape each line independently (no `\n` escapes survive), then rejoin on
+    // real newlines so the <pre> shows the breaks. The quoted result still
+    // matches the highlighter's string token as a single span.
+    const pad = indent + "  ";
+    const body = value
+      .split("\n")
+      .map((line) => JSON.stringify(line).slice(1, -1))
+      .join("\n" + pad);
+    return `"${body}"`;
+  }
+
+  const compact = JSON.stringify(value);
+  if (compact === undefined) return "null";
+  if (
+    compact.length <= WRAP_WIDTH ||
+    typeof value !== "object" ||
+    value === null
+  )
+    return compact;
+
+  const pad = indent + "  ";
+  if (Array.isArray(value)) {
+    const items = value.map((v) => pad + prettyJson(v, pad));
+    return `[\n${items.join(",\n")}\n${indent}]`;
+  }
+  const items = Object.entries(value).map(
+    ([k, v]) => `${pad}${JSON.stringify(k)}: ${prettyJson(v, pad)}`,
+  );
+  return `{\n${items.join(",\n")}\n${indent}}`;
+}
+
 /** Render a JSON value as syntax-highlighted, pretty-printed text. */
 export function JsonBlock({
   value,
@@ -13,7 +63,7 @@ export function JsonBlock({
     return <span className="text-muted-foreground">—</span>;
   }
 
-  const source = JSON.stringify(value, null, 2);
+  const source = prettyJson(value);
   const parts: React.ReactNode[] = [];
   let last = 0;
 
