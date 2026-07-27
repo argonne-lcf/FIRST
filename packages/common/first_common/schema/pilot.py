@@ -38,6 +38,7 @@ class ReplicaInfo(BaseModel):
     state_message: str
     served_model_name: str
     resources: list[GpuClaim]
+    log_path: Path
 
 
 class AddressInfo(BaseModel):

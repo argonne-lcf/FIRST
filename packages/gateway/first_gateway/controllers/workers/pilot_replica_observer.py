@@ -327,6 +327,9 @@ class PilotReplicaObserver(Worker):
             if ri.resources and not db_replica.resources:
                 values["resources"] = [r.model_dump(mode="json") for r in ri.resources]
 
+            if ri.log_path and not db_replica.log_path:
+                values["log_path"] = ri.log_path.as_posix()
+
             if not values:
                 continue
 

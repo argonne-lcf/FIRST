@@ -1,6 +1,9 @@
+import asyncio
+from pathlib import Path
+
 from fastapi import APIRouter, Body
 
-from first_common.errors import BadPilotRequest, InvalidSpecError
+from first_common.errors import BadPilotRequest, FirstError, InvalidSpecError
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources import (
     ConfigVersion,
@@ -11,6 +14,8 @@ from first_common.schema.resources import (
 from first_common.schema.resources.read import (
     PilotDeploymentSummary,
 )
+from first_common.schema.types import PilotConfig, ReplicaState
+from first_gateway.platforms.schedulers import build_scheduler
 from first_gateway.services.pilot_control import PilotControlClient
 
 from ...database import models as db
@@ -125,10 +130,30 @@ async def tail_replica_logs(sess: DbSession, slug: str, client_state: AppState) 
         raise BadPilotRequest(f"Replica {replica.name!r} has no PilotJob assigned yet.")
 
     job = await db.PilotJob.get_by_name(sess, replica.pilot_job_name)
-    if job.manager_url is None or job.scheduler_state != SchedulerJobState.running:
-        raise BadPilotRequest(
-            f"Replica {replica.name!r} PilotJob is not yet running with a live manager."
-        )
 
-    client = PilotControlClient(client_state, cn="gateway-client")
-    return await client.get_logs(job.manager_url, replica.name)
+    # Prefer to get logs directly from Pilot (no scheduler adapter)
+    if (
+        job.manager_url
+        and job.scheduler_state == SchedulerJobState.running
+        and replica.state
+        in (ReplicaState.launching, ReplicaState.ready, ReplicaState.unhealthy)
+    ):
+        client = PilotControlClient(client_state, cn="gateway-client")
+        return await client.get_logs(job.manager_url, replica.name)
+
+    # If job is history, we'll have to read the log file:
+    if replica.log_path:
+        cluster = await db.Cluster.get_by_name(sess, job.cluster_name)
+        adapter = await build_scheduler(
+            PilotConfig.model_validate(cluster.pilot_system),
+            client_state,
+        )
+        try:
+            async with asyncio.timeout(10):
+                return await adapter.read_file(Path(replica.log_path))
+        except TimeoutError:
+            raise FirstError("Could not read log file within timeout")
+
+    raise BadPilotRequest(
+        f"Replica {replica.name!r} is not running and has no log_path set yet."
+    )

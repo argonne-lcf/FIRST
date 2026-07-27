@@ -580,6 +580,7 @@ class PilotReplica(ResourceRow, SoftDeletable):
     state_message: Mapped[str] = mapped_column(default="Replica created.")
     started_at: Mapped[DateTimeOrNone]
     stopped_at: Mapped[DateTimeOrNone]
+    log_path: Mapped[str | None]
 
     pilot_deployment: Mapped[PilotDeployment] = relationship(
         back_populates="replicas", lazy="raise"

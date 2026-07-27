@@ -138,4 +138,4 @@ class PilotControlClient:
     async def get_logs(self, manager_url: str, replica_name: str) -> str:
         resp = await self._request("GET", f"{manager_url}/logs/{replica_name}")
         resp.raise_for_status()
-        return resp.json()
+        return str(resp.json())

@@ -2,6 +2,7 @@
 
 import itertools
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -190,6 +191,7 @@ def _status_json(replica_names: list[str]) -> dict[str, Any]:
             state_message="starting",
             served_model_name="llama-3",
             resources=[],
+            log_path=Path("/path/to/replica.log"),
         )
         for n in replica_names
     ]

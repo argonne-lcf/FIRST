@@ -2,6 +2,7 @@
 and consecutive_launch_failures tracking."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -80,6 +81,7 @@ def _replica_info(
         state_message=state_message,
         started_at=started_at,
         resources=[GpuClaim(hostname="foo", gpu_ids=["0", "1"])],
+        log_path=Path("/path/to/replica.log"),
     )
 
 
