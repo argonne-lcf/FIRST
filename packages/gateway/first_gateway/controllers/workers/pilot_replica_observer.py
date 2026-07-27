@@ -333,7 +333,11 @@ class PilotReplicaObserver(Worker):
             async with self.client_state.db_sessionmaker.begin() as sess:
                 await sess.execute(
                     sa.update(PilotReplica)
-                    .where(PilotReplica.uid == db_replica.uid)
+                    .where(
+                        PilotReplica.uid == db_replica.uid,
+                        PilotReplica.deleted_at.is_(None),
+                        PilotReplica.state == db_replica.state,
+                    )
                     .values(**values)
                 )
 
@@ -346,7 +350,7 @@ class PilotReplicaObserver(Worker):
         assert job.manager_url is not None
         for ri in remote_replicas:
             # Match on BOTH name and pilot_job_name (even though name is
-            # unique), because if same Replica is assigned to a different
+            # unique itself), because if same Replica is assigned to a different
             # PilotJob, this one is still an orphan (resource leak).
             async with self.client_state.db_sessionmaker() as sess:
                 exists = await sess.scalar(

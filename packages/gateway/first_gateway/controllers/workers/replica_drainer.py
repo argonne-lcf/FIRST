@@ -143,11 +143,14 @@ class ReplicaDrainer(Controller):
 
     async def _finalize_deletion(self, replica: PilotReplica) -> None:
         now = datetime.now(timezone.utc)
-        new_state = (
-            replica.state
-            if replica.state in _PRESERVE_STATES
-            else ReplicaState.terminated.value
-        )
+
+        if replica.state in _PRESERVE_STATES:
+            new_state = replica.state
+            new_msg = replica.state_message
+        else:
+            new_state = ReplicaState.terminated.value
+            new_msg = "Replica terminated by drainer."
+
         async with self.client_state.db_sessionmaker.begin() as sess:
             if replica.pilot_job:
                 await PilotJob.unassign_replica(
@@ -162,6 +165,7 @@ class ReplicaDrainer(Controller):
                 )
                 .values(
                     state=new_state,
+                    state_message=new_msg,
                     stopped_at=sa.func.coalesce(PilotReplica.stopped_at, now),
                     deleted_at=now,
                 )
