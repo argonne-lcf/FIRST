@@ -45,6 +45,8 @@ export function DeploymentRow({ deployment }: { deployment: Deployment }) {
           </div>
         ) : (
           <div className="text-xs text-muted-foreground">
+            {deployment.summary.state}
+            {` · `}
             {deployment.summary.desired_replicas} desired replica
             {deployment.summary.desired_replicas === 1 ? "" : "s"}
             {deployment.summary.consecutive_launch_failures > 0 && (

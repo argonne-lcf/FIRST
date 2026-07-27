@@ -40,6 +40,9 @@ services:
       - "9090:9090"
     networks:
       - gateway
+    environment:
+      - ALL_PROXY=socks5h://host.docker.internal:1080
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
 
   controller-manager:
     environment:

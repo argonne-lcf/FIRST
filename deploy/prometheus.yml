@@ -10,3 +10,4 @@ scrape_configs:
     http_sd_configs:
       - url: http://inference-gateway:7000/discovery/v1/prometheus
         refresh_interval: 1m
+        proxy_from_environment: true

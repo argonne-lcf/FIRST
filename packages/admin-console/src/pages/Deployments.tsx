@@ -6,6 +6,7 @@ import {
   type Deployment,
   type DeploymentState,
 } from "@/components/DeploymentRow";
+import { STATE_SEVERITY, type Severity } from "@/lib/severity";
 import {
   Accordion,
   AccordionContent,
@@ -16,21 +17,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn, humanize } from "@/lib/utils";
-
-type Severity = "ok" | "warning" | "critical";
-
-/** State → severity. Only "healthy" is green; hard failures are red. */
-const STATE_SEVERITY: Record<DeploymentState, Severity> = {
-  healthy: "ok",
-  unhealthy: "critical",
-  failed: "critical",
-  degraded: "warning",
-  starting: "warning",
-  stopping: "warning",
-  awaiting_capacity: "warning",
-  offline: "warning",
-  unknown: "warning",
-};
 
 const SEVERITY_RANK: Record<Severity, number> = {
   critical: 2,

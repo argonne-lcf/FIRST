@@ -3,6 +3,12 @@ import { useParams } from "@tanstack/react-router";
 import { type PilotDeploymentDetail as PilotDeploymentDetailModel } from "@/lib/client";
 import { deploymentQueries } from "@/queries/deployment";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import {
+  HealthDescription,
+  HealthIndicator,
+  PilotStateDescription,
+  PilotStateIndicator,
+} from "@/components/ClusterStatus";
 import { FieldValueTable } from "@/components/FieldValueTable";
 import { ReplicaCards } from "@/components/ReplicaCards";
 import { ResourceHeader } from "@/components/ResourceHeader";
@@ -128,6 +134,12 @@ function PilotDeploymentDetail({ name }: { name: string }) {
         kind={deployment.kind}
         name={deployment.name}
         uid={deployment.uid}
+      >
+        <PilotStateIndicator state={deployment.state} />
+      </ResourceHeader>
+      <PilotStateDescription
+        state={deployment.state}
+        desiredReplicas={deployment.desired_replicas}
       />
       <ReplicaGrid deployment={deployment} />
       <DetailsCard
@@ -156,7 +168,10 @@ function StaticDeploymentDetail({ name }: { name: string }) {
         kind={deployment.kind}
         name={deployment.name}
         uid={deployment.uid}
-      />
+      >
+        <HealthIndicator health={deployment.health} />
+      </ResourceHeader>
+      <HealthDescription health={deployment.health} />
       <DetailsCard
         title="Details"
         obj={deployment}

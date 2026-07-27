@@ -8,7 +8,11 @@ import {
 } from "@/lib/client";
 import { clusterQueries } from "@/queries/cluster";
 import { Breadcrumb } from "@/components/Breadcrumb";
-import { DeploymentCounts, HealthIndicator } from "@/components/ClusterStatus";
+import {
+  DeploymentCounts,
+  HealthDescription,
+  HealthIndicator,
+} from "@/components/ClusterStatus";
 import { JsonBlock } from "@/components/JsonBlock";
 import { ResourceHeader } from "@/components/ResourceHeader";
 import { Badge } from "@/components/ui/badge";
@@ -304,6 +308,12 @@ export function ClusterDetail() {
         )}
       </div>
 
+      <HealthDescription health={cluster.health} />
+
+      {cluster.pilot_system != null && (
+        <PilotJobsTable cluster={cluster} clusterSlug={clusterSlug} />
+      )}
+
       {cluster.maintenance_notice && (
         <div className="flex items-start gap-2 rounded-md bg-warning/10 p-3 text-sm text-warning">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" />
@@ -312,10 +322,6 @@ export function ClusterDetail() {
       )}
 
       <ConfigTable cluster={cluster} />
-
-      {cluster.pilot_system != null && (
-        <PilotJobsTable cluster={cluster} clusterSlug={clusterSlug} />
-      )}
     </DetailShell>
   );
 }

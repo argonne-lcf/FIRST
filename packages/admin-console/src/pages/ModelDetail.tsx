@@ -104,15 +104,6 @@ export function ModelDetail() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Router Config</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <JsonBlock value={modelConfig} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
           <CardTitle>Deployments</CardTitle>
         </CardHeader>
         <CardContent>
@@ -128,6 +119,15 @@ export function ModelDetail() {
               />
             ))
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Router Config</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <JsonBlock value={modelConfig} />
         </CardContent>
       </Card>
     </DetailShell>
