@@ -12,15 +12,26 @@ import {
  * Two-column Field/Value table with syntax-highlighted JSON values, matching
  * the Configuration table in ClusterDetail. Renders one row per own key of
  * `obj` (in declaration order), skipping any key listed in `omit`.
+ *
+ * Fields named in `order` are floated to the top in that order; any remaining
+ * fields keep their original declaration order below them.
  */
 export function FieldValueTable({
   obj,
   omit = [],
+  order = [],
 }: {
   obj: Record<string, unknown>;
   omit?: readonly string[];
+  order?: readonly string[];
 }) {
-  const rows = Object.entries(obj).filter(([field]) => !omit.includes(field));
+  const rank = (field: string) => {
+    const i = order.indexOf(field);
+    return i === -1 ? order.length : i;
+  };
+  const rows = Object.entries(obj)
+    .filter(([field]) => !omit.includes(field))
+    .sort(([a], [b]) => rank(a) - rank(b));
   return (
     <Table>
       <TableHeader>

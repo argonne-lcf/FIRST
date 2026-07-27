@@ -174,6 +174,17 @@ export function ReplicaDetail() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Runtime</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm">
+          <ReplicaRuntime runtime={replica.runtime} />
+        </CardContent>
+      </Card>
+
+      <LogViewer replicaName={replica.name} replicaSlug={replica.slug} />
+
+      <Card>
+        <CardHeader>
           <CardTitle>Details</CardTitle>
         </CardHeader>
         <CardContent>
@@ -183,17 +194,6 @@ export function ReplicaDetail() {
           />
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Runtime</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm">
-          <ReplicaRuntime runtime={replica.runtime} />
-        </CardContent>
-      </Card>
-
-      <LogViewer replicaName={replica.name} replicaSlug={replica.slug} />
     </DetailShell>
   );
 }

@@ -59,10 +59,12 @@ function DetailsCard({
   title,
   obj,
   omit,
+  order,
 }: {
   title: string;
   obj: Record<string, unknown>;
   omit?: readonly string[];
+  order?: readonly string[];
 }) {
   return (
     <Card>
@@ -70,11 +72,35 @@ function DetailsCard({
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <FieldValueTable obj={obj} omit={omit} />
+        <FieldValueTable obj={obj} omit={omit} order={order} />
       </CardContent>
     </Card>
   );
 }
+
+/** Important fields floated to the top of a pilot deployment's Details card. */
+const PILOT_FIELD_ORDER = [
+  "cluster_name",
+  "model_name",
+  "state",
+  "desired_replicas",
+  "min_replicas",
+  "max_replicas",
+  "consecutive_launch_failures",
+  "reconcile_failures",
+  "reconcile_last_error",
+  "reconcile_retry_at",
+] as const;
+
+/** Important fields floated to the top of a static deployment's Details card. */
+const STATIC_FIELD_ORDER = [
+  "cluster_name",
+  "model_name",
+  "health",
+  "runtime",
+  "api_url",
+  "upstream_model_name",
+] as const;
 
 function ReplicaGrid({
   deployment,
@@ -103,12 +129,13 @@ function PilotDeploymentDetail({ name }: { name: string }) {
         name={deployment.name}
         uid={deployment.uid}
       />
+      <ReplicaGrid deployment={deployment} />
       <DetailsCard
         title="Details"
         obj={deployment}
         omit={["kind", "name", "uid", "replicas"]}
+        order={PILOT_FIELD_ORDER}
       />
-      <ReplicaGrid deployment={deployment} />
     </DetailShell>
   );
 }
@@ -134,6 +161,7 @@ function StaticDeploymentDetail({ name }: { name: string }) {
         title="Details"
         obj={deployment}
         omit={["kind", "name", "uid"]}
+        order={STATIC_FIELD_ORDER}
       />
     </DetailShell>
   );
