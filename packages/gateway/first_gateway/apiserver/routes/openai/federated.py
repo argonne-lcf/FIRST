@@ -9,6 +9,8 @@ from first_common.schema.endpoints.openai import (
     OpenAIResponsesPayload,
 )
 
+from ....services.orchestration import get_backend
+from ....services.submit_inference import submit_inference
 from ...dependencies import AdmissionControllerDep, AuthUser
 from .dependencies import AuthorizedModel
 
@@ -22,9 +24,8 @@ async def chat_completions(
     model: AuthorizedModel,
     admission_controler: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    # backend = await get_backend()
-    # await submit_to_backend()
-    raise NotImplementedError("Not implemented yet.")
+    backend = await get_backend(user, model, admission_controler)
+    return await submit_inference(backend, payload)
 
 
 @router.post("/responses", response_model=None)
@@ -34,7 +35,8 @@ async def responses(
     model: AuthorizedModel,
     admission_controler: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    raise NotImplementedError("Not implemented yet.")
+    backend = await get_backend(user, model, admission_controler)
+    return await submit_inference(backend, payload)
 
 
 @router.post("/embeddings", response_model=None)
@@ -44,4 +46,5 @@ async def embeddings(
     model: AuthorizedModel,
     admission_controler: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    raise NotImplementedError("Not implemented yet.")
+    backend = await get_backend(user, model, admission_controler)
+    return await submit_inference(backend, payload)
