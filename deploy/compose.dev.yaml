@@ -43,6 +43,8 @@ services:
       - gateway
     environment:
       - ALL_PROXY=socks5h://host.docker.internal:1080
+      - HTTPS_PROXY=socks5h://host.docker.internal:1080
+      - HTTP_PROXY=socks5h://host.docker.internal:1080
       - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
 
   controller-manager:

@@ -133,7 +133,7 @@ spec:
   router_params:
     max_backend_concurrency: 20
   prometheus_metrics_path:  "/metrics"
-  prometheus_scrape_interval_sec: 30
+  prometheus_scrape_interval_sec: 15
 
   min_replicas: 0
   max_replicas: 2
