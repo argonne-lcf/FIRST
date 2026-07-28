@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: 'FIRST Inference Dashboards'
+    orgId: 1
+    folder: 'FIRST'
+    type: file
+    disableInclusionByUniqueUID: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

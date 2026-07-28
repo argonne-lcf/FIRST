@@ -16,7 +16,7 @@ spec:
     job_walltime_min: 10080
     max_concurrent_jobs: 3
     max_num_nodes: 3
-    queue: "infer-bigmem"
+    queue: "infer-svc-test"
     account: inference_service
     scheduler_flags: "-l filesystems=home:eagle"
     workdir: /eagle/inference_service/firstv2-pilot/workdir
@@ -139,7 +139,7 @@ spec:
   max_replicas: 2
   scaling_strategy:
     immediate_cold_start: true
-    scale_down_sustain_sec: 900
+    scale_down_sustain_sec: 10800
     scaling_thresholds:
       - [0.0, 1]
       - [5.0, 2]
