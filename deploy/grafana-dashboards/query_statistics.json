@@ -682,7 +682,7 @@
   ],
   "preload": false,
   "schemaVersion": 40,
-  "tags": [],
+  "tags": ["first", "vllm"],
   "templating": {
     "list": [
       {
@@ -752,7 +752,7 @@
   "time": { "from": "now-12h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Query Statistics_New4",
+  "title": "vLLM Token Statistics",
   "uid": "query-statistics4",
   "version": 2,
   "weekStart": ""
