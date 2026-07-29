@@ -159,3 +159,11 @@ def raise_admit_error(admit_result: AdmitResult, usage_limits: UsageLimits) -> N
 
     else:
         raise FirstError(f"Uncaught admit_result status: {admit_result.status}.")
+
+
+def get_name_from_slug(slug: str) -> str:
+    return slug.replace("~", "/")
+
+
+def get_slug_from_name(name: str) -> str:
+    return name.replace("/", "~")
