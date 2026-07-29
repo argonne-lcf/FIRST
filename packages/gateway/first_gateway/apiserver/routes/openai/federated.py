@@ -22,9 +22,9 @@ async def chat_completions(
     user: AuthUser,
     payload: OpenAIChatCompletionsPayload,
     model: AuthorizedModel,
-    admission_controler: AdmissionControllerDep,
+    admission_controller: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    backend = await get_backend(user, model, admission_controler)
+    backend = await get_backend(user, model, admission_controller)
     return await submit_inference(backend, payload)
 
 
@@ -33,9 +33,9 @@ async def responses(
     user: AuthUser,
     payload: OpenAIResponsesPayload,
     model: AuthorizedModel,
-    admission_controler: AdmissionControllerDep,
+    admission_controller: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    backend = await get_backend(user, model, admission_controler)
+    backend = await get_backend(user, model, admission_controller)
     return await submit_inference(backend, payload)
 
 
@@ -44,7 +44,7 @@ async def embeddings(
     user: AuthUser,
     payload: OpenAIEmbeddingsPayload,
     model: AuthorizedModel,
-    admission_controler: AdmissionControllerDep,
+    admission_controller: AdmissionControllerDep,
 ) -> StreamingResponse | dict[str, Any]:
-    backend = await get_backend(user, model, admission_controler)
+    backend = await get_backend(user, model, admission_controller)
     return await submit_inference(backend, payload)

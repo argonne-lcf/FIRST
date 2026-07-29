@@ -102,10 +102,10 @@ AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
 IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
 
 
-async def get_admission_controler(redis_client: RedisDep) -> _AdmissionController:
+async def get_admission_controller(redis_client: RedisDep) -> _AdmissionController:
     return _AdmissionController(client=redis_client)
 
 
 AdmissionControllerDep = Annotated[
-    _AdmissionController, Depends(get_admission_controler)
+    _AdmissionController, Depends(get_admission_controller)
 ]
