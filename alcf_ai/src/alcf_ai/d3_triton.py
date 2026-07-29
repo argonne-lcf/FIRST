@@ -12,7 +12,9 @@ cli = typer.Typer(no_args_is_help=True)
 
 @cli.command()
 def submit(
-    model_name: str = typer.Argument(..., help="Triton model name (e.g. DoubleMetricLearning)"),
+    model_name: str = typer.Argument(
+        ..., help="Triton model name (e.g. DoubleMetricLearning)"
+    ),
     input_path: Path = typer.Argument(..., help="Path to the input .npz file"),
     from_collection_id: str | None = typer.Option(
         None, help="Globus collection ID to stage in from (default: HTTPS upload)"

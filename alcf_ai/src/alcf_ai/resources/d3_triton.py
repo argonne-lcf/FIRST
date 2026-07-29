@@ -68,9 +68,7 @@ class D3TritonResource(ClientResource):
 
         raise RuntimeError(f"Unexpected D3 Triton inference response: {resp}")
 
-    def poll_task_result(
-        self, task_id: str, timeout: int = 300
-    ) -> dict[str, Any]:
+    def poll_task_result(self, task_id: str, timeout: int = 300) -> dict[str, Any]:
         """
         Poll on the inference task for up to ``timeout`` seconds.
         """

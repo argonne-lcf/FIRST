@@ -28,7 +28,9 @@ cli = Typer(no_args_is_help=True)
 _cli_state: CliState = {}
 
 cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
-cli.add_typer(d3_triton_cli, name="d3-triton", help="Use the Triton HEP inference service")
+cli.add_typer(
+    d3_triton_cli, name="d3-triton", help="Use the Triton HEP inference service"
+)
 cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation service")
 
 
