@@ -1,7 +1,7 @@
 import numpy as np
 
 from first_common.errors import (
-    InternalServerError,
+    FirstError,
     NotFound,
     ServiceUnavailable,
     TooManyRequests,
@@ -135,7 +135,7 @@ def raise_admit_error(admit_result: AdmitResult, usage_limits: UsageLimits) -> N
         elif admit_result.quota_reason == QuotaReason.USER_TPM:
             raise TooManyRequests(f"Tokens per minute above f{usage_limits.tpm}.")
         else:
-            raise InternalServerError(
+            raise FirstError(
                 f"Uncaught reject reason for status {AdmitStatus.REJECT_QUOTA}: {admit_result.quota_reason}."
             )
 
@@ -153,11 +153,9 @@ def raise_admit_error(admit_result: AdmitResult, usage_limits: UsageLimits) -> N
                 f"Backend not available yet. Retry in {admit_result.retry_after_sec} seconds."
             )
         else:
-            raise InternalServerError(
+            raise FirstError(
                 f"Uncaught reject reason for status {AdmitStatus.REJECT_CAPACITY}: {admit_result.capacity_reason}."
             )
 
     else:
-        raise InternalServerError(
-            f"Uncaught admit_result status: {admit_result.status}."
-        )
+        raise FirstError(f"Uncaught admit_result status: {admit_result.status}.")

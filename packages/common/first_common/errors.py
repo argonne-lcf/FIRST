@@ -65,11 +65,6 @@ class ServiceUnavailable(FirstError):
     code: str = "service_unavailable"
 
 
-class InternalServerError(FirstError):
-    status_code = HTTPStatus.INTERNAL_SERVER_ERROR
-    code: str = "internal_server_error"
-
-
 class InvalidSpecError(FirstError):
     status_code = HTTPStatus.BAD_REQUEST
     code: str = "resource_spec_invalid"
