@@ -58,7 +58,7 @@ uvx alcf-ai chat --model google/gemma-4-31B-it --stream --temp 0.3 --max-tokens 
 
 ### Segment images with SAM3
 
-You can segment your images with the [Meta SAM3](https://github.com/facebookresearch/sam3) model.  
+You can segment your images with the [Meta SAM3](https://github.com/facebookresearch/sam3) model.
 
 Send a single image URI plus prompt in for segmentation:
 
@@ -113,6 +113,100 @@ You can preview the segmentation results in a batch by passing the paths to the 
 
 ```bash
 uvx  alcf-ai sam3 preview-batch-results shard-00004.tar shard-00004.results.tar
+```
+
+### Segment images with DINOv3
+
+You can also segment your images with a [DINOv3](https://github.com/facebookresearch/dinov3)
+segmentation model. Unlike SAM3, DINOv3 works over a **whole folder of images at
+once**: you stage in a directory, the GPU dataloader batches over every image in
+it, and a folder of results (semantic masks, plus optional color overlays) is
+written back out.
+
+Because the folder is the unit of work, the input/output paths are staged with
+Globus Transfer as recursive directory transfers. Folder transfers require a
+source/destination Globus collection (the HTTPS upload path is single-file only),
+so first authorize transfers against your collection:
+
+```bash
+# Look up the UUID of your collection:
+SOURCE_COLLECTION="your globus collection UUID"
+
+# Append ":data_access" if this scope is required:
+uvx alcf-ai auth login --authorize-transfers $SOURCE_COLLECTION:data_access
+```
+
+Then submit a folder for segmentation with the CLI. It stages the folder in,
+runs inference, polls until complete, and stages the results folder back:
+
+```bash
+uvx alcf-ai dinov3 submit \
+  /path/to/image-folder \
+  --from-collection-id $SOURCE_COLLECTION \  # Stage the input folder in from here
+  --to-collection-id $SOURCE_COLLECTION \    # Send the results folder back here
+  --save-overlay                             # Also render color overlays
+```
+
+#### Sharding large datasets
+
+The GPU dataloader batches over all images in a single folder, so **one folder =
+one inference task**. To parallelize a large dataset, shard it into subfolders
+and submit each concurrently. The SDK is preferred for driving the bulk
+transfers and concurrent inference tasks:
+
+```python
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+from alcf_ai import InferenceClient
+from alcf_ai.auth import STAGING_COLLECTION_ROOT
+from rich import print
+
+client = InferenceClient()
+
+collection_id = "your globus collection UUID"
+
+# A dataset pre-sharded into subfolders, e.g. dataset/shard-00000/, shard-00001/, ...
+dataset_dir = Path("/path/to/dataset")
+shards = sorted(p for p in dataset_dir.iterdir() if p.is_dir())
+
+
+def run_inference(shard_dir: Path) -> dict:
+    """Stage a folder in, run DINOv3 segmentation, and stage the results back."""
+    # Recursively stage the input folder in from the source collection:
+    stagein = client.stage_in(
+        shard_dir,
+        Path(shard_dir.name),
+        from_collection_id=collection_id,
+        recursive=True,
+    )
+    remote_input = STAGING_COLLECTION_ROOT + str(stagein.destination_path)
+
+    # Submit the inference request and poll for completion. The results
+    # directory is derived server-side within your staging area (you don't -- and
+    # can't -- choose it) and reported back as `mask_dir` in the result.
+    resp = client.dinov3.submit(input_dir=remote_input, save_overlay=True)
+    result = client.dinov3.poll_task_result(resp.task_id)
+
+    # Recursively stage the results folder back to the source collection. Its
+    # name comes from the service (mask_dir == <results_dir>/semantic_masks):
+    results_dirname = Path(result["mask_dir"]).parent.name
+    client.stage_out(
+        collection_id,
+        Path(results_dirname),
+        shard_dir.with_name(results_dirname),
+        recursive=True,
+    )
+    return result
+
+
+with ThreadPoolExecutor(max_workers=8) as pool:
+    # Submit all stage_in / inference / stage_out pipelines to run in parallel:
+    futures = {pool.submit(run_inference, shard): shard for shard in shards}
+    for future in as_completed(futures):
+        shard = futures[future]
+        result = future.result()
+        print(f"[green]{shard.name}[/green] completed: {result}")
 ```
 
 ### Installing the latest client version
@@ -200,3 +294,99 @@ The client with both programmatic and CLI usage defaults to the ALCF Inference S
 1. By exporting the `inference_base_url` environment variable
 2. From the CLI, passing an optional `--base-url` to the `alcf-ai` subcommand.
 3. From the Python client, passing the kwarg `InferenceClient(base_url="...")`
+
+## AmSC SUF-D3 Models
+
+`alcf-ai` provides an SDK/CLI to submit SUF-D3 inference workloads to a Triton serving backend.
+There are 7 models available in the current deployment:
+
+- snbamsc_2dcnn_u
+- snbamsc_2dcnn_v
+- snbamsc_2dcnn_z
+- DoubleMetricLearning
+- higgsInteractionNet
+- particlenet_AK4_PT
+- nugraph2
+
+Inference requests can be submitted using either the `alcf-ai d3-triton submit` CLI or the Python SDK.
+Requests must provide one of the above model names along with a path to the input dataset stored in the Numpy `.npz` format, where each input tensor key is directly matched against the Triton model input metadata.
+
+
+To orchestrate a single test inference task with dataset staging from a source Globus collection, the CLI is convenient.  The following example invokes the `snbamsc_2dcnn_u` model together with the orchestration of Globus data stage-in and stage-out:
+
+```bash
+# ALCF Eagle DTN:
+SOURCE_COLLECTION="05d2c76a-e867-4f67-aa57-76edeb0beda0"
+uvx alcf-ai auth login --authorize-transfers $SOURCE_COLLECTION
+
+alcf-ai d3-triton submit \
+  --from-collection-id $SOURCE_COLLECTION \  # Stage input in from this collection
+  --to-collection-id $SOURCE_COLLECTION \  # Send result back to the same collection
+  snbamsc_2dcnn_u  \   # Select model
+  /datascience/msalim/test-staging-area/amsc-d3-triton/sample_inputs/snbamsc_2dcnn_u.npz # Input path
+```
+
+For efficient bulk processing, the SDK is preferred to arrange bulk transfer tasks and to submit concurrent inference tasks.
+
+```python
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+from alcf_ai import InferenceClient
+from alcf_ai.auth import STAGING_COLLECTION_ROOT
+from rich import print
+
+client = InferenceClient()
+
+sample_dir = Path("/datascience/msalim/test-staging-area/amsc-d3-triton/sample_inputs")
+models = [
+  "snbamsc_2dcnn_u",
+  "snbamsc_2dcnn_v",
+  "snbamsc_2dcnn_z",
+  "DoubleMetricLearning",
+  "higgsInteractionNet",
+  "particlenet_AK4_PT",
+  "nugraph2",
+]
+
+collection_id = "05d2c76a-e867-4f67-aa57-76edeb0beda0"
+
+
+def run_inference(model_name: str, input_path: Path) -> dict:
+    """Stage in an input file, run Triton inference, and stage out the result."""
+    # Stage the input file in from the source collection:
+    stagein = client.stage_in(
+        input_path, Path(input_path.name), from_collection_id=collection_id
+    )
+    remote_input = STAGING_COLLECTION_ROOT + str(stagein.destination_path)
+    remote_output = remote_input.rsplit(".", 1)[0] + ".output.npz"
+
+    # Submit the inference request and poll for completion:
+    resp = client.d3_triton.submit(
+        model_name=model_name,
+        input_path=remote_input,
+        output_path=remote_output,
+    )
+    result = client.d3_triton.poll_task_result(resp.task_id)
+
+    # Stage the result back to the source collection:
+    output_filename = Path(result["output_path"]).name
+    local_output = input_path.with_suffix(".output.npz")
+    client.stage_out(collection_id, Path(output_filename), local_output)
+
+    return result
+
+
+with ThreadPoolExecutor(max_workers=8) as pool:
+    # Example: one input file per model
+    inputs = [sample_dir / f"{model}.npz" for model in models]
+    # Submit all stage_in / inference / stage_out pipelines to run in parallel:
+    futures = {
+        pool.submit(run_inference, model, input_path): model
+        for model, input_path in zip(models, inputs)
+    }
+    for future in as_completed(futures):
+        model = futures[future]
+        result = future.result()
+        print(f"[green]{model}[/green] completed: {result}")
+```

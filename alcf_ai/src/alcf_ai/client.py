@@ -6,7 +6,13 @@ from httpx import Auth, Client, Request, Response, Timeout
 from pydantic import BaseModel
 
 from .auth import get_inference_authorizer
-from .resources import ClientResource, ClusterResource, D3TritonResource, Sam3Resource
+from .resources import (
+    ClientResource,
+    ClusterResource,
+    D3TritonResource,
+    DINOv3Resource,
+    Sam3Resource,
+)
 from .transfer import TransferResult, https_put_to_collection, run_globus_transfer
 
 DEFAULT_BASE_URL = os.environ.get(
@@ -65,6 +71,12 @@ class InferenceClient(Client):
             "d3_triton", D3TritonResource("sophia/triton/amsc-d3", self)
         )
 
+    @property
+    def dinov3(self) -> "DINOv3Resource":
+        return self._resources.setdefault(  # type: ignore[return-value]
+            "dinov3", DINOv3Resource("sophia/dinoserver", self)
+        )
+
     def list_endpoints(self) -> dict[str, Any]:
         resp = self.get("list-endpoints")
         resp.raise_for_status()
@@ -77,7 +89,12 @@ class InferenceClient(Client):
         return StagingAreaResponse.model_validate(resp.json())
 
     def stage_in(
-        self, src: Path, dst: Path, *, from_collection_id: str | None = None
+        self,
+        src: Path,
+        dst: Path,
+        *,
+        from_collection_id: str | None = None,
+        recursive: bool = False,
     ) -> TransferResult:
         if self._staging_area is None:
             self._staging_area = self.ensure_staging_area()
@@ -96,13 +113,26 @@ class InferenceClient(Client):
                 source_path=src.as_posix(),
                 destination_collection_id=self._staging_area.collection_id,
                 destination_path=dst.as_posix(),
+                recursive=recursive,
             )
         else:
+            if recursive:
+                raise ValueError(
+                    "Recursive (directory) stage-in requires a from_collection_id; "
+                    "the HTTPS upload path only supports single files."
+                )
             src = Path(src).expanduser().resolve()
             assert src.is_file()
             return https_put_to_collection(src, dst)
 
-    def stage_out(self, to_collection_id: str, src: Path, dst: Path) -> TransferResult:
+    def stage_out(
+        self,
+        to_collection_id: str,
+        src: Path,
+        dst: Path,
+        *,
+        recursive: bool = False,
+    ) -> TransferResult:
         if self._staging_area is None:
             self._staging_area = self.ensure_staging_area()
 
@@ -119,4 +149,5 @@ class InferenceClient(Client):
             source_path=Path(src).as_posix(),
             destination_collection_id=to_collection_id,
             destination_path=Path(dst).as_posix(),
+            recursive=recursive,
         )
