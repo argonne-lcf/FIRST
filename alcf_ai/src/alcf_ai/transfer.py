@@ -38,12 +38,16 @@ def run_globus_transfer(
     destination_collection_id: str,
     destination_path: str,
     *,
+    recursive: bool = False,
     timeout: int = 300,
     polling_interval: int = 5,
     verify_checksum: bool = False,
 ) -> TransferResult:
     """
     Submit a Globus Transfer task and block until it completes.
+
+    Set ``recursive=True`` when ``source_path`` is a directory, to transfer the
+    entire directory tree.
     """
     auth_collection_id = (
         source_collection_id
@@ -59,7 +63,7 @@ def run_globus_transfer(
         label=f"transfer {source_path}",
         verify_checksum=verify_checksum,
     )
-    tdata.add_item(source_path, destination_path)
+    tdata.add_item(source_path, destination_path, recursive=recursive)
 
     submit_result = tc.submit_transfer(tdata)
     task_id = submit_result["task_id"]
