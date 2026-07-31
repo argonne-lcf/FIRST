@@ -14,3 +14,15 @@ KEYCLOAK_AUDIENCE=ALCF-PBS-PUBLIC
 
 SSL_VERIFY=False
 ```
+
+### Keycloak Token (personal)
+
+```bash
+./keycloak_get_personal_tokens.sh
+```
+
+Enter your ALCF credentials, and copy-paste the `access_token` value from the response into your `.env` file. 
+
+### Qstat and Qsub
+
+Edit the `graphql_qstat.py` and `graphql_qsub.py` to fit your needs, and execute them with `python`.
