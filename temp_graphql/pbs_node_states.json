@@ -1,0 +1,8 @@
+{
+    "idle": 0,
+    "busy": 1,
+    "full": 2,
+    "maintenance": 3,
+    "unlicensed": 4,
+    "down": 5
+}
