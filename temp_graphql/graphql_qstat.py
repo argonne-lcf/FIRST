@@ -22,6 +22,12 @@ query {{
                 queue {{
                     name
                 }}
+                allocatedMachines {{
+                    name
+                    hostname
+                    state
+                    port
+                }}
             }}
             error {{
                 errorCode
