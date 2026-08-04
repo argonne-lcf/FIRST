@@ -16,6 +16,7 @@ from .client import InferenceClient
 from .d3_triton import cli as d3_triton_cli
 from .dinov3 import cli as dinov3_cli
 from .sam3 import cli as sam3_cli
+from .agent import cli as agent_cli
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
@@ -36,6 +37,7 @@ cli.add_typer(
     dinov3_cli, name="dinov3", help="Use the DINOv3 image segmentation service"
 )
 cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation service")
+cli.add_typer(agent_cli, name="agent", help="Utilities to quick-configure agents")
 
 
 @cli.callback()
