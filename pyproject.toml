@@ -70,7 +70,6 @@ members = ["alcf_ai/"]
 module-name = [
     "resource_server_async",
     "dashboard_async",
-    "utils",
     "alcf_ai",
 ]
 module-root = ""
@@ -91,7 +90,7 @@ extend-exclude = [
 select = ["F", "I"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["alcf_ai", "resource_server_async", "dashboard_async", "utils"]
+known-first-party = ["alcf_ai", "resource_server_async", "dashboard_async"]
 
 
 [tool.mypy]
@@ -103,7 +102,6 @@ exclude = [
     'node_modules',
     '^build/',
     '^dist/',
-    'utils/tests/test.*\.py$',
     'resource_server_async/tests/.*.py$',
     '^compute-functions/.*$',
 ]
