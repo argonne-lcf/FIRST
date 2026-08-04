@@ -1,8 +1,11 @@
 import json
 import logging
-import typer
 from pathlib import Path
 from typing import Annotated, Literal
+
+import typer
+
+from alcf_ai.auth import get_inference_authorizer
 
 cli = typer.Typer(no_args_is_help=True)
 
@@ -14,7 +17,7 @@ ALLOWLIST = {
 }
 
 
-def edit_opencode(service_url: str, endpoints) -> None:
+def edit_opencode(service_url: str, api_key: str, endpoints) -> None:
     path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
     try:
         with path.open() as f:
@@ -46,7 +49,7 @@ def edit_opencode(service_url: str, endpoints) -> None:
                 "npm": "@ai-sdk/openai-compatible",
                 "options": {
                     "baseURL": f"{service_url}{cluster_name}/{framework_name}/v1",
-                    "apiKey": "{env:ALCF_AI_TOKEN}",
+                    "apiKey": f"{api_key}",
                 },
                 "models": models,
             }
@@ -69,6 +72,10 @@ def configure(agent: Annotated[Literal["opencode"], typer.Argument()]) -> None:
     client = _cli_state["client"]
     endpoints = client.list_endpoints()
 
+    auth = get_inference_authorizer()
+    auth.ensure_valid_token()
+    api_key = auth.access_token
+
     match agent:
         case "opencode":
-            edit_opencode(client.base_url, endpoints)
+            edit_opencode(client.base_url, api_key, endpoints)

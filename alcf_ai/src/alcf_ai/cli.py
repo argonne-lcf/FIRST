@@ -11,12 +11,12 @@ from rich.logging import RichHandler
 from rich.markdown import Markdown
 from typer import Typer
 
+from .agent import cli as agent_cli
 from .auth import cli as auth_cli
 from .client import InferenceClient
 from .d3_triton import cli as d3_triton_cli
 from .dinov3 import cli as dinov3_cli
 from .sam3 import cli as sam3_cli
-from .agent import cli as agent_cli
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
