@@ -83,6 +83,10 @@ Connect to existing OpenAI-compatible APIs without any local inference infrastru
 
 [→ Setup Direct API Connection](direct-api.md)
 
+For replicated Minerva backends, also configure
+[Minerva Direct API Affinity](minerva.md) to preserve replica-local KV-cache
+reuse with per-user cache isolation.
+
 ---
 
 ## Comparison Matrix
@@ -191,4 +195,3 @@ After setup:
 
 - [Production Best Practices](../deployment/production.md)
 - [Monitoring & Troubleshooting](../monitoring.md)
-

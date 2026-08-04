@@ -81,6 +81,7 @@ nav:
           - Globus Compute + vLLM: admin-guide/inference-setup/globus-compute.md
           - Local vLLM Setup: admin-guide/inference-setup/local-vllm.md
           - Direct API Connection: admin-guide/inference-setup/direct-api.md
+          - Minerva Direct API Affinity: admin-guide/inference-setup/minerva.md
       - Connecting Gateway to Backends:
           - Overview: admin-guide/connecting-gateway-to-backend/index.md
           - Globus Compute Adaptors: admin-guide/connecting-gateway-to-backend/globus-compute.md
@@ -104,4 +105,3 @@ extra:
       link: https://doi.org/10.1145/3731599.3767346
 
 copyright: Copyright &copy; 2025 Argonne National Laboratory - Apache 2.0 License
-

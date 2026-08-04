@@ -8,7 +8,7 @@ from inspect import iscoroutinefunction
 from logging import getLogger
 
 from asgiref.sync import async_to_sync, markcoroutinefunction, sync_to_async
-from django.http import HttpRequest, HttpResponse, StreamingHttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 
 from resource_server_async.schemas.structured_logs import (
     AccessLogPydantic,
@@ -17,6 +17,7 @@ from resource_server_async.schemas.structured_logs import (
 )
 
 from .cache import should_throttle
+from .minerva_affinity import SESSION_HEADER, validate_session_id
 
 logger = getLogger(__name__)
 
@@ -26,6 +27,7 @@ class RequestContext:
     access_log: AccessLogPydantic
     user: UserPydantic | None = None
     request_log: RequestLogPydantic | None = None
+    minerva_session_id: str | None = None
 
 
 _request_context: ContextVar[RequestContext] = ContextVar("_request_context")
@@ -107,10 +109,19 @@ class AccessLogMiddleware:
         self, request: HttpRequest
     ) -> HttpResponse | StreamingHttpResponse:
 
-        token = _request_context.set(RequestContext(initialize_access_log(request)))
+        context = RequestContext(initialize_access_log(request))
+        token = _request_context.set(context)
+        response: HttpResponse | StreamingHttpResponse
 
         try:
-            response = await self.get_response(request)
+            try:
+                context.minerva_session_id = validate_session_id(
+                    request.headers.get(SESSION_HEADER)
+                )
+            except ValueError as exc:
+                response = JsonResponse({"detail": str(exc)}, status=400)
+            else:
+                response = await self.get_response(request)
             ctx_data = _request_context.get()
         finally:
             _request_context.reset(token)

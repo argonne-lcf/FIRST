@@ -65,6 +65,11 @@ All configuration is done through environment variables, typically stored in a `
 | `MAX_BATCHES_PER_USER` | No | `2` | Maximum concurrent batch jobs per user |
 | `STREAMING_SERVER_HOST` | No | - | Internal streaming server host:port |
 | `INTERNAL_STREAMING_SECRET` | No | - | Secret for internal streaming authentication |
+| `MINERVA_AFFINITY_HMAC_KEY` | For Minerva inference | - | Dedicated secret of at least 32 bytes used to derive opaque Minerva session-affinity keys and per-user/model cache salts |
+
+Rotating `MINERVA_AFFINITY_HMAC_KEY` remaps all Minerva sessions and cache
+namespaces. Treat rotation as a planned cold-cache event. See
+[Minerva Direct API Affinity](../inference-setup/minerva.md).
 
 ### Metis (Direct API) Configuration
 

@@ -55,8 +55,13 @@ class AsyncHttpClient:
         response.raise_for_status()
         return response.json()
 
-    async def post(self, url: str, data: Any = None) -> Any:
-        response = await self._client.post(url, json=data)
+    async def post(
+        self,
+        url: str,
+        data: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        response = await self._client.post(url, json=data, headers=headers)
         response.raise_for_status()
         return response.json()
 

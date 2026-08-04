@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -97,13 +98,24 @@ class DirectAPIEndpoint(BaseEndpoint):
 
     # Submit task
     async def submit_task(self, data: dict[str, Any]) -> SubmitTaskResult:
+        return await self._submit_task_with_headers(data)
+
+    async def _submit_task_with_headers(
+        self,
+        data: dict[str, Any],
+        request_headers: dict[str, str] | None = None,
+    ) -> SubmitTaskResult:
         """Submits a single interactive task to the compute resource."""
-        endpoint = data.pop("openai_endpoint", "chat/completions").strip("/")
+        request_data = copy.deepcopy(data)
+        endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
+        captured_headers = dict(request_headers) if request_headers else None
 
         # Submit POST call and wait for the response
         try:
-            response = await self.httpx_client.post(url, data=data)
+            response = await self.httpx_client.post(
+                url, data=request_data, headers=captured_headers
+            )
         except httpx.HTTPStatusError as e:
             raise EndpointError(
                 f"Upstream endpoint returned {e.response.status_code}: {e.response.content[:256]!r}.",
@@ -126,7 +138,24 @@ class DirectAPIEndpoint(BaseEndpoint):
     async def submit_streaming_task(
         self, data: dict[str, Any]
     ) -> SubmitStreamingTaskResponse:
+        return await self._submit_streaming_task_with_headers(data)
+
+    async def _submit_streaming_task_with_headers(
+        self,
+        data: dict[str, Any],
+        request_headers: dict[str, str] | None = None,
+    ) -> SubmitStreamingTaskResponse:
         """Submits a single interactive task to the compute resource with streaming enabled."""
+
+        # Capture request-local state before returning the lazy streaming
+        # generator. Endpoint adapters and HTTP clients are shared objects.
+        request_data = copy.deepcopy(data)
+        endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
+        url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
+        captured_headers = {
+            **self.httpx_client.headers,
+            **dict(request_headers or {}),
+        }
 
         # Shared state for tracking streaming (optimized - minimal memory)
         streaming_state: StreamingState = {
@@ -143,7 +172,9 @@ class DirectAPIEndpoint(BaseEndpoint):
 
             # For each streaming chunk ...
             try:
-                async for chunk in self.__get_stream_chunks(data):
+                async for chunk in self.__get_stream_chunks(
+                    url, request_data, captured_headers
+                ):
                     if chunk:
                         # Send chunk
                         streaming_state["total_chunks"] += 1
@@ -205,12 +236,12 @@ class DirectAPIEndpoint(BaseEndpoint):
 
     # Get stream chunks
     async def __get_stream_chunks(
-        self, data: dict[str, Any]
+        self,
+        url: str,
+        data: dict[str, Any],
+        headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
         """Make a direct API streaming call to the endpoint."""
-        endpoint = data.pop("openai_endpoint", "chat/completions").strip("/")
-        url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
-
         # Create an async HTTPx client
         try:
             async with httpx.AsyncClient(
@@ -228,7 +259,7 @@ class DirectAPIEndpoint(BaseEndpoint):
                     "POST",
                     url,
                     json=data,
-                    headers=self.httpx_client.headers,
+                    headers=headers,
                 ) as response:
                     # Return error if something went wrong
                     if response.status_code != 200:
