@@ -24,6 +24,34 @@ from ..schemas.endpoints import (
 
 log = logging.getLogger(__name__)
 
+_FORWARDED_REQUEST_HEADER_ALLOWLIST = {
+    "x-minerva-affinity-key": "X-Minerva-Affinity-Key",
+    "x-request-id": "X-Request-ID",
+}
+
+
+def _merge_forwarded_request_headers(
+    request_headers: dict[str, str] | None,
+    default_headers: dict[str, str],
+) -> dict[str, str]:
+    """Validate per-request headers and keep configured defaults authoritative."""
+    forwarded: dict[str, str] = {}
+    for name, value in (request_headers or {}).items():
+        canonical_name = _FORWARDED_REQUEST_HEADER_ALLOWLIST.get(name.casefold())
+        if canonical_name is None:
+            raise EndpointError(
+                "Only X-Minerva-Affinity-Key and X-Request-ID may be forwarded.",
+                status_code=400,
+            )
+        forwarded[canonical_name] = value
+
+    for name, value in default_headers.items():
+        for forwarded_name in tuple(forwarded):
+            if forwarded_name.casefold() == name.casefold():
+                del forwarded[forwarded_name]
+        forwarded[name] = value
+    return forwarded
+
 
 class DirectAPIEndpointConfig(BaseModel):
     api_url: str
@@ -97,13 +125,28 @@ class DirectAPIEndpoint(BaseEndpoint):
 
     # Submit task
     async def submit_task(self, data: dict[str, Any]) -> SubmitTaskResult:
+        return await self._submit_task_with_headers(data)
+
+    async def _submit_task_with_headers(
+        self,
+        data: dict[str, Any],
+        request_headers: dict[str, str] | None = None,
+    ) -> SubmitTaskResult:
         """Submits a single interactive task to the compute resource."""
-        endpoint = data.pop("openai_endpoint", "chat/completions").strip("/")
+        request_data = dict(data)
+        endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
+        captured_headers = (
+            _merge_forwarded_request_headers(request_headers, self.httpx_client.headers)
+            if request_headers is not None
+            else None
+        )
 
         # Submit POST call and wait for the response
         try:
-            response = await self.httpx_client.post(url, data=data)
+            response = await self.httpx_client.post(
+                url, data=request_data, headers=captured_headers
+            )
         except httpx.HTTPStatusError as e:
             raise EndpointError(
                 f"Upstream endpoint returned {e.response.status_code}: {e.response.content[:256]!r}.",
@@ -126,7 +169,23 @@ class DirectAPIEndpoint(BaseEndpoint):
     async def submit_streaming_task(
         self, data: dict[str, Any]
     ) -> SubmitStreamingTaskResponse:
+        return await self._submit_streaming_task_with_headers(data)
+
+    async def _submit_streaming_task_with_headers(
+        self,
+        data: dict[str, Any],
+        request_headers: dict[str, str] | None = None,
+    ) -> SubmitStreamingTaskResponse:
         """Submits a single interactive task to the compute resource with streaming enabled."""
+
+        # Capture request-local state before returning the lazy streaming
+        # generator. Endpoint adapters and HTTP clients are shared objects.
+        request_data = dict(data)
+        endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
+        url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
+        captured_headers = _merge_forwarded_request_headers(
+            request_headers, self.httpx_client.headers
+        )
 
         # Shared state for tracking streaming (optimized - minimal memory)
         streaming_state: StreamingState = {
@@ -143,7 +202,9 @@ class DirectAPIEndpoint(BaseEndpoint):
 
             # For each streaming chunk ...
             try:
-                async for chunk in self.__get_stream_chunks(data):
+                async for chunk in self.__get_stream_chunks(
+                    url, request_data, captured_headers
+                ):
                     if chunk:
                         # Send chunk
                         streaming_state["total_chunks"] += 1
@@ -205,12 +266,12 @@ class DirectAPIEndpoint(BaseEndpoint):
 
     # Get stream chunks
     async def __get_stream_chunks(
-        self, data: dict[str, Any]
+        self,
+        url: str,
+        data: dict[str, Any],
+        headers: dict[str, str],
     ) -> AsyncGenerator[str, None]:
         """Make a direct API streaming call to the endpoint."""
-        endpoint = data.pop("openai_endpoint", "chat/completions").strip("/")
-        url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
-
         # Create an async HTTPx client
         try:
             async with httpx.AsyncClient(
@@ -228,7 +289,7 @@ class DirectAPIEndpoint(BaseEndpoint):
                     "POST",
                     url,
                     json=data,
-                    headers=self.httpx_client.headers,
+                    headers=headers,
                 ) as response:
                     # Return error if something went wrong
                     if response.status_code != 200:

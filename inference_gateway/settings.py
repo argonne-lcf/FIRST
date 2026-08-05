@@ -37,6 +37,10 @@ load_dotenv(override=True)
 # Django secret key
 SECRET_KEY = os.getenv("SECRET_KEY")
 
+# Dedicated Minerva affinity/cache namespace key. It is validated only when a
+# Minerva inference request is forwarded so unrelated adapters remain usable.
+MINERVA_AFFINITY_HMAC_KEY = os.getenv("MINERVA_AFFINITY_HMAC_KEY")
+
 # Define whether we are in the automated test suite mode
 RUNNING_AUTOMATED_TEST_SUITE = os.getenv(
     "RUNNING_AUTOMATED_TEST_SUITE", "False"
