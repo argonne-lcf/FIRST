@@ -1,6 +1,6 @@
 [project]
 name = "alcf-ai"
-version = "0.7.0"
+version = "0.8.0"
 description = "ALCF Inference Gateway SDK"
 authors = [{ name = "Misha Salim", email = "msalim@anl.gov" }]
 requires-python = ">=3.12"
@@ -16,6 +16,7 @@ dependencies = [
     "Pillow",
     "tifffile",
     "smart-open",
+    "tomlkit>=0.15.1",
 ]
 
 [project.scripts]

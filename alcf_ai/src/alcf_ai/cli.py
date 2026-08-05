@@ -11,6 +11,7 @@ from rich.logging import RichHandler
 from rich.markdown import Markdown
 from typer import Typer
 
+from .agent import cli as agent_cli
 from .auth import cli as auth_cli
 from .client import InferenceClient
 from .d3_triton import cli as d3_triton_cli
@@ -36,6 +37,7 @@ cli.add_typer(
     dinov3_cli, name="dinov3", help="Use the DINOv3 image segmentation service"
 )
 cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation service")
+cli.add_typer(agent_cli, name="agent", help="Utilities to quick-configure agents")
 
 
 @cli.callback()
