@@ -24,6 +24,34 @@ from ..schemas.endpoints import (
 
 log = logging.getLogger(__name__)
 
+_FORWARDED_REQUEST_HEADER_ALLOWLIST = {
+    "x-minerva-affinity-key": "X-Minerva-Affinity-Key",
+    "x-request-id": "X-Request-ID",
+}
+
+
+def _merge_forwarded_request_headers(
+    request_headers: dict[str, str] | None,
+    default_headers: dict[str, str],
+) -> dict[str, str]:
+    """Validate per-request headers and keep configured defaults authoritative."""
+    forwarded: dict[str, str] = {}
+    for name, value in (request_headers or {}).items():
+        canonical_name = _FORWARDED_REQUEST_HEADER_ALLOWLIST.get(name.casefold())
+        if canonical_name is None:
+            raise EndpointError(
+                "Only X-Minerva-Affinity-Key and X-Request-ID may be forwarded.",
+                status_code=400,
+            )
+        forwarded[canonical_name] = value
+
+    for name, value in default_headers.items():
+        for forwarded_name in tuple(forwarded):
+            if forwarded_name.casefold() == name.casefold():
+                del forwarded[forwarded_name]
+        forwarded[name] = value
+    return forwarded
+
 
 class DirectAPIEndpointConfig(BaseModel):
     api_url: str
@@ -108,7 +136,11 @@ class DirectAPIEndpoint(BaseEndpoint):
         request_data = dict(data)
         endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
-        captured_headers = dict(request_headers) if request_headers else None
+        captured_headers = (
+            _merge_forwarded_request_headers(request_headers, self.httpx_client.headers)
+            if request_headers is not None
+            else None
+        )
 
         # Submit POST call and wait for the response
         try:
@@ -151,10 +183,9 @@ class DirectAPIEndpoint(BaseEndpoint):
         request_data = dict(data)
         endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
-        captured_headers = {
-            **self.httpx_client.headers,
-            **dict(request_headers or {}),
-        }
+        captured_headers = _merge_forwarded_request_headers(
+            request_headers, self.httpx_client.headers
+        )
 
         # Shared state for tracking streaming (optimized - minimal memory)
         streaming_state: StreamingState = {

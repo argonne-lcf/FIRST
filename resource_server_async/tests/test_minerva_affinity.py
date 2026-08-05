@@ -400,10 +400,17 @@ class DirectAPIIsolationChecks(SimpleTestCase):
         endpoint._BaseEndpoint__endpoint_slug = "direct-test"
         return endpoint
 
+    @staticmethod
+    def header_value(headers: dict[str, str], name: str) -> str:
+        return {key.casefold(): value for key, value in headers.items()}[
+            name.casefold()
+        ]
+
     async def test_stream_captures_top_level_body_and_headers_before_iteration(
         self,
     ) -> None:
         endpoint = self.direct_endpoint()
+        endpoint.httpx_client.headers["x-rEqUeSt-Id"] = "configured-request-id"
         capture: dict = {}
         data = {
             "model": "model-a",
@@ -411,7 +418,11 @@ class DirectAPIIsolationChecks(SimpleTestCase):
             "messages": [{"role": "user", "content": "original"}],
             "cache_salt": "original-salt",
         }
-        headers = {AFFINITY_HEADER: "original-affinity"}
+        affinity_name = "x-MiNeRvA-aFfInItY-kEy"
+        headers = {
+            affinity_name: "original-affinity",
+            "X-ReQuEsT-ID": "request-local-id",
+        }
         with patch(
             "resource_server_async.endpoints.direct_api.httpx.AsyncClient",
             side_effect=lambda **kwargs: FakeStreamingClient(capture, **kwargs),
@@ -421,34 +432,94 @@ class DirectAPIIsolationChecks(SimpleTestCase):
             )
             data["messages"] = [{"role": "user", "content": "mutated"}]
             data["cache_salt"] = "mutated-salt"
-            headers[AFFINITY_HEADER] = "mutated-affinity"
+            headers[affinity_name] = "mutated-affinity"
             chunks = [chunk async for chunk in result.response.streaming_content]
 
         self.assertEqual(chunks, [b"data: captured\n\n", b"data: [DONE]\n\n"])
         self.assertEqual(capture["json"]["messages"][0]["content"], "original")
         self.assertEqual(capture["json"]["cache_salt"], "original-salt")
-        self.assertEqual(capture["headers"][AFFINITY_HEADER], "original-affinity")
-        self.assertEqual(capture["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(
+            self.header_value(capture["headers"], AFFINITY_HEADER),
+            "original-affinity",
+        )
+        self.assertEqual(
+            self.header_value(capture["headers"], REQUEST_ID_HEADER),
+            "configured-request-id",
+        )
+        self.assertEqual(
+            self.header_value(capture["headers"], "Authorization"),
+            "Bearer test-key",
+        )
 
     async def test_nonstream_copies_top_level_body_and_headers(self) -> None:
         endpoint = self.direct_endpoint()
+        endpoint.httpx_client.headers["x-rEqUeSt-Id"] = "configured-request-id"
         endpoint.httpx_client.post = AsyncMock(return_value={"ok": True})
         data = {
             "model": "model-a",
             "openai_endpoint": "chat/completions",
             "messages": [{"role": "user", "content": "original"}],
         }
-        headers = {AFFINITY_HEADER: "original-affinity"}
+        affinity_name = "x-MiNeRvA-aFfInItY-kEy"
+        headers = {
+            affinity_name: "original-affinity",
+            "X-ReQuEsT-ID": "request-local-id",
+        }
 
         await endpoint._submit_task_with_headers(data, request_headers=headers)
         data["messages"] = [{"role": "user", "content": "mutated"}]
-        headers[AFFINITY_HEADER] = "mutated-affinity"
+        headers[affinity_name] = "mutated-affinity"
 
         sent = endpoint.httpx_client.post.await_args
         self.assertIsNot(sent.kwargs["data"], data)
         self.assertEqual(sent.kwargs["data"]["messages"][0]["content"], "original")
-        self.assertEqual(sent.kwargs["headers"][AFFINITY_HEADER], "original-affinity")
+        self.assertEqual(
+            self.header_value(sent.kwargs["headers"], AFFINITY_HEADER),
+            "original-affinity",
+        )
+        self.assertEqual(
+            self.header_value(sent.kwargs["headers"], REQUEST_ID_HEADER),
+            "configured-request-id",
+        )
+        self.assertEqual(
+            self.header_value(sent.kwargs["headers"], "Authorization"),
+            "Bearer test-key",
+        )
         self.assertNotIn(AFFINITY_HEADER, endpoint.httpx_client.headers)
+
+    async def test_nonstream_rejects_mixed_case_default_header_overrides(
+        self,
+    ) -> None:
+        endpoint = self.direct_endpoint()
+        endpoint.httpx_client.post = AsyncMock(return_value={"ok": True})
+        data = {"model": "model-a"}
+
+        for name in ("aUtHoRiZaTiOn", "cOnTeNt-TyPe"):
+            with self.subTest(name=name):
+                supplied_value = f"caller-value-for-{name}"
+                with self.assertRaises(EndpointError) as raised:
+                    await endpoint._submit_task_with_headers(
+                        data, request_headers={name: supplied_value}
+                    )
+                self.assertEqual(raised.exception.status_code, 400)
+                self.assertNotIn(supplied_value, str(raised.exception))
+        endpoint.httpx_client.post.assert_not_awaited()
+
+    async def test_stream_rejects_mixed_case_default_header_overrides(
+        self,
+    ) -> None:
+        endpoint = self.direct_endpoint()
+        data = {"model": "model-a"}
+
+        for name in ("aUtHoRiZaTiOn", "cOnTeNt-TyPe"):
+            with self.subTest(name=name):
+                supplied_value = f"caller-value-for-{name}"
+                with self.assertRaises(EndpointError) as raised:
+                    await endpoint._submit_streaming_task_with_headers(
+                        data, request_headers={name: supplied_value}
+                    )
+                self.assertEqual(raised.exception.status_code, 400)
+                self.assertNotIn(supplied_value, str(raised.exception))
 
     async def test_non_minerva_direct_request_gets_no_minerva_values(self) -> None:
         endpoint = self.direct_endpoint()
