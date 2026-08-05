@@ -1,5 +1,6 @@
 import json
 import logging
+import tomlkit
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -44,7 +45,7 @@ def edit_opencode(service_url: str, api_key: str, endpoints) -> None:
             if not models:
                 continue
 
-            providers[f"inference-service-{cluster_name}-{framework_name}"] = {
+            providers[f"alcf-inference-service-{cluster_name}-{framework_name}"] = {
                 "name": f"ALCF Inference Service ({cluster_name.title()}, {'vLLM' if framework_name == 'vllm' else 'Direct API'})",
                 "npm": "@ai-sdk/openai-compatible",
                 "options": {
@@ -62,8 +63,42 @@ def edit_opencode(service_url: str, api_key: str, endpoints) -> None:
     logging.info(f"Updated configuration at {path}")
 
 
+def edit_codex(service_url: str, api_key: str, endpoints) -> None:
+    path = Path.home() / ".codex" / "config.toml"
+    try:
+        with path.open() as f:
+            config = tomlkit.load(f)
+    except (FileNotFoundError, tomlkit.exceptions.ParseError):
+        config = {}
+
+    providers = config.get("model_providers", {})
+    for cluster_name, cluster in endpoints["clusters"].items():
+        for api in cluster["frameworks"].keys():
+            if api not in ("vllm", "api"):
+                continue
+
+            providers[f"alcf-inference-service-{cluster_name}-{api}"] = {
+                "name": f"ALCF Inference Service ({cluster_name.title()}, {'vLLM' if api == 'vllm' else 'Direct API'})",
+                "base_url": f"{service_url}{cluster_name}/{api}/v1",
+                "experimental_bearer_token": f"{api_key}",
+                "wire_api": "chat",
+            }
+
+    config["model_providers"] = providers
+
+    # hardcode default to minerva nemotron
+    config["model"] = "nemotron-3-ultra"
+    config["model_provider"] = "alcf-inference-service-minerva-api"
+
+    path.parent.mkdir(exist_ok=True, parents=True)
+    with path.open("w") as f:
+        tomlkit.dump(config, f)
+
+    logging.info(f"Updated configuration at {path}")
+
+
 @cli.command()
-def configure(agent: Annotated[Literal["opencode"], typer.Argument()]) -> None:
+def configure(agent: Annotated[Literal["opencode", "codex"], typer.Argument()]) -> None:
     """
     Generates a configuration template for a given agent.
     """
@@ -79,3 +114,5 @@ def configure(agent: Annotated[Literal["opencode"], typer.Argument()]) -> None:
     match agent:
         case "opencode":
             edit_opencode(client.base_url, api_key, endpoints)
+        case "codex":
+            edit_codex(client.base_url, api_key, endpoints)

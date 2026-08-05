@@ -16,6 +16,7 @@ dependencies = [
     "Pillow",
     "tifffile",
     "smart-open",
+    "tomlkit>=0.15.1",
 ]
 
 [project.scripts]

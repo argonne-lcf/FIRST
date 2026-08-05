@@ -22,6 +22,7 @@ dependencies = [
     { name = "rich" },
     { name = "smart-open" },
     { name = "tifffile" },
+    { name = "tomlkit" },
     { name = "typer" },
 ]
 
@@ -36,6 +37,7 @@ requires-dist = [
     { name = "rich" },
     { name = "smart-open" },
     { name = "tifffile" },
+    { name = "tomlkit", specifier = ">=0.15.1" },
     { name = "typer" },
 ]
 
@@ -1501,6 +1503,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d7/4a/e687f5957fead200faad58dbf9c9431a2bbb118040e96f5fb8a55f7ebc50/tifffile-2026.4.11.tar.gz", hash = "sha256:17758ff0c0d4db385792a083ad3ca51fcb0f4d942642f4d8f8bc1287fdcf17bc", size = 394956, upload-time = "2026-04-12T01:57:28.793Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/9f/74f110b4271ded519c7add4341cbabc824de26817ff1c345b3109df9e99c/tifffile-2026.4.11-py3-none-any.whl", hash = "sha256:9b94ffeddb39e97601af646345e8808f885773de01b299e480ed6d3a41509ec9", size = 248227, upload-time = "2026-04-12T01:57:26.969Z" },
+]
+
+[[package]]
+name = "tomlkit"
+version = "0.15.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/96/e07752635b98536177fa1f37671c8f3cdde2e724c6bcf6034b2cfb571565/tomlkit-0.15.1.tar.gz", hash = "sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97", size = 180129, upload-time = "2026-07-17T01:48:04.562Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl", hash = "sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304", size = 49449, upload-time = "2026-07-17T01:48:05.728Z" },
 ]
 
 [[package]]
