@@ -1,10 +1,11 @@
 import json
 import logging
-import tomlkit
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
+import tomlkit
 import typer
+from httpx import URL
 
 from alcf_ai.auth import get_inference_authorizer
 
@@ -18,7 +19,7 @@ ALLOWLIST = {
 }
 
 
-def edit_opencode(service_url: str, api_key: str, endpoints) -> None:
+def edit_opencode(service_url: URL, api_key: str, endpoints: dict[str, Any]) -> None:
     path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
     try:
         with path.open() as f:
@@ -63,13 +64,13 @@ def edit_opencode(service_url: str, api_key: str, endpoints) -> None:
     logging.info(f"Updated configuration at {path}")
 
 
-def edit_codex(service_url: str, api_key: str, endpoints) -> None:
+def edit_codex(service_url: URL, api_key: str, endpoints: dict[str, Any]) -> None:
     path = Path.home() / ".codex" / "config.toml"
     try:
         with path.open() as f:
             config = tomlkit.load(f)
     except (FileNotFoundError, tomlkit.exceptions.ParseError):
-        config = {}
+        config = tomlkit.TOMLDocument()
 
     providers = config.get("model_providers", {})
     for cluster_name, cluster in endpoints["clusters"].items():
@@ -108,8 +109,8 @@ def configure(agent: Annotated[Literal["opencode", "codex"], typer.Argument()]) 
     endpoints = client.list_endpoints()
 
     auth = get_inference_authorizer()
-    auth.ensure_valid_token()
-    api_key = auth.access_token
+    auth.ensure_valid_token()  # type: ignore[attr-defined]
+    api_key = auth.access_token  # type: ignore[attr-defined]
 
     match agent:
         case "opencode":
