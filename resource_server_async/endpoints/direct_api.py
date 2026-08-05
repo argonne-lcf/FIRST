@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import json
 import logging
 import os
@@ -106,7 +105,7 @@ class DirectAPIEndpoint(BaseEndpoint):
         request_headers: dict[str, str] | None = None,
     ) -> SubmitTaskResult:
         """Submits a single interactive task to the compute resource."""
-        request_data = copy.deepcopy(data)
+        request_data = dict(data)
         endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
         captured_headers = dict(request_headers) if request_headers else None
@@ -149,7 +148,7 @@ class DirectAPIEndpoint(BaseEndpoint):
 
         # Capture request-local state before returning the lazy streaming
         # generator. Endpoint adapters and HTTP clients are shared objects.
-        request_data = copy.deepcopy(data)
+        request_data = dict(data)
         endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
         captured_headers = {

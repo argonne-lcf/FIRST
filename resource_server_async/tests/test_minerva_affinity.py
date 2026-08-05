@@ -400,7 +400,7 @@ class DirectAPIIsolationChecks(SimpleTestCase):
         endpoint._BaseEndpoint__endpoint_slug = "direct-test"
         return endpoint
 
-    async def test_stream_captures_body_and_per_call_headers_before_iteration(
+    async def test_stream_captures_top_level_body_and_headers_before_iteration(
         self,
     ) -> None:
         endpoint = self.direct_endpoint()
@@ -419,7 +419,7 @@ class DirectAPIIsolationChecks(SimpleTestCase):
             result = await endpoint._submit_streaming_task_with_headers(
                 data, request_headers=headers
             )
-            data["messages"][0]["content"] = "mutated"
+            data["messages"] = [{"role": "user", "content": "mutated"}]
             data["cache_salt"] = "mutated-salt"
             headers[AFFINITY_HEADER] = "mutated-affinity"
             chunks = [chunk async for chunk in result.response.streaming_content]
@@ -430,7 +430,7 @@ class DirectAPIIsolationChecks(SimpleTestCase):
         self.assertEqual(capture["headers"][AFFINITY_HEADER], "original-affinity")
         self.assertEqual(capture["headers"]["Authorization"], "Bearer test-key")
 
-    async def test_nonstream_copies_per_call_body_and_headers(self) -> None:
+    async def test_nonstream_copies_top_level_body_and_headers(self) -> None:
         endpoint = self.direct_endpoint()
         endpoint.httpx_client.post = AsyncMock(return_value={"ok": True})
         data = {
@@ -441,10 +441,11 @@ class DirectAPIIsolationChecks(SimpleTestCase):
         headers = {AFFINITY_HEADER: "original-affinity"}
 
         await endpoint._submit_task_with_headers(data, request_headers=headers)
-        data["messages"][0]["content"] = "mutated"
+        data["messages"] = [{"role": "user", "content": "mutated"}]
         headers[AFFINITY_HEADER] = "mutated-affinity"
 
         sent = endpoint.httpx_client.post.await_args
+        self.assertIsNot(sent.kwargs["data"], data)
         self.assertEqual(sent.kwargs["data"]["messages"][0]["content"], "original")
         self.assertEqual(sent.kwargs["headers"][AFFINITY_HEADER], "original-affinity")
         self.assertNotIn(AFFINITY_HEADER, endpoint.httpx_client.headers)
