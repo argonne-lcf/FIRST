@@ -617,6 +617,7 @@ class OpenAIChatCompletionsPydantic(BaseModelExtraForbid):
     web_search_options: Optional[WebSearchOptions] = WebSearchOptions()
 
     # vLLM extra options relative to OpenAI
+    chat_template_kwargs: Optional[dict[str, Any]] = None
     extra_body: Optional[ExtraBody] = None
 
     # Extra validations

@@ -267,6 +267,7 @@ class MinervaRequestPreparationChecks(SimpleTestCase):
             "model_params": {
                 "model": "model-a",
                 "messages": [{"role": "user", "content": "hello"}],
+                "chat_template_kwargs": {"enable_thinking": False},
                 "openai_endpoint": "chat/completions",
             }
         }
@@ -281,6 +282,7 @@ class MinervaRequestPreparationChecks(SimpleTestCase):
             headers = submit_task.await_args.kwargs["request_headers"]
             self.assertFalse(body["stream"])
             self.assertIn("cache_salt", body)
+            self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
             self.assertIn(AFFINITY_HEADER, headers)
 
         with patch.object(
@@ -294,6 +296,7 @@ class MinervaRequestPreparationChecks(SimpleTestCase):
             headers = submit_stream.await_args.kwargs["request_headers"]
             self.assertTrue(body["stream"])
             self.assertIn("cache_salt", body)
+            self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
             self.assertIn(AFFINITY_HEADER, headers)
 
     async def test_concurrent_users_do_not_contaminate_shared_endpoint_headers(

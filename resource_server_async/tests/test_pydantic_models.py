@@ -52,6 +52,24 @@ class PydanticModelsTestCase(testcases.TestCase):
     def test_OpenAIChatCompletions_validation(self):
         self.__generic_serializer_validation(CHAT_COMPLETIONS)
 
+    def test_chat_template_kwargs_validation_and_serialization(self):
+        kwargs = {"enable_thinking": False, "medium_effort": True}
+        payload = OpenAIChatCompletionsPydantic(
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            chat_template_kwargs=kwargs,
+        )
+
+        serialized = payload.model_dump(exclude_unset=True, mode="json")
+        self.assertEqual(serialized["chat_template_kwargs"], kwargs)
+
+        with self.assertRaises(ValidationError):
+            OpenAIChatCompletionsPydantic(
+                model="test-model",
+                messages=[{"role": "user", "content": "hello"}],
+                chat_template_kwargs=["not", "an", "object"],
+            )
+
     # Test OpenAIEmbeddings pydantic model for validation
     def test_OpenAIEmbeddings_validation(self):
         self.__generic_serializer_validation(EMBEDDINGS)
