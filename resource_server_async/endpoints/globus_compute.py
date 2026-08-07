@@ -47,6 +47,17 @@ from ..schemas.endpoints import (
 log = logging.getLogger(__name__)
 
 
+def _copy_request_envelope(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a shallow per-request copy safe for adapter metadata injection."""
+    model_params = data.get("model_params")
+    if not isinstance(model_params, dict):
+        raise EndpointError("Invalid internal OpenAI request envelope.")
+
+    request_data = dict(data)
+    request_data["model_params"] = dict(model_params)
+    return request_data
+
+
 class GlobusComputeEndpointConfig(BaseModel):
     api_port: int
     endpoint_uuid: str
@@ -205,17 +216,16 @@ class GlobusComputeEndpoint(BaseEndpoint):
     async def submit_task(self, data: dict[str, Any]) -> SubmitTaskResult:
         """Submits a single interactive task to the compute resource."""
         gce = await self.prepare_executor()
+        request_data = _copy_request_envelope(data)
 
         # Add API port to the input data
-        model_params = data.setdefault("model_params", {})
-        if isinstance(model_params, dict):
-            model_params["api_port"] = self.config.api_port
+        request_data["model_params"]["api_port"] = self.config.api_port
 
         return await globus_utils.submit_and_get_result(
             gce,
             self.config.endpoint_uuid,
             self.config.function_uuid,
-            data=data,
+            data=request_data,
             endpoint_slug=self.endpoint_slug,
         )
 
@@ -264,6 +274,7 @@ class GlobusComputeEndpoint(BaseEndpoint):
         streaming_start_time = time.time()
 
         # Prepare streaming data payload using utility function
+        data = _copy_request_envelope(data)
         data = prepare_streaming_task_data(data, stream_task_id)
 
         # Add API port to the input data

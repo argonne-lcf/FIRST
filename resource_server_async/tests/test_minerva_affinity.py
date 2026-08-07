@@ -267,6 +267,11 @@ class MinervaRequestPreparationChecks(SimpleTestCase):
             "model_params": {
                 "model": "model-a",
                 "messages": [{"role": "user", "content": "hello"}],
+                "unknown_scalar": "preserved",
+                "unknown_object": {"nested": [1, False, None]},
+                "unknown_list": ["a", {"b": 2}],
+                "chat_template_kwargs": {"enable_thinking": False},
+                "extra_body": {"future_backend_option": True},
                 "openai_endpoint": "chat/completions",
             }
         }
@@ -281,6 +286,14 @@ class MinervaRequestPreparationChecks(SimpleTestCase):
             headers = submit_task.await_args.kwargs["request_headers"]
             self.assertFalse(body["stream"])
             self.assertIn("cache_salt", body)
+            for field in (
+                "unknown_scalar",
+                "unknown_object",
+                "unknown_list",
+                "chat_template_kwargs",
+                "extra_body",
+            ):
+                self.assertEqual(body[field], data["model_params"][field])
             self.assertIn(AFFINITY_HEADER, headers)
 
         with patch.object(
@@ -294,6 +307,14 @@ class MinervaRequestPreparationChecks(SimpleTestCase):
             headers = submit_stream.await_args.kwargs["request_headers"]
             self.assertTrue(body["stream"])
             self.assertIn("cache_salt", body)
+            for field in (
+                "unknown_scalar",
+                "unknown_object",
+                "unknown_list",
+                "chat_template_kwargs",
+                "extra_body",
+            ):
+                self.assertEqual(body[field], data["model_params"][field])
             self.assertIn(AFFINITY_HEADER, headers)
 
     async def test_concurrent_users_do_not_contaminate_shared_endpoint_headers(
@@ -525,12 +546,15 @@ class DirectAPIIsolationChecks(SimpleTestCase):
         endpoint = self.direct_endpoint()
         endpoint.httpx_client.post = AsyncMock(return_value={"ok": True})
         data = {
-            "model": "model-a",
-            "openai_endpoint": "chat/completions",
-            "messages": [{"role": "user", "content": "hello"}],
+            "model_params": {
+                "model": "model-a",
+                "openai_endpoint": "chat/completions",
+                "messages": [{"role": "user", "content": "hello"}],
+            }
         }
         await endpoint.submit_task(data)
         sent = endpoint.httpx_client.post.await_args
         self.assertIsNone(sent.kwargs["headers"])
         self.assertNotIn("cache_salt", sent.kwargs["data"])
+        self.assertFalse(sent.kwargs["data"]["stream"])
         self.assertNotIn(AFFINITY_HEADER, endpoint.httpx_client.headers)
