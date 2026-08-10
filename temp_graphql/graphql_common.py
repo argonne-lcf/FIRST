@@ -1,7 +1,8 @@
-from dotenv import load_dotenv
-import requests
 import json
 import os
+
+import requests
+from dotenv import load_dotenv
 
 # Environment variables for testing
 load_dotenv()
@@ -12,8 +13,9 @@ SSL_VERIFY = os.getenv("SSL_VERIFY", "True").lower() in ("true", "1", "t")
 # Setup request arguments
 headers = {
     "Authorization": f"Bearer {KEYCLOAK_ACCESS_TOKEN}",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
 }
+
 
 # Generic command to send post requests to GraphQL
 def post_graphql(payload=None):
@@ -21,7 +23,9 @@ def post_graphql(payload=None):
 
     try:
         # Send API request to GraphQL
-        response = requests.post(GRAPHQL_URL, json=payload, headers=headers, verify=SSL_VERIFY)
+        response = requests.post(
+            GRAPHQL_URL, json=payload, headers=headers, verify=SSL_VERIFY
+        )
         response = response.json()
         print(json.dumps(response, indent=2))
 

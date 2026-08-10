@@ -1,3 +1,5 @@
+import base64
+
 from graphql_common import post_graphql
 
 # PBS job setup
@@ -8,20 +10,21 @@ output_path = "/home/msalim"
 compute_allocation = "inference_service"
 walltime_sec = 300
 
-# Commands to be executed
-commands = """
-echo Start
-sleep 10
-echo "slept for 10 secs"
-echo "using following python executable"
-which python
-echo End
+# The full job script. Goes through scriptContent (base64), so no escaping/one-lining
+# is needed -- newlines, quotes, and heredocs are all preserved verbatim.
+script = """#!/bin/bash
+echo "hello"
+
+# Run an embedded python script via a heredoc. Quoting the delimiter ('PYEOF')
+# stops the shell from expanding anything inside the python block.
+python3 <<'PYEOF'
+for i in range(1, 31):
+    print(i)
+PYEOF
 """
 
-# Format commands to a single line
-commands = commands.strip()
-commands = "; ".join(line.strip() for line in commands.splitlines() if line.strip())
-commands = commands.replace('"', '\\"')
+# scriptContent expects urlsafe base64 encoded script content (per schema Base64 type).
+script_b64 = base64.urlsafe_b64encode(script.encode()).decode()
 
 # Variables to set the number of nodes
 SLOTS_PER_NODE = 288
@@ -33,8 +36,7 @@ query = f"""
 mutation {{
     createJob (
         input: {{
-            remoteCommand: "/bin/bash"
-            commandArgs: ["-lc", "{commands}"]
+            scriptContent: "{script_b64}"
             name: "test"
             resourcesRequested: {{
                 jobResources: {{

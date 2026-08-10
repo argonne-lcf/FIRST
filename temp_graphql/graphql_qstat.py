@@ -1,11 +1,11 @@
-
 from graphql_common import post_graphql
 
 # Double quotes need to be inside the filter string
-#filters = '( filter: {states: [5, 6, 7, 9], jobIds: ["7299126"], owner: "bcote"} )'
-#filters = '( filter: {states: [5]} )'
-filters = '( filter: {withHistoryJobs: true, owner: "bcote"} )'
-#filters = ''
+# filters = '( filter: {states: [5, 6, 7, 9], jobIds: ["4693"], owner: "msalim"} )'
+filters = '( filter: {owner: "msalim", withHistoryJobs: true} )'
+# filters = '( filter: {states: [5]} )'
+# filters = '( filter: {withHistoryJobs: true, owner: "bcote"} )'
+# filters = ''
 
 query = f"""
 query {{
@@ -15,6 +15,10 @@ query {{
                 jobId
                 name
                 owner
+                remoteCommand
+                commandArgs
+                shellPath
+                workDir
                 accountingId
                 status {{
                     state
@@ -27,6 +31,9 @@ query {{
                     hostname
                     state
                     port
+                    resourcesAvail {{
+                        customResources  {{ name value }}
+                    }}
                 }}
             }}
             error {{
@@ -37,6 +44,7 @@ query {{
     }}
 }}
 """
+print(query)
 
 # Send API call to GraphQL
-post_graphql(payload = {"query": query})
+post_graphql(payload={"query": query})
