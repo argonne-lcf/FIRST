@@ -3,6 +3,7 @@ from first_common.schema.types import PilotConfig
 
 from ...settings import ClientState
 from .globus_compute_pbs import GlobusComputePBSAdapter
+from .graphql_pbs import GraphQLPBSAdapter
 
 
 async def build_scheduler(
@@ -15,4 +16,4 @@ async def build_scheduler(
     return await pilot.scheduler_adapter.build(client_state, pilot.scheduler_config)
 
 
-__all__ = ["build_scheduler", "GlobusComputePBSAdapter"]
+__all__ = ["build_scheduler", "GlobusComputePBSAdapter", "GraphQLPBSAdapter"]

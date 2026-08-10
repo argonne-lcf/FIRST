@@ -176,6 +176,10 @@ class PilotConfig(BaseModel):
     pilot_path: Path
     job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
 
+    # Path to PilotRuntimeConfig YAML already present on the target
+    # filesystem. Used by adapters that cannot write files (e.g. GraphQLPBSAdapter)
+    pilot_config_path: Path | None = None
+
 
 class DemandSignalConfig(BaseModel):
     """Model-level config for the shared demand signal all of a model's

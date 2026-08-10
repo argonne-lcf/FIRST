@@ -76,6 +76,7 @@ class JobStatusInfo:
     started_at: datetime | None
     walltime_minutes: int
     head_node_ip_address: str | None = None
+    head_node_hostname: str | None = None
 
     @property
     def deadline(self) -> datetime | None:

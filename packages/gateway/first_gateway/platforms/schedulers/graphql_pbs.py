@@ -67,6 +67,13 @@ def _head_node_ip(machines: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _head_node_hostname(machines: list[dict[str, Any]]) -> str | None:
+    """Pull the head node's hostname off the job's allocated machines."""
+    if not machines:
+        return None
+    return machines[0].get("hostname") or None
+
+
 class GraphQLPBSAdapter(SchedulerAdapter):
     def __init__(self, client: AsyncClient, owner: str, url: str) -> None:
         self.client = client
@@ -176,6 +183,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                         }}
                         allocatedMachines {{
                             name
+                            hostname
                             resourcesAvail {{
                                 customResources {{ name value }}
                             }}
@@ -210,8 +218,11 @@ class GraphQLPBSAdapter(SchedulerAdapter):
             walltime_sec = resources.get("wallClockTime") or 0
 
             head_ip = None
+            head_hostname = None
             if state_code in _ACTIVE_STATES:
-                head_ip = _head_node_ip(node.get("allocatedMachines") or [])
+                machines = node.get("allocatedMachines") or []
+                head_ip = _head_node_ip(machines)
+                head_hostname = _head_node_hostname(machines)
 
             results.append(
                 JobStatusInfo(
@@ -223,6 +234,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                     started_at=_parse_epoch_micros(node.get("startTime")),
                     walltime_minutes=walltime_sec // 60,
                     head_node_ip_address=head_ip,
+                    head_node_hostname=head_hostname,
                 )
             )
 

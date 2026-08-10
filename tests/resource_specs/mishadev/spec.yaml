@@ -39,6 +39,34 @@ spec:
   pilot_system: null
 
 ---
+kind: Cluster
+name: tara
+spec:
+  health_check:
+    url: ""
+  maintenance_notice: null
+  pilot_system:
+    submit_script_preamble: ""
+    scheduler_adapter: first_gateway.platforms.schedulers.GraphQLPBSAdapter
+    scheduler_config:
+      keycloak_client_name: tara-pbs
+      job_owner: openinference_svc
+      graphql_url: https://graphql-bridge-dev-01.lab.alcf.anl.gov/tara/graphql
+    job_walltime_min: 10080
+    max_concurrent_jobs: 5
+    max_num_nodes: 20
+    queue: "workq"
+    account: inference_service
+    scheduler_flags: ""
+    workdir: /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/workdir
+    external_port: 8000
+    nginx_path: /vast/draco/tara/projects/Tara_Deployment/msalim/nginx/sbin
+    ip_allowlist: ["0.0.0.0/0"]
+    node_file_env: PBS_NODEFILE
+    pilot_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/envs/firstv2/bin/first-pilot
+    job_name_prefix: __FIRST_PILOT_MISHADEV_
+
+---
 
 kind: AccessGroup
 name: public
