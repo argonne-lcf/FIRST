@@ -605,6 +605,7 @@ dependencies = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "pyyaml" },
 ]
 
@@ -613,6 +614,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "pyyaml" },
 ]
 

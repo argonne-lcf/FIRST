@@ -77,6 +77,7 @@ class LocalSchedulerAdapter(SchedulerAdapter):
         return cls()
 
     async def submit_job(self, job: JobSubmitPayload) -> JobSubmitResult:
+        assert job.script_path is not None  # LocalScheduler submits by path
         # PilotSubmitter writes `<name>.config.yaml` next to `<name>.sh`.
         config_path = job.script_path.with_name(job.script_path.stem + ".config.yaml")
         cfg = yaml.safe_load(config_path.read_text())

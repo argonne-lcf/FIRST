@@ -152,6 +152,10 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         raise TimeoutError(f"Timeout expired while waiting for Compute task {task_id}")
 
     async def submit_job(self, job: JobSubmitPayload) -> JobSubmitResult:
+        if job.script_path is None:
+            raise ValueError(
+                "GlobusComputePBSAdapter.submit_job requires a script_path"
+            )
         args = shlex.split(f"""
             -A {job.account} -q {job.queue} -N {job.name}
             -e {job.log_path} -o {job.log_path} -j oe

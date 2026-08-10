@@ -16,6 +16,12 @@ class JobSubmitPayload:
 
     This is what goes into `qsub` at a generic level; there are no
     pilot-specific abstractions here.
+
+    The job body is supplied one of two ways (exactly one must be set):
+      - ``script_path``: path to a script that already exists on the target
+        filesystem (used by adapters with filesystem access).
+      - ``script``: the script contents themselves (used by adapters that
+        submit the body inline, e.g. over GraphQL).
     """
 
     name: str
@@ -25,8 +31,13 @@ class JobSubmitPayload:
     num_nodes: int
     gpus_per_node: int
     walltime_min: int
-    script_path: Path
     log_path: Path
+    script_path: Path | None = None
+    script: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.script_path is None) == (self.script is None):
+            raise ValueError("Provide exactly one of script_path or script")
 
 
 @dataclass
@@ -64,6 +75,7 @@ class JobStatusInfo:
     created_at: datetime
     started_at: datetime | None
     walltime_minutes: int
+    head_node_ip_address: str | None = None
 
     @property
     def deadline(self) -> datetime | None:

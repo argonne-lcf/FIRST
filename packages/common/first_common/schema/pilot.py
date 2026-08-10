@@ -11,6 +11,7 @@ from typing import Self
 
 import yaml
 from pydantic import BaseModel, computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .types import GpuClaim, PilotLaunchSpec, ReplicaState
 
@@ -100,12 +101,16 @@ class PilotJobStatus(BaseModel):
     replicas: list[ReplicaInfo]
 
 
-class PilotRuntimeConfig(BaseModel):
+class PilotRuntimeConfig(BaseSettings):
     """
     The on-disk YAML contract between the gateway (which produces it at
     pilot-job submit time) and the first-pilot process (which loads it at
     startup).
     """
+
+    model_config = SettingsConfigDict(
+        env_prefix="pilot_", case_sensitive=False, extra="ignore"
+    )
 
     ca_crt: str
     server_crt: str
@@ -142,7 +147,8 @@ class PilotRuntimeConfig(BaseModel):
     def load(cls) -> Self:
         """
         Load from PILOT_CONFIG_FILE environment variable pointing to a yaml
-        config file.
+        config file.  Missing fields in the file are supplanted by "pilot_" prefixed
+        environment variables.
         """
         yaml_path = os.environ["PILOT_CONFIG_FILE"]
         config_raw = yaml.safe_load(Path(yaml_path).read_text())

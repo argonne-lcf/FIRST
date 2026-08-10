@@ -5,6 +5,7 @@ from typing import AsyncGenerator
 
 from globus_compute_sdk import Client as ComputeClient
 from globus_sdk import ClientApp, ConfidentialAppAuthClient
+from httpx import AsyncClient, Timeout
 from pydantic import (
     SecretStr,
     computed_field,
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 
 from .database.redis.pubsub import RedisPubSub
 from .database.redis.repo import RedisRepo
+from .services.keycloak_client import KeycloakServiceTokenAuth
 
 
 @dataclass
@@ -36,6 +38,7 @@ class ClientState:
     db_sessionmaker: async_sessionmaker[AsyncSession]
     auth_client: ConfidentialAppAuthClient
     compute_client: ComputeClient
+    keycloak_clients: dict[str, AsyncClient]
 
 
 class GlobusAuthSettings(BaseSettings):
@@ -75,6 +78,21 @@ class GlobusAuthSettings(BaseSettings):
             return ", ".join(domains_string) + ", or providers with approved projects"
 
 
+class KeycloakSettings(BaseSettings):
+    base_url: str
+    realm: str
+    impersonation_client_id: str
+    impersonation_client_secret: SecretStr
+    audience: str
+    requested_subject: str = "openinference_svc"
+    ssl_verify: bool = True
+    timeout: float = 10.0
+
+    @property
+    def token_url(self) -> str:
+        return f"{self.base_url}/realms/{self.realm}/protocol/openid-connect/token"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Auto-detect and layer variables for local development (outside of containers)
@@ -100,6 +118,8 @@ class Settings(BaseSettings):
     pilot_ca_key: SecretStr
     health_slack_webhook_url: str | None = None
     gateway_health_url: str = "http://127.0.0.1/health"
+
+    keycloak_clients: dict[str, KeycloakSettings] = {}
 
     @asynccontextmanager
     async def build_clients(self) -> AsyncGenerator[ClientState, None]:
@@ -133,6 +153,14 @@ class Settings(BaseSettings):
                     ),
                     do_version_check=False,
                 ),
+                keycloak_clients={
+                    name: AsyncClient(
+                        auth=KeycloakServiceTokenAuth(cfg),
+                        verify=cfg.ssl_verify,
+                        timeout=Timeout(cfg.timeout),
+                    )
+                    for name, cfg in self.keycloak_clients.items()
+                },
             )
         finally:
             await redis.aclose()
