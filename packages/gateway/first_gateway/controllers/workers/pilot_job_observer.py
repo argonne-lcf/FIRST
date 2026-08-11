@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
 from first_common.schema.types import HealthCheckResult, PilotConfig
@@ -61,10 +62,21 @@ class PilotJobObserver(Worker):
                 )
                 async with self.client_state.db_sessionmaker.begin() as sess:
                     await Cluster.record_failure(sess, cluster.uid, e)
-                await self._mark_cluster_health(cluster, HealthCheckResult.unhealthy)
+                    await self._mark_cluster_health(
+                        sess, cluster, HealthCheckResult.unhealthy
+                    )
             else:
-                if cluster.health == HealthCheckResult.unknown:
-                    await self._mark_cluster_health(cluster, HealthCheckResult.healthy)
+                if cluster.health != HealthCheckResult.healthy:
+                    logger.info(
+                        "%s: cluster %r poll succeeded; recovering",
+                        self.name,
+                        cluster.name,
+                    )
+                    async with self.client_state.db_sessionmaker.begin() as sess:
+                        await Cluster.reset_reconcile_state(sess, cluster.uid)
+                        await self._mark_cluster_health(
+                            sess, cluster, HealthCheckResult.healthy
+                        )
 
     async def _poll_cluster(
         self,
@@ -205,7 +217,7 @@ class PilotJobObserver(Worker):
             )
 
     async def _mark_cluster_health(
-        self, cluster: Cluster, health: HealthCheckResult
+        self, sess: AsyncSession, cluster: Cluster, health: HealthCheckResult
     ) -> None:
         async with self.client_state.db_sessionmaker.begin() as sess:
             await sess.execute(
