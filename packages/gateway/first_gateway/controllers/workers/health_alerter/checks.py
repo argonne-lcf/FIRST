@@ -94,7 +94,7 @@ async def _check_scheduler(
 
     try:
         await adapter.get_job_statuses()
-    except Exception as e:
+    except (Exception, asyncio.exceptions.CancelledError) as e:
         return Observation(
             key=key,
             status="error",

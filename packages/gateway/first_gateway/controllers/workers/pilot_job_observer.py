@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import sqlalchemy as sa
 
 from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
-from first_common.schema.types import PilotConfig
+from first_common.schema.types import HealthCheckResult, PilotConfig
 
 from ...database.models import Cluster, PilotJob
 from ...database.redis.pubsub import Channel
@@ -55,10 +55,16 @@ class PilotJobObserver(Worker):
             )
             try:
                 await self._poll_cluster(submitter, cluster.name)
-            except Exception:
+            except Exception as e:
                 logger.exception(
                     "%s: poll failed for cluster %s", self.name, cluster.name
                 )
+                async with self.client_state.db_sessionmaker.begin() as sess:
+                    await Cluster.record_failure(sess, cluster.uid, e)
+                await self._mark_cluster_health(cluster, HealthCheckResult.unhealthy)
+            else:
+                if cluster.health == HealthCheckResult.unknown:
+                    await self._mark_cluster_health(cluster, HealthCheckResult.healthy)
 
     async def _poll_cluster(
         self,
@@ -196,4 +202,17 @@ class PilotJobObserver(Worker):
 
             await self.client_state.redis_pubsub.publish(
                 Channel.pilot_job_ready, job_name
+            )
+
+    async def _mark_cluster_health(
+        self, cluster: Cluster, health: HealthCheckResult
+    ) -> None:
+        async with self.client_state.db_sessionmaker.begin() as sess:
+            await sess.execute(
+                sa.update(Cluster)
+                .where(
+                    Cluster.uid == cluster.uid,
+                    Cluster.health.is_distinct_from(health.value),
+                )
+                .values(health=health.value)
             )
