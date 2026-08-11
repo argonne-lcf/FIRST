@@ -69,6 +69,8 @@ PILOT_SYSTEM: dict[str, Any] = {
     "job_walltime_min": 60,
     "queue": "debug",
     "account": "TestAcct",
+    "max_num_nodes": 10,
+    "gpus_per_node": 8,
     "scheduler_flags": "",
     "workdir": WORKDIR,
     "external_port": 8443,

@@ -15,7 +15,8 @@ spec:
       endpoint_id: 508cbb33-145f-40e4-9f67-1e99660f6a78
     job_walltime_min: 10080
     max_concurrent_jobs: 3
-    max_num_nodes: 3
+    max_num_nodes: 10
+    gpus_per_node: 8
     queue: "infer-svc-test"
     account: inference_service
     scheduler_flags: "-l filesystems=home:eagle"
@@ -55,6 +56,7 @@ spec:
     job_walltime_min: 10080
     max_concurrent_jobs: 5
     max_num_nodes: 20
+    gpus_per_node: 4
     queue: "workq"
     account: inference_service
     scheduler_flags: ""

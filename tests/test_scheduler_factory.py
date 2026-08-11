@@ -27,6 +27,8 @@ async def test_build_scheduler_dispatches_globus_compute_pbs() -> None:
             "scheduler_config": {"endpoint_id": "endpoint-uuid-xyz"},
             "job_walltime_min": 60,
             "queue": "debug",
+            "max_num_nodes": 8,
+            "gpus_per_node": 8,
             "account": "ALCFTest",
             "workdir": "/tmp/pilot-workdir",
             "external_port": 8443,

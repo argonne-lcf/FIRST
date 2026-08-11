@@ -68,6 +68,7 @@ PILOT_SYSTEM: dict[str, Any] = {
     "pilot_max_unhealthy_time_min": 5,
     "max_concurrent_jobs": 3,
     "max_num_nodes": 10,
+    "gpus_per_node": 8,
     "queue": "debug",
     "account": "TestAcct",
     "scheduler_flags": "",

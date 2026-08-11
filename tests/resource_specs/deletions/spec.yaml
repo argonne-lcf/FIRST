@@ -20,6 +20,8 @@ spec:
     pilot_env_path: /eagle/inference-service/venvs/pilot/
     pilot_config_path: /eagle/inference-service/pilot-config/
     job_walltime_min: 2592000
+    max_num_nodes: 64
+    gpus_per_node: 8
     queue: infer-svc
     account: inference_svc
     workdir: /eagle/inference-service/pilot-workdir/

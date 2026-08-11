@@ -68,6 +68,8 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
             "job_walltime_min": 60,
             "queue": "debug",
             "account": "TestAcct",
+            "max_num_nodes": 10,
+            "gpus_per_node": 8,
             "scheduler_flags": "-l filesystems=home",
             "workdir": str(tmp_path / "pilot_workdir"),
             "external_port": 8443,
