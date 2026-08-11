@@ -88,6 +88,12 @@ class PilotJobObserver(Worker):
             jobid
             for jobid, status in statuses.items()
             if (now - status.created_at).total_seconds() > 180
+            and status.state
+            in (
+                SchedulerJobState.queued,
+                SchedulerJobState.starting,
+                SchedulerJobState.running,
+            )
         )
         orphan_job_ids = queued_steady - {db_job.scheduler_job_id for db_job in db_jobs}
 

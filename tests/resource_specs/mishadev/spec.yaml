@@ -60,11 +60,12 @@ spec:
     scheduler_flags: ""
     workdir: /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/workdir
     external_port: 8000
-    nginx_path: /vast/draco/tara/projects/Tara_Deployment/msalim/nginx/sbin
+    nginx_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/nginx/sbin/nginx
     ip_allowlist: ["0.0.0.0/0"]
     node_file_env: PBS_NODEFILE
-    pilot_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/envs/firstv2/bin/first-pilot
-    job_name_prefix: __FIRST_PILOT_MISHADEV_
+    pilot_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/FIRST/.venv/bin/first-pilot
+    pilot_config_path:  /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/config.yaml
+    job_name_prefix: pilot-misha-
 
 ---
 
@@ -107,6 +108,17 @@ spec:
     reject_window_sec: 120
     avg_request_duration_sec: 60
     ewma_alpha: 0.4
+
+---
+
+kind: Model
+name: openai/gpt-oss-20b
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - /chat/completions
+    - /messages
+    - /responses
 
 ---
 
@@ -224,3 +236,66 @@ spec:
         --tensor-parallel-size 4 \
         --max-model-len 65536 \
         --max-num-seqs 32
+
+---
+
+kind: PilotDeployment
+name: tara/openai/gpt-oss-20b
+spec:
+  cluster_name: tara
+  model_name: openai/gpt-oss-20b
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path:  "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 2
+  scaling_strategy:
+    immediate_cold_start: true
+    scale_down_sustain_sec: 10800
+    scaling_thresholds:
+      - [0.0, 1]
+      - [5.0, 2]
+
+  max_consecutive_launch_failures: 2
+  launch_spec:
+    served_model_name: openai/gpt-oss-20b
+    gpus_per_node: 4
+    num_nodes: 1
+    venv_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/envs/vllm0.26
+    weights_path: /vast/draco/tara/projects/Tara_Deployment/msalim/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee
+    weights_cache_path: ""
+    max_startup_sec: 600
+    health_check:
+      url: /health
+
+    env:
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      OMP_NUM_THREADS: "4"
+      VLLM_USE_FLASHINFER_SAMPLER: "0"
+      HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+      HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+      TIKTOKEN_ENCODINGS_BASE: /vast/draco/tara/projects/Tara_Deployment/inference_service/weights/tiktoken_encodings
+
+    serve_script_template: |
+      source {{venv_path}}/bin/activate
+      which python
+
+      # Need to point at regular gcc 14:
+      module load gcc-native
+      export CC=$(command -v gcc)
+      export CXX=$(command -v g++)
+
+      export CUDA_VISIBLE_DEVICES={{ gpus_by_host.values() | first | join(',') }}
+      vllm serve {{weights_path}} \
+        --served-model-name {{served_model_name}} \
+        --host 127.0.0.1 --port {{port}} \
+        --disable-access-log-for-endpoints /health,/metrics \
+        --enable-log-requests \
+        --tensor-parallel-size 4 \
+        --max-model-len 65536 \
+        --max-num-seqs 32 \
+        --tool-call-parser openai \
+        --enable-auto-tool-choice
