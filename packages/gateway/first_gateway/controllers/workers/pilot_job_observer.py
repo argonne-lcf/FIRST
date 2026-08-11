@@ -219,12 +219,11 @@ class PilotJobObserver(Worker):
     async def _mark_cluster_health(
         self, sess: AsyncSession, cluster: Cluster, health: HealthCheckResult
     ) -> None:
-        async with self.client_state.db_sessionmaker.begin() as sess:
-            await sess.execute(
-                sa.update(Cluster)
-                .where(
-                    Cluster.uid == cluster.uid,
-                    Cluster.health.is_distinct_from(health.value),
-                )
-                .values(health=health.value)
+        await sess.execute(
+            sa.update(Cluster)
+            .where(
+                Cluster.uid == cluster.uid,
+                Cluster.health.is_distinct_from(health.value),
             )
+            .values(health=health.value)
+        )

@@ -94,10 +94,14 @@ class HealthObserver(Worker):
     ) -> tuple[str, int, HealthCheckResult] | None:
         """Run one health check.
 
-        Returns `(kind, uid, health)` for the transition batch, or ``None`` when
-        the first failure is being debounced.
+        Returns `(kind, uid, health)` for the transition batch. Returns ``None``
+        when no healthcheck URL is configured (health is owned by
+        PilotJobObserver in that case) or when a first failure is being
+        debounced.
         """
         params = HealthCheckParams.model_validate(resource.health_check)
+        if not params.url:
+            return None
         result = await perform_health_check(self.health_client, params)
 
         key = (resource.kind, resource.uid)

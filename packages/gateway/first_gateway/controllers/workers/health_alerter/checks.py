@@ -28,6 +28,9 @@ from first_gateway.settings import ClientState
 
 logger = logging.getLogger(__name__)
 
+# Per-cluster scheduler probe budget
+_SCHEDULER_CHECK_TIMEOUT_S = 10.0
+
 _BAD_REPLICA_STATES = {
     ReplicaState.unhealthy.value,
     ReplicaState.error.value,
@@ -93,8 +96,9 @@ async def _check_scheduler(
         )
 
     try:
-        await adapter.get_job_statuses()
-    except (Exception, asyncio.exceptions.CancelledError) as e:
+        async with asyncio.timeout(_SCHEDULER_CHECK_TIMEOUT_S):
+            await adapter.get_job_statuses()
+    except Exception as e:
         return Observation(
             key=key,
             status="error",
