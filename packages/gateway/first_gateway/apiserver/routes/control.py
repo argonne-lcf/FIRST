@@ -92,7 +92,9 @@ async def set_desired_pilot_replicas(
     """Manually set desired scale of a PilotDeployment"""
     async with sess.begin():
         deployment = await db.PilotDeployment.get_by_name(sess, name)
+        deployment.consecutive_launch_failures = 0
         deployment.set_desired_replicas(num_replicas)
+        await db.PilotDeployment.reset_reconcile_state(sess, deployment.uid)
     await pubsub.publish(Channel.desired_replicas_changed, name)
     return deployment
 
