@@ -263,7 +263,7 @@ spec:
   max_consecutive_launch_failures: 2
   launch_spec:
     served_model_name: openai/gpt-oss-20b
-    gpus_per_node: 4
+    gpus_per_node: 1
     num_nodes: 1
     venv_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/envs/vllm0.26
     weights_path: /vast/draco/tara/projects/Tara_Deployment/msalim/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee
@@ -296,7 +296,7 @@ spec:
         --host 127.0.0.1 --port {{port}} \
         --disable-access-log-for-endpoints /health,/metrics \
         --enable-log-requests \
-        --tensor-parallel-size 4 \
+        --tensor-parallel-size 1 \
         --max-model-len 65536 \
         --max-num-seqs 32 \
         --tool-call-parser openai \
