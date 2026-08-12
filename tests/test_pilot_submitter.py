@@ -74,6 +74,9 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
             "workdir": str(tmp_path / "pilot_workdir"),
             "external_port": 8443,
             "nginx_path": str(nginx_path),
+            "nginx_sha256": "a" * 64,
+            "pilot_runtime_manifest_sha256": "b" * 64,
+            "pilot_source_identity_sha256": "c" * 64,
             "ip_allowlist": ["10.0.0.0/8"],
             "node_file_env": "PBS_NODEFILE",
             "pals_path": "/opt/site/mpiexec",
@@ -126,6 +129,9 @@ async def test_submit_renders_config_and_script(
     assert parsed["job_name"] == "alpha-7"
     assert parsed["ca_crt"] == ca_crt
     assert parsed["external_port"] == 8443
+    assert parsed["nginx_sha256"] == "a" * 64
+    assert parsed["pilot_runtime_manifest_sha256"] == "b" * 64
+    assert parsed["pilot_source_identity_sha256"] == "c" * 64
     assert parsed["pals_path"] == "/opt/site/mpiexec"
     assert parsed["num_nodes"] == 2
     assert parsed["gpus_per_node"] == 4

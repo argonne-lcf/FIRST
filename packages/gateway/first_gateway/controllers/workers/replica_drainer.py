@@ -33,6 +33,21 @@ _MIN_DRAIN_WAIT_SEC = 20.0
 # Hard cap: after this long we drain regardless of remaining in-flight work.
 _MAX_DRAIN_WAIT_SEC = 300.0
 
+# After exactly two controller-recorded manager-stop failures, stop retrying
+# the same live allocation.  The next action schedules the parent PilotJob for
+# authoritative scheduler termination and retains the replica's GPU claims
+# until that exact allocation is observed gone.
+_STOP_FAILURE_LIMIT = 2
+_STOP_FAILURE_MARKER = "replica cleanup verification failed"
+_FORCED_CLEANUP_MESSAGE = (
+    "Replica cleanup verification FAILED after bounded manager stop retries; "
+    "parent scheduler allocation termination requested."
+)
+
+
+class ReplicaCleanupUnverified(RuntimeError):
+    """The manager stop RPC did not prove model and post-stop cleanup."""
+
 
 class ReplicaDrainer(Controller):
     """
@@ -102,16 +117,116 @@ class ReplicaDrainer(Controller):
         ):
             return
 
+        job = replica.pilot_job
+
+        # Once any controller has requested scheduler deletion, allocation
+        # absence is the only safe release proof.  In particular, the forced
+        # cleanup path must not unassign claims while qdel is still running.
+        if job and job.scheduled_deletion_at is not None:
+            if (
+                job.scheduler_state != SchedulerJobState.gone.value
+                or job.deleted_at is None
+            ):
+                return
+            await self._finalize_deletion(replica)
+            return
+
+        # Exiting/suspended is allocation-active but the manager is no longer a
+        # safe cleanup authority. Request exact parent qdel and retain claims
+        # even when the drainer wins the race with PilotJobController.
+        if job and job.scheduler_state == SchedulerJobState.exiting.value:
+            await self._request_parent_termination(replica, cleanup_unverified=False)
+            return
+
         # Stop the process on the pilot manager. The manager holds on-node
         # resources even for error/start_timeout replicas until told to stop:
-        if (
-            replica.pilot_job
-            and replica.pilot_job.scheduler_state == SchedulerJobState.running
-            and replica.pilot_job.manager_url
-        ):
-            await self._stop_on_manager(replica.pilot_job.manager_url, replica.name)
+        if job and job.scheduler_state == SchedulerJobState.running and job.manager_url:
+            if self._bounded_stop_failures(replica) >= _STOP_FAILURE_LIMIT:
+                await self._request_parent_termination(replica, cleanup_unverified=True)
+                return
+            try:
+                await self._stop_on_manager(job.manager_url, replica.name)
+            except Exception as exc:
+                raise ReplicaCleanupUnverified(
+                    f"{_STOP_FAILURE_MARKER}: {type(exc).__name__}: {exc}"
+                ) from exc
 
         await self._finalize_deletion(replica)
+
+    @staticmethod
+    def _bounded_stop_failures(replica: PilotReplica) -> int:
+        error = replica.reconcile_last_error or ""
+        if _STOP_FAILURE_MARKER not in error:
+            return 0
+        return replica.reconcile_failures
+
+    async def _request_parent_termination(
+        self, replica: PilotReplica, *, cleanup_unverified: bool
+    ) -> None:
+        """Atomically retain failure evidence and request parent allocation qdel."""
+        if replica.pilot_job is None:
+            raise StaleReconcile(
+                f"ReplicaDrainer: {replica.name} lost parent before forced cleanup"
+            )
+
+        now = datetime.now(timezone.utc)
+        async with self.client_state.db_sessionmaker.begin() as sess:
+            locked_replica = await sess.scalar(
+                sa.select(PilotReplica)
+                .where(
+                    PilotReplica.uid == replica.uid,
+                    PilotReplica.deleted_at.is_(None),
+                    PilotReplica.scheduled_deletion_at.is_not(None),
+                    PilotReplica.pilot_job_name == replica.pilot_job.name,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if locked_replica is None:
+                raise StaleReconcile(
+                    f"ReplicaDrainer: {replica.name} disappeared during escalation"
+                )
+            locked_job = await sess.scalar(
+                sa.select(PilotJob)
+                .where(
+                    PilotJob.uid == replica.pilot_job.uid,
+                    PilotJob.name == replica.pilot_job.name,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if locked_job is None:
+                raise StaleReconcile(
+                    f"ReplicaDrainer: parent for {replica.name} disappeared"
+                )
+            if locked_replica.pilot_job_name != locked_job.name:
+                raise StaleReconcile(
+                    f"ReplicaDrainer: {replica.name} changed parent during escalation"
+                )
+
+            if cleanup_unverified:
+                locked_replica.state = ReplicaState.error.value
+                locked_replica.state_message = _FORCED_CLEANUP_MESSAGE
+            if (
+                locked_job.deleted_at is None
+                and locked_job.scheduler_state != SchedulerJobState.gone.value
+                and locked_job.scheduled_deletion_at is None
+            ):
+                locked_job.scheduled_deletion_at = now
+
+        if cleanup_unverified:
+            logger.error(
+                "ReplicaDrainer: %s; PilotJob %s must prove scheduler absence",
+                _FORCED_CLEANUP_MESSAGE,
+                replica.pilot_job.name,
+            )
+        else:
+            logger.warning(
+                "ReplicaDrainer: PilotJob %s is exiting; requested scheduler "
+                "termination and retained replica %s claims",
+                replica.pilot_job.name,
+                replica.name,
+            )
 
     async def _ready_eligible(self, replica: PilotReplica) -> bool:
         assert replica.scheduled_deletion_at

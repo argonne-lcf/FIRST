@@ -1,4 +1,6 @@
 import os
+import ssl
+from pathlib import Path
 from typing import Generator
 
 from dotenv import load_dotenv
@@ -36,14 +38,20 @@ class InferenceClient(Client):
         self,
         base_url: str | None = None,
         timeout: Timeout = Timeout(10.0, read=30.0),
+        verify: ssl.SSLContext | str | Path | bool = True,
+        trust_env: bool = True,
     ) -> None:
         if base_url is None:
             base_url = DEFAULT_BASE_URL
+        if isinstance(verify, Path):
+            verify = str(verify)
 
         super().__init__(
             auth=AutoGlobusAuth(),
             base_url=base_url,
             timeout=timeout,
+            verify=verify,
+            trust_env=trust_env,
         )
         self.admin = AdminAPI(self)
         self.sam3 = Sam3API(self)

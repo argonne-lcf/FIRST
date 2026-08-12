@@ -504,6 +504,23 @@ class PilotJob(ResourceRow, SoftDeletable):
         )
         assert job is not None and replica_row is not None
 
+        # Candidate selection happens before this locked transaction.  Recheck
+        # lifecycle eligibility under the PilotJob row lock so an idle-delete
+        # (or scheduler transition) that wins that gap cannot receive a stale
+        # GPU claim and then be terminated with a newly placed replica.
+        if (
+            job.scheduled_deletion_at is not None
+            or job.deleted_at is not None
+            or job.scheduler_state
+            not in {
+                SchedulerJobState.pending_submit.value,
+                SchedulerJobState.queued.value,
+                SchedulerJobState.starting.value,
+                SchedulerJobState.running.value,
+            }
+        ):
+            return False
+
         known_gpus = {
             (host_idx, gpu_idx)
             for host_idx in range(job.num_nodes)

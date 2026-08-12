@@ -5,12 +5,15 @@ exactly as long as the manager process does.
 """
 
 import logging
+from ipaddress import ip_address
 from time import monotonic
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from prometheus_client import make_asgi_app
+
+from first_gateway.runtime_identity import RuntimeIdentity, load_runtime_identity
 
 from .worker import Worker
 
@@ -32,6 +35,20 @@ async def healthz() -> Response:
         if status.timed_out:
             return Response(content=f"worker {w.name} heartbeat stale", status_code=503)
     return Response(content="ok", status_code=200)
+
+
+@app.get("/runtime-identity", response_model=RuntimeIdentity)
+async def runtime_identity(request: Request) -> RuntimeIdentity:
+    """Return the controller identity only to a local caller."""
+    try:
+        is_loopback = (
+            request.client is not None and ip_address(request.client.host).is_loopback
+        )
+    except ValueError:
+        is_loopback = False
+    if not is_loopback:
+        raise HTTPException(status_code=404)
+    return load_runtime_identity("controller")
 
 
 @app.get("/controllers")

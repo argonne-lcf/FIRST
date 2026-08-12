@@ -4,6 +4,7 @@ These schemas describe the communication between first-gateway and first-pilot.
 Do not confuse with admin-created pilot resources inside `resources` subpackage
 """
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -118,6 +119,13 @@ class PilotRuntimeConfig(BaseSettings):
 
     external_port: int
     nginx_path: Path
+    nginx_sha256: str | None = Field(default=None, pattern=r"[0-9a-f]{64}")
+    pilot_runtime_manifest_sha256: str | None = Field(
+        default=None, pattern=r"[0-9a-f]{64}"
+    )
+    pilot_source_identity_sha256: str | None = Field(
+        default=None, pattern=r"[0-9a-f]{64}"
+    )
     ip_allowlist: list[str]
     workdir: Path
     node_file_env: str
@@ -165,11 +173,34 @@ class PilotRuntimeConfig(BaseSettings):
         # allocation.
         for field_name in (
             "job_name",
+            "external_port",
+            "nginx_path",
+            "nginx_sha256",
+            "workdir",
+            "node_file_env",
             "pals_path",
             "num_nodes",
             "gpus_per_node",
         ):
             env_name = f"PILOT_{field_name.upper()}"
             if env_name in os.environ:
-                config_raw[field_name] = os.environ[env_name]
+                value = os.environ[env_name]
+                config_raw[field_name] = None if value == "" else value
+        for field_name, env_name in (
+            ("pilot_runtime_manifest_sha256", "PILOT_RUNTIME_MANIFEST_SHA256"),
+            ("pilot_source_identity_sha256", "PILOT_SOURCE_IDENTITY_SHA256"),
+        ):
+            if env_name in os.environ:
+                value = os.environ[env_name]
+                config_raw[field_name] = None if value == "" else value
+        if "PILOT_IP_ALLOWLIST_JSON" in os.environ:
+            try:
+                allowlist = json.loads(os.environ["PILOT_IP_ALLOWLIST_JSON"])
+            except json.JSONDecodeError as exc:
+                raise ValueError("PILOT_IP_ALLOWLIST_JSON is invalid JSON") from exc
+            if not isinstance(allowlist, list) or not all(
+                isinstance(value, str) for value in allowlist
+            ):
+                raise ValueError("PILOT_IP_ALLOWLIST_JSON must be a string list")
+            config_raw["ip_allowlist"] = allowlist
         return cls.model_validate(config_raw)

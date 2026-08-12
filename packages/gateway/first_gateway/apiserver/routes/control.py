@@ -16,6 +16,7 @@ from first_common.schema.resources.read import (
 )
 from first_common.schema.types import PilotConfig, ReplicaState
 from first_gateway.platforms.schedulers import build_scheduler
+from first_gateway.runtime_identity import RuntimeIdentity, load_runtime_identity
 from first_gateway.services.pilot_control import PilotControlClient
 
 from ...database import models as db
@@ -29,6 +30,12 @@ from ..dependencies import (
 )
 
 admin_router = APIRouter(prefix="/control/v1")
+
+
+@admin_router.get("/runtime-identity", response_model=RuntimeIdentity)
+async def runtime_identity(_admin: AdminUser) -> RuntimeIdentity:
+    """Return the active frozen gateway identity or fail closed."""
+    return load_runtime_identity("gateway")
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)

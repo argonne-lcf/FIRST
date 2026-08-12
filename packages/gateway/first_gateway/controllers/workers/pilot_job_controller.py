@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from first_common.schema.base_scheduler import JobSubmitResult, SchedulerJobState
 from first_common.schema.types import HealthCheckResult, PilotConfig
 
-from ...database.models import Cluster, PilotJob
+from ...database.models import Cluster, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
 from ...platforms.schedulers import build_scheduler
 from ...services.pilot_submitter import PilotSubmitter
@@ -17,13 +17,13 @@ from ..controller import Controller, StaleReconcile
 logger = logging.getLogger(__name__)
 
 _RPC_TIMEOUT = 60.0
-_TERMINAL_STATES = frozenset(
-    {SchedulerJobState.exiting.value, SchedulerJobState.gone.value}
-)
+_DYING_STATES = frozenset({SchedulerJobState.exiting.value})
+_GONE_STATES = frozenset({SchedulerJobState.gone.value})
 _ACTIVE_STATES = [
     SchedulerJobState.queued.value,
     SchedulerJobState.starting.value,
     SchedulerJobState.running.value,
+    SchedulerJobState.exiting.value,
 ]
 
 
@@ -40,14 +40,17 @@ class PilotJobController(Controller):
             PilotJob.deleted_at.is_(None),
             sa.or_(
                 PilotJob.scheduled_deletion_at.is_not(None),
-                PilotJob.scheduler_state.not_in(
+                PilotJob.scheduler_state.in_(
                     [
-                        SchedulerJobState.queued.value,
-                        SchedulerJobState.starting.value,
-                        SchedulerJobState.running.value,
+                        SchedulerJobState.pending_submit.value,
+                        SchedulerJobState.exiting.value,
+                        SchedulerJobState.gone.value,
                     ]
                 ),
-                PilotJob.idle_since.is_not(None),
+                sa.and_(
+                    PilotJob.idle_since.is_not(None),
+                    self._no_live_assigned_replicas(),
+                ),
                 PilotJob.manager_health == HealthCheckResult.unhealthy.value,
             ),
         )
@@ -67,14 +70,15 @@ class PilotJobController(Controller):
             await self._terminate_and_delete(job, pilot_config)
             return
 
-        if job.scheduler_state in _TERMINAL_STATES:
+        if job.scheduler_state in _DYING_STATES | _GONE_STATES:
             logger.info(
-                "PilotJob %s in terminal state %s, scheduling deletion",
+                "PilotJob %s in dying/gone state %s, scheduling deletion",
                 job.name,
                 job.scheduler_state,
             )
             await self._mark_scheduled_deletion(
-                job, PilotJob.scheduler_state.in_(list(_TERMINAL_STATES))
+                job,
+                PilotJob.scheduler_state.in_(list(_DYING_STATES | _GONE_STATES)),
             )
             return
 
@@ -89,9 +93,7 @@ class PilotJobController(Controller):
                     idle_min,
                     pilot_config.pilot_max_idle_time_min,
                 )
-                await self._mark_scheduled_deletion(
-                    job, PilotJob.idle_since.is_not(None)
-                )
+                await self._mark_idle_deletion(job)
                 return
 
         if (
@@ -134,10 +136,7 @@ class PilotJobController(Controller):
     async def _terminate_and_delete(
         self, job: PilotJob, pilot_config: PilotConfig
     ) -> None:
-        if (
-            job.scheduler_job_id is not None
-            and job.scheduler_state not in _TERMINAL_STATES
-        ):
+        if job.scheduler_job_id is not None and job.scheduler_state not in _GONE_STATES:
             adapter = await build_scheduler(pilot_config, self.client_state)
             await asyncio.wait_for(
                 adapter.terminate_job(job.scheduler_job_id), timeout=_RPC_TIMEOUT
@@ -183,6 +182,24 @@ class PilotJobController(Controller):
                 raise StaleReconcile(
                     f"PilotJob {job.name}: mark_scheduled_deletion stale"
                 )
+
+    @staticmethod
+    def _no_live_assigned_replicas() -> sa.ColumnElement[bool]:
+        """Correlated guard against deleting a newly/nonhistorically assigned job."""
+        return ~sa.exists().where(
+            PilotReplica.pilot_job_name == PilotJob.name,
+            PilotReplica.deleted_at.is_(None),
+        )
+
+    async def _mark_idle_deletion(self, job: PilotJob) -> None:
+        # The NOT EXISTS predicate is part of the UPDATE itself.  It closes the
+        # idle=0 race where placement assigns a replica after this controller's
+        # detached read but before scheduled_deletion_at is written.
+        await self._mark_scheduled_deletion(
+            job,
+            PilotJob.idle_since.is_not(None),
+            self._no_live_assigned_replicas(),
+        )
 
     async def _submit(self, job: PilotJob, pilot_config: PilotConfig) -> None:
         async with self.client_state.db_sessionmaker() as sess:

@@ -6,13 +6,17 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 _replica_counter = itertools.count()
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources.runtime import BackendRuntime
 from first_common.schema.types import ReplicaState
+from first_gateway.controllers.controller import StaleReconcile
 from first_gateway.controllers.worker import Worker
 from first_gateway.controllers.workers.replica_drainer import ReplicaDrainer
 from first_gateway.database.models import (
@@ -119,6 +123,8 @@ async def _insert_job(
     scheduler_state: SchedulerJobState = SchedulerJobState.running,
     manager_url: str | None = MANAGER_URL,
     claimed_gpu_ids: list[tuple[int, int]] | None = None,
+    scheduled_deletion_at: datetime | None = None,
+    deleted_at: datetime | None = None,
 ) -> str:
     sess.add(
         PilotJob(
@@ -127,6 +133,8 @@ async def _insert_job(
             scheduler_state=scheduler_state.value,
             manager_url=manager_url,
             claimed_gpu_ids=claimed_gpu_ids or [(0, 0), (0, 1)],
+            scheduled_deletion_at=scheduled_deletion_at,
+            deleted_at=deleted_at,
             walltime_min=60,
             num_nodes=1,
             gpus_per_node=4,
@@ -147,6 +155,8 @@ async def _insert_replica(
     deleted_at: datetime | None = None,
     stopped_at: datetime | None = None,
     reconcile_retry_at: datetime | None = None,
+    reconcile_failures: int = 0,
+    reconcile_last_error: str | None = None,
 ) -> int:
     r = PilotReplica(
         name=f"{deployment_name}/replica/{next(_replica_counter)}",
@@ -158,6 +168,8 @@ async def _insert_replica(
         deleted_at=deleted_at,
         stopped_at=stopped_at,
         reconcile_retry_at=reconcile_retry_at,
+        reconcile_failures=reconcile_failures,
+        reconcile_last_error=reconcile_last_error,
     )
     sess.add(r)
     await sess.flush()
@@ -384,6 +396,27 @@ async def test_reconcile_skips_rpc_when_job_not_running(
     assert job.claimed_gpu_ids == []
 
 
+async def test_exiting_parent_requests_qdel_and_retains_claims_until_gone(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess, scheduler_state=SchedulerJobState.exiting)
+        uid = await _insert_replica(sess, state=ReplicaState.launching)
+
+    ctrl = _make_controller(db, _reject)
+    await ctrl.reconcile(uid)
+
+    replica = await _get_replica(db, uid)
+    job = await _get_job(db, "job-1")
+    assert replica.deleted_at is None
+    assert replica.claimed_gpu_ids == [(0, 0), (0, 1)]
+    assert replica.state == ReplicaState.launching.value
+    assert job.scheduled_deletion_at is not None
+    assert job.claimed_gpu_ids == [(0, 0), (0, 1)]
+
+
 async def test_reconcile_handles_replica_without_job(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -439,7 +472,8 @@ async def test_reconcile_raises_on_manager_500(
     ctrl = _make_controller(db, _server_error)
     try:
         await ctrl.reconcile(uid)
-    except httpx.HTTPStatusError:
+    except RuntimeError as exc:
+        assert "replica cleanup verification failed" in str(exc)
         pass
     else:
         raise AssertionError("expected HTTPStatusError on 500")
@@ -447,6 +481,115 @@ async def test_reconcile_raises_on_manager_500(
     replica = await _get_replica(db, uid)
     assert replica.deleted_at is None
     assert replica.state == ReplicaState.launching.value
+
+
+async def test_two_stop_failures_force_parent_qdel_without_early_release(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    calls = 0
+
+    def failing_handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        uid = await _insert_replica(sess, state=ReplicaState.launching)
+
+    ctrl = _make_controller(db, failing_handler)
+    await ctrl._reconcile_one(uid)
+    await ctrl._reconcile_one(uid)
+
+    replica = await _get_replica(db, uid)
+    assert replica.reconcile_failures == 2
+    assert replica.deleted_at is None
+    assert replica.claimed_gpu_ids == [(0, 0), (0, 1)]
+    job = await _get_job(db, "job-1")
+    assert job.scheduled_deletion_at is None
+    assert job.claimed_gpu_ids == [(0, 0), (0, 1)]
+
+    # The next action escalates without a third manager-stop transaction.
+    await ctrl._reconcile_one(uid)
+    assert calls == 6  # PilotControlClient's three HTTP attempts x two failures.
+    replica = await _get_replica(db, uid)
+    job = await _get_job(db, "job-1")
+    assert replica.state == ReplicaState.error.value
+    assert "cleanup verification FAILED" in replica.state_message
+    assert replica.deleted_at is None
+    assert replica.claimed_gpu_ids == [(0, 0), (0, 1)]
+    assert job.scheduled_deletion_at is not None
+    assert job.deleted_at is None
+    assert job.claimed_gpu_ids == [(0, 0), (0, 1)]
+
+    # Parent qdel has been requested but the allocation is still live: no DB
+    # release and no false PASS are allowed.
+    await ctrl.reconcile(uid)
+    replica = await _get_replica(db, uid)
+    assert replica.deleted_at is None
+    assert replica.claimed_gpu_ids == [(0, 0), (0, 1)]
+
+    async with db.begin() as sess:
+        await sess.execute(
+            sa.update(PilotJob)
+            .where(PilotJob.name == "job-1")
+            .values(
+                scheduler_state=SchedulerJobState.gone.value,
+                deleted_at=datetime.now(timezone.utc),
+            )
+        )
+    await ctrl.reconcile(uid)
+
+    replica = await _get_replica(db, uid)
+    job = await _get_job(db, "job-1")
+    assert replica.deleted_at is not None
+    assert replica.claimed_gpu_ids == []
+    assert replica.state == ReplicaState.error.value
+    assert "cleanup verification FAILED" in replica.state_message
+    assert job.claimed_gpu_ids == []
+
+
+async def test_forced_cleanup_escalation_rejects_parent_assignment_race(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        await _insert_job(sess, name="job-2", claimed_gpu_ids=[])
+        uid = await _insert_replica(
+            sess,
+            state=ReplicaState.launching,
+            reconcile_failures=2,
+            reconcile_last_error="replica cleanup verification failed: timeout",
+        )
+
+    ctrl = _make_controller(db, _reject)
+    async with db() as sess:
+        replica = await sess.get(
+            PilotReplica,
+            uid,
+            options=[
+                # Match the production detached snapshot used by reconcile.
+                selectinload(PilotReplica.pilot_job),
+                selectinload(PilotReplica.pilot_deployment),
+            ],
+        )
+    assert replica is not None
+    async with db.begin() as sess:
+        await sess.execute(
+            sa.update(PilotReplica)
+            .where(PilotReplica.uid == uid)
+            .values(pilot_job_name="job-2")
+        )
+
+    with pytest.raises(StaleReconcile, match="disappeared during escalation"):
+        await ctrl._request_parent_termination(replica, cleanup_unverified=True)
+
+    assert (await _get_job(db, "job-1")).scheduled_deletion_at is None
+    assert (await _get_job(db, "job-2")).scheduled_deletion_at is None
 
 
 # ── reconcile: ready eligibility gate ────────────────────────────────────

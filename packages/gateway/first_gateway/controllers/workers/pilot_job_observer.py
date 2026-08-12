@@ -19,9 +19,7 @@ from ..worker import Worker
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATES = frozenset(
-    {SchedulerJobState.exiting.value, SchedulerJobState.gone.value}
-)
+_TERMINAL_STATES = frozenset({SchedulerJobState.gone.value})
 
 
 class PilotJobObserver(Worker):
@@ -127,6 +125,13 @@ class PilotJobObserver(Worker):
         for job in db_jobs:
             assert job.scheduler_job_id is not None
             status = statuses.get(job.scheduler_job_id)
+            if status is None:
+                # Bulk scheduler listings can be truncated or active-only.
+                # Absence is lifecycle evidence only when the adapter's exact-ID
+                # lookup explicitly proves it; conservative adapters raise.
+                status = await submitter.adapter.get_exact_job_status(
+                    job.scheduler_job_id
+                )
             await self._update_job(job, status)
 
         now = datetime.now(timezone.utc)
@@ -139,6 +144,7 @@ class PilotJobObserver(Worker):
                 SchedulerJobState.queued,
                 SchedulerJobState.starting,
                 SchedulerJobState.running,
+                SchedulerJobState.exiting,
             )
         )
         orphan_job_ids = queued_steady - {db_job.scheduler_job_id for db_job in db_jobs}

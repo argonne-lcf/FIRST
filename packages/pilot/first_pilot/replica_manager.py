@@ -1,14 +1,13 @@
+import hashlib
 import logging
 import os
 import re
-import shutil
 import socket
+import stat
 import subprocess
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutTimeout
 from enum import Enum
 from pathlib import Path
 from typing import Literal
@@ -40,15 +39,9 @@ REPLICA_PORT_OFFSET = 2
 
 
 def safe_getfqdn(name: str = "", *, timeout: float = 2.0) -> str:
-    """getfqdn with a timeout — falls back to *name* (or the raw hostname) on slow rDNS."""
-    pool = ThreadPoolExecutor(1)
-    try:
-        return pool.submit(socket.getfqdn, name).result(timeout=timeout)
-    except FutTimeout:
-        logger.warning("getfqdn(%r) timed out after %ss", name, timeout)
-        return name or socket.gethostname()
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    """Return a DNS-free address label; retained for the control API contract."""
+    del timeout
+    return name or socket.gethostname()
 
 
 class _ReservedSentinel(Enum):
@@ -63,7 +56,59 @@ _NVIDIA_SMI_ARGS = [
     "--query-gpu=index,name,memory.total,memory.used",
     "--format=csv,noheader,nounits",
 ]
+_NVIDIA_SMI_PATH = Path("/usr/bin/nvidia-smi")
+_NVIDIA_SMI_SHA256 = "5a2c0103899cdbf5451a4d39722026fb64222ca19a54d249f2fffbf97c618bd0"
+_PALS_PATH = Path("/opt/cray/pals/1.8/bin/mpiexec")
+_PALS_SHA256 = "3507f81afcc0ba819a67cb210298e730bc14e16e812075e39c2bdb3d9b322925"
 _PALS_LABEL = re.compile(r"^(?P<host>\S+)\s+(?P<rank>\d+):\s?(?P<row>.*)$")
+
+
+def _require_frozen_executable(
+    path: Path, *, expected_path: Path, expected_sha256: str, label: str
+) -> str:
+    if path != expected_path:
+        raise RuntimeError(
+            f"required {label} path differs: expected {expected_path}, got {path}"
+        )
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"required {label} is unavailable: {path}") from exc
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != 0
+        or info.st_gid != 0
+        or stat.S_IMODE(info.st_mode) != 0o755
+        or not os.access(path, os.X_OK)
+    ):
+        raise RuntimeError(f"required {label} identity differs: {path}")
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise RuntimeError(f"required {label} is unreadable: {path}") from exc
+    if digest != expected_sha256:
+        raise RuntimeError(f"required {label} digest differs: {path}")
+    return str(path)
+
+
+def _require_nvidia_smi() -> str:
+    return _require_frozen_executable(
+        _NVIDIA_SMI_PATH,
+        expected_path=Path("/usr/bin/nvidia-smi"),
+        expected_sha256=_NVIDIA_SMI_SHA256,
+        label="GPU inventory binary",
+    )
+
+
+def _require_pals(pals_path: Path) -> str:
+    return _require_frozen_executable(
+        pals_path,
+        expected_path=_PALS_PATH,
+        expected_sha256=_PALS_SHA256,
+        label="PALS launcher",
+    )
 
 
 def _parse_gpu_row(line: str) -> GpuInfo:
@@ -111,9 +156,10 @@ def _validated_host_gpus(
 
 def query_gpus(hostname: str, expected_gpus: int) -> HostGpus:
     """Inventory a single-node pilot locally; never use a remote shell."""
+    nvidia_smi = _require_nvidia_smi()
     try:
         result = subprocess.run(
-            ["nvidia-smi", *_NVIDIA_SMI_ARGS],
+            [nvidia_smi, *_NVIDIA_SMI_ARGS],
             capture_output=True,
             text=True,
             timeout=5,
@@ -138,29 +184,38 @@ def _normalized_hostname(hostname: str) -> str:
     return hostname.strip().rstrip(".").lower()
 
 
+def _host_identity(hostname: str) -> str:
+    return _normalized_hostname(hostname).split(".", maxsplit=1)[0]
+
+
 def _host_matches(label: str, expected: str) -> bool:
-    normalized_label = _normalized_hostname(label)
-    normalized_expected = _normalized_hostname(expected)
-    if not normalized_label or not normalized_expected:
-        return False
-    if "." in normalized_label and "." in normalized_expected:
-        return normalized_label == normalized_expected
-    return (
-        normalized_label.split(".", maxsplit=1)[0]
-        == normalized_expected.split(".", maxsplit=1)[0]
-    )
+    label_identity = _host_identity(label)
+    expected_identity = _host_identity(expected)
+    return bool(label_identity) and label_identity == expected_identity
+
+
+def _deduplicate_hosts(hostnames: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for hostname in hostnames:
+        identity = _host_identity(hostname)
+        if not identity:
+            raise RuntimeError("scheduler node inventory contains an empty hostname")
+        if identity not in seen:
+            seen.add(identity)
+            result.append(hostname)
+    return result
 
 
 def query_gpus_pals(
     hostnames: list[str], pals_path: Path, expected_gpus: int
 ) -> list[HostGpus]:
     """Run one labeled inventory rank per host through the site PALS launcher."""
-    nvidia_smi = shutil.which("nvidia-smi")
-    if nvidia_smi is None:
-        raise RuntimeError("nvidia-smi is unavailable for PALS GPU inventory")
+    nvidia_smi = _require_nvidia_smi()
+    pals = _require_pals(pals_path)
 
     command = [
-        str(pals_path),
+        pals,
         "--pmi=pmix",
         "--genvnone",
         "--no-transfer",
@@ -236,9 +291,9 @@ def query_gpus_pals(
 
 def discover_hosts(node_file_env: str) -> list[str]:
     node_file = os.environ.get(node_file_env)
-    localhost = safe_getfqdn()
 
     if not node_file:
+        localhost = socket.gethostname()
         logger.info(
             "%s not set; assuming single-host deployment (%s)",
             node_file_env,
@@ -250,6 +305,7 @@ def discover_hosts(node_file_env: str) -> list[str]:
         with open(node_file) as f:
             lines = f.readlines()
     except (FileNotFoundError, OSError) as exc:
+        localhost = socket.gethostname()
         logger.warning(
             "node file %s=%s not read (%s); falling back to single host %s",
             node_file_env,
@@ -261,6 +317,7 @@ def discover_hosts(node_file_env: str) -> list[str]:
 
     hosts = [l.strip() for l in lines if l.strip()]
     if not hosts:
+        localhost = socket.gethostname()
         logger.warning(
             "node file %s was empty; falling back to single host %s",
             node_file,
@@ -272,9 +329,10 @@ def discover_hosts(node_file_env: str) -> list[str]:
 
 
 class ReplicaManager:
-    # Mirrors PilotControlClient.STOP_TIMEOUT: pre-stop (25s max), hook cleanup,
-    # TERM/KILL fallback, and monitor join are all bounded below this ceiling.
-    _STOP_JOIN_TIMEOUT = 60.0
+    # Mirrors PilotControlClient.STOP_TIMEOUT: pre-stop, model TERM/KILL,
+    # post-stop verification, auxiliary-group cleanup, and monitor join are all
+    # bounded below this ceiling.
+    _STOP_JOIN_TIMEOUT = 120.0
 
     def __init__(self, config: PilotRuntimeConfig) -> None:
         self.config = config
@@ -282,8 +340,8 @@ class ReplicaManager:
         # PBS nodefiles may repeat a hostname once per assigned resource.  Keep
         # the scheduler's first-occurrence order because it is also the PALS
         # rank order used by gpus_by_host in the replica launch context.
-        self.node_hostnames = list(
-            dict.fromkeys(discover_hosts(self.config.node_file_env))
+        self.node_hostnames = _deduplicate_hosts(
+            discover_hosts(self.config.node_file_env)
         )
         if len(self.node_hostnames) != self.config.num_nodes:
             raise RuntimeError(

@@ -3,6 +3,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -16,6 +17,7 @@ from first_common.schema.base_scheduler import (
 from first_common.schema.pilot import PilotResources
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import HealthCheckResult, PilotConfig
+from first_gateway.platforms.schedulers import graphql_pbs
 from first_gateway.platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from first_gateway.services.pilot_submitter import PilotSubmitter
 
@@ -89,6 +91,9 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
             "workdir": "/service/first-v2/workdir",
             "external_port": 18443,
             "nginx_path": "/service/nginx/sbin/nginx",
+            "nginx_sha256": "a" * 64,
+            "pilot_runtime_manifest_sha256": "b" * 64,
+            "pilot_source_identity_sha256": "c" * 64,
             "ip_allowlist": ["10.124.176.33/32"],
             "node_file_env": "PBS_NODEFILE",
             "pals_path": "/opt/cray/pals/1.8/bin/mpiexec",
@@ -130,6 +135,14 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
     assert "PILOT_NUM_NODES=2" in script
     assert "PILOT_GPUS_PER_NODE=4" in script
     assert "PILOT_PALS_PATH=/opt/cray/pals/1.8/bin/mpiexec" in script
+    assert "PILOT_EXTERNAL_PORT=18443" in script
+    assert "PILOT_NGINX_PATH=/service/nginx/sbin/nginx" in script
+    assert f"PILOT_NGINX_SHA256={'a' * 64}" in script
+    assert f"PILOT_RUNTIME_MANIFEST_SHA256={'b' * 64}" in script
+    assert f"PILOT_SOURCE_IDENTITY_SHA256={'c' * 64}" in script
+    assert "PILOT_IP_ALLOWLIST_JSON='[\"10.124.176.33/32\"]'" in script
+    assert "PILOT_WORKDIR=/service/first-v2/workdir" in script
+    assert "PILOT_NODE_FILE_ENV=PBS_NODEFILE" in script
     assert script.endswith("'/service/first v2/bin/first-pilot'\n")
 
 
@@ -174,3 +187,252 @@ async def test_graphql_get_endpoint_rejects_running_to_exiting_race() -> None:
         ):
             with pytest.raises(ValueError, match="No ready endpoint"):
                 await submitter.get_endpoint("nemotron-canary")
+
+
+def _job_node(job_id: str, state: int) -> dict[str, object]:
+    return {
+        "jobId": job_id,
+        "name": "__FIRST_PILOT_nemotron-canary",
+        "submitTime": 1_700_000_000_000_000,
+        "startTime": 1_700_000_100_000_000,
+        "status": {"state": state},
+        "resourcesRequested": {"jobResources": {"wallClockTime": 5400}},
+        "allocatedMachines": [
+            {
+                "hostname": "x3001",
+                "resourcesAvail": {
+                    "customResources": [{"name": "hsn_ips", "value": "10.1.2.3"}]
+                },
+            }
+        ],
+    }
+
+
+def _jobs_payload(
+    edges: list[dict[str, object]], *, has_next: bool = False, cursor: str = ""
+) -> dict[str, object]:
+    return {
+        "data": {
+            "jobs": {
+                "edges": edges,
+                "pageInfo": {
+                    "hasNextPage": has_next,
+                    "endCursor": cursor,
+                },
+            }
+        }
+    }
+
+
+async def test_graphql_active_statuses_paginate_and_never_query_history() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        cursor = body["variables"]["cursor"]
+        if cursor is None:
+            payload = _jobs_payload(
+                [{"node": _job_node("101.tara", 7), "error": None}],
+                has_next=True,
+                cursor="page-2",
+            )
+        else:
+            payload = _jobs_payload([{"node": _job_node("102.tara", 9), "error": None}])
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        statuses = await GraphQLPBSAdapter(
+            client, "openinference_svc", "https://bridge"
+        ).get_job_statuses()
+
+    assert [status.id for status in statuses] == ["101.tara", "102.tara"]
+    assert [status.state for status in statuses] == [
+        SchedulerJobState.running,
+        SchedulerJobState.exiting,
+    ]
+    assert [request["variables"]["cursor"] for request in requests] == [
+        None,
+        "page-2",
+    ]
+    assert all(
+        "withHistoryJobs: false" in str(request["query"]) for request in requests
+    )
+
+
+async def test_graphql_statuses_fail_closed_on_edge_unknown_and_duplicate() -> None:
+    responses = [
+        _jobs_payload(
+            [
+                {
+                    "node": None,
+                    "error": {"errorCode": 7, "errorMessage": "denied"},
+                }
+            ]
+        ),
+        _jobs_payload([{"node": _job_node("101.tara", 99), "error": None}]),
+        _jobs_payload(
+            [
+                {"node": _job_node("101.tara", 7), "error": None},
+                {"node": _job_node("101.tara", 7), "error": None},
+            ]
+        ),
+    ]
+    for payload, message in zip(
+        responses,
+        ("edge failed", "unknown GraphQL job state", "duplicated job ID"),
+        strict=True,
+    ):
+        transport = httpx.MockTransport(
+            lambda _request, payload=payload: httpx.Response(200, json=payload)
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            adapter = GraphQLPBSAdapter(client, "svc", "https://bridge")
+            with pytest.raises(RuntimeError, match=message):
+                await adapter.get_job_statuses()
+
+
+async def test_graphql_suspended_state_is_dying_not_gone() -> None:
+    payload = _jobs_payload([{"node": _job_node("101.tara", 8), "error": None}])
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=payload)
+        )
+    ) as client:
+        status = await GraphQLPBSAdapter(
+            client, "svc", "https://bridge"
+        ).get_exact_job_status("101.tara")
+
+    assert status is not None
+    assert status.state == SchedulerJobState.exiting
+    assert status.head_node_ip_address == "10.1.2.3"
+
+
+async def test_graphql_delete_polls_exact_id_through_exiting_to_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    states = iter((7, 9, 12))
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if "mutation DeleteJob" in body["query"]:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "deleteJob": {
+                            "node": {"jobId": "101.tara"},
+                            "error": None,
+                        }
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json=_jobs_payload(
+                [{"node": _job_node("101.tara", next(states)), "error": None}]
+            ),
+        )
+
+    monkeypatch.setattr(graphql_pbs, "_DELETE_POLL_INTERVAL_SEC", 0)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await GraphQLPBSAdapter(client, "svc", "https://bridge").terminate_job(
+            "101.tara"
+        )
+
+    assert len(requests) == 4
+    assert all(request["variables"]["jobId"] == "101.tara" for request in requests)
+
+
+async def test_graphql_delete_accepts_explicit_absence_after_lost_ack() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        body = json.loads(request.content)
+        if "mutation DeleteJob" in body["query"]:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "deleteJob": {
+                            "node": None,
+                            "error": {
+                                "errorCode": 15001,
+                                "errorMessage": "unknown job id",
+                            },
+                        }
+                    }
+                },
+            )
+        return httpx.Response(200, json=_jobs_payload([]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await GraphQLPBSAdapter(client, "svc", "https://bridge").terminate_job(
+            "101.tara"
+        )
+    assert calls == 2
+
+
+async def test_graphql_delete_error_with_live_job_remains_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "mutation DeleteJob" in body["query"]:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "deleteJob": {
+                            "node": None,
+                            "error": {"errorCode": 1, "errorMessage": "failed"},
+                        }
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json=_jobs_payload([{"node": _job_node("101.tara", 7), "error": None}]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="deleteJob failed"):
+            await GraphQLPBSAdapter(client, "svc", "https://bridge").terminate_job(
+                "101.tara"
+            )
+
+
+async def test_graphql_delete_timeout_and_malformed_id_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        body = json.loads(request.content)
+        if "mutation DeleteJob" in body["query"]:
+            payload: dict[str, Any] = {
+                "data": {
+                    "deleteJob": {
+                        "node": {"jobId": "101.tara"},
+                        "error": None,
+                    }
+                }
+            }
+        else:
+            payload = _jobs_payload([{"node": _job_node("101.tara", 7), "error": None}])
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(graphql_pbs, "_DELETE_POLL_ATTEMPTS", 2)
+    monkeypatch.setattr(graphql_pbs, "_DELETE_POLL_INTERVAL_SEC", 0)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = GraphQLPBSAdapter(client, "svc", "https://bridge")
+        with pytest.raises(TimeoutError, match="did not become absent/gone"):
+            await adapter.terminate_job("101.tara")
+        before = calls
+        with pytest.raises(ValueError, match="invalid PBS scheduler job ID"):
+            await adapter.terminate_job('101.tara" } mutation { exploit')
+        assert calls == before

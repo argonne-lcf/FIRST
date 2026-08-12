@@ -20,6 +20,7 @@ from first_common.schema.pilot import (
 
 from .nginx_manager import NginxManager, ReplicaPort
 from .replica_manager import ReplicaManager, safe_getfqdn
+from .runtime_identity import validate_configured_runtime, validate_nginx_identity
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,8 @@ class _PilotManager:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config = PilotRuntimeConfig.load()
+    validate_configured_runtime(config)
+    validate_nginx_identity(config)
     config.ensure_dirs()
     readyfile = config.readyfile_dir / f"{config.job_name}.ready.json"
 

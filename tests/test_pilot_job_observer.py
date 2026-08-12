@@ -312,6 +312,50 @@ async def test_graphql_head_ip_requires_live_manager_status(
     publish.assert_awaited_once_with(Channel.pilot_job_ready, "job-graphql")
 
 
+async def test_graphql_known_job_omitted_from_bulk_page_uses_exact_truth(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "job-omitted",
+            "omitted.pbs",
+            state=SchedulerJobState.queued,
+        )
+
+    exact = JobStatusInfo(
+        id="omitted.pbs",
+        name="__FIRST_PILOT_job-omitted",
+        state=SchedulerJobState.running,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+        head_node_ip_address="10.1.2.7",
+        head_node_hostname="x3007",
+    )
+    adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
+    bulk = AsyncMock(return_value=[])
+    exact_lookup = AsyncMock(return_value=exact)
+    adapter.get_job_statuses = bulk  # type: ignore[method-assign]
+    adapter.get_exact_job_status = exact_lookup  # type: ignore[method-assign]
+    submitter = PilotSubmitter(
+        PilotConfig.model_validate(PILOT_SYSTEM),
+        adapter,
+        "fake-ca-crt",
+        "fake-ca-key",
+    )
+    observer = _make_observer(db)
+    await observer._poll_cluster(submitter, "polaris")
+
+    async with db() as sess:
+        job = await sess.get(PilotJob, uid)
+        assert job is not None
+        assert job.scheduler_state == SchedulerJobState.running.value
+        assert job.deleted_at is None
+    exact_lookup.assert_awaited_once_with("omitted.pbs")
+
+
 async def test_graphql_unready_terminal_allocation_is_charged_once(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -380,6 +424,13 @@ async def test_graphql_unready_terminal_allocation_is_charged_once(
 
     async with db() as sess:
         dep = await PilotDeployment.get_by_name(sess, "dep-a")
+        assert dep.consecutive_launch_failures == 0
+
+    await observer._update_job(job, None)
+    await observer._update_job(job, None)
+
+    async with db() as sess:
+        dep = await PilotDeployment.get_by_name(sess, "dep-a")
         assert dep.consecutive_launch_failures == 1
 
 
@@ -402,6 +453,14 @@ async def test_orphan_scheduler_job_reaped(
             started_at=NOW,
             walltime_minutes=60,
         ),
+        JobStatusInfo(
+            id="998.pbs",
+            name=f"{prefix}orphan-exiting",
+            state=SchedulerJobState.exiting,
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=4),
+            started_at=NOW,
+            walltime_minutes=60,
+        ),
     ]
 
     observer = _make_observer(db)
@@ -410,6 +469,7 @@ async def test_orphan_scheduler_job_reaped(
         await observer._poll_all_clusters()
 
     assert "999.pbs" in adapter.terminated
+    assert "998.pbs" in adapter.terminated
 
 
 async def test_no_update_when_state_unchanged(

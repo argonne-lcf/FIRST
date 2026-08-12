@@ -1,5 +1,7 @@
+import asyncio
 import base64
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Self
@@ -27,7 +29,7 @@ _STATE_MAP: dict[int, SchedulerJobState] = {
     5: SchedulerJobState.starting,  # StagingIn
     6: SchedulerJobState.exiting,  # StagingOut
     7: SchedulerJobState.running,  # Running
-    8: SchedulerJobState.gone,  # Suspended
+    8: SchedulerJobState.exiting,  # Suspended; allocation release is unproven
     9: SchedulerJobState.exiting,  # Exiting
     10: SchedulerJobState.gone,  # Done
     11: SchedulerJobState.gone,  # Failed
@@ -38,9 +40,14 @@ _STATE_MAP: dict[int, SchedulerJobState] = {
 
 # States in which the job is actually placed on machines, so allocatedMachines
 # (and thus hsn_ips) is meaningful
-_ACTIVE_STATES = frozenset({5, 6, 7, 9})
+_ACTIVE_STATES = frozenset({5, 6, 7, 8, 9})
 
 _HSN_RESOURCE_NAME = "hsn_ips"
+_PBS_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_DELETE_POLL_ATTEMPTS = 45
+_DELETE_POLL_INTERVAL_SEC = 1.0
+_STATUS_PAGE_SIZE = 500
+_STATUS_MAX_PAGES = 10
 
 
 def _parse_epoch_micros(raw: int | None) -> datetime | None:
@@ -74,6 +81,40 @@ def _head_node_hostname(machines: list[dict[str, Any]]) -> str | None:
     return machines[0].get("hostname") or None
 
 
+def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
+    job_id = (node.get("jobId") or "").strip()
+    if not job_id:
+        raise RuntimeError("GraphQL jobs query returned an empty jobId")
+
+    state_code: int | None = (node.get("status") or {}).get("state")
+    state = _STATE_MAP.get(state_code) if state_code is not None else None
+    if state is None:
+        raise RuntimeError(
+            f"unknown GraphQL job state {state_code!r} for job {job_id!r}"
+        )
+
+    resources = (node.get("resourcesRequested") or {}).get("jobResources") or {}
+    walltime_sec = resources.get("wallClockTime") or 0
+    head_ip = None
+    head_hostname = None
+    if state_code in _ACTIVE_STATES:
+        machines = node.get("allocatedMachines") or []
+        head_ip = _head_node_ip(machines)
+        head_hostname = _head_node_hostname(machines)
+
+    return JobStatusInfo(
+        id=job_id,
+        name=node.get("name") or "",
+        state=state,
+        created_at=_parse_epoch_micros(node.get("submitTime"))
+        or datetime.now(timezone.utc),
+        started_at=_parse_epoch_micros(node.get("startTime")),
+        walltime_minutes=walltime_sec // 60,
+        head_node_ip_address=head_ip,
+        head_node_hostname=head_hostname,
+    )
+
+
 class GraphQLPBSAdapter(SchedulerAdapter):
     def __init__(self, client: AsyncClient, owner: str, url: str) -> None:
         self.client = client
@@ -94,8 +135,13 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         graphql_url = config["graphql_url"]
         return cls(client=deps.keycloak_clients[name], owner=owner, url=graphql_url)
 
-    async def _post(self, query: str) -> dict[str, Any]:
-        resp = await self.client.post(self.url, json={"query": query})
+    async def _post(
+        self, query: str, variables: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        request: dict[str, Any] = {"query": query}
+        if variables is not None:
+            request["variables"] = variables
+        resp = await self.client.post(self.url, json=request)
         resp.raise_for_status()
         body: dict[str, Any] = resp.json()
         if body.get("errors"):
@@ -165,8 +211,12 @@ class GraphQLPBSAdapter(SchedulerAdapter):
 
     async def get_job_statuses(self) -> list[JobStatusInfo]:
         query = f"""
-        query {{
-            jobs ( filter: {{owner: "{self.owner}", withHistoryJobs: true}} ) {{
+        query ActiveJobs($owner: String!, $cursor: Cursor) {{
+            jobs (
+                filter: {{owner: $owner, withHistoryJobs: false}}
+                count: {_STATUS_PAGE_SIZE}
+                from: $cursor
+            ) {{
                 edges {{
                     node {{
                         jobId
@@ -193,71 +243,189 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                         errorCode
                         errorMessage
                     }}
+                    cursor
+                }}
+                pageInfo {{
+                    hasNextPage
+                    endCursor
                 }}
             }}
         }}
         """
-        data = await self._post(query)
-        edges = data.get("jobs", {}).get("edges") or []
-
         results: list[JobStatusInfo] = []
-        for edge in edges:
-            if edge.get("error"):
-                logger.warning("Skipping job with error: %s", edge["error"])
-                continue
-            node = edge["node"]
-            job_id = (node["jobId"] or "").strip()
-
-            state_code: int | None = (node.get("status") or {}).get("state")
-            state = _STATE_MAP.get(state_code) if state_code is not None else None
-            if state is None:
-                logger.warning("Unknown job state %r for job %r", state_code, job_id)
-                state = SchedulerJobState.gone
-
-            resources = (node.get("resourcesRequested") or {}).get("jobResources") or {}
-            walltime_sec = resources.get("wallClockTime") or 0
-
-            head_ip = None
-            head_hostname = None
-            if state_code in _ACTIVE_STATES:
-                machines = node.get("allocatedMachines") or []
-                head_ip = _head_node_ip(machines)
-                head_hostname = _head_node_hostname(machines)
-
-            results.append(
-                JobStatusInfo(
-                    id=job_id,
-                    name=node["name"],
-                    state=state,
-                    created_at=_parse_epoch_micros(node.get("submitTime"))
-                    or datetime.now(timezone.utc),
-                    started_at=_parse_epoch_micros(node.get("startTime")),
-                    walltime_minutes=walltime_sec // 60,
-                    head_node_ip_address=head_ip,
-                    head_node_hostname=head_hostname,
-                )
+        seen_ids: set[str] = set()
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        for _ in range(_STATUS_MAX_PAGES):
+            data = await self._post(
+                query,
+                {"owner": self.owner, "cursor": cursor},
             )
+            connection = data.get("jobs")
+            if not isinstance(connection, dict):
+                raise RuntimeError("GraphQL jobs query returned no connection")
+            edges = connection.get("edges")
+            if not isinstance(edges, list):
+                raise RuntimeError("GraphQL jobs query returned malformed edges")
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    raise RuntimeError("GraphQL jobs query returned a malformed edge")
+                if edge.get("error"):
+                    raise RuntimeError(f"GraphQL jobs edge failed:\n{edge['error']}")
+                node = edge.get("node")
+                if not isinstance(node, dict):
+                    raise RuntimeError("GraphQL jobs edge returned no node")
+                status = _job_status_from_node(node)
+                if status.id in seen_ids:
+                    raise RuntimeError(
+                        f"GraphQL jobs pages duplicated job ID {status.id!r}"
+                    )
+                seen_ids.add(status.id)
+                results.append(status)
 
-        return results
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, dict) or not isinstance(
+                page_info.get("hasNextPage"), bool
+            ):
+                raise RuntimeError("GraphQL jobs query returned malformed pageInfo")
+            if not page_info["hasNextPage"]:
+                return results
+            next_cursor = page_info.get("endCursor")
+            if (
+                not isinstance(next_cursor, str)
+                or not next_cursor
+                or next_cursor in seen_cursors
+            ):
+                raise RuntimeError("GraphQL jobs pagination cursor did not advance")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        raise RuntimeError(
+            "GraphQL active-job listing exceeded bounded pagination "
+            f"({_STATUS_MAX_PAGES} pages)"
+        )
 
     async def terminate_job(self, job_id: str) -> None:
-        query = f"""
-        mutation {{
-            deleteJob (jobId: "{job_id}", input: {{force: true}}) {{
-                node {{
+        job_id = job_id.strip()
+        if _PBS_JOB_ID.fullmatch(job_id) is None:
+            raise ValueError(f"invalid PBS scheduler job ID: {job_id!r}")
+
+        query = """
+        mutation DeleteJob($jobId: String!) {
+            deleteJob (jobId: $jobId, input: {force: true}) {
+                node {
                     jobId
-                }}
-                error {{
+                }
+                error {
                     errorCode
                     errorMessage
-                }}
-            }}
-        }}
+                }
+            }
+        }
         """
-        data = await self._post(query)
+        data = await self._post(query, {"jobId": job_id})
         payload = data["deleteJob"]
         if payload.get("error"):
+            # A retry after a lost acknowledgement can legitimately receive a
+            # not-found mutation error.  The error alone is never release
+            # evidence; accept it only if a separate exact lookup proves the
+            # same ID absent or gone.
+            state = await self._get_exact_job_state(job_id)
+            if state is None or state == SchedulerJobState.gone:
+                return
             raise RuntimeError(f"GraphQL deleteJob failed:\n{payload['error']}")
+        returned_id = ((payload.get("node") or {}).get("jobId") or "").strip()
+        if returned_id and returned_id != job_id:
+            raise RuntimeError(
+                "GraphQL deleteJob returned a different job ID: "
+                f"expected {job_id!r}, got {returned_id!r}"
+            )
+
+        # A successful mutation is only an acknowledgement. Retain the DB
+        # allocation until this exact scheduler ID is terminal or absent.
+        for attempt in range(_DELETE_POLL_ATTEMPTS):
+            state = await self._get_exact_job_state(job_id)
+            if state is None or state == SchedulerJobState.gone:
+                return
+            if attempt + 1 < _DELETE_POLL_ATTEMPTS:
+                await asyncio.sleep(_DELETE_POLL_INTERVAL_SEC)
+
+        raise TimeoutError(
+            f"scheduler job {job_id!r} did not become absent/gone after "
+            f"{_DELETE_POLL_ATTEMPTS} polls"
+        )
+
+    async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
+        job_id = job_id.strip()
+        if _PBS_JOB_ID.fullmatch(job_id) is None:
+            raise ValueError(f"invalid PBS scheduler job ID: {job_id!r}")
+        query = """
+        query ExactJobState($jobId: String!) {
+            jobs(
+                filter: {jobIds: [$jobId], withHistoryJobs: true}
+                count: 1
+            ) {
+                edges {
+                    node {
+                        jobId
+                        name
+                        submitTime
+                        startTime
+                        status { state }
+                        resourcesRequested {
+                            jobResources { wallClockTime }
+                        }
+                        allocatedMachines {
+                            name
+                            hostname
+                            resourcesAvail {
+                                customResources { name value }
+                            }
+                        }
+                    }
+                    error {
+                        errorCode
+                        errorMessage
+                    }
+                }
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
+            }
+        }
+        """
+        data = await self._post(query, {"jobId": job_id})
+        connection = data.get("jobs")
+        if not isinstance(connection, dict):
+            raise RuntimeError("GraphQL exact-job query returned no connection")
+        edges = connection.get("edges")
+        if not isinstance(edges, list):
+            raise RuntimeError("GraphQL exact-job query returned malformed edges")
+        page_info = connection.get("pageInfo")
+        if not isinstance(page_info, dict) or page_info.get("hasNextPage") is not False:
+            raise RuntimeError("GraphQL exact-job query was not an exact page")
+        if not edges:
+            return None
+        if len(edges) != 1 or not isinstance(edges[0], dict):
+            raise RuntimeError("GraphQL exact-job query returned non-exact edges")
+        edge = edges[0]
+        if edge.get("error"):
+            raise RuntimeError(f"GraphQL exact-job edge failed:\n{edge['error']}")
+        node = edge.get("node")
+        if not isinstance(node, dict):
+            raise RuntimeError("GraphQL exact-job edge returned no node")
+        status = _job_status_from_node(node)
+        if status.id != job_id:
+            raise RuntimeError(
+                "GraphQL exact-job query returned a different job ID: "
+                f"expected {job_id!r}, got {status.id!r}"
+            )
+        return status
+
+    async def _get_exact_job_state(self, job_id: str) -> SchedulerJobState | None:
+        status = await self.get_exact_job_status(job_id)
+        return None if status is None else status.state
 
     async def put_file(self, content: str, path: Path, mode: int) -> None:
         raise NotImplementedError

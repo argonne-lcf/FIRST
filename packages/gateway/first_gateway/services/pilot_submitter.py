@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from math import ceil
 from pathlib import Path
@@ -82,11 +83,22 @@ class PilotSubmitter:
             runtime_env = {
                 "PILOT_CONFIG_FILE": str(pc.pilot_config_path),
                 "PILOT_JOB_NAME": name,
+                "PILOT_EXTERNAL_PORT": str(pc.external_port),
+                "PILOT_NGINX_PATH": str(pc.nginx_path),
+                "PILOT_NGINX_SHA256": pc.nginx_sha256 or "",
+                "PILOT_RUNTIME_MANIFEST_SHA256": (
+                    pc.pilot_runtime_manifest_sha256 or ""
+                ),
+                "PILOT_SOURCE_IDENTITY_SHA256": (pc.pilot_source_identity_sha256 or ""),
+                "PILOT_IP_ALLOWLIST_JSON": json.dumps(
+                    pc.ip_allowlist, separators=(",", ":")
+                ),
+                "PILOT_WORKDIR": str(pc.workdir),
+                "PILOT_NODE_FILE_ENV": pc.node_file_env,
+                "PILOT_PALS_PATH": str(pc.pals_path) if pc.pals_path else "",
                 "PILOT_NUM_NODES": str(pilot_job.num_nodes),
                 "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
             }
-            if pc.pals_path is not None:
-                runtime_env["PILOT_PALS_PATH"] = str(pc.pals_path)
             assignments = " ".join(
                 f"{key}={quote(value)}" for key, value in runtime_env.items()
             )
@@ -109,6 +121,9 @@ class PilotSubmitter:
                 server_key=server_key,
                 external_port=pc.external_port,
                 nginx_path=pc.nginx_path,
+                nginx_sha256=pc.nginx_sha256,
+                pilot_runtime_manifest_sha256=pc.pilot_runtime_manifest_sha256,
+                pilot_source_identity_sha256=pc.pilot_source_identity_sha256,
                 ip_allowlist=pc.ip_allowlist,
                 workdir=pc.workdir,
                 node_file_env=pc.node_file_env,

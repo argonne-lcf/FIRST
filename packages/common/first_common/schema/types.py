@@ -170,6 +170,13 @@ class PilotConfig(BaseModel):
     workdir: Path
     external_port: int
     nginx_path: Path
+    nginx_sha256: str | None = Field(default=None, pattern=r"[0-9a-f]{64}")
+    pilot_runtime_manifest_sha256: str | None = Field(
+        default=None, pattern=r"[0-9a-f]{64}"
+    )
+    pilot_source_identity_sha256: str | None = Field(
+        default=None, pattern=r"[0-9a-f]{64}"
+    )
     ip_allowlist: list[str]
     node_file_env: str
     pals_path: Path | None = None
@@ -336,12 +343,25 @@ class PilotLaunchSpec(BaseModel):
     pre_stop_timeout_sec: float = Field(default=20.0, gt=0, le=25.0)
     """Hard deadline for the optional pre-stop script, in seconds."""
 
+    post_stop_script_template: str | None = None
+    """
+    Optional cleanup-verification script run only after the model process group
+    is authoritatively absent. Stop is not successful until this hook exits
+    cleanly and its complete process group is absent.
+    """
+    post_stop_timeout_sec: float = Field(default=50.0, gt=0, le=50.0)
+    """Hard deadline for the optional post-stop script, in seconds."""
+
     max_startup_sec: int
     max_unhealthy_sec: int | None = Field(default=None, gt=0)
     """Post-readiness unhealthy deadline; defaults to `max_startup_sec`."""
     health_check: HealthCheckParams
 
-    @field_validator("serve_script_template", "pre_stop_script_template")
+    @field_validator(
+        "serve_script_template",
+        "pre_stop_script_template",
+        "post_stop_script_template",
+    )
     @classmethod
     def _check_template_variables(cls, v: str | None) -> str | None:
         if v is None:

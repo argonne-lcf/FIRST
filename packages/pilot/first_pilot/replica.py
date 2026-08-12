@@ -97,6 +97,14 @@ class Replica:
             )
             self._pre_stop_script_path.chmod(0o700)
 
+        self._post_stop_script_path: Path | None = None
+        if self.launch_spec.post_stop_script_template is not None:
+            self._post_stop_script_path = self.workdir / "post-stop.sh"
+            self._post_stop_script_path.write_text(
+                self._render_script(self.launch_spec.post_stop_script_template)
+            )
+            self._post_stop_script_path.chmod(0o700)
+
         self._log_fh = open(self.log_path, "ab")
 
         self._env = os.environ.copy()
@@ -152,10 +160,15 @@ class Replica:
         self._pre_stop_attempted: bool = False
         self._pre_stop_proc: subprocess.Popen[bytes] | None = None
         self._pre_stop_succeeded: bool | None = None
+        self._post_stop_proc: subprocess.Popen[bytes] | None = None
+        self._post_stop_succeeded: bool | None = None
+        self._post_stop_attempts = 0
         self._model_teardown_attempts = 0
         self._hook_cleanup_attempts = 0
+        self._post_hook_cleanup_attempts = 0
         self._model_survivors: dict[int, int] | None = None
         self._hook_survivors: dict[int, int] | None = None
+        self._post_hook_survivors: dict[int, int] | None = None
         self._monitor_exit = threading.Event()
         self._monitor = threading.Thread(
             target=self._monitor_loop,
@@ -348,7 +361,16 @@ class Replica:
                 raise failure
 
             self.state = ReplicaState.terminated
-            if self._pre_stop_succeeded is True:
+            if self._pre_stop_succeeded is True and self._post_stop_succeeded is True:
+                self.state_message = (
+                    "Model replica terminated after cooperative pre-stop and "
+                    "verified post-stop hooks."
+                )
+            elif self._post_stop_succeeded is True:
+                self.state_message = (
+                    "Model replica terminated after verified post-stop hook."
+                )
+            elif self._pre_stop_succeeded is True:
                 self.state_message = (
                     "Model replica terminated after cooperative pre-stop hook."
                 )
@@ -402,7 +424,25 @@ class Replica:
             except Exception:
                 logger.exception("model cleanup failed for replica %s", self.name)
                 model_absent = False
-            if hook_absent and model_absent:
+            post_stop_ready = True
+            if model_absent:
+                try:
+                    (
+                        self._post_stop_succeeded,
+                        post_stop_group_absent,
+                    ) = self._run_post_stop_hook()
+                    post_stop_ready = (
+                        self._post_stop_succeeded is not False
+                        and post_stop_group_absent
+                    )
+                except Exception:
+                    logger.exception(
+                        "post-stop verification failed for replica %s", self.name
+                    )
+                    self._post_stop_succeeded = False
+                    post_stop_ready = False
+
+            if hook_absent and model_absent and post_stop_ready:
                 self._teardown_complete = True
                 self._close_log_handles()
                 return
@@ -412,6 +452,8 @@ class Replica:
                 survivors.append("pre-stop hook process group")
             if not model_absent:
                 survivors.append("model process group")
+            if not post_stop_ready:
+                survivors.append("post-stop hook or verification")
             message = (
                 f"Replica {self.name} teardown incomplete; still present: "
                 + ", ".join(survivors)
@@ -488,6 +530,84 @@ class Replica:
         self._write_lifecycle_log("pre-stop hook completed")
         return True, True
 
+    def _run_post_stop_hook(self) -> tuple[bool | None, bool]:
+        """Run cleanup verification after authoritative model-group absence.
+
+        The hook runs in its own private session.  Every non-success outcome is
+        retained as a stop failure even when fallback cleanup removes the hook
+        group, so a later controller attempt must rerun and obtain an explicit
+        successful verification result.
+        """
+        script_path = self._post_stop_script_path
+        if script_path is None:
+            return None, True
+        if self._post_stop_succeeded is True:
+            return True, self._ensure_post_stop_hook_group_absent()
+
+        # A prior failed attempt may still own descendants.  Never start a new
+        # verifier until that exact private process group is absent.
+        if not self._ensure_post_stop_hook_group_absent():
+            return False, False
+
+        self._post_stop_attempts += 1
+        timeout = self.launch_spec.post_stop_timeout_sec
+        logger.info(
+            "running post-stop hook for replica %s (attempt=%d, timeout=%.1fs)",
+            self.name,
+            self._post_stop_attempts,
+            timeout,
+        )
+        self._write_lifecycle_log(
+            "post-stop hook started "
+            f"(attempt={self._post_stop_attempts}, timeout={timeout:.1f}s)"
+        )
+        try:
+            hook = subprocess.Popen(
+                ["/bin/bash", str(script_path)],
+                cwd=str(self.workdir),
+                stdout=self._log_fh,
+                stderr=subprocess.STDOUT,
+                env=self._env,
+                start_new_session=True,
+            )
+        except Exception:
+            logger.exception("failed to start post-stop hook for replica %s", self.name)
+            self._write_lifecycle_log("post-stop hook failed to start")
+            return False, True
+
+        self._post_stop_proc = hook
+        try:
+            rc = hook.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "post-stop hook for replica %s exceeded %.1fs",
+                self.name,
+                timeout,
+            )
+            self._write_lifecycle_log("post-stop hook timed out")
+            return False, self._terminate_post_stop_hook_group(hook)
+
+        if rc != 0:
+            logger.error(
+                "post-stop hook for replica %s exited %d",
+                self.name,
+                rc,
+            )
+            self._write_lifecycle_log(f"post-stop hook exited {rc}")
+            return False, self._terminate_post_stop_hook_group(hook)
+
+        if self._process_group_alive(hook.pid):
+            logger.error(
+                "post-stop hook for replica %s left descendant processes",
+                self.name,
+            )
+            self._write_lifecycle_log("post-stop hook left descendant processes")
+            return False, self._terminate_post_stop_hook_group(hook)
+
+        logger.info("post-stop hook completed for replica %s", self.name)
+        self._write_lifecycle_log("post-stop hook completed")
+        return True, True
+
     def _ensure_hook_group_absent(self) -> bool:
         hook = self._pre_stop_proc
         if hook is None or not self._process_group_alive(hook.pid):
@@ -528,6 +648,48 @@ class Replica:
         if not absent:
             logger.error("pre-stop hook process group survived SIGKILL")
             self._hook_survivors = self._snapshot_process_group(hook.pid)
+        return absent
+
+    def _ensure_post_stop_hook_group_absent(self) -> bool:
+        hook = self._post_stop_proc
+        if hook is None or not self._process_group_alive(hook.pid):
+            return True
+        return self._terminate_post_stop_hook_group(hook)
+
+    def _terminate_post_stop_hook_group(self, hook: subprocess.Popen[bytes]) -> bool:
+        """Bound cleanup of a post-stop hook group; prove exact absence."""
+        retry = self._post_hook_cleanup_attempts > 0
+        self._post_hook_cleanup_attempts += 1
+        hook.poll()
+        if not self._process_group_alive(hook.pid):
+            return True
+        if retry and not self._retry_owns_process_group(
+            hook.pid,
+            hook,
+            self._post_hook_survivors,
+            label="post-stop hook",
+        ):
+            return False
+        try:
+            os.killpg(hook.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            logger.error("permission denied signalling post-stop hook group SIGTERM")
+        if self._wait_for_process_group_exit(hook.pid, hook, self._HOOK_TERM_GRACE):
+            return True
+        try:
+            os.killpg(hook.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            logger.error("permission denied signalling post-stop hook group SIGKILL")
+        absent = self._wait_for_process_group_exit(
+            hook.pid, hook, self._HOOK_KILL_GRACE
+        )
+        if not absent:
+            logger.error("post-stop hook process group survived SIGKILL")
+            self._post_hook_survivors = self._snapshot_process_group(hook.pid)
         return absent
 
     def _write_lifecycle_log(self, message: str) -> None:

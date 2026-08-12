@@ -13,7 +13,9 @@ from first_common.schema.types import (
     PilotLaunchSpec,
     ReplicaState,
 )
+from first_gateway.services.pilot_control import STOP_TIMEOUT
 from first_pilot.replica import Replica, ReplicaTeardownError
+from first_pilot.replica_manager import ReplicaManager
 
 _SERVE_UNTIL_TERM = """
 trap 'exit 0' TERM INT
@@ -67,6 +69,10 @@ def test_pre_stop_template_validation_and_unhealthy_deadline() -> None:
         _launch_spec(pre_stop_script_template="echo {{ not_in_context }}")
     with pytest.raises(ValidationError, match="less than or equal to 25"):
         _launch_spec(pre_stop_script_template="true", pre_stop_timeout_sec=26)
+    with pytest.raises(ValidationError, match="unknown variables"):
+        _launch_spec(post_stop_script_template="echo {{ not_in_context }}")
+    with pytest.raises(ValidationError, match="less than or equal to 50"):
+        _launch_spec(post_stop_script_template="true", post_stop_timeout_sec=51)
 
     explicit = Replica.__new__(Replica)
     explicit.launch_spec = _launch_spec(max_unhealthy_sec=7)
@@ -75,6 +81,11 @@ def test_pre_stop_template_validation_and_unhealthy_deadline() -> None:
     fallback = Replica.__new__(Replica)
     fallback.launch_spec = _launch_spec()
     assert fallback._unhealthy_timeout_sec() == 30
+
+
+def test_stop_rpc_and_join_budgets_cover_sequential_hooks() -> None:
+    assert STOP_TIMEOUT.read == 120.0
+    assert ReplicaManager._STOP_JOIN_TIMEOUT == 120.0
 
 
 def test_process_group_probe_is_fail_closed_on_permission_error() -> None:
@@ -111,6 +122,148 @@ printf '%s\n' '{{ replica_name }}|{{ gpus_by_host["node-a"] | join(",") }}|{{ en
     assert lifecycle_log.count("pre-stop hook started") == 1
     assert lifecycle_log.count("pre-stop hook completed") == 1
     assert not replica._group_alive()
+
+
+def test_post_stop_runs_only_after_model_absence_and_latches_success(
+    tmp_path: Path,
+) -> None:
+    spec = _launch_spec(
+        serve_script_template="""
+printf '%s\n' "$$" > model-pgid
+trap 'exit 0' TERM INT
+while true; do sleep 0.1; done
+""",
+        post_stop_script_template="""
+model_pgid=$(cat model-pgid)
+if kill -0 -- "-$model_pgid" 2>/dev/null; then
+    exit 70
+fi
+printf '%s\n' verified >> post-stop-proof
+""",
+        post_stop_timeout_sec=2,
+    )
+    replica = _replica(tmp_path, spec)
+    try:
+        replica.stop(timeout=0.2)
+        replica.stop(timeout=0.2)
+    finally:
+        if not _teardown_complete(replica):
+            replica.stop(timeout=0.2)
+
+    assert replica.state == ReplicaState.terminated
+    assert replica.state_message == (
+        "Model replica terminated after verified post-stop hook."
+    )
+    assert (replica.workdir / "post-stop-proof").read_text().splitlines() == [
+        "verified"
+    ]
+    assert replica.log_path.read_text().count("post-stop hook completed") == 1
+
+
+def test_nonzero_post_stop_is_fail_closed_and_retryable(tmp_path: Path) -> None:
+    replica = _replica(
+        tmp_path,
+        _launch_spec(
+            post_stop_script_template="""
+if [ ! -e permit-post-stop ]; then
+    exit 7
+fi
+exit 0
+""",
+            post_stop_timeout_sec=2,
+        ),
+    )
+    try:
+        with pytest.raises(ReplicaTeardownError, match="post-stop"):
+            replica.stop(timeout=0.2)
+        assert not _teardown_complete(replica)
+        assert not replica._log_fh.closed
+        assert replica._post_stop_attempts == 1
+
+        (replica.workdir / "permit-post-stop").touch()
+        replica.stop(timeout=0.2)
+        assert _teardown_complete(replica)
+        assert replica._post_stop_attempts == 2
+        assert replica.state_message == (
+            "Model replica terminated after verified post-stop hook."
+        )
+    finally:
+        if not _teardown_complete(replica):
+            (replica.workdir / "permit-post-stop").touch()
+            replica.stop(timeout=0.2)
+
+
+def test_timed_out_post_stop_cleans_group_but_requires_new_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Replica, "_HOOK_TERM_GRACE", 0.05)
+    monkeypatch.setattr(Replica, "_HOOK_KILL_GRACE", 0.2)
+    monkeypatch.setattr(Replica, "_GROUP_POLL_INTERVAL", 0.01)
+    replica = _replica(
+        tmp_path,
+        _launch_spec(
+            post_stop_script_template="""
+printf '%s\n' "$$" > post-hook-pgid
+trap '' TERM
+while true; do sleep 1; done
+""",
+            post_stop_timeout_sec=0.3,
+        ),
+    )
+    try:
+        with pytest.raises(ReplicaTeardownError, match="post-stop"):
+            replica.stop(timeout=0.2)
+        hook_pgid = int((replica.workdir / "post-hook-pgid").read_text())
+        assert not Replica._process_group_alive(hook_pgid)
+        assert not _teardown_complete(replica)
+
+        replica._post_stop_script_path.write_text("exit 0\n")  # type: ignore[union-attr]
+        replica.stop(timeout=0.2)
+        assert replica._post_stop_attempts == 2
+    finally:
+        if not _teardown_complete(replica):
+            replica._post_stop_script_path.write_text("exit 0\n")  # type: ignore[union-attr]
+            replica.stop(timeout=0.2)
+
+
+def test_post_stop_descendant_is_removed_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Replica, "_HOOK_TERM_GRACE", 0.05)
+    monkeypatch.setattr(Replica, "_HOOK_KILL_GRACE", 0.2)
+    monkeypatch.setattr(Replica, "_GROUP_POLL_INTERVAL", 0.01)
+    replica = _replica(
+        tmp_path,
+        _launch_spec(
+            post_stop_script_template="""
+if [ ! -e retry-post-stop ]; then
+    printf '%s\n' "$$" > post-descendant-pgid
+    (trap '' TERM HUP; while true; do sleep 1; done) &
+    exit 0
+fi
+old_pgid=$(cat post-descendant-pgid)
+if kill -0 -- "-$old_pgid" 2>/dev/null; then
+    exit 71
+fi
+exit 0
+""",
+            post_stop_timeout_sec=2,
+        ),
+    )
+    try:
+        with pytest.raises(ReplicaTeardownError, match="post-stop"):
+            replica.stop(timeout=0.2)
+        old_pgid = int((replica.workdir / "post-descendant-pgid").read_text())
+        assert not Replica._process_group_alive(old_pgid)
+
+        (replica.workdir / "retry-post-stop").touch()
+        replica.stop(timeout=0.2)
+        assert _teardown_complete(replica)
+        assert replica._post_stop_attempts == 2
+    finally:
+        if not _teardown_complete(replica):
+            (replica.workdir / "retry-post-stop").touch()
+            replica.stop(timeout=0.2)
 
 
 def test_nonzero_pre_stop_uses_process_group_fallback(tmp_path: Path) -> None:
