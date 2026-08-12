@@ -76,6 +76,7 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
             "nginx_path": str(nginx_path),
             "ip_allowlist": ["10.0.0.0/8"],
             "node_file_env": "PBS_NODEFILE",
+            "pals_path": "/opt/site/mpiexec",
             "submit_script_preamble": "#!/bin/bash\nset -eu\nmodule load python",
             "pilot_path": "/test/first-pilot",
         }
@@ -125,6 +126,9 @@ async def test_submit_renders_config_and_script(
     assert parsed["job_name"] == "alpha-7"
     assert parsed["ca_crt"] == ca_crt
     assert parsed["external_port"] == 8443
+    assert parsed["pals_path"] == "/opt/site/mpiexec"
+    assert parsed["num_nodes"] == 2
+    assert parsed["gpus_per_node"] == 4
     assert "BEGIN CERTIFICATE" in parsed["server_crt"]
     assert "BEGIN" in parsed["server_key"]
 
@@ -145,6 +149,20 @@ async def test_submit_renders_config_and_script(
 
     assert result.job_name == f"{pilot_config.job_name_prefix}alpha-7"
     assert result.scheduler_id == "42.fake"
+
+
+async def test_submit_rejects_multi_node_without_pals(
+    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+) -> None:
+    config_without_pals = pilot_config.model_copy(update={"pals_path": None})
+    adapter = FakeSchedulerAdapter()
+    submitter = PilotSubmitter(config_without_pals, adapter, *ca_pair)
+
+    with pytest.raises(ValueError, match="multi-node pilot submission requires"):
+        await submitter.submit(_make_pilot_job("no-pals"))
+
+    assert not adapter.submitted
+    assert not adapter.files
 
 
 async def test_get_statuses_filters_by_prefix(

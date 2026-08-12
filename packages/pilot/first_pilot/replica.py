@@ -24,6 +24,10 @@ from first_common.schema.types import (
 logger = logging.getLogger(__name__)
 
 
+class ReplicaTeardownError(RuntimeError):
+    """The bounded teardown attempt ended with a process group still present."""
+
+
 def tail_file(
     path: Path,
     num_lines: int = 200,
@@ -59,6 +63,8 @@ class Replica:
     _HEALTH_INTERVAL = 2.0
     _TERM_GRACE = 8.0
     _KILL_GRACE = 5.0
+    _HOOK_TERM_GRACE = 1.0
+    _HOOK_KILL_GRACE = 1.0
     _GROUP_POLL_INTERVAL = 0.2
 
     def __init__(
@@ -78,13 +84,23 @@ class Replica:
         self.log_path = workdir / "out.log"
 
         script_path = self.workdir / "serve.sh"
-        script_path.write_text(self._render_script())
+        script_path.write_text(
+            self._render_script(self.launch_spec.serve_script_template)
+        )
         script_path.chmod(0o755)
+
+        self._pre_stop_script_path: Path | None = None
+        if self.launch_spec.pre_stop_script_template is not None:
+            self._pre_stop_script_path = self.workdir / "pre-stop.sh"
+            self._pre_stop_script_path.write_text(
+                self._render_script(self.launch_spec.pre_stop_script_template)
+            )
+            self._pre_stop_script_path.chmod(0o700)
 
         self._log_fh = open(self.log_path, "ab")
 
-        env = os.environ.copy()
-        env.update(self.launch_spec.env)
+        self._env = os.environ.copy()
+        self._env.update(self.launch_spec.env)
 
         logger.info(
             "starting replica %s on port %d (workdir=%s)",
@@ -98,7 +114,7 @@ class Replica:
                 cwd=str(self.workdir),
                 stdout=self._log_fh,
                 stderr=subprocess.STDOUT,
-                env=env,
+                env=self._env,
                 start_new_session=True,
             )
         except Exception:
@@ -130,7 +146,16 @@ class Replica:
             logger.info("Replica health check disabled")
 
         self._teardown_lock = threading.Lock()
-        self._torn_down = False
+        self._stop_lock = threading.Lock()
+        self._teardown_started: bool = False
+        self._teardown_complete: bool = False
+        self._pre_stop_attempted: bool = False
+        self._pre_stop_proc: subprocess.Popen[bytes] | None = None
+        self._pre_stop_succeeded: bool | None = None
+        self._model_teardown_attempts = 0
+        self._hook_cleanup_attempts = 0
+        self._model_survivors: dict[int, int] | None = None
+        self._hook_survivors: dict[int, int] | None = None
         self._monitor_exit = threading.Event()
         self._monitor = threading.Thread(
             target=self._monitor_loop,
@@ -139,7 +164,7 @@ class Replica:
         )
         self._monitor.start()
 
-    def _render_script(self) -> str:
+    def _render_script(self, template: str) -> str:
         spec = self.launch_spec
 
         gpus_by_host: dict[str, list[str]] = {}
@@ -161,7 +186,7 @@ class Replica:
         }
 
         env = Environment(undefined=StrictUndefined)
-        return env.from_string(spec.serve_script_template).render(**context)
+        return env.from_string(template).render(**context)
 
     def _check_health(self) -> HealthCheckResult:
         if not self._health_params.url:
@@ -182,18 +207,35 @@ class Replica:
         if self._unhealthy_since is None:
             return False
         elapsed = time.monotonic() - self._unhealthy_since
-        return elapsed > self.launch_spec.max_startup_sec
+        return elapsed > self._unhealthy_timeout_sec()
+
+    def _unhealthy_timeout_sec(self) -> int:
+        timeout = self.launch_spec.max_unhealthy_sec
+        return self.launch_spec.max_startup_sec if timeout is None else timeout
 
     def _monitor_loop(self) -> None:
         while not self._monitor_exit.wait(timeout=self._HEALTH_INTERVAL):
             try:
                 self._run_monitor_check()
+            except ReplicaTeardownError:
+                # The teardown path already recorded exact surviving groups in
+                # state_message and the lifecycle log.  Keep the Replica
+                # addressable so a later controller retry can finish cleanup.
+                logger.exception("teardown incomplete for replica %s", self.name)
+                if self.state != ReplicaState.terminating:
+                    self.state = ReplicaState.error
+                return
             except Exception:
                 logger.exception(
                     "uncaught exception in monitor thread for %s", self.name
                 )
                 self.state = ReplicaState.error
-                self._shutdown()
+                try:
+                    self._shutdown()
+                except ReplicaTeardownError:
+                    logger.exception(
+                        "fallback teardown incomplete for replica %s", self.name
+                    )
                 return
 
     def _run_monitor_check(self) -> None:
@@ -207,10 +249,11 @@ class Replica:
         self._advance_state(health)
 
     def _handle_process_exit(self, rc: int) -> None:
-        if self.state in (ReplicaState.terminating, ReplicaState.terminated):
-            self.state = ReplicaState.terminated
-            self.state_message = "Model replica has terminated."
-        else:
+        expected_stop = self.state in (
+            ReplicaState.terminating,
+            ReplicaState.terminated,
+        )
+        if not expected_stop:
             log = self.get_logs(num_lines=10)
             msg = (
                 f"Model replica {self.name} exited unexpectedly with code {rc}:\n{log}"
@@ -221,6 +264,9 @@ class Replica:
 
         # The leader is gone but may have left GPU-pinned children behind:
         self._shutdown()
+        if expected_stop:
+            self.state = ReplicaState.terminated
+            self.state_message = "Model replica has terminated."
 
     def _advance_state(self, health: HealthCheckResult) -> None:
         healthy = health == HealthCheckResult.healthy
@@ -256,7 +302,11 @@ class Replica:
                 self._unhealthy_since = None
             elif self._unhealthy_for_too_long():
                 log = self.get_logs(num_lines=10)
-                msg = f"replica {self.name} unhealthy for over max_startup_sec; tearing down:\n{log}"
+                timeout = self._unhealthy_timeout_sec()
+                msg = (
+                    f"replica {self.name} unhealthy for over {timeout}s; "
+                    f"tearing down:\n{log}"
+                )
                 logger.error(msg)
                 self.state_message = msg
                 self.state = ReplicaState.error
@@ -264,63 +314,363 @@ class Replica:
 
     def stop(self, timeout: float = 10.0) -> None:
         """
-        Terminate the process group, wait for the monitor to exit, then record
-        the terminal state.
-        """
-        logger.info("stopping replica %s", self.name)
-        self.state = ReplicaState.terminating
-        self._shutdown()
+        Cooperatively quiesce (when configured), terminate the process group,
+        wait for the monitor to exit, then record the terminal state.
 
-        # Join the monitor so nothing writes self.state after this point
-        if self._monitor.is_alive() and threading.current_thread() is not self._monitor:
-            self._monitor.join(timeout=timeout + 5)
-
-        self.state = ReplicaState.terminated
-
-    def _shutdown(self) -> None:
+        Calls are serialized and idempotent after authoritative completion. A
+        failed attempt leaves the Replica addressable and retryable; success is
+        reported only after both the hook and model process groups are absent.
         """
-        Idempotent teardown: kill the group, close logs, stop the monitor.  Safe
-        to call concurrently from the monitor thread and stop().
+        with self._stop_lock:
+            if self._is_teardown_complete():
+                return
+
+            logger.info("stopping replica %s", self.name)
+            self.state = ReplicaState.terminating
+            failure: ReplicaTeardownError | None = None
+            try:
+                self._shutdown(cooperative=True)
+            except ReplicaTeardownError as exc:
+                failure = exc
+
+            # Join the monitor so nothing writes self.state after this point.
+            if (
+                self._monitor.is_alive()
+                and threading.current_thread() is not self._monitor
+            ):
+                self._monitor.join(timeout=timeout + 5)
+
+            # A monitor that was already inside a check may have completed a
+            # second serialized teardown attempt while we joined it.
+            if not self._is_teardown_complete():
+                if failure is None:
+                    failure = ReplicaTeardownError(self.state_message)
+                raise failure
+
+            self.state = ReplicaState.terminated
+            if self._pre_stop_succeeded is True:
+                self.state_message = (
+                    "Model replica terminated after cooperative pre-stop hook."
+                )
+            elif self._pre_stop_succeeded is False:
+                self.state_message = (
+                    "Model replica terminated with process-group fallback after "
+                    "pre-stop hook failure."
+                )
+            else:
+                self.state_message = "Model replica has terminated."
+
+    def _is_teardown_complete(self) -> bool:
+        """Read mutable completion state without exposing a stale snapshot."""
+        return self._teardown_complete
+
+    def _shutdown(self, *, cooperative: bool = False) -> None:
         """
-        with self._teardown_lock:
-            if not self._torn_down:
-                self._torn_down = True
-                self._terminate_process_group()
-                self._close_log_handles()
+        Run one bounded teardown attempt.
+
+        Completion is latched only after both private process groups are absent;
+        once latched, their numeric PGIDs are never probed or signalled again.
+        Failed attempts retain the original Popen handles for a safe retry and
+        cannot be confused with a subsequently started Replica.
+        """
         self._monitor_exit.set()
+        with self._teardown_lock:
+            if self._teardown_complete:
+                return
 
-    def _terminate_process_group(self) -> None:
-        if not self._signal_group(signal.SIGTERM):
-            return  # group already empty
+            first_attempt = not self._teardown_started
+            self._teardown_started = True
+
+            try:
+                if cooperative and first_attempt and not self._pre_stop_attempted:
+                    (
+                        self._pre_stop_succeeded,
+                        hook_absent,
+                    ) = self._run_pre_stop_hook()
+                else:
+                    hook_absent = self._ensure_hook_group_absent()
+            except Exception:
+                logger.exception("pre-stop cleanup failed for replica %s", self.name)
+                self._pre_stop_succeeded = False
+                hook_absent = False
+
+            # The model fallback is independent of hook outcome: even a hook
+            # cleanup error must not prevent the GPU-bearing group from being
+            # driven through its own bounded TERM/KILL sequence.
+            try:
+                model_absent = self._terminate_process_group()
+            except Exception:
+                logger.exception("model cleanup failed for replica %s", self.name)
+                model_absent = False
+            if hook_absent and model_absent:
+                self._teardown_complete = True
+                self._close_log_handles()
+                return
+
+            survivors = []
+            if not hook_absent:
+                survivors.append("pre-stop hook process group")
+            if not model_absent:
+                survivors.append("model process group")
+            message = (
+                f"Replica {self.name} teardown incomplete; still present: "
+                + ", ".join(survivors)
+            )
+            logger.error(message)
+            self.state_message = message
+            self._write_lifecycle_log(message)
+            raise ReplicaTeardownError(message)
+
+    def _run_pre_stop_hook(self) -> tuple[bool | None, bool]:
+        self._pre_stop_attempted = True
+        script_path = self._pre_stop_script_path
+        if script_path is None:
+            return None, True
+
+        timeout = self.launch_spec.pre_stop_timeout_sec
+        logger.info(
+            "running pre-stop hook for replica %s (timeout=%.1fs)",
+            self.name,
+            timeout,
+        )
+        self._write_lifecycle_log(f"pre-stop hook started (timeout={timeout:.1f}s)")
+        try:
+            hook = subprocess.Popen(
+                ["/bin/bash", str(script_path)],
+                cwd=str(self.workdir),
+                stdout=self._log_fh,
+                stderr=subprocess.STDOUT,
+                env=self._env,
+                start_new_session=True,
+            )
+        except Exception:
+            logger.exception("failed to start pre-stop hook for replica %s", self.name)
+            self._write_lifecycle_log("pre-stop hook failed to start; using fallback")
+            return False, True
+
+        self._pre_stop_proc = hook
+
+        try:
+            rc = hook.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "pre-stop hook for replica %s exceeded %.1fs; using fallback",
+                self.name,
+                timeout,
+            )
+            self._write_lifecycle_log("pre-stop hook timed out; using fallback")
+            return False, self._terminate_hook_group(hook)
+
+        if rc != 0:
+            logger.error(
+                "pre-stop hook for replica %s exited %d; using fallback",
+                self.name,
+                rc,
+            )
+            self._write_lifecycle_log(f"pre-stop hook exited {rc}; using fallback")
+            # The leader is reaped, but it may have orphaned descendants in its
+            # private session. Absence of the whole hook process group is the
+            # cleanup condition for every hook outcome.
+            return False, self._terminate_hook_group(hook)
+
+        if self._process_group_alive(hook.pid):
+            logger.error(
+                "pre-stop hook for replica %s left descendant processes; "
+                "using fallback",
+                self.name,
+            )
+            self._write_lifecycle_log(
+                "pre-stop hook left descendant processes; using fallback"
+            )
+            return False, self._terminate_hook_group(hook)
+
+        logger.info("pre-stop hook completed for replica %s", self.name)
+        self._write_lifecycle_log("pre-stop hook completed")
+        return True, True
+
+    def _ensure_hook_group_absent(self) -> bool:
+        hook = self._pre_stop_proc
+        if hook is None or not self._process_group_alive(hook.pid):
+            return True
+        return self._terminate_hook_group(hook)
+
+    def _terminate_hook_group(self, hook: subprocess.Popen[bytes]) -> bool:
+        """Bound cleanup of a pre-stop hook group; return authoritative absence."""
+        retry = self._hook_cleanup_attempts > 0
+        self._hook_cleanup_attempts += 1
+        hook.poll()
+        if not self._process_group_alive(hook.pid):
+            return True
+        if retry and not self._retry_owns_process_group(
+            hook.pid,
+            hook,
+            self._hook_survivors,
+            label="pre-stop hook",
+        ):
+            return False
+        try:
+            os.killpg(hook.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            logger.error("permission denied signalling pre-stop hook group SIGTERM")
+        if self._wait_for_process_group_exit(hook.pid, hook, self._HOOK_TERM_GRACE):
+            return True
+        try:
+            os.killpg(hook.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            logger.error("permission denied signalling pre-stop hook group SIGKILL")
+        absent = self._wait_for_process_group_exit(
+            hook.pid, hook, self._HOOK_KILL_GRACE
+        )
+        if not absent:
+            logger.error("pre-stop hook process group survived SIGKILL")
+            self._hook_survivors = self._snapshot_process_group(hook.pid)
+        return absent
+
+    def _write_lifecycle_log(self, message: str) -> None:
+        try:
+            self._log_fh.write(f"[FIRST lifecycle] {message}\n".encode())
+            self._log_fh.flush()
+        except (OSError, ValueError):
+            logger.exception(
+                "could not write lifecycle marker for replica %s", self.name
+            )
+
+    def _terminate_process_group(self) -> bool:
+        """Bound TERM/KILL of the model group; return authoritative absence."""
+        retry = self._model_teardown_attempts > 0
+        self._model_teardown_attempts += 1
+        if not self._group_alive():
+            return True
+        if retry and not self._retry_owns_process_group(
+            self._pgid,
+            self.proc,
+            self._model_survivors,
+            label="model",
+        ):
+            return False
+
+        try:
+            os.killpg(self._pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            logger.error("permission denied signalling model group SIGTERM")
 
         if self._wait_for_group_exit(self._TERM_GRACE):
-            return
+            return True
 
         logger.warning(
             "replica %s still alive %.0fs after SIGTERM; escalating to SIGKILL",
             self.name,
             self._TERM_GRACE,
         )
-        if not self._signal_group(signal.SIGKILL):
-            return
-        if not self._wait_for_group_exit(self._KILL_GRACE):
-            logger.error("replica %s process group survived SIGKILL", self.name)
-
-    def _signal_group(self, sig: int) -> bool:
-        """Send `sig` to the whole process group. Returns False if empty."""
         try:
-            os.killpg(self._pgid, sig)
-            return True
+            os.killpg(self._pgid, signal.SIGKILL)
         except ProcessLookupError:
-            return False
+            pass
+        except PermissionError:
+            logger.error("permission denied signalling model group SIGKILL")
+        absent = self._wait_for_group_exit(self._KILL_GRACE)
+        if not absent:
+            logger.error("replica %s process group survived SIGKILL", self.name)
+            self._model_survivors = self._snapshot_process_group(self._pgid)
+        return absent
 
     def _group_alive(self) -> bool:
         """True if the process group still has at least one member."""
+        return self._process_group_alive(self._pgid)
+
+    @staticmethod
+    def _process_group_alive(pgid: int) -> bool:
+        """True if process group ``pgid`` still has at least one member."""
         try:
-            os.killpg(self._pgid, 0)  # signal 0 == existence probe
+            os.killpg(pgid, 0)  # signal 0 == existence probe
             return True
-        except (ProcessLookupError, PermissionError):
+        except ProcessLookupError:
             return False
+        except PermissionError:
+            # EPERM means the kernel found the group but denied the probe.  It
+            # is not evidence of absence; cleanup must remain fail-closed.
+            return True
+        except OSError:
+            logger.exception("process-group existence probe failed for pgid=%d", pgid)
+            return True
+
+    @staticmethod
+    def _snapshot_process_group(pgid: int) -> dict[int, int] | None:
+        """Return Linux ``pid -> starttime`` identities for one private session.
+
+        ``None`` means the procfs ownership check is unavailable.  An empty
+        mapping means no readable member currently has both pgrp and session
+        equal to the launch-time PGID.
+        """
+        try:
+            entries = list(Path("/proc").iterdir())
+        except OSError:
+            return None
+
+        members: dict[int, int] = {}
+        for entry in entries:
+            if not entry.name.isdecimal():
+                continue
+            try:
+                raw = (entry / "stat").read_text()
+                # comm (field 2) is parenthesized and may contain spaces or ')'.
+                fields = raw[raw.rfind(")") + 2 :].split()
+                pgrp = int(fields[2])  # field 5
+                session = int(fields[3])  # field 6
+                starttime = int(fields[19])  # field 22
+            except (OSError, ValueError, IndexError):
+                continue
+            if pgrp == pgid and session == pgid:
+                members[int(entry.name)] = starttime
+        return members
+
+    def _retry_owns_process_group(
+        self,
+        pgid: int,
+        leader: subprocess.Popen[bytes],
+        witnesses: dict[int, int] | None,
+        *,
+        label: str,
+    ) -> bool:
+        """Refuse a retry signal unless the numeric PGID is still ours.
+
+        PGIDs can be reused after a group disappears. A live original leader is
+        an ownership witness. Once that leader is gone, at least one surviving
+        ``(pid, /proc starttime)`` captured by the prior failed attempt must
+        still match. Ambiguity is retained as teardown failure rather than
+        risking a signal to an unrelated, reused group.
+        """
+        if leader.poll() is None:
+            try:
+                if os.getpgid(leader.pid) == pgid and os.getsid(leader.pid) == pgid:
+                    return True
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        current = self._snapshot_process_group(pgid)
+        if (
+            current is not None
+            and witnesses
+            and any(
+                current.get(pid) == starttime for pid, starttime in witnesses.items()
+            )
+        ):
+            witnesses.update(current)
+            return True
+
+        logger.error(
+            "refusing retry signal for %s pgid=%d: original process-group "
+            "ownership cannot be proven",
+            label,
+            pgid,
+        )
+        return False
 
     def _wait_for_group_exit(self, timeout: float) -> bool:
         """
@@ -331,6 +681,19 @@ class Replica:
         while True:
             self.proc.poll()  # reap the leader so a zombie can't keep the group "alive"
             if not self._group_alive():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self._GROUP_POLL_INTERVAL)
+
+    def _wait_for_process_group_exit(
+        self, pgid: int, leader: subprocess.Popen[bytes], timeout: float
+    ) -> bool:
+        """Bound wait for an auxiliary process group, reaping its leader."""
+        deadline = time.monotonic() + timeout
+        while True:
+            leader.poll()
+            if not self._process_group_alive(pgid):
                 return True
             if time.monotonic() >= deadline:
                 return False

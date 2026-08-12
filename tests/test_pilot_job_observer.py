@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import select
@@ -15,11 +15,20 @@ from first_common.schema.base_scheduler import (
     SchedulerAdapter,
     SchedulerJobState,
 )
-from first_common.schema.pilot import AddressInfo
+from first_common.schema.pilot import AddressInfo, PilotJobStatus, PilotResources
 from first_common.schema.types import HealthCheckResult, PilotConfig
+from first_gateway.controllers.worker import Worker
 from first_gateway.controllers.workers.pilot_job_observer import PilotJobObserver
-from first_gateway.database.models import Cluster, PilotJob
+from first_gateway.database.models import (
+    AccessGroup,
+    Cluster,
+    Model,
+    PilotDeployment,
+    PilotJob,
+    PilotReplica,
+)
 from first_gateway.database.redis.pubsub import Channel
+from first_gateway.platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from first_gateway.services.pilot_submitter import PilotSubmitter
 
 _PATCH_BUILD = "first_gateway.controllers.workers.pilot_job_observer.build_scheduler"
@@ -98,7 +107,15 @@ def _make_client_state(
 def _make_observer(
     db: async_sessionmaker[AsyncSession],
 ) -> PilotJobObserver:
-    return PilotJobObserver("pilot-job-observer", _make_client_state(db), MagicMock())
+    # Bypass the production mTLS client constructor; individual tests control
+    # the candidate-endpoint /status result through this AsyncMock.
+    observer = PilotJobObserver.__new__(PilotJobObserver)
+    Worker.__init__(observer, "pilot-job-observer", _make_client_state(db), MagicMock())
+    observer.client = MagicMock()
+    observer.client.get_status = AsyncMock(
+        return_value=PilotJobStatus(resources=PilotResources(), replicas=[])
+    )
+    return observer
 
 
 async def _seed_cluster(sess: AsyncSession) -> None:
@@ -107,6 +124,36 @@ async def _seed_cluster(sess: AsyncSession) -> None:
             name="polaris",
             health_check={"url": "http://x/health", "debounce": 2},
             pilot_system=PILOT_SYSTEM,
+        )
+    )
+    await sess.flush()
+
+
+async def _seed_deployment_parents(sess: AsyncSession) -> None:
+    sess.add(AccessGroup(name="ag", allowed_groups=[], allowed_domains=[]))
+    await sess.flush()
+    sess.add(Model(name="model", access_group_name="ag", supported_endpoints=["chat"]))
+    await sess.flush()
+
+
+async def _insert_deployment(
+    sess: AsyncSession,
+    name: str,
+    *,
+    max_consecutive_launch_failures: int = 1,
+) -> None:
+    sess.add(
+        PilotDeployment(
+            name=name,
+            cluster_name="polaris",
+            model_name="model",
+            router_params={},
+            prometheus_scrape_interval_sec=30,
+            min_replicas=1,
+            max_replicas=1,
+            launch_spec={},
+            desired_replicas=1,
+            max_consecutive_launch_failures=max_consecutive_launch_failures,
         )
     )
     await sess.flush()
@@ -200,6 +247,142 @@ async def test_submitted_to_running_and_endpoint_discovery(
     publish.assert_not_awaited()
 
 
+async def test_graphql_head_ip_requires_live_manager_status(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A scheduler-assigned head IP is not pilot-manager readiness evidence."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "job-graphql",
+            "graphql.pbs",
+            state=SchedulerJobState.running,
+        )
+
+    scheduler_status = JobStatusInfo(
+        id="graphql.pbs",
+        name="__FIRST_PILOT_job-graphql",
+        state=SchedulerJobState.running,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+        head_node_ip_address="10.1.2.3",
+        head_node_hostname="x3001",
+    )
+    adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
+    submitter = PilotSubmitter(
+        PilotConfig.model_validate(PILOT_SYSTEM),
+        adapter,
+        "fake-ca-crt",
+        "fake-ca-key",
+    )
+    observer = _make_observer(db)
+    get_status = cast(AsyncMock, observer.client.get_status)
+    publish = cast(AsyncMock, observer.client_state.redis_pubsub.publish)
+    get_status.side_effect = RuntimeError("manager not bound")
+
+    with patch.object(
+        adapter,
+        "get_job_statuses",
+        new=AsyncMock(return_value=[scheduler_status]),
+    ):
+        await observer._discover_endpoints(submitter, "polaris")
+
+        async with db() as sess:
+            job = await sess.get(PilotJob, uid)
+            assert job is not None
+            assert job.manager_url is None
+        publish.assert_not_awaited()
+
+        # Once the exact candidate answers /status over mTLS, publish it and
+        # wake launchers.  This is the first point at which manager_url is set.
+        get_status.side_effect = None
+        get_status.return_value = PilotJobStatus(
+            resources=PilotResources(), replicas=[]
+        )
+        await observer._discover_endpoints(submitter, "polaris")
+
+    candidate = "https://10.1.2.3:8443/control/"
+    get_status.assert_awaited_with(candidate)
+    async with db() as sess:
+        job = await sess.get(PilotJob, uid)
+        assert job is not None
+        assert job.manager_url == candidate
+    publish.assert_awaited_once_with(Channel.pilot_job_ready, "job-graphql")
+
+
+async def test_graphql_unready_terminal_allocation_is_charged_once(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A PALS-era failure behind a synthesized head IP gets one replacement."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_deployment_parents(sess)
+        await _insert_deployment(sess, "dep-a")
+        uid = await _insert_pilot_job(
+            sess,
+            "job-inventory-failed",
+            "inventory-failed.pbs",
+            state=SchedulerJobState.running,
+        )
+        sess.add(
+            PilotReplica(
+                name="dep-a/replica/inventory-failed",
+                pilot_deployment_name="dep-a",
+                pilot_job_name="job-inventory-failed",
+                state="placed",
+            )
+        )
+
+    scheduler_status = JobStatusInfo(
+        id="inventory-failed.pbs",
+        name="__FIRST_PILOT_job-inventory-failed",
+        state=SchedulerJobState.running,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+        head_node_ip_address="10.1.2.4",
+        head_node_hostname="x3002",
+    )
+    adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
+    submitter = PilotSubmitter(
+        PilotConfig.model_validate(PILOT_SYSTEM),
+        adapter,
+        "fake-ca-crt",
+        "fake-ca-key",
+    )
+    observer = _make_observer(db)
+    get_status = cast(AsyncMock, observer.client.get_status)
+    get_status.side_effect = RuntimeError("PALS inventory failed before bind")
+    with patch.object(
+        adapter,
+        "get_job_statuses",
+        new=AsyncMock(return_value=[scheduler_status]),
+    ):
+        await observer._discover_endpoints(submitter, "polaris")
+
+    async with db() as sess:
+        job = await sess.get(PilotJob, uid)
+        assert job is not None
+        assert job.manager_url is None
+
+    terminal = JobStatusInfo(
+        id="inventory-failed.pbs",
+        name="__FIRST_PILOT_job-inventory-failed",
+        state=SchedulerJobState.exiting,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+    )
+    await observer._update_job(job, terminal)
+    await observer._update_job(job, terminal)
+
+    async with db() as sess:
+        dep = await PilotDeployment.get_by_name(sess, "dep-a")
+        assert dep.consecutive_launch_failures == 1
+
+
 async def test_orphan_scheduler_job_reaped(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -260,6 +443,165 @@ async def test_no_update_when_state_unchanged(
     async with db() as sess:
         job = (await sess.scalars(select(PilotJob).where(PilotJob.uid == uid))).one()
     assert job.scheduler_state == SchedulerJobState.running.value
+
+
+async def test_pre_manager_terminal_jobs_count_once_per_assigned_deployment(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A failed allocation is charged once, even across exiting/gone polls.
+
+    With a configured maximum of one launch failure, the first dead allocation
+    permits one replacement and the replacement's failure advances the counter
+    to two, which the autoscaler treats as over the bound.
+    """
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_deployment_parents(sess)
+        await _insert_deployment(sess, "dep-a")
+        await _insert_deployment(sess, "dep-b")
+        first_uid = await _insert_pilot_job(
+            sess,
+            "job-first",
+            "first.pbs",
+            state=SchedulerJobState.running,
+        )
+        sess.add_all(
+            [
+                # Two replicas from dep-a must still count as one allocation
+                # failure for that deployment.
+                PilotReplica(
+                    name="dep-a/replica/one",
+                    pilot_deployment_name="dep-a",
+                    pilot_job_name="job-first",
+                    state="placed",
+                ),
+                PilotReplica(
+                    name="dep-a/replica/two",
+                    pilot_deployment_name="dep-a",
+                    pilot_job_name="job-first",
+                    state="placed",
+                ),
+                PilotReplica(
+                    name="dep-b/replica/one",
+                    pilot_deployment_name="dep-b",
+                    pilot_job_name="job-first",
+                    state="placed",
+                ),
+            ]
+        )
+
+    async with db() as sess:
+        first_job = await sess.get(PilotJob, first_uid)
+    assert first_job is not None
+
+    observer = _make_observer(db)
+    exiting = JobStatusInfo(
+        id="first.pbs",
+        name="__FIRST_PILOT_job-first",
+        state=SchedulerJobState.exiting,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+    )
+    await observer._update_job(first_job, exiting)
+    # Repeat with the intentionally stale object, then advance exiting -> gone.
+    # The locked current row is the exactly-once guard, not caller freshness.
+    await observer._update_job(first_job, exiting)
+    await observer._update_job(first_job, None)
+
+    async with db() as sess:
+        dep_a = await PilotDeployment.get_by_name(sess, "dep-a")
+        dep_b = await PilotDeployment.get_by_name(sess, "dep-b")
+        first_job_current = await sess.get(PilotJob, first_uid)
+        assert dep_a.consecutive_launch_failures == 1
+        assert dep_b.consecutive_launch_failures == 1
+        assert first_job_current is not None
+        assert first_job_current.scheduler_state == SchedulerJobState.gone.value
+
+    # A single fresh replacement allocation for dep-a fails the same way.  It
+    # is charged once and moves 1 -> 2; repeat observation remains idempotent.
+    async with db.begin() as sess:
+        second_uid = await _insert_pilot_job(
+            sess,
+            "job-replacement",
+            "replacement.pbs",
+            state=SchedulerJobState.running,
+        )
+        sess.add(
+            PilotReplica(
+                name="dep-a/replica/replacement",
+                pilot_deployment_name="dep-a",
+                pilot_job_name="job-replacement",
+                state="placed",
+            )
+        )
+
+    async with db() as sess:
+        replacement = await sess.get(PilotJob, second_uid)
+    assert replacement is not None
+    await observer._update_job(replacement, None)
+    await observer._update_job(replacement, None)
+
+    async with db() as sess:
+        dep_a = await PilotDeployment.get_by_name(sess, "dep-a")
+        dep_b = await PilotDeployment.get_by_name(sess, "dep-b")
+        assert dep_a.consecutive_launch_failures == 2
+        assert dep_a.max_consecutive_launch_failures == 1
+        assert dep_b.consecutive_launch_failures == 1
+
+
+async def test_intentional_or_ready_terminal_job_is_not_charged(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Only an unready, not-already-draining allocation is a launch failure."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_deployment_parents(sess)
+        await _insert_deployment(sess, "dep-a")
+        ready_uid = await _insert_pilot_job(
+            sess,
+            "job-was-ready",
+            "ready.pbs",
+            state=SchedulerJobState.running,
+            manager_url="https://10.0.0.1/control",
+        )
+        draining_uid = await _insert_pilot_job(
+            sess,
+            "job-draining",
+            "draining.pbs",
+            state=SchedulerJobState.running,
+        )
+        draining = await sess.get(PilotJob, draining_uid)
+        assert draining is not None
+        draining.scheduled_deletion_at = NOW
+        sess.add_all(
+            [
+                PilotReplica(
+                    name="dep-a/replica/ready",
+                    pilot_deployment_name="dep-a",
+                    pilot_job_name="job-was-ready",
+                    state="ready",
+                ),
+                PilotReplica(
+                    name="dep-a/replica/draining",
+                    pilot_deployment_name="dep-a",
+                    pilot_job_name="job-draining",
+                    state="placed",
+                ),
+            ]
+        )
+
+    observer = _make_observer(db)
+    async with db() as sess:
+        ready = await sess.get(PilotJob, ready_uid)
+        draining = await sess.get(PilotJob, draining_uid)
+    assert ready is not None and draining is not None
+    await observer._update_job(ready, None)
+    await observer._update_job(draining, None)
+
+    async with db() as sess:
+        dep = await PilotDeployment.get_by_name(sess, "dep-a")
+        assert dep.consecutive_launch_failures == 0
 
 
 async def test_cluster_without_pilot_system_skipped(

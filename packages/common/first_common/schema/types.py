@@ -172,6 +172,7 @@ class PilotConfig(BaseModel):
     nginx_path: Path
     ip_allowlist: list[str]
     node_file_env: str
+    pals_path: Path | None = None
     submit_script_preamble: str
     pilot_path: Path
     job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
@@ -251,8 +252,8 @@ class DemandThresholdStrategy(BaseModel):
 
 class ScriptTemplateContext(TypedDict):
     """
-    Variables made available to `PilotLaunchSpec.serve_script_template` when it
-    is rendered.
+    Variables made available to the `PilotLaunchSpec` serve and pre-stop script
+    templates when they are rendered.
 
     The single source of truth for what a Jinja template author may reference.
     """
@@ -326,21 +327,34 @@ class PilotLaunchSpec(BaseModel):
 
     serve_script_template: str
 
+    pre_stop_script_template: str | None = None
+    """
+    Optional cooperative-quiesce script run before process-group termination on
+    a normal controller stop. It receives the same strict template context as
+    `serve_script_template`.
+    """
+    pre_stop_timeout_sec: float = Field(default=20.0, gt=0, le=25.0)
+    """Hard deadline for the optional pre-stop script, in seconds."""
+
     max_startup_sec: int
+    max_unhealthy_sec: int | None = Field(default=None, gt=0)
+    """Post-readiness unhealthy deadline; defaults to `max_startup_sec`."""
     health_check: HealthCheckParams
 
-    @field_validator("serve_script_template")
+    @field_validator("serve_script_template", "pre_stop_script_template")
     @classmethod
-    def _check_template_variables(cls, v: str) -> str:
+    def _check_template_variables(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         try:
             ast = Environment().parse(v)
         except TemplateSyntaxError as e:
-            raise ValueError(f"serve_script_template is not valid Jinja2: {e}") from e
+            raise ValueError(f"script template is not valid Jinja2: {e}") from e
         used = meta.find_undeclared_variables(ast)
         unknown = used - SCRIPT_TEMPLATE_VARIABLES
         if unknown:
             raise ValueError(
-                f"serve_script_template references unknown variables: "
+                f"script template references unknown variables: "
                 f"{sorted(unknown)}. Allowed: {sorted(SCRIPT_TEMPLATE_VARIABLES)}"
             )
         return v

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Self
 
 import yaml
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .types import GpuClaim, PilotLaunchSpec, ReplicaState
@@ -121,6 +121,9 @@ class PilotRuntimeConfig(BaseSettings):
     ip_allowlist: list[str]
     workdir: Path
     node_file_env: str
+    pals_path: Path | None = None
+    num_nodes: int = Field(ge=1)
+    gpus_per_node: int = Field(ge=1)
     job_name: str
 
     @property
@@ -152,4 +155,21 @@ class PilotRuntimeConfig(BaseSettings):
         """
         yaml_path = os.environ["PILOT_CONFIG_FILE"]
         config_raw = yaml.safe_load(Path(yaml_path).read_text())
+        if not isinstance(config_raw, dict):
+            raise ValueError("pilot runtime config must be a YAML mapping")
+
+        # These values are allocation-specific.  GraphQL schedulers cannot stage
+        # a fresh config file per job, so PilotSubmitter supplies authoritative
+        # values through the command environment.  Override any stale values in
+        # the pre-baked config rather than allowing them to describe a different
+        # allocation.
+        for field_name in (
+            "job_name",
+            "pals_path",
+            "num_nodes",
+            "gpus_per_node",
+        ):
+            env_name = f"PILOT_{field_name.upper()}"
+            if env_name in os.environ:
+                config_raw[field_name] = os.environ[env_name]
         return cls.model_validate(config_raw)
