@@ -41,19 +41,28 @@ services:
       - "9090:9090"
     networks:
       - gateway
+    depends_on:
+      tunnel:
+        condition: service_healthy
     environment:
-      - ALL_PROXY=socks5h://host.docker.internal:1080
-      - HTTPS_PROXY=socks5h://host.docker.internal:1080
-      - HTTP_PROXY=socks5h://host.docker.internal:1080
+      - ALL_PROXY=socks5h://tunnel:1080
+      - HTTPS_PROXY=socks5h://tunnel:1080
+      - HTTP_PROXY=socks5h://tunnel:1080
       - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
 
   controller-manager:
+    depends_on:
+      tunnel:
+        condition: service_healthy
     environment:
-      - ALL_PROXY=socks5h://host.docker.internal:1080
+      - ALL_PROXY=socks5h://tunnel:1080
 
   inference-gateway:
+    depends_on:
+      tunnel:
+        condition: service_healthy
     environment:
-      - ALL_PROXY=socks5h://host.docker.internal:1080
+      - ALL_PROXY=socks5h://tunnel:1080
 
   grafana:
     image: grafana/grafana:latest
@@ -71,6 +80,33 @@ services:
     networks:
       - gateway
 
+  tunnel:
+  # docker compose up -d, then docker compose attach tunnel to get the OTP
+  # prompt, type the token, then detach with Ctrl-p Ctrl-q (leaves it running).
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.tunnel
+    command:
+      - ssh
+      - -N
+      - -D
+      - 0.0.0.0:1080
+      - -o
+      - ExitOnForwardFailure=yes
+      - -o
+      - ServerAliveInterval=30
+      - -o
+      - StrictHostKeyChecking=accept-new
+      - msalim@bastion.alcf.anl.gov
+    stdin_open: true # so you can type the OTP
+    tty: true
+    restart: "no"       # important: auto-restart would hang waiting for OTP
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "1080"]
+      interval: 5s
+      retries: 60
+    networks:
+      - gateway
 
 volumes:
   grafana-storage:
