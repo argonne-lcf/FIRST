@@ -44,13 +44,25 @@ def frozen_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[dict[str, Any], None, None]:
     uid, gid = os.geteuid(), os.getegid()
-    monkeypatch.setattr(runtime_identity_module, "_service_ids", lambda: (uid, gid))
+    first_commit = "1" * 40
+    envs_root = tmp_path / "envs"
+    profile = runtime_identity_module._ControlRuntimeProfile(
+        service_user="fixture-user",
+        service_group="fixture-group",
+        envs_root=envs_root,
+    )
+    monkeypatch.setattr(
+        runtime_identity_module, "_CONTROL_RUNTIME_PROFILES", (profile,)
+    )
+    monkeypatch.setattr(
+        runtime_identity_module, "_service_ids", lambda _profile: (uid, gid)
+    )
     monkeypatch.setattr(runtime_identity_module, "_PYTHON_UID", uid)
     monkeypatch.setattr(runtime_identity_module, "_PYTHON_GID", gid)
 
     external_python = tmp_path / "python3.12"
     _write(external_python, b"frozen external python\n", 0o755)
-    runtime = tmp_path / "runtime"
+    runtime = envs_root / f"firstv2-{first_commit}-py312"
     source = runtime / "lib/python3.12/site-packages/first_gateway/runtime_identity.py"
     apply = runtime / "bin/firstv2-authoritative-apply"
     source_payload = b"# frozen runtime identity module\n"
@@ -89,9 +101,12 @@ def frozen_runtime(
         "schema_version": "1",
         "runtime_kind": "sophia-firstv2-control-plane",
         "runtime_status": "published",
-        "first_commit": "1" * 40,
+        "first_commit": first_commit,
         "deployment_commit": "2" * 40,
         "runtime_manifest_sha256": _digest(manifest_payload),
+        "service_user": profile.service_user,
+        "service_group": profile.service_group,
+        "runtime_root": str(runtime),
         "gateway_entrypoint": "first_gateway.apiserver.api:app",
         "controller_entrypoint": "first_gateway.controllers.manager",
         "admin_entrypoint": "alcf_ai:main",
@@ -239,16 +254,110 @@ def test_runtime_identity_rejects_wrong_mode_and_hardlink(
         load_runtime_identity("gateway")
 
 
-def test_runtime_identity_rejects_wrong_owner_group(
+@pytest.mark.parametrize("identity_offset", [(1, 0), (0, 1)])
+def test_runtime_identity_rejects_wrong_owner_or_group(
+    frozen_runtime: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    identity_offset: tuple[int, int],
+) -> None:
+    uid_offset, gid_offset = identity_offset
+    monkeypatch.setattr(
+        runtime_identity_module,
+        "_require_executing_service",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runtime_identity_module,
+        "_service_ids",
+        lambda _profile: (os.geteuid() + uid_offset, os.getegid() + gid_offset),
+    )
+    with pytest.raises(RuntimeIdentityError, match="directory identity differs"):
+        load_runtime_identity("gateway")
+
+
+def test_runtime_identity_rejects_wrong_execution_identity(
     frozen_runtime: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
         runtime_identity_module,
         "_service_ids",
-        lambda: (os.geteuid(), os.getegid() + 1),
+        lambda _profile: (os.geteuid() + 1, os.getegid()),
     )
-    with pytest.raises(RuntimeIdentityError, match="directory identity differs"):
+    with pytest.raises(RuntimeIdentityError, match="service identity differs"):
         load_runtime_identity("gateway")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"service_user": "openinference_svc"},
+        {"service_group": "inference_service"},
+        {"runtime_root": "/home/webportal/inference-gateway"},
+    ],
+)
+def test_runtime_identity_rejects_wrong_control_profile_fields(
+    frozen_runtime: dict[str, Any], override: dict[str, str]
+) -> None:
+    frozen_runtime["publish"](override)
+    with pytest.raises(RuntimeIdentityError, match="values differ"):
+        load_runtime_identity("gateway")
+
+
+def test_runtime_identity_rejects_nonexact_runtime_path(
+    frozen_runtime: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "prefix", f"{frozen_runtime['runtime']}/")
+    with pytest.raises(RuntimeIdentityError, match="path is not exact"):
+        load_runtime_identity("gateway")
+
+
+@pytest.mark.parametrize(
+    ("runtime_root", "service_user", "service_group"),
+    [
+        (
+            "/vast/draco/tara/projects/Tara_Deployment/inference_service/envs",
+            "openinference_svc",
+            "inference_service",
+        ),
+        (
+            "/home/webportal/firstv2-tara-runtime/envs",
+            "webportal",
+            "webportal",
+        ),
+    ],
+)
+def test_control_profile_allows_only_reviewed_namespaces(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_root: str,
+    service_user: str,
+    service_group: str,
+) -> None:
+    commit = "a" * 40
+    runtime = Path(runtime_root) / f"firstv2-{commit}-py312"
+    monkeypatch.setattr(sys, "prefix", str(runtime))
+
+    profile, observed_commit = runtime_identity_module._select_control_profile(runtime)
+
+    assert observed_commit == commit
+    assert profile.service_user == service_user
+    assert profile.service_group == service_group
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        "/home/webportal/inference-gateway/.venv",
+        "/home/webportal/FIRST-v2-tara/.venv",
+        "/home/webportal/firstv2-tara-runtime/envs/firstv2-not-a-commit-py312",
+        "/tmp/firstv2-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-py312",
+    ],
+)
+def test_control_profile_rejects_v1_checkout_and_unreviewed_paths(
+    monkeypatch: pytest.MonkeyPatch, runtime: str
+) -> None:
+    monkeypatch.setattr(sys, "prefix", runtime)
+    with pytest.raises(RuntimeIdentityError, match="path is not approved"):
+        runtime_identity_module._select_control_profile(Path(runtime))
 
 
 def test_runtime_identity_rejects_special_entry_and_symlink_change(

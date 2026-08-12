@@ -9,14 +9,13 @@ import pwd
 import re
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
-_SERVICE_USER = "openinference_svc"
-_SERVICE_GROUP = "inference_service"
 _PYTHON_UID = 0
 _PYTHON_GID = 0
 _HEX40 = re.compile(r"[0-9a-f]{40}")
@@ -30,6 +29,9 @@ _IDENTITY_KEYS = frozenset(
         "first_commit",
         "deployment_commit",
         "runtime_manifest_sha256",
+        "service_user",
+        "service_group",
+        "runtime_root",
         "gateway_entrypoint",
         "controller_entrypoint",
         "admin_entrypoint",
@@ -51,6 +53,33 @@ _MANIFEST_EXEMPT = frozenset(
     }
 )
 _PYTHON_LAUNCHERS = frozenset({"bin/python", "bin/python3", "bin/python3.12"})
+
+
+@dataclass(frozen=True)
+class _ControlRuntimeProfile:
+    service_user: str
+    service_group: str
+    envs_root: Path
+
+
+# These are the only reviewed identities and namespaces allowed to execute the
+# frozen control plane.  In particular, the webportal exception applies only
+# to the isolated development-VM namespace; it does not alter the Tara pilot
+# identity enforced by first_pilot.runtime_identity.
+_CONTROL_RUNTIME_PROFILES = (
+    _ControlRuntimeProfile(
+        service_user="openinference_svc",
+        service_group="inference_service",
+        envs_root=Path(
+            "/vast/draco/tara/projects/Tara_Deployment/inference_service/envs"
+        ),
+    ),
+    _ControlRuntimeProfile(
+        service_user="webportal",
+        service_group="webportal",
+        envs_root=Path("/home/webportal/firstv2-tara-runtime/envs"),
+    ),
+)
 
 
 class RuntimeIdentityError(RuntimeError):
@@ -80,16 +109,45 @@ def _digest(path: Path) -> str:
     return value.hexdigest()
 
 
-def _service_ids() -> tuple[int, int]:
+def _select_control_profile(
+    runtime: Path,
+) -> tuple[_ControlRuntimeProfile, str]:
+    raw_runtime = os.fspath(sys.prefix)
+    if not runtime.is_absolute() or str(runtime) != raw_runtime:
+        raise RuntimeIdentityError("executing runtime path is not exact")
+
+    match = re.fullmatch(r"firstv2-([0-9a-f]{40})-py312", runtime.name)
+    if match is None:
+        raise RuntimeIdentityError("executing runtime path is not approved")
+    first_commit = match.group(1)
+    for profile in _CONTROL_RUNTIME_PROFILES:
+        expected = profile.envs_root / f"firstv2-{first_commit}-py312"
+        if runtime == expected:
+            return profile, first_commit
+    raise RuntimeIdentityError("executing runtime path is not approved")
+
+
+def _service_ids(profile: _ControlRuntimeProfile) -> tuple[int, int]:
     try:
         return (
-            pwd.getpwnam(_SERVICE_USER).pw_uid,
-            grp.getgrnam(_SERVICE_GROUP).gr_gid,
+            pwd.getpwnam(profile.service_user).pw_uid,
+            grp.getgrnam(profile.service_group).gr_gid,
         )
     except KeyError as exc:
         raise RuntimeIdentityError(
-            "production service identity does not resolve"
+            "control-plane service identity does not resolve"
         ) from exc
+
+
+def _require_executing_service(*, uid: int, gid: int) -> None:
+    try:
+        process_groups = {os.getegid(), *os.getgroups()}
+    except OSError as exc:
+        raise RuntimeIdentityError(
+            "executing control-plane service identity is unreadable"
+        ) from exc
+    if os.geteuid() != uid or gid not in process_groups:
+        raise RuntimeIdentityError("executing control-plane service identity differs")
 
 
 def _require_directory(path: Path, *, uid: int, gid: int) -> None:
@@ -351,12 +409,17 @@ def load_runtime_identity(
     Deliberately uncached: the service-owned runtime is writable by its owner,
     so a prior successful check cannot be reused as current integrity proof.
     """
-    uid, gid = _service_ids()
     runtime_raw = Path(sys.prefix)
-    if not runtime_raw.is_absolute():
-        raise RuntimeIdentityError("executing runtime path is not absolute")
+    profile, path_commit = _select_control_profile(runtime_raw)
+    uid, gid = _service_ids(profile)
+    _require_executing_service(uid=uid, gid=gid)
     _require_directory(runtime_raw, uid=uid, gid=gid)
-    runtime = runtime_raw.resolve()
+    try:
+        runtime = runtime_raw.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeIdentityError("executing runtime path is unreadable") from exc
+    if runtime != runtime_raw:
+        raise RuntimeIdentityError("executing runtime path is not canonical")
     _require_directory(runtime / "bin", uid=uid, gid=gid)
 
     identity_path = runtime / "FIRST_CONTROL_RUNTIME_IDENTITIES"
@@ -410,9 +473,13 @@ def load_runtime_identity(
         or values["runtime_kind"] != "sophia-firstv2-control-plane"
         or values["runtime_status"] != "published"
         or _HEX40.fullmatch(values["first_commit"]) is None
+        or values["first_commit"] != path_commit
         or _HEX40.fullmatch(values["deployment_commit"]) is None
         or _HEX64.fullmatch(values["runtime_manifest_sha256"]) is None
         or values["runtime_manifest_sha256"] != hashlib.sha256(manifest_raw).hexdigest()
+        or values["service_user"] != profile.service_user
+        or values["service_group"] != profile.service_group
+        or values["runtime_root"] != str(runtime)
         or values["gateway_entrypoint"] != "first_gateway.apiserver.api:app"
         or values["controller_entrypoint"] != "first_gateway.controllers.manager"
         or values["admin_entrypoint"] != "alcf_ai:main"
