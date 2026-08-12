@@ -1,0 +1,18 @@
+[Unit]
+Description=First V2 -> V1 endpoint registration bridge (sidecar)
+After=network.target
+
+[Service]
+User=webportal
+Group=webportal
+WorkingDirectory=/home/webportal/inference-gateway
+Environment=PATH=/home/webportal/inference-gateway/.venv/bin/
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/webportal/inference-gateway/.venv/bin/python manage.py first_v2_bridge
+KillMode=mixed
+TimeoutStopSec=5
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
