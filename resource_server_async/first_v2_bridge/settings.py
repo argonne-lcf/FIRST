@@ -5,7 +5,10 @@ PrefixMap = dict[str, tuple[str, str]]
 
 
 def _default_prefix_map() -> PrefixMap:
-    return {"tara/": ("tara", "api")}
+    return {
+        "tara/": ("tara", "api"),
+        "tara-production/": ("tara", "api"),
+    }
 
 
 class BridgeSettings:

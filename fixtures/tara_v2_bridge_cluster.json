@@ -1,0 +1,21 @@
+[
+    {
+        "model": "resource_server_async.cluster",
+        "pk": 100,
+        "fields": {
+            "cluster_name": "tara",
+            "cluster_adapter": "resource_server_async.clusters.tara.TaraCluster",
+            "frameworks": [
+                "api"
+            ],
+            "openai_endpoints": [
+                "chat/completions",
+                "completions",
+                "embeddings"
+            ],
+            "allowed_globus_groups": [],
+            "allowed_domains": [],
+            "config": {}
+        }
+    }
+]
