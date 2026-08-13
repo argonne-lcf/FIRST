@@ -182,7 +182,7 @@ class PilotConfig(BaseModel):
     pals_path: Path | None = None
     submit_script_preamble: str
     pilot_path: Path
-    job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
+    job_name_prefix: str = Field("FIRST_PILOT_", pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
 
     # Path to PilotRuntimeConfig YAML already present on the target
     # filesystem. Used by adapters that cannot write files (e.g. GraphQLPBSAdapter)

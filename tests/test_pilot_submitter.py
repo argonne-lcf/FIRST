@@ -4,6 +4,7 @@ from typing import Any, Self
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
@@ -84,6 +85,34 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
             "pilot_path": "/test/first-pilot",
         }
     )
+
+
+def test_pilot_job_name_prefix_accepts_pbs_safe_tara_prefix(
+    pilot_config: PilotConfig,
+) -> None:
+    config = PilotConfig.model_validate(
+        pilot_config.model_dump() | {"job_name_prefix": "first-pilot-tara-prod-"}
+    )
+
+    assert config.job_name_prefix == "first-pilot-tara-prod-"
+
+
+@pytest.mark.parametrize(
+    "job_name_prefix",
+    [
+        "__FIRST_PILOT_TARA_PROD_",
+        "1-first-pilot",
+        "first.pilot",
+        "first pilot",
+    ],
+)
+def test_pilot_job_name_prefix_rejects_non_pbs_safe_values(
+    pilot_config: PilotConfig, job_name_prefix: str
+) -> None:
+    with pytest.raises(ValidationError, match="job_name_prefix"):
+        PilotConfig.model_validate(
+            pilot_config.model_dump() | {"job_name_prefix": job_name_prefix}
+        )
 
 
 def _make_pilot_job(name: str) -> PilotJob:
