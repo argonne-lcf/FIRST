@@ -14,13 +14,11 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from prometheus_client import make_asgi_app
 
 from first_gateway.runtime_identity import RuntimeIdentity, load_runtime_identity
+from first_gateway.settings import CONTROLLER_METRICS_PORT
 
 from .worker import Worker
 
 logger = logging.getLogger(__name__)
-
-METRICS_HOST = "0.0.0.0"
-METRICS_PORT = 9100
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/metrics", make_asgi_app())
@@ -80,14 +78,14 @@ def _get_restart_count(worker_name: str) -> float:
         return 0
 
 
-async def serve(workers: list[Worker]) -> None:
+async def serve(workers: list[Worker], *, host: str) -> None:
     _workers.clear()
     _workers.extend(workers)
 
     config = uvicorn.Config(
         app,
-        host=METRICS_HOST,
-        port=METRICS_PORT,
+        host=host,
+        port=CONTROLLER_METRICS_PORT,
         log_level="warning",
     )
     server = uvicorn.Server(config)

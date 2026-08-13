@@ -86,7 +86,15 @@ class ControllerManager:
         tasks.append(
             asyncio.create_task(self.dispatcher.run(), name="wakeup-dispatcher")
         )
-        tasks.append(asyncio.create_task(serve_metrics(workers), name="metrics-server"))
+        tasks.append(
+            asyncio.create_task(
+                serve_metrics(
+                    workers,
+                    host=str(self.client_state.settings.controller_metrics_host),
+                ),
+                name="metrics-server",
+            )
+        )
 
         await self._shutdown.wait()
         logger.info("shutdown requested; cancelling tasks")
