@@ -97,10 +97,22 @@ def test_pilot_job_name_prefix_accepts_pbs_safe_tara_prefix(
     assert config.job_name_prefix == "first-pilot-tara-prod-"
 
 
+def test_pilot_job_name_prefix_accepts_exact_legacy_tara_prefix_for_migration(
+    pilot_config: PilotConfig,
+) -> None:
+    config = PilotConfig.model_validate(
+        pilot_config.model_dump() | {"job_name_prefix": "__FIRST_PILOT_TARA_PROD_"}
+    )
+
+    assert config.job_name_prefix == "__FIRST_PILOT_TARA_PROD_"
+
+
 @pytest.mark.parametrize(
     "job_name_prefix",
     [
-        "__FIRST_PILOT_TARA_PROD_",
+        "__FIRST_PILOT_",
+        "__FIRST_PILOT_TARA_DEV_",
+        "_first-pilot",
         "1-first-pilot",
         "first.pilot",
         "first pilot",
