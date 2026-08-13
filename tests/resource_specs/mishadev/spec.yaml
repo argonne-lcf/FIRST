@@ -211,6 +211,7 @@ spec:
       VLLM_ATTENTION_BACKEND: TRITON_ATTN
       HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
       HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+      VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
 
     serve_script_template: |
       ulimit -c unlimited
@@ -280,6 +281,7 @@ spec:
       HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
       HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
       TIKTOKEN_ENCODINGS_BASE: /vast/draco/tara/projects/Tara_Deployment/inference_service/weights/tiktoken_encodings
+      VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
 
     serve_script_template: |
       source {{venv_path}}/bin/activate

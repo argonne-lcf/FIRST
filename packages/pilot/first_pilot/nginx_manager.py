@@ -18,21 +18,42 @@ _conf_template_str = """
     worker_processes 2;
 
     events {
-        worker_connections 2048;
+        worker_connections 4096;
+        multi_accept on;
     }
 
     pid {{nginx_tmpdir}}/nginx.pid;
-    error_log {{nginx_tmpdir}}/nginx-error.log;
+    error_log {{nginx_tmpdir}}/nginx-error.log warn;
 
     http {
         # All temp paths must be writable
         client_body_temp_path {{nginx_tmpdir}}/client_body;
         proxy_temp_path {{nginx_tmpdir}}/proxy;
         fastcgi_temp_path {{nginx_tmpdir}}/fastcgi;
-        access_log {{nginx_tmpdir}}/access.log;
+        access_log {{nginx_tmpdir}}/access.log combined buffer=64k flush=5s;
         uwsgi_temp_path {{nginx_tmpdir}}/uwsgi;
         scgi_temp_path {{nginx_tmpdir}}/scgi;
 
+        tcp_nodelay on;                 # push token frames immediately
+        gzip off;                       # never compress SSE (it buffers tokens)
+        reset_timedout_connection on;
+
+        # Gateway-facing keepalive. Must outlive the gateway/httpx idle expiry so
+        # the gateway is always the side that closes an idle connection first.
+        keepalive_timeout  300s;
+        keepalive_requests 10000;
+
+        {% for replica in replicas %}
+        # Pooled connections to the local vLLM replica over its Unix socket.
+        # Keyed by loop index: replica.name contains '/' and '.', invalid in an
+        # upstream identifier. Both loops iterate `replicas` in order, so indices align.
+        upstream replica_{{loop.index}} {
+            server unix:{{replica.uds}};
+            keepalive 32;
+            keepalive_requests 10000;
+            keepalive_timeout 60s;      # < vLLM/uvicorn keep-alive (raise vLLM's; default 5s defeats this)
+        }
+        {% endfor %}
 
         server {
             listen {{config.external_port}} ssl;
@@ -45,6 +66,10 @@ _conf_template_str = """
             ssl_client_certificate {{ca_crt_path}};
             ssl_verify_client on;
             ssl_verify_depth 1;
+
+            # Prompts can be MBs of JSON; keep them out of disk spool.
+            client_max_body_size    32m;
+            client_body_buffer_size 1m;
 
             location {{control_path}} {
                 {% for ip in config.ip_allowlist -%}
@@ -62,7 +87,23 @@ _conf_template_str = """
                 {% endfor -%}
                 allow 127.0.0.1;
                 deny all;
-                proxy_pass http://unix:{{replica.uds}}:/;
+                proxy_pass http://replica_{{loop.index}}/;
+
+                # Upstream keepalive prerequisites
+                proxy_http_version 1.1;
+                proxy_set_header Connection "";
+
+                # Streaming correctness: relay tokens the instant they arrive
+                proxy_buffering off;
+                proxy_request_buffering off;
+
+                # Timeouts sit ABOVE the gateway's so the gateway times out first
+                proxy_connect_timeout 5s;
+                proxy_send_timeout    60s;
+                proxy_read_timeout    920s;
+
+                proxy_socket_keepalive on;
+                proxy_next_upstream off;
             }
             {% endfor %}
         }
