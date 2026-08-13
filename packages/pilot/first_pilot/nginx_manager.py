@@ -36,7 +36,7 @@ _conf_template_str = """
 
         server {
             listen {{config.external_port}} ssl;
-            ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_protocols TLSv1.3;
             server_name _;
             ssl_certificate {{server_crt_path}};
             ssl_certificate_key {{server_key_path}};
