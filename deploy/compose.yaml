@@ -2,7 +2,7 @@ services:
   nginx:
     image: nginx:latest
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ../packages/admin-console/dist:/usr/share/nginx/html/admin-console:ro
@@ -41,7 +41,7 @@ services:
     env_file: *env-files
     command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
     ports:
-      - "9100:9100"
+      - "127.0.0.1:9100:9100"
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,13 +63,15 @@ services:
     networks:
       - gateway
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5433:5432"
     restart: unless-stopped
 
   redis:
     image: redis:8
     command:
       - redis-server
+      - --port
+      - "6380"
       - --appendonly yes
       - --appendfsync everysec
       - --latency-monitor-threshold 10
@@ -80,12 +82,12 @@ services:
       - gateway
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-u", "redis://127.0.0.1:6380", "ping"]
       interval: 5s
       timeout: 3s
       retries: 3
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6380:6380"
 
   dozzle:
     container_name: dozzle
@@ -94,7 +96,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - dozzle_data:/data
     ports:
-      - 8080:8080
+      - "127.0.0.1:8080:8080"
 
 networks:
   gateway:
