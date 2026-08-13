@@ -61,20 +61,20 @@ async def _apply(
 
 
 @pytest.fixture
-async def baseline_plan(client: httpx.AsyncClient) -> ResourceChangePlan:
+async def baseline_plan(control_client: httpx.AsyncClient) -> ResourceChangePlan:
     """Apply the baseline spec and return the resulting plan."""
     resources = _load("baseline")
-    plan = await _plan(client, resources)
-    await _apply(client, resources, plan)
+    plan = await _plan(control_client, resources)
+    await _apply(control_client, resources, plan)
     return plan
 
 
 async def test_no_changes(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     """Re-submitting the baseline produces a plan with everything in no_change."""
     resources = _load("baseline")
-    plan = await _plan(client, resources)
+    plan = await _plan(control_client, resources)
 
     assert plan.previous_version == baseline_plan.previous_version + 1
     assert len(plan.no_change) == 5
@@ -83,15 +83,15 @@ async def test_no_changes(
     assert plan.to_update == []
 
     # Applying a no-change plan is a no-op (200, no error)
-    await _apply(client, resources, plan)
+    await _apply(control_client, resources, plan)
 
 
 async def test_additions(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     """Adding new resources shows them in to_add; existing resources stay in no_change."""
     resources = _load("additions")
-    plan = await _plan(client, resources)
+    plan = await _plan(control_client, resources)
 
     # 5 baseline resources unchanged + 4 new
     assert len(plan.no_change) == 5
@@ -106,12 +106,12 @@ async def test_additions(
     assert "PilotDeployment" in added_kinds
 
     # Apply and verify version bumps
-    result = await _apply(client, resources, plan)
+    result = await _apply(control_client, resources, plan)
     assert result is not None
     assert result.uid == baseline_plan.previous_version + 2
 
     # Re-plan after apply: everything should be no_change now
-    plan2 = await _plan(client, resources)
+    plan2 = await _plan(control_client, resources)
     assert len(plan2.no_change) == 9
     assert plan2.to_add == []
     assert plan2.to_delete == []
@@ -119,11 +119,11 @@ async def test_additions(
 
 
 async def test_deletions(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     """Removing resources shows them in to_delete."""
     resources = _load("deletions")
-    plan = await _plan(client, resources)
+    plan = await _plan(control_client, resources)
 
     # 3 resources remain unchanged (AccessGroup, Cluster, Model)
     assert len(plan.no_change) == 3
@@ -136,12 +136,12 @@ async def test_deletions(
     assert "sophia/pilot/llama-3-8b" in deleted_names
 
     # Apply and verify
-    result = await _apply(client, resources, plan)
+    result = await _apply(control_client, resources, plan)
     assert result is not None
     assert result.uid == baseline_plan.previous_version + 2
 
     # Re-plan: only 3 resources remain
-    plan2 = await _plan(client, resources)
+    plan2 = await _plan(control_client, resources)
     assert len(plan2.no_change) == 3
     assert plan2.to_add == []
     assert plan2.to_delete == []
@@ -149,11 +149,11 @@ async def test_deletions(
 
 
 async def test_updates(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     """Modifying existing resources shows them in to_update."""
     resources = _load("updates")
-    plan = await _plan(client, resources)
+    plan = await _plan(control_client, resources)
 
     # 3 resources unchanged (AccessGroup, Model, PilotDeployment)
     assert len(plan.no_change) == 3
@@ -180,15 +180,15 @@ async def test_updates(
     assert "router_params" in static_patch.patch
 
     # Apply and verify
-    result = await _apply(client, resources, plan)
+    result = await _apply(control_client, resources, plan)
     assert result is not None
     assert result.uid == baseline_plan.previous_version + 2
 
 
-async def test_invalid_reference(client: httpx.AsyncClient) -> None:
+async def test_invalid_reference(control_client: httpx.AsyncClient) -> None:
     """A resource referencing a nonexistent parent returns 400."""
     resources = _load("invalid_ref")
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/plan",
         json={"resources": [r.model_dump(mode="json") for r in resources]},
         headers=auth_header(ADMIN_TOKEN),
@@ -199,10 +199,10 @@ async def test_invalid_reference(client: httpx.AsyncClient) -> None:
     assert "nonexistent-group" in body["error"]["message"]
 
 
-async def test_duplicate_resources(client: httpx.AsyncClient) -> None:
+async def test_duplicate_resources(control_client: httpx.AsyncClient) -> None:
     """Two resources with the same kind+name returns 400."""
     resources = _load("duplicates")
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/plan",
         json={"resources": [r.model_dump(mode="json") for r in resources]},
         headers=auth_header(ADMIN_TOKEN),
@@ -213,7 +213,7 @@ async def test_duplicate_resources(client: httpx.AsyncClient) -> None:
 
 
 async def test_concurrent_update_diverged_plan(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     """
     Applying a stale plan (generated before another apply) raises SpecApplyError.
@@ -222,17 +222,17 @@ async def test_concurrent_update_diverged_plan(
 
     # Step 2: generate a plan for the updates spec.
     updates_resources = _load("updates")
-    plan_updates = await _plan(client, updates_resources)
+    plan_updates = await _plan(control_client, updates_resources)
     assert len(plan_updates.to_update) == 2
 
     # Step 3: apply the additions spec instead (changes the DB state).
     additions_resources = _load("additions")
-    plan_additions = await _plan(client, additions_resources)
-    await _apply(client, additions_resources, plan_additions)
+    plan_additions = await _plan(control_client, additions_resources)
+    await _apply(control_client, additions_resources, plan_additions)
 
     # Step 4: try to apply the stale plan_updates.
     # The actual plan (replanned from current DB) will differ from plan_updates.
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/apply",
         json={
             "resources": [r.model_dump(mode="json") for r in updates_resources],
@@ -398,7 +398,7 @@ async def _create_pilot_replica(
 
 
 async def test_apply_resets_reconcile_state_on_update(
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     db_session: AsyncSession,
     baseline_plan: ResourceChangePlan,
 ) -> None:
@@ -414,11 +414,11 @@ async def test_apply_resets_reconcile_state_on_update(
     assert cluster.reconcile_failures == 5
 
     resources = _load("updates")
-    plan = await _plan(client, resources)
+    plan = await _plan(control_client, resources)
     sophia_patch = next(r for r in plan.to_update if r.name == "sophia")
     assert "maintenance_notice" in sophia_patch.patch
 
-    await _apply(client, resources, plan)
+    await _apply(control_client, resources, plan)
 
     await db_session.refresh(cluster)
     assert cluster.reconcile_failures == 0
@@ -426,7 +426,7 @@ async def test_apply_resets_reconcile_state_on_update(
 
 
 async def test_apply_cascades_reconcile_reset_to_pilot_jobs(
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     db_session: AsyncSession,
     baseline_plan: ResourceChangePlan,
 ) -> None:
@@ -437,8 +437,8 @@ async def test_apply_cascades_reconcile_reset_to_pilot_jobs(
     await db_session.commit()
 
     resources = _load("updates")
-    plan = await _plan(client, resources)
-    await _apply(client, resources, plan)
+    plan = await _plan(control_client, resources)
+    await _apply(control_client, resources, plan)
 
     await db_session.refresh(job)
     assert job.reconcile_failures == 0
@@ -446,7 +446,7 @@ async def test_apply_cascades_reconcile_reset_to_pilot_jobs(
 
 
 async def test_apply_cascades_reconcile_reset_to_pilot_replicas(
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     db_session: AsyncSession,
     baseline_plan: ResourceChangePlan,
 ) -> None:
@@ -463,7 +463,7 @@ async def test_apply_cascades_reconcile_reset_to_pilot_replicas(
     # Instead, just use the reconcile-reset endpoint to test the cascade,
     # and test the apply cascade via the Cluster path above.
     # Actually, let's directly test via the reconcile-reset endpoint.
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/reconcile-reset",
         json={"resource": "PilotDeployment.sophia/pilot/llama-3-8b"},
         headers=auth_header(ADMIN_TOKEN),
@@ -476,7 +476,7 @@ async def test_apply_cascades_reconcile_reset_to_pilot_replicas(
 
 
 async def test_reconcile_reset_endpoint(
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     db_session: AsyncSession,
     baseline_plan: ResourceChangePlan,
 ) -> None:
@@ -488,7 +488,7 @@ async def test_reconcile_reset_endpoint(
     cluster.reconcile_last_error = "persistent failure"
     await db_session.commit()
 
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/reconcile-reset",
         json={"resource": "Cluster.sophia"},
         headers=auth_header(ADMIN_TOKEN),
@@ -502,7 +502,7 @@ async def test_reconcile_reset_endpoint(
 
 
 async def test_reconcile_reset_cascades_to_child_pilot_jobs(
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     db_session: AsyncSession,
     baseline_plan: ResourceChangePlan,
 ) -> None:
@@ -512,7 +512,7 @@ async def test_reconcile_reset_cascades_to_child_pilot_jobs(
     job.reconcile_last_error = "scheduler unreachable"
     await db_session.commit()
 
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/reconcile-reset",
         json={"resource": "Cluster.sophia"},
         headers=auth_header(ADMIN_TOKEN),
@@ -525,10 +525,10 @@ async def test_reconcile_reset_cascades_to_child_pilot_jobs(
 
 
 async def test_reconcile_reset_not_found(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
     """Resetting a nonexistent resource returns 404."""
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/reconcile-reset",
         json={"resource": "Cluster.nonexistent"},
         headers=auth_header(ADMIN_TOKEN),
@@ -536,16 +536,16 @@ async def test_reconcile_reset_not_found(
     assert resp.status_code == 404
 
 
-async def test_reconcile_reset_bad_format(client: httpx.AsyncClient) -> None:
+async def test_reconcile_reset_bad_format(control_client: httpx.AsyncClient) -> None:
     """Malformed resource identifier returns 400."""
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/reconcile-reset",
         json={"resource": "no-dot-here"},
         headers=auth_header(ADMIN_TOKEN),
     )
     assert resp.status_code == 400
 
-    resp = await client.post(
+    resp = await control_client.post(
         "/control/v1/reconcile-reset",
         json={"resource": "FakeKind.name"},
         headers=auth_header(ADMIN_TOKEN),

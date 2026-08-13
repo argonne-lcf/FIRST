@@ -54,12 +54,18 @@ async def test_clusters_rejects_missing_credentials(
     assert resp.status_code == 401
 
 
-async def test_plan_forbidden_for_non_admin(client: httpx.AsyncClient) -> None:
+async def test_plan_forbidden_for_non_admin(
+    control_client: httpx.AsyncClient,
+) -> None:
     # Authenticated, but not in the admin group -> 403 from check_permission.
-    resp = await client.post("/control/v1/plan", headers=auth_header(USER_TOKEN))
+    resp = await control_client.post(
+        "/control/v1/plan", headers=auth_header(USER_TOKEN)
+    )
     assert resp.status_code == 403
 
-    resp = await client.post("/control/v1/apply", headers=auth_header(USER_TOKEN))
+    resp = await control_client.post(
+        "/control/v1/apply", headers=auth_header(USER_TOKEN)
+    )
     assert resp.status_code == 403
 
 

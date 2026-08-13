@@ -7,8 +7,8 @@ import uvloop
 from first_gateway.log_config import config_logging
 
 from ..settings import ClientState, Settings
+from .control_server import serve as serve_control
 from .lease import ManagerLease
-from .metrics_server import serve as serve_metrics
 from .wakeup import WakeupDispatcher
 from .worker import Worker
 from .workers.autoscaler import PilotAutoscaler
@@ -86,7 +86,11 @@ class ControllerManager:
         tasks.append(
             asyncio.create_task(self.dispatcher.run(), name="wakeup-dispatcher")
         )
-        tasks.append(asyncio.create_task(serve_metrics(workers), name="metrics-server"))
+        tasks.append(
+            asyncio.create_task(
+                serve_control(workers, self.client_state), name="control-server"
+            )
+        )
 
         await self._shutdown.wait()
         logger.info("shutdown requested; cancelling tasks")

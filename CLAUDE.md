@@ -18,6 +18,7 @@ Postgres correctly before `make test`.
 - To run the gateway stack locally, use `make compose-up`. Then test it at http://localhost:8000.
 - Point the CLI tool at your local stack to test end-to-end: `alcf-ai --base-url http://localhost:8000 admin audit`
 - Use `docker compose ps` and `docker compose logs <SERVICE> --since=1m` to view service logs
+- Get an access token with `token=$(alcf-ai auth get-access-token)`. If this fails, ask the user to refresh their login and try again.
 
 # Agent Instructions
 - Feel free to work autonomously within this repo.  Do not touch files outside of this project root directory.

@@ -27,10 +27,12 @@ async def redis() -> AsyncGenerator[Redis, None]:
 
 
 @pytest.fixture
-async def baseline(client: httpx.AsyncClient) -> None:
+async def baseline(control_client: httpx.AsyncClient) -> None:
+    # Seeding goes through the control plane, which now lives on the localhost-only
+    # control server; the tests below read it back via the apiserver ``client``.
     resources = _load("baseline")
-    plan = await _plan(client, resources)
-    await _apply(client, resources, plan)
+    plan = await _plan(control_client, resources)
+    await _apply(control_client, resources, plan)
 
 
 async def _get_models(client: httpx.AsyncClient) -> list[dict[str, Any]]:

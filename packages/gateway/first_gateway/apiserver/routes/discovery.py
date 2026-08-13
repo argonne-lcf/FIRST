@@ -3,7 +3,8 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from ..dependencies import RouterConfigDep
+from ...database.redis.router_config import RouterConfig
+from ..dependencies import AppState
 
 router = APIRouter(prefix="/discovery/v1")
 
@@ -17,7 +18,7 @@ class PrometheusTarget(BaseModel):
 
 @router.get("/prometheus", response_model=list[PrometheusTarget])
 async def prometheus_service_discovery(
-    config: RouterConfigDep,
+    state: AppState,
 ) -> list[PrometheusTarget]:
     """Prometheus HTTP Service Discovery endpoint for live model backends.
 
@@ -34,6 +35,8 @@ async def prometheus_service_discovery(
     """
     seen: set[str] = set()
     targets: list[PrometheusTarget] = []
+
+    config = await RouterConfig.load(state.redis)
 
     for model in config.models:
         for dep in model.deployments:

@@ -113,7 +113,7 @@ async def client(
     mock_globus: None,
 ) -> AsyncGenerator[httpx.AsyncClient, None]:
     """
-    An httpx client bound to the FastAPI app, with its lifespan run.
+    An httpx client bound to the user-facing apiserver app, with its lifespan run.
 
     Relies on db and mock_globus fixtures to patch postgres, redis, and globus auth.
     """
@@ -121,6 +121,31 @@ async def client(
     # See https://fastapi.tiangolo.com/advanced/async-tests/
     async with LifespanManager(app) as manager:
         transport = httpx.ASGITransport(app=manager.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as http_client:
+            yield http_client
+
+
+@pytest.fixture
+async def control_client(
+    db: async_sessionmaker[AsyncSession],
+    mock_globus: None,
+) -> AsyncGenerator[httpx.AsyncClient, None]:
+    """
+    An httpx client bound to the localhost-only control server app, which serves
+    the /control/v1 and /discovery/v1 routes.
+
+    The control server has no lifespan; instead of running one we build a
+    ClientState directly and stash it on app.state.
+    """
+    from first_gateway import Settings
+    from first_gateway.controllers.control_server import app as control_app
+
+    settings = Settings()
+    async with settings.build_clients() as client_state:
+        control_app.state.client_state = client_state
+        transport = httpx.ASGITransport(app=control_app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver"
         ) as http_client:

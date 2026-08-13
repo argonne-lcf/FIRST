@@ -9,7 +9,7 @@ scrape_configs:
   - job_name: model-backends
     proxy_from_environment: true
     http_sd_configs:
-      - url: http://inference-gateway:7000/discovery/v1/prometheus
+      - url: http://controller-manager:9100/discovery/v1/prometheus
         refresh_interval: 1m
         proxy_from_environment: true
     tls_config:
