@@ -62,6 +62,9 @@ class Command(BaseCommand):
     def _tick(self, settings: BridgeSettings) -> None:
         redis_client = get_bridge_redis_client(settings.redis_url)
         cfg = RouterConfig.load(redis_client)
+        if cfg is None:
+            log.warning("No RouterConfig; skipping tick")
+            return
         desired = desired_endpoints(cfg, settings)
 
         created, updated, deleted = self._reconcile_endpoints(desired)

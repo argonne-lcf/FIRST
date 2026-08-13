@@ -68,10 +68,10 @@ class RouterConfig(BaseModel):
     models: list[ModelConfig] = []
 
     @classmethod
-    def load(cls, client: "redis.Redis") -> "RouterConfig":
+    def load(cls, client: "redis.Redis") -> "RouterConfig | None":
         """Read and parse the router config blob from Redis (sync client)."""
         raw = client.get(ROUTER_CONFIG_KEY)
         if not raw:
-            return cls()
+            return None
         assert isinstance(raw, (str, bytes, bytearray))
         return cls.model_validate_json(raw)

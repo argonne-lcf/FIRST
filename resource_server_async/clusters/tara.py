@@ -56,11 +56,15 @@ class TaraCluster(BaseCluster):
         except Exception as e:
             raise GetJobsError(f"Failed to read Tara router config: {e}")
 
-        desired = [
-            d
-            for d in desired_endpoints(cfg, settings)
-            if d.cluster == self.cluster_name
-        ]
+        desired = (
+            [
+                d
+                for d in desired_endpoints(cfg, settings)
+                if d.cluster == self.cluster_name
+            ]
+            if cfg
+            else []
+        )
 
         formatted = JobsByStatus()
         for d in desired:
