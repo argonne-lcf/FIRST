@@ -143,8 +143,7 @@ async def list_clusters(sess: DbSession) -> list[db.Cluster]:
 @admin_router.get("/clusters/{name:path}", response_model=ClusterDetail)
 async def get_cluster(sess: DbSession, name: str, repo: RedisRepo) -> ClusterDetail:
     """
-    Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
-    sensitive operational state.
+    Get a Cluster with its pilot jobs. Admin-only.
     """
     cluster = await db.Cluster.get_detail(sess, name)
     runtimes = await repo.get_pilot_job_runtimes([j.uid for j in cluster.pilot_jobs])
