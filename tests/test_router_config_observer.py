@@ -1,16 +1,23 @@
 """Tests for RouterConfigObserver publish → subscribe flow."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from redis.asyncio import Redis
 
-from first_common.schema.types import OverloadPolicy, RouterParams, UsagePolicy
+from first_common.schema.types import (
+    OverloadPolicy,
+    ReplicaState,
+    RouterParams,
+    UsagePolicy,
+)
 from first_gateway import Settings
 from first_gateway.controllers.workers.router_config_observer import (
     RouterConfigObserver,
 )
+from first_gateway.database.models import PilotDeployment, PilotReplica
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -140,3 +147,73 @@ async def test_no_publish_when_config_unchanged(redis: Redis) -> None:
             pass
 
     assert published_versions == []
+
+
+def test_tara_pilot_json_matches_v1_bridge_contract() -> None:
+    """Lock the V2 producer fields consumed by the V1-side bridge.
+
+    The bridge remains in the legacy V1 gateway; its consumer contract was
+    introduced on FIRST main by squash 1b5baad625bf803372e98c7e19c1fa46298d927a.
+    """
+    deployment_name = "tara-production/nemotron-3-ultra"
+    backend_url = "https://10.20.30.40:18443/v1"
+    served_model_name = "nemotron-3-ultra"
+    replica = PilotReplica(
+        uid=71,
+        name=f"{deployment_name}/replica/00000001",
+        pilot_deployment_name=deployment_name,
+        state=ReplicaState.ready.value,
+        model_url=backend_url,
+        observed_served_name=served_model_name,
+        scheduled_deletion_at=None,
+    )
+    deployment = PilotDeployment(
+        uid=31,
+        name=deployment_name,
+        cluster_name="tara-production",
+        model_name="nemotron-3-ultra",
+        router_params={},
+        prometheus_metrics_path="/metrics",
+        prometheus_scrape_interval_sec=15,
+        min_replicas=0,
+        max_replicas=1,
+        launch_spec={"served_model_name": served_model_name},
+        replicas=[replica],
+    )
+
+    config = RouterConfig(
+        models=[
+            ModelConfig(
+                name="nemotron-3-ultra",
+                aliases=[],
+                allowed_groups=[],
+                allowed_domains=[],
+                supported_endpoints=["chat/completions"],
+                usage_limits=UsagePolicy(),
+                overload=OverloadPolicy(),
+                deployments=RouterConfigObserver._build_deployments([deployment], []),
+            )
+        ]
+    )
+
+    payload = json.loads(config.model_dump_json())
+    model = payload["models"][0]
+    pilot = model["deployments"][0]
+    backend = pilot["backends"][0]
+    assert {
+        "model_name": model["name"],
+        "allowed_groups": model["allowed_groups"],
+        "allowed_domains": model["allowed_domains"],
+        "deployment_kind": pilot["kind"],
+        "deployment_name": pilot["name"],
+        "backend_url": backend["model_url"],
+        "served_model_name": backend["backend_model_name"],
+    } == {
+        "model_name": "nemotron-3-ultra",
+        "allowed_groups": [],
+        "allowed_domains": [],
+        "deployment_kind": "pilot",
+        "deployment_name": deployment_name,
+        "backend_url": backend_url,
+        "served_model_name": served_model_name,
+    }
