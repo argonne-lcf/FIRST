@@ -762,11 +762,11 @@ export type PilotConfig = {
   /**
    * Max Num Nodes
    */
-  max_num_nodes?: number;
+  max_num_nodes: number;
   /**
    * Gpus Per Node
    */
-  gpus_per_node?: number;
+  gpus_per_node: number;
   /**
    * Queue
    */
@@ -811,6 +811,10 @@ export type PilotConfig = {
    * Job Name Prefix
    */
   job_name_prefix?: string;
+  /**
+   * Pilot Config Path
+   */
+  pilot_config_path?: string | null;
 };
 
 /**
