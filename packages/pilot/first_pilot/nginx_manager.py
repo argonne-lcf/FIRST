@@ -62,7 +62,7 @@ _conf_template_str = """
                 {% endfor -%}
                 allow 127.0.0.1;
                 deny all;
-                proxy_pass http://127.0.0.1:{{replica.port}}/;
+                proxy_pass http://unix:{{replica.uds}}:/;
             }
             {% endfor %}
         }
@@ -72,9 +72,9 @@ _conf_template_str = """
 conf_template = Template(dedent(_conf_template_str).lstrip())
 
 
-class ReplicaPort(NamedTuple):
+class ReplicaUpstream(NamedTuple):
     name: str
-    port: int
+    uds: str
 
 
 class NginxManager:
@@ -102,7 +102,7 @@ class NginxManager:
             fp.write(content.strip() + "\n")
         return path
 
-    def render_config(self, replicas: list[ReplicaPort]) -> str:
+    def render_config(self, replicas: list[ReplicaUpstream]) -> str:
 
         return conf_template.render(
             config=self.pilot_config,
@@ -141,7 +141,7 @@ class NginxManager:
         except subprocess.TimeoutExpired:
             self._nginx.kill()
 
-    def reload(self, replicas: list[ReplicaPort]) -> None:
+    def reload(self, replicas: list[ReplicaUpstream]) -> None:
         if self._nginx is None:
             raise RuntimeError("NGINX process is not set yet; must call start() first.")
 

@@ -263,8 +263,8 @@ class ScriptTemplateContext(TypedDict):
     served_model_name: str
     """`served_model_name` from the launch spec."""
 
-    port: int
-    """TCP port the replica must listen on."""
+    uds: str
+    """Absolute path to the Unix domain socket the replica must listen on."""
 
     gpus_per_node: int
     """`gpus_per_node` from the launch spec."""
@@ -307,7 +307,7 @@ class PilotLaunchSpec(BaseModel):
     Specification for launching a model replica inside of a pilot job.
 
     The Spec author retains full flexibility to write a bash model startup
-    script in `serve_script_template`. The template must respect the port,
+    script in `serve_script_template`. The template must respect the uds,
     served model name, and GPU resources provided as context to the script
     template.
     """

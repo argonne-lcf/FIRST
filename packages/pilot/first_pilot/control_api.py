@@ -1,5 +1,7 @@
+import fcntl
 import logging
 import socket
+import struct
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,7 +20,7 @@ from first_common.schema.pilot import (
     ReplicaStartRequest,
 )
 
-from .nginx_manager import NginxManager, ReplicaPort
+from .nginx_manager import NginxManager, ReplicaUpstream
 from .replica_manager import ReplicaManager, safe_getfqdn
 
 logger = logging.getLogger(__name__)
@@ -43,12 +45,21 @@ class _PilotManager:
         self.replica_manager.stop_all()
 
     def discover_service_endpoint(self) -> AddressInfo:
-        # UDP "connect" to a public IP — no traffic is sent, but the OS
-        # picks the interface it *would* route through, giving us the
-        # externally-reachable source address.
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
+        if self.config.network_interface:
+            ip = self._interface_ip(self.config.network_interface)
+            logger.info(
+                f"Discovered IP {ip!r} from interface {self.config.network_interface!r}"
+            )
+        else:
+            # UDP "connect" to a public IP — no traffic is sent, but the OS
+            # picks the interface it *would* route through, giving us the
+            # externally-reachable source address.
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+            logger.info(
+                f"config.network_interface=None: auto-detected external IP {ip!r}"
+            )
 
         return AddressInfo(
             hostname=safe_getfqdn(ip),
@@ -57,13 +68,26 @@ class _PilotManager:
             control_path=self.nginx.control_path,
         )
 
+    @staticmethod
+    def _interface_ip(ifname: str) -> str:
+        # SIOCGIFADDR: read the IPv4 address bound to a specific interface,
+        # bypassing the routing table so we advertise (e.g.) the high-speed
+        # network instead of the default management interface.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            packed = fcntl.ioctl(
+                s.fileno(),
+                0x8915,  # SIOCGIFADDR
+                struct.pack("256s", ifname.encode("utf-8")[:15]),
+            )
+        return socket.inet_ntoa(packed[20:24])
+
     def _reload_nginx(self) -> None:
-        ports = [
-            ReplicaPort(name=r.name, port=r.port)
+        upstreams = [
+            ReplicaUpstream(name=r.name, uds=r.uds)
             for r in self.replica_manager.get_replicas()
         ]
         try:
-            self.nginx.reload(ports)
+            self.nginx.reload(upstreams)
         except Exception:
             logger.exception("nginx reload failed")
 

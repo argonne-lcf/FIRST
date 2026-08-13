@@ -123,8 +123,7 @@ spec:
 
       exec vllm serve {{ quote(weights_cache_path) }} \
         --served-model-name {{ quote(served_model_name) }} \
-        --host 127.0.0.1 \
-        --port {{ port }} \
+        --uds {{ quote(uds) }} \
         --enable-auto-tool-choice \
         --tool-call-parser gemma4 \
         --reasoning-parser gemma4 \

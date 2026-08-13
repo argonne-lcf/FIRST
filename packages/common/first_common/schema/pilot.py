@@ -123,6 +123,12 @@ class PilotRuntimeConfig(BaseSettings):
     node_file_env: str
     job_name: str
 
+    # Name of the IPv4 network interface (e.g. "hsn0") whose address the pilot
+    # should advertise as its externally-reachable endpoint. When None, the IP
+    # is discovered by the default UDP-route trick, which on some clusters
+    # picks a slow management interface instead of the high-speed network.
+    network_interface: str | None = None
+
     @property
     def nginx_base_dir(self) -> Path:
         return self.workdir / "nginx"

@@ -47,28 +47,30 @@ pytestmark = [
 
 
 # A bash one-liner that becomes the replica process: a stdlib HTTP server
-# answering 200 on /health. Rendered by Replica._render_script as Jinja
-# (only `{{port}}` is interpolated here).
+# bound to a Unix domain socket, answering 200 on /health. Rendered by
+# Replica._render_script as Jinja (only `{{uds}}` is interpolated here).
 _MOCK_REPLICA_SCRIPT = """\
 #!/bin/bash
 exec python -c '
-import http.server, sys
+import http.server, socket
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         code = 200 if self.path == "/health" else 404
         self.send_response(code); self.end_headers()
     def log_message(self, *a, **kw): pass
-http.server.HTTPServer(("127.0.0.1", {{port}}), H).serve_forever()
+class S(http.server.HTTPServer):
+    address_family = socket.AF_UNIX
+S("{{uds}}", H).serve_forever()
 '
 """
 
 
-def _free_port_window(n: int = 3) -> int:
+def _free_port_window(n: int = 2) -> int:
     """
     Find a base port P such that P, P+1, ..., P+n-1 are all bindable on
-    127.0.0.1. The pilot uses external_port for nginx, +1 for the internal
-    control API, and +2 for the first replica — picking only the first slot
-    is racy and made test_replica_lifecycle flake with EADDRINUSE on +2.
+    127.0.0.1. The pilot uses external_port for nginx and +1 for the internal
+    control API (replicas now listen on Unix domain sockets, not ports).
+    Picking only the first slot is racy, so we reserve the whole window.
     """
     for _ in range(100):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s0:
@@ -107,7 +109,7 @@ def ca_pair() -> tuple[str, str]:
 
 @pytest.fixture
 def pilot_config(workdir: Path) -> PilotConfig:
-    external_port = _free_port_window(3)
+    external_port = _free_port_window(2)
     return PilotConfig.model_validate(
         {
             "scheduler_adapter": (

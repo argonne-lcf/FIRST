@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from httpx import Client
+from httpx import Client, HTTPTransport
 from jinja2 import Environment, StrictUndefined
 
 from first_common.health import perform_health_check_sync
@@ -64,13 +64,13 @@ class Replica:
     def __init__(
         self,
         name: str,
-        port: int,
+        uds: str,
         resources: list[GpuClaim],
         launch_spec: PilotLaunchSpec,
         workdir: Path,
     ) -> None:
         self.name = name
-        self.port = port
+        self.uds = uds
         self.resources = resources
         self.launch_spec = launch_spec
         self.workdir = workdir
@@ -87,9 +87,9 @@ class Replica:
         env.update(self.launch_spec.env)
 
         logger.info(
-            "starting replica %s on port %d (workdir=%s)",
+            "starting replica %s on uds %s (workdir=%s)",
             self.name,
-            self.port,
+            self.uds,
             workdir,
         )
         try:
@@ -117,13 +117,13 @@ class Replica:
         self.consecutive_health_ok = 0
         self.consecutive_health_fail = 0
         self._unhealthy_since: float | None = None
-        self._health_client = Client()
+        self._health_client = Client(transport=HTTPTransport(uds=self.uds))
 
         self._health_params = self.launch_spec.health_check
         self._health_debounce = max(5, self._health_params.debounce)
         if self._health_params.url:
             path = urlparse(self._health_params.url).path
-            url = f"http://127.0.0.1:{self.port}/{path.lstrip('/')}"
+            url = f"http://localhost/{path.lstrip('/')}"
             self._health_params.url = url
             logger.info(f"Replica will monitor health at {url}")
         else:
@@ -149,7 +149,7 @@ class Replica:
         context: ScriptTemplateContext = {
             "replica_name": self.name,
             "served_model_name": spec.served_model_name,
-            "port": self.port,
+            "uds": self.uds,
             "gpus_per_node": spec.gpus_per_node,
             "num_nodes": spec.num_nodes,
             "gpus_by_host": gpus_by_host,

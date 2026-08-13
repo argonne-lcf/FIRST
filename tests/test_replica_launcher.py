@@ -44,7 +44,7 @@ LAUNCH_SPEC: dict[str, Any] = {
     "weights_path": "/unused",
     "weights_cache_path": "/unused",
     "env": {},
-    "serve_script_template": "echo {{ port }}",
+    "serve_script_template": "echo {{ uds }}",
     "max_startup_sec": 60,
     "health_check": {"url": "http://localhost/health"},
 }

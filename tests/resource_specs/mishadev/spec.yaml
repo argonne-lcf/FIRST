@@ -230,7 +230,7 @@ spec:
 
       vllm serve {{weights_cache_path}} \
         --served-model-name {{served_model_name}} \
-        --host 127.0.0.1 --port {{port}} \
+        --uds {{uds}} \
         --disable-access-log-for-endpoints /health,/metrics \
         --enable-log-requests \
         --tool-call-parser openai \
@@ -293,7 +293,7 @@ spec:
       export CUDA_VISIBLE_DEVICES={{ gpus_by_host.values() | first | join(',') }}
       vllm serve {{weights_path}} \
         --served-model-name {{served_model_name}} \
-        --host 127.0.0.1 --port {{port}} \
+        --uds {{uds}} \
         --disable-access-log-for-endpoints /health,/metrics \
         --enable-log-requests \
         --tensor-parallel-size 1 \

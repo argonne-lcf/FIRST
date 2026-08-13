@@ -7,6 +7,8 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, wait
 from concurrent.futures import TimeoutError as FutTimeout
 from enum import Enum
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 from cachetools.func import ttl_cache
@@ -31,8 +33,6 @@ from first_common.schema.types import (
 from .replica import Replica
 
 logger = logging.getLogger(__name__)
-
-REPLICA_PORT_OFFSET = 2
 
 
 def safe_getfqdn(name: str = "", *, timeout: float = 2.0) -> str:
@@ -165,13 +165,19 @@ class ReplicaManager:
             f"discovered {len(self._inventory)} GPU(s) across {len(resources.hosts)} hosts"
         )
 
+        # Private directory (0700 by default) that holds every replica's Unix
+        # domain socket.
+        self._socket_dir = TemporaryDirectory(prefix="first-pilot-uds-")
+        logger.info("replica sockets will live under %s", self._socket_dir.name)
+
         # The lock serializes the small critical section in start_replica /
-        # stop_replica that mutates these three structures together:
-        #   self._replicas, self._claimed, self._used_ports
+        # stop_replica that mutates these structures together:
+        #   self._replicas, self._claimed, self._next_socket_id
         self._lock = threading.Lock()
         self._replicas: dict[str, Replica | ReservedSentinel] = {}
         self._claimed: set[tuple[str, str]] = set()
-        self._used_ports: set[int] = set()
+        # Monotonic counter used to mint short, unique socket filenames
+        self._next_socket_id = 0
 
     @ttl_cache(ttl=60)
     def query_resources(self) -> PilotResources:
@@ -218,19 +224,16 @@ class ReplicaManager:
 
         return requested
 
-    def _allocate_port_locked(self) -> int:
+    def _allocate_uds_locked(self) -> str:
         # Caller must hold self._lock.
-        port = self.config.external_port + REPLICA_PORT_OFFSET
-        while port in self._used_ports:
-            port += 1
-        self._used_ports.add(port)
-        return port
+        socket_id = self._next_socket_id
+        self._next_socket_id += 1
+        return str(Path(self._socket_dir.name) / f"replica-{socket_id}.sock")
 
-    def _release_locked(self, name: str, resources: list[GpuClaim], port: int) -> None:
+    def _release_locked(self, name: str, resources: list[GpuClaim]) -> None:
         # caller must hold self._lock
         self._replicas.pop(name, None)
         self._claimed.difference_update(self._flatten(resources))
-        self._used_ports.discard(port)
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
         requested = self._validate_request(replica.name, replica.gpu_indices)
@@ -259,7 +262,7 @@ class ReplicaManager:
                 )
 
             self._claimed.update(requested)
-            port = self._allocate_port_locked()
+            uds = self._allocate_uds_locked()
             # Insert a placeholder under the name so a racing start_replica
             # for the same name fails fast. We swap in the real Replica below.
             self._replicas[replica.name] = _RESERVED
@@ -270,7 +273,7 @@ class ReplicaManager:
 
             r = Replica(
                 name=replica.name,
-                port=port,
+                uds=uds,
                 resources=resources,
                 launch_spec=replica.launch_spec,
                 workdir=workdir,
@@ -280,7 +283,7 @@ class ReplicaManager:
                 "failed to start replica %s; releasing reservation", replica.name
             )
             with self._lock:
-                self._release_locked(replica.name, resources, port)
+                self._release_locked(replica.name, resources)
             raise ReplicaStartError(f"Failed to start replica: {e}") from e
 
         with self._lock:
@@ -300,7 +303,7 @@ class ReplicaManager:
         replica.stop()
 
         with self._lock:
-            self._release_locked(replica_name, replica.resources, replica.port)
+            self._release_locked(replica_name, replica.resources)
 
     def stop_all(self) -> None:
 
@@ -314,7 +317,9 @@ class ReplicaManager:
 
         with self._lock:
             for r in replicas:
-                self._release_locked(r.name, r.resources, r.port)
+                self._release_locked(r.name, r.resources)
+
+        self._socket_dir.cleanup()
 
     def get_replicas(self) -> list[Replica]:
         with self._lock:
