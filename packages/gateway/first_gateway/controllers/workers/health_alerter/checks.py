@@ -24,7 +24,7 @@ from first_gateway.database.models import (
     StaticDeployment,
 )
 from first_gateway.platforms.schedulers import build_scheduler
-from first_gateway.settings import CONTROLLER_METRICS_PORT, ClientState
+from first_gateway.settings import ClientState
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +327,9 @@ async def check_host(client_state: ClientState) -> list[Observation]:
         )
 
     try:
-        resp = await http.get(f"http://127.0.0.1:{CONTROLLER_METRICS_PORT}/healthz")
+        resp = await http.get(
+            f"http://127.0.0.1:{client_state.settings.controller_metrics_port}/healthz"
+        )
         if resp.status_code == 503:
             obs.append(
                 Observation(

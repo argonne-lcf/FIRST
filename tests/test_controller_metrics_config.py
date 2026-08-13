@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import uvicorn
 from pydantic import ValidationError
 
 from first_gateway.controllers import metrics_server
-from first_gateway.settings import CONTROLLER_METRICS_PORT, Settings
+from first_gateway.controllers.workers.health_alerter import checks
+from first_gateway.settings import ClientState, Settings
 
 
 def build_settings(**overrides: object) -> Settings:
@@ -31,19 +34,25 @@ def build_settings(**overrides: object) -> Settings:
 def test_controller_metrics_bind_defaults_remain_compose_compatible() -> None:
     settings = build_settings()
     assert str(settings.controller_metrics_host) == "0.0.0.0"
+    assert settings.controller_metrics_port == 9100
 
 
 def test_controller_metrics_bind_accepts_loopback_override() -> None:
-    settings = build_settings(controller_metrics_host="127.0.0.1")
+    settings = build_settings(
+        controller_metrics_host="127.0.0.1", controller_metrics_port=9101
+    )
     assert str(settings.controller_metrics_host) == "127.0.0.1"
+    assert settings.controller_metrics_port == 9101
 
 
 def test_controller_metrics_bind_loads_from_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FIRST_CONTROLLER_METRICS_HOST", "127.0.0.1")
+    monkeypatch.setenv("FIRST_CONTROLLER_METRICS_PORT", "9101")
     settings = build_settings()
     assert str(settings.controller_metrics_host) == "127.0.0.1"
+    assert settings.controller_metrics_port == 9101
 
 
 @pytest.mark.parametrize(
@@ -53,6 +62,12 @@ def test_controller_metrics_bind_loads_from_environment(
 def test_controller_metrics_bind_rejects_invalid_values(value: object) -> None:
     with pytest.raises(ValidationError):
         build_settings(controller_metrics_host=value)
+
+
+@pytest.mark.parametrize("value", [0, 65536])
+def test_controller_metrics_bind_rejects_invalid_ports(value: int) -> None:
+    with pytest.raises(ValidationError):
+        build_settings(controller_metrics_port=value)
 
 
 @pytest.mark.asyncio
@@ -76,10 +91,54 @@ async def test_metrics_server_passes_reviewed_bind_to_uvicorn(
     monkeypatch.setattr(uvicorn, "Config", FakeConfig)
     monkeypatch.setattr(uvicorn, "Server", FakeServer)
 
-    await metrics_server.serve([], host="127.0.0.1")
+    await metrics_server.serve([], host="127.0.0.1", port=9101)
 
     assert observed["app"] is metrics_server.app
     assert observed["host"] == "127.0.0.1"
-    assert observed["port"] == CONTROLLER_METRICS_PORT == 9100
+    assert observed["port"] == 9101
     assert observed["log_level"] == "warning"
     assert observed["served"] is True
+
+
+@pytest.mark.asyncio
+async def test_health_alerter_uses_configured_controller_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    urls: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = "ok"
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def get(self, url: str) -> FakeResponse:
+            urls.append(url)
+            return FakeResponse()
+
+    class FakeProcess:
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"Filesystem 1024-blocks Used Available Capacity Mounted on\n", b""
+
+    async def fake_subprocess(*_: object, **__: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(checks, "AsyncClient", FakeClient)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    state = cast(
+        ClientState,
+        SimpleNamespace(
+            settings=SimpleNamespace(
+                gateway_health_url="http://127.0.0.1:8001/health",
+                controller_metrics_port=9101,
+            )
+        ),
+    )
+
+    assert await checks.check_host(state) == []
+    assert urls == [
+        "http://127.0.0.1:8001/health",
+        "http://127.0.0.1:9101/healthz",
+    ]

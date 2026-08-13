@@ -1,12 +1,12 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncGenerator, Literal
+from typing import Annotated, AsyncGenerator, Literal
 
 from globus_compute_sdk import Client as ComputeClient
 from globus_sdk import ClientApp, ConfidentialAppAuthClient
 from httpx import AsyncClient, Timeout
-from pydantic import SecretStr, computed_field
+from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy.ext.asyncio import (
@@ -19,8 +19,6 @@ from sqlalchemy.ext.asyncio import (
 from .database.redis.pubsub import RedisPubSub
 from .database.redis.repo import RedisRepo
 from .services.keycloak_client import KeycloakServiceTokenAuth
-
-CONTROLLER_METRICS_PORT = 9100
 
 
 @dataclass
@@ -109,6 +107,7 @@ class Settings(BaseSettings):
     prompt_storage_dir: Path = Path("prompt-records")
     log_level: str = "INFO"
     controller_metrics_host: Literal["0.0.0.0", "127.0.0.1"] = "0.0.0.0"
+    controller_metrics_port: Annotated[int, Field(ge=1, le=65535)] = 9100
 
     db_url: SecretStr
     redis_url: str

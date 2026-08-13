@@ -91,6 +91,7 @@ class ControllerManager:
                 serve_metrics(
                     workers,
                     host=str(self.client_state.settings.controller_metrics_host),
+                    port=self.client_state.settings.controller_metrics_port,
                 ),
                 name="metrics-server",
             )
