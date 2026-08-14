@@ -25,6 +25,8 @@ services:
       - -o
       - StrictHostKeyChecking=accept-new
       - ${TUNNEL_SSH_TARGET}
+    ports:
+      - "127.0.0.1:1080:1080"
     stdin_open: true # so you can type the OTP
     tty: true
     restart: "no" # auto-restart would hang waiting for OTP
