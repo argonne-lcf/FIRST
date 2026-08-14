@@ -1,0 +1,47 @@
+# Opt-in SOCKS tunnel overlay (DEV ONLY).
+#
+# On a laptop without a network conduit to the HPC systems, append this file to
+# COMPOSE_FILE to bring up a SSH SOCKS proxy and route service egress through it:
+#   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml:deploy/compose.tunnel.yaml
+#
+# Then: `docker compose up -d`, `make attach-tunnel`, enter your OTP, detach.
+# Prod never references this file, so the tunnel simply does not exist there.
+
+services:
+  tunnel:
+    # docker compose up -d, `make attach-tunnel`, authenticate, detach
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.tunnel
+    command:
+      - ssh
+      - -N
+      - -D
+      - 0.0.0.0:1080
+      - -o
+      - ExitOnForwardFailure=yes
+      - -o
+      - ServerAliveInterval=30
+      - -o
+      - StrictHostKeyChecking=accept-new
+      - ${TUNNEL_SSH_TARGET}
+    stdin_open: true # so you can type the OTP
+    tty: true
+    restart: "no" # auto-restart would hang waiting for OTP
+    networks:
+      - gateway
+
+  inference-gateway:
+    environment:
+      - ALL_PROXY=socks5h://tunnel:1080
+
+  controller-manager:
+    environment:
+      - ALL_PROXY=socks5h://tunnel:1080
+
+  prometheus:
+    environment:
+      - ALL_PROXY=socks5h://tunnel:1080
+      - HTTPS_PROXY=socks5h://tunnel:1080
+      - HTTP_PROXY=socks5h://tunnel:1080
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway

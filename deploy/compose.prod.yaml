@@ -1,5 +1,28 @@
+# Prod overlay: layer on top of compose.yaml.
+#   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml
+#
+# Differences from dev:
+#   - No nginx (the host runs nginx and proxy_passes to 127.0.0.1:7000).
+#   - No auto migration (run `make prod-migrate` manually after deploy).
+#   - No tunnel (prod egress goes through the host conduit).
+#   - Data volumes are `external` so `docker compose down -v` cannot delete them.
+#     Create them once with `make prod-init`.
+#   - Prod env (.env.prod, non-secret) + secrets from .env.secret on the host.
+
 services:
+  inference-gateway:
+    env_file: &prod-env
+      - path: ../.env.prod
+        required: true
+    # Publish only on loopback; host nginx proxy_passes here.
+    ports:
+      - "127.0.0.1:7000:7000"
+
+  controller-manager:
+    env_file: *prod-env
+
   postgres:
+    env_file: *prod-env
     volumes:
       - postgres_data_prod:/var/lib/postgresql
 
@@ -7,6 +30,20 @@ services:
     volumes:
       - redis_data_prod:/data
 
+  prometheus:
+    volumes:
+      - prometheus_data_prod:/prometheus
+
+  grafana:
+    volumes:
+      - grafana_data_prod:/var/lib/grafana
+
 volumes:
   postgres_data_prod:
+    external: true
   redis_data_prod:
+    external: true
+  prometheus_data_prod:
+    external: true
+  grafana_data_prod:
+    external: true

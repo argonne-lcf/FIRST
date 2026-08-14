@@ -1,108 +1,297 @@
 # Docker Deployment
 
-The gateway stack runs as a small Docker Compose application: the
-**apiserver**, the **controller-manager**, an NGINX reverse proxy in
-front of the apiserver, plus Postgres and Redis.
-
-The Compose definitions live under `deploy/`:
+The gateway runs as a small Docker Compose application. A single **base**
+file defines the services that exist everywhere; thin **overlay** files add
+the differences for each environment. The base file never runs alone.
 
 | File | Role |
 |---|---|
-| `deploy/compose.yaml` | Base service definitions (apiserver, controller-manager, nginx, postgres, redis). |
-| `deploy/compose.dev.yaml` | Dev overlay — `tmpfs`-backed Postgres for fast, isolated test runs. |
-| `deploy/compose.prod.yaml` | Prod overlay — persistent Postgres volume. |
-| `deploy/Dockerfile` | Image used by both apiserver and controller-manager (same image, different command). |
-| `deploy/nginx.conf` | Reverse proxy config; publishes the apiserver on `:8000`. |
+| `deploy/compose.yaml` | Base services common to dev and prod: apiserver, controller-manager, postgres, redis, prometheus, grafana. |
+| `deploy/compose.dev.yaml` | **Dev** overlay — nginx container, auto-migration, dev data volumes, dev env (`.env.compose`). |
+| `deploy/compose.prod.yaml` | **Prod** overlay — publishes apiserver on `127.0.0.1:7000`, external data volumes, prod env (`.env.prod`); no nginx, no auto-migration. |
+| `deploy/compose.tunnel.yaml` | Opt-in **dev** overlay — SOCKS tunnel + `*PROXY` injection. |
+| `deploy/Dockerfile` | Image for both apiserver and controller-manager (same image, different `command`). |
+| `deploy/Dockerfile.tunnel` | Tiny image (openssh) for the SOCKS tunnel container. |
+| `deploy/nginx.conf` | **Dev** reverse-proxy config; publishes the apiserver on `:8000`. |
+| `deploy/nginx.prod.conf.example` | Template for the **host** nginx in prod (TLS, proxy to `127.0.0.1:7000`). |
+| `deploy/first.service.example` | Template systemd unit to run the prod stack on boot. |
+| `deploy/prometheus.yml` | Prometheus scrape config (controller-manager + discovered backends). |
+| `deploy/grafana-*`, `deploy/dashboards.yaml` | Grafana datasource + dashboard provisioning. |
 
-## Quick start
-
-The Makefile wraps the common Compose invocations. Configure
-`COMPOSE_FILE` in your `.env` once and the targets do the rest — see the
-[Developer Guide](../getting-started/developer.md) for the full env-file
-layering.
-
-```bash
-# Bring up the full stack (dev overlay):
-make compose-up
-
-# Apiserver-only logs:
-make watch-logs
-
-# Tear down:
-make compose-down
-
-# Production overlay (persistent postgres volume):
-make prod-up
-make prod-down
-```
-
-Once up, the apiserver is reachable at <http://localhost:8000>; Postgres
-and Redis are bound to their default ports for local testing.
-
-## Services
+## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     classDef gw fill:#e8f0ff,stroke:#3b6ea8,color:#1a2a3a
     classDef store fill:#ffffff,stroke:#888,color:#222
     classDef proxy fill:#fff5e6,stroke:#d49a3a,color:#3a2a10
+    classDef obs fill:#eafaf1,stroke:#3a9a6a,color:#10301f
+    classDef opt fill:#f3f0ff,stroke:#7a5ad4,color:#241a3a,stroke-dasharray: 4 3
 
-    NX["nginx<br/>:8000"]:::proxy
-    API["inference-gateway<br/>(apiserver)"]:::gw
-    CM["controller-manager"]:::gw
-    PG[("postgres:18")]:::store
-    RD[("redis:7")]:::store
+    Client([client / alcf-ai])
 
-    NX --> API
-    API --> PG
-    API --> RD
-    CM --> PG
-    CM --> RD
+    subgraph host[Host]
+      NX["nginx<br/>dev: container :8000<br/>prod: host :443"]:::proxy
+      subgraph net["Compose network (first_gateway)"]
+        API["inference-gateway<br/>apiserver :7000"]:::gw
+        CM["controller-manager<br/>:9100"]:::gw
+        PG[("postgres:18")]:::store
+        RD[("redis:8")]:::store
+        PROM["prometheus :9090"]:::obs
+        GRAF["grafana :3000"]:::obs
+        TUN["tunnel :1080<br/>(dev, opt-in)"]:::opt
+      end
+    end
+    Pilot([HPC pilot backends])
+
+    Client --> NX --> API
+    API --> PG & RD
+    CM --> PG & RD
+    PROM -->|scrape| CM
+    PROM -->|http_sd + scrape| Pilot
+    GRAF -->|query| PROM
+    API -.egress via.-> TUN
+    CM -.egress via.-> TUN
+    TUN -.SSH -D.-> Pilot
 ```
 
-Both `inference-gateway` and `controller-manager` are built from the same
-`deploy/Dockerfile`; the controller-manager overrides `command` to run
-`python -m first_gateway.controllers.manager`.
+## Components
+
+- **inference-gateway (apiserver)** — the user-facing API (gunicorn/uvicorn on
+  `:7000`). Fronted by nginx. Dev doesn't publish `:7000` (nginx proxies it
+  inside the network); prod publishes `127.0.0.1:7000` for the host nginx.
+- **controller-manager** — runs the control loops; exposes metrics and pilot
+  service-discovery on `127.0.0.1:9100`. Same image as the apiserver.
+- **postgres:18** — application database. Published on `127.0.0.1:5433` for host
+  access. Healthcheck gates the apiserver/controller startup.
+- **redis:8** — control-plane state / coordination on `127.0.0.1:6380`. Tuned for
+  latency and throughput over durability (light RDB, no AOF); data is persistent
+  but expendable and **not** backed up.
+- **prometheus** — scrapes the controller-manager and the pilot backends it
+  discovers. Bounded footprint (retain ~15 days / 5 GB) with the admin API enabled
+  for snapshots. Published on `127.0.0.1:9090`.
+- **grafana** — dashboards over Prometheus, provisioned from `deploy/`. Published
+  on `127.0.0.1:3000`. Runs in dev **and** prod.
+- **nginx** — reverse proxy + rate limiting + SSE-friendly buffering. A container
+  in dev; the **host's** nginx in prod (see below).
+- **tunnel** *(dev, opt-in)* — an SSH SOCKS proxy so a laptop with no direct route
+  to the HPC systems can still reach pilot backends.
+- **migration** *(dev only)* — one-shot `alembic upgrade head` on startup. Prod
+  migrations are manual.
+
+## Filesystem dependencies
+
+The stack bind-mounts a few host paths. They must exist before `up`:
+
+- **`pki/`** (repo root, `.gitignore`d) — TLS material (`ca.crt`,
+  `first-pilot.crt`, `first-pilot.key`) mounted read-only into Prometheus to scrape
+  pilot backends over mTLS. Generated by the certificate manager; a dev stack needs
+  at least placeholder files present.
+- **`packages/admin-console/dist`** — the built admin UI, mounted into the dev
+  nginx container. Build it (in `packages/admin-console`) before relying on the
+  console; in **prod** you deploy `dist/` to a host path that host-nginx serves
+  (see `nginx.prod.conf.example`).
+- **`.env.secret`** (repo root, `.gitignore`d) — required by the stack; see
+  [Environment files](#environment-files).
+- **`backups/`** — created on demand by the backup scripts (`.gitignore`d);
+  override with `BACKUP_DIR`.
 
 ## Environment files
 
-`env_file` layering (see `deploy/compose.yaml`):
+`env_file` layering. The base loads only what is valid everywhere; each overlay
+adds its environment-specific file, so **no dev value can leak into prod**:
 
-1. `.env.default` — common defaults, checked in.
-2. `.env.compose` — service-network specifics (e.g. `redis` / `postgres`
-   hostnames inside the Compose network).
-3. `.env.secret` — local-only secrets (Globus app credentials, CA
-   material). `.gitignore`d.
-4. `.env.prod` — optional production overrides.
+1. `.env.default` — common, non-secret defaults, checked in (base).
+2. `.env.secret` — secrets (Globus credentials, CA material, `POSTGRES_PASSWORD`,
+   `FIRST_DB_URL`). `.gitignore`d (base).
+3. `.env.compose` — **dev only** (added by `compose.dev.yaml`): dev DB
+   name/credentials and in-network `redis`/`postgres` URLs.
+4. `.env.prod` — **prod only** (added by `compose.prod.yaml`): non-secret prod DB
+   name and service URLs. It also documents which secret keys prod expects in
+   `.env.secret` on the host.
 
-`.env.local` is **not** loaded inside Compose; it exists only so that
-running tests on the host machine can reach the published `localhost`
-ports of the containerised Postgres/Redis.
+`.env.local` is **not** loaded inside Compose; it only helps host-side test runs
+reach the published `localhost` ports. `.env` (dev, `.gitignore`d) selects the
+stack via `COMPOSE_FILE` and holds dev conveniences like `TUNNEL_SSH_TARGET`.
 
-All gateway settings use the `FIRST_` prefix with `__` for nested
-fields — e.g. `FIRST_DB_URL`, `FIRST_GLOBUS__APP_ID`. See
-[`settings.py`](https://github.com/argonne-lcf/inference-gateway/blob/main/packages/gateway/first_gateway/settings.py)
-for the full `Settings` model.
+All settings use the `FIRST_` prefix with `__` for nesting — e.g. `FIRST_DB_URL`,
+`FIRST_GLOBUS__APP_ID`. See
+[`settings.py`](https://github.com/argonne-lcf/inference-gateway/blob/main/packages/gateway/first_gateway/settings.py).
+
+## Dev environment
+
+Set `.env` at the repo root:
+
+```ini
+COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml
+COMPOSE_PROJECT_NAME=first
+inference_base_url=http://localhost:8000
+```
+
+```bash
+make compose-up      # build + start the dev stack
+make watch-logs      # apiserver logs
+make compose-down    # stop
+make db-reset        # wipe DEV db/redis volumes and re-run migrations (prompts)
+```
+
+Once up: apiserver via nginx at <http://localhost:8000>, Grafana at
+<http://localhost:3000>, Prometheus at <http://localhost:9090>. Postgres and Redis
+are on `127.0.0.1:5433` / `127.0.0.1:6380`.
+
+### Dozzle (browser log viewer)
+
+Dozzle is intentionally **not** in the Compose stack. Run it on demand:
+
+```bash
+./scripts/dozzle.sh          # http://127.0.0.1:8080 ; Ctrl-C to stop
+```
+
+It attaches to the `first_gateway` network and reads the Docker socket read-only.
+
+### SOCKS tunnel (opt-in)
+
+On a laptop with no route to the HPC systems, append the tunnel overlay and set
+the SSH target:
+
+```ini
+# .env
+COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml:deploy/compose.tunnel.yaml
+TUNNEL_SSH_TARGET=you@bastion.example.org
+```
+
+The overlay both defines the `tunnel` service and injects `*_PROXY` into the
+apiserver, controller-manager, and Prometheus. Because the tunnel uses one-time
+passwords, you attach once to authenticate:
+
+```bash
+make compose-up
+make attach-tunnel   # shows recent logs, then attaches; enter your OTP
+                     # press Ctrl-X to detach (leaves it running)
+```
+
+Prod never references this file, so the tunnel simply does not exist there.
+
+## Prod environment
+
+Prod differs from dev in three ways: **nginx runs on the host**, **migrations are
+manual**, and **data volumes are external** (so `docker compose down -v` cannot
+delete them).
+
+### First-time setup
+
+```bash
+# 1. Populate .env.secret on the host with prod secrets:
+#      POSTGRES_PASSWORD=...
+#      FIRST_DB_URL=postgresql+psycopg://first_gateway:...@postgres:5432/first_gateway
+#    plus the Globus / CA secrets. .env.prod documents the required keys.
+
+# 2. Create the external data volumes once:
+make prod-init
+
+# 3. Bring up the stack and apply migrations:
+make prod-up
+make prod-migrate
+
+# 4. Configure the HOST nginx (see below).
+```
+
+`make prod-*` targets select the prod overlay explicitly, so `.env` can stay on
+the dev path. Day-to-day:
+
+```bash
+make prod-up        # start / apply changes
+make prod-migrate   # after deploying a new image
+make prod-down      # stop (never uses -v)
+```
+
+### Host nginx
+
+In prod the host runs nginx and proxies to the loopback-published apiserver.
+`deploy/nginx.prod.conf.example` mirrors the dev config (rate limits, SSE-friendly
+buffering) but terminates TLS and targets `127.0.0.1:7000`:
+
+```bash
+sudo cp deploy/nginx.prod.conf.example /etc/nginx/conf.d/first.conf
+# edit server_name, TLS cert paths, and the admin-console root
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Deploy the built admin console (`packages/admin-console/dist`) to the host path
+referenced by that config.
+
+!!! warning "Grafana is anonymous-admin"
+    Grafana runs with anonymous admin access and binds to `127.0.0.1:3000`. That's
+    fine for local access / SSH tunnels. **Do not** expose it through host nginx
+    without putting real authentication in front of it.
+
+### Run on boot (systemd)
+
+`deploy/first.service.example` ties the prod stack's lifecycle to boot. Compose's
+own `restart: unless-stopped` keeps containers alive while dockerd runs; the unit
+adds ordering after `docker.service` and a clean start/stop.
+
+```bash
+sudo cp deploy/first.service.example /etc/systemd/system/first.service
+# edit WorkingDirectory (repo path) and User
+sudo systemctl daemon-reload
+sudo systemctl enable --now first.service
+```
+
+Run `make prod-init` once before the first start. Migrations remain manual
+(`make prod-migrate`) so a schema change never runs unattended on boot.
+
+## Backups
+
+Both scripts are safe against a live stack and pick up the stack selected by
+`COMPOSE_FILE`. Destinations are configurable via `BACKUP_DIR` (default
+`./backups`); each keeps the newest `KEEP` (default 7) and prunes older ones.
+
+```bash
+make db-backup       # pg_dump -> backups/postgres/first-<ts>.sql.gz
+make prom-snapshot   # TSDB snapshot -> backups/prometheus/prometheus-<name>.tar.gz
+```
+
+Restore Postgres:
+
+```bash
+gunzip -c backups/postgres/first-<ts>.sql.gz \
+  | docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"'
+```
+
+Redis is **not** backed up by design (expendable state).
+
+### Nightly cron (prod)
+
+`cd` into the repo first so `.env` resolves; point `BACKUP_DIR` at persistent
+storage. Example crontab (`crontab -e`):
+
+```cron
+# m h dom mon dow  command
+15 2 * * *  cd /opt/inference-gateway && BACKUP_DIR=/var/backups/first KEEP=7 ./scripts/pg-backup.sh    >> /var/log/first-backup.log 2>&1
+30 2 * * *  cd /opt/inference-gateway && BACKUP_DIR=/var/backups/first KEEP=7 ./scripts/prom-snapshot.sh >> /var/log/first-backup.log 2>&1
+```
+
+See [`scripts/README.md`](https://github.com/argonne-lcf/inference-gateway/blob/main/scripts/README.md)
+for details.
 
 ## Troubleshooting
 
 ```bash
-# Process status:
-docker compose ps
-
-# Recent logs from one service:
-docker compose logs inference-gateway --since=1m
+docker compose ps                                  # status
+docker compose logs inference-gateway --since=1m   # recent logs
 docker compose logs controller-manager --since=1m
-
-# Reset dev DB (tmpfs — wipe is automatic, but force a rebuild too):
-docker compose down -v
-docker compose up -d --build
+make db-reset                                      # DEV only: wipe + re-migrate
 ```
 
-## Production notes
+!!! warning
+    `make db-reset` removes the dev volumes by name (`first_postgres-dev`,
+    `first_redis-dev`). Prod volumes are `external` and immune to
+    `docker compose down -v` — but never run `db-reset` against a prod stack.
+
+## Beyond a single host
 
 Container-native deployment is a primary goal of v2 (see
-[Motivation](../architecture/motivation.md)) and the eventual target is
-the ALCF Hermes Kubernetes cluster. The Compose prod overlay is a
-single-host staging step; the same image, settings, and `Settings`
-loading work in either environment.
+[Motivation](../architecture/motivation.md)); the eventual target is the ALCF
+Hermes Kubernetes cluster. The Compose prod overlay is a single-host staging step —
+the same image, settings, and `Settings` loading carry over.

@@ -71,23 +71,40 @@ alcf-ai admin audit
 
 ## More on the Docker Compose setup
 
-- Docker Compose supports combining YAML files. We can take advantage of this by putting the common parts in `deploy/compose.yaml` and the dev specifics in `deploy/compose.dev.yaml`.
-- The Dev stack specifically uses a `tmpfs` mount for postgres, which erases all data
-on restarts, and runs a `migration` task to recreate the database on startup.  `tmpfs` is memory-backed and enables faster testing without sacrificing the true postgres integration and isolation in each test case.
-- The `deploy/compose.prod.yaml` uses a persistent volume instead of tmpfs.
+- Docker Compose supports combining YAML files. A single **base** file
+  (`deploy/compose.yaml`) holds the services common to every environment; thin
+  **overlays** add the differences: `deploy/compose.dev.yaml` for dev,
+  `deploy/compose.prod.yaml` for prod, and an opt-in `deploy/compose.tunnel.yaml`
+  for the SOCKS tunnel.
+- The Dev stack runs a `migration` service that applies `alembic upgrade head` on
+  startup, after postgres is healthy. Dev data lives in a named volume
+  (`postgres-dev`) that persists across restarts; use `make db-reset` to wipe it
+  and re-apply the full migration chain.
+- Prod uses **external** data volumes (so `docker compose down -v` can't delete
+  them) and does **not** auto-migrate — see the
+  [Docker Deployment](../deployment/docker.md) guide for the full dev-vs-prod story.
 
 ## Env File Structure
 
-The `env_file` block in deploy/compose.yaml shows how environment variables are layered into the Compose containers:
+Environment variables are layered into the Compose containers. The base file loads
+only what's valid everywhere; each overlay adds its own file, so no dev value can
+leak into prod:
 
-1. `.env.default` contains common environment variables
-2. `.env.compose` contains variables specific to services inside compose.  This is mostly concerned with the network (the redis service hostname is `redis`, not `localhost`)
-3. `.env.secret` contains the secrets defined above
-4. `.env.prod` is OPTIONAL and contains any prod overrides
+1. `.env.default` — common, non-secret variables (base).
+2. `.env.secret` — the secrets defined above (base).
+3. `.env.compose` — **dev only**: variables specific to services inside compose,
+   mostly the network (the redis/postgres hostnames are `redis`/`postgres`, not
+   `localhost`) and dev DB credentials.
+4. `.env.prod` — **prod only**: non-secret prod DB name and service URLs.
 
-When running tests on the local host, we want to use the postgres/redis services running in the containers.  However, they bind to ports on `localhost` and the hostnames in `.env.compose` do not exist outside of the Compose network.
+When running tests on the local host, we want to reuse the postgres/redis services
+running in the containers. However, they bind to ports on `localhost` and the
+hostnames in `.env.compose` do not exist outside the Compose network.
 
-Therefore, a `.env.local` file serves the purpose of setting the service endpoints correctly to `localhost:5432` for postgres and `localhost:6379` for redis.  The `.env.local` file is never seen inside the Docker Compose stack, but it makes local testing much more convenient by reusing the compose services.
+Therefore a `.env.local` file sets the service endpoints to `localhost:5433` for
+postgres and `localhost:6380` for redis. The `.env.local` file is never seen inside
+the Docker Compose stack, but it makes local testing convenient by reusing the
+compose services.
 
 ## Settings loading
 

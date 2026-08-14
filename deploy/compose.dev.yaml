@@ -1,23 +1,58 @@
+# Dev overlay: layer on top of compose.yaml.
+#   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml
+#
+# Adds the local nginx front-end, auto-running migrations, dev data volumes, and
+# the dev-specific env (.env.compose: dev DB name, credentials, service URLs).
+
 services:
+  nginx:
+    image: nginx:latest@sha256:8541484afbc9c8a5a8a99b379568ebbc957f658583ec9448fc43104229c03cf8
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../packages/admin-console/dist:/usr/share/nginx/html/admin-console:ro
+    depends_on:
+      - inference-gateway
+    networks:
+      - gateway
+    restart: unless-stopped
+
+  inference-gateway:
+    env_file: &dev-env
+      - path: ../.env.compose # dev DB name / credentials / service URLs
+        required: true
+
+  controller-manager:
+    env_file: *dev-env
+
   postgres:
+    env_file: *dev-env
     volumes:
       - postgres-dev:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U first_gateway -d first_gateway_dev" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+
+  redis:
+    volumes:
+      - redis-dev:/data
+
+  prometheus:
+    volumes:
+      - prometheus-dev:/prometheus
+
+  grafana:
+    volumes:
+      - grafana-dev:/var/lib/grafana
 
   migration:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     env_file:
-      - path: ../.env.default # common
+      - path: ../.env.default
         required: true
-      - path: ../.env.compose # specific to compose stack
+      - path: ../.env.secret
         required: true
-      - path: ../.env.secret  # .gitignored secrets
+      - path: ../.env.compose
         required: true
     depends_on:
       postgres:
@@ -28,87 +63,8 @@ services:
     networks:
       - gateway
 
-  redis:
-    volumes:
-      - redis-dev:/data
-
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ../pki:/etc/prometheus/certs
-    ports:
-      - "127.0.0.1:9090:9090"
-    networks:
-      - gateway
-    depends_on:
-      tunnel:
-        condition: service_healthy
-    environment:
-      - ALL_PROXY=socks5h://tunnel:1080
-      - HTTPS_PROXY=socks5h://tunnel:1080
-      - HTTP_PROXY=socks5h://tunnel:1080
-      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
-
-  controller-manager:
-    depends_on:
-      tunnel:
-        condition: service_healthy
-    environment:
-      - ALL_PROXY=socks5h://tunnel:1080
-
-  inference-gateway:
-    depends_on:
-      tunnel:
-        condition: service_healthy
-    environment:
-      - ALL_PROXY=socks5h://tunnel:1080
-
-  grafana:
-    image: grafana/grafana:latest
-    environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_AUTH_DISABLE_LOGIN_FORM: "true"
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - grafana-storage:/var/lib/grafana
-      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
-      - ./dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
-      - ./grafana-dashboards:/var/lib/grafana/dashboards
-    networks:
-      - gateway
-
-  tunnel:
-  # docker compose up -d, then docker compose attach tunnel to get the OTP
-  # prompt, type the token, then detach with Ctrl-p Ctrl-q (leaves it running).
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.tunnel
-    command:
-      - ssh
-      - -N
-      - -D
-      - 0.0.0.0:1080
-      - -o
-      - ExitOnForwardFailure=yes
-      - -o
-      - ServerAliveInterval=30
-      - -o
-      - StrictHostKeyChecking=accept-new
-      - msalim@bastion.alcf.anl.gov
-    stdin_open: true # so you can type the OTP
-    tty: true
-    restart: "no"       # important: auto-restart would hang waiting for OTP
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "1080"]
-      interval: 5s
-      retries: 60
-    networks:
-      - gateway
-
 volumes:
-  grafana-storage:
   postgres-dev:
   redis-dev:
+  prometheus-dev:
+  grafana-dev:

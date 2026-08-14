@@ -50,12 +50,17 @@ variable the application's `Settings` class uses. No additional
 configuration is needed; the compose stack and the test fixtures both set
 this variable.
 
-## Dev compose stack
+## Migrations in dev vs prod
 
 The `migration` service in `deploy/compose.dev.yaml` runs
-`alembic upgrade head` on startup, after postgres is healthy. Because the
-dev stack uses a tmpfs-backed postgres, every `docker compose up` starts
-from an empty database and applies the full migration chain.
+`alembic upgrade head` automatically on startup, after postgres is
+healthy. The dev database lives in a named volume (`postgres-dev`) that
+persists across restarts; use `make db-reset` to wipe it and re-apply the
+full migration chain from empty.
+
+In prod migrations are **manual** — there is no `migration` service in
+`deploy/compose.prod.yaml`. Run `make prod-migrate` after deploying a new
+image; it runs `alembic upgrade head` in a one-off container.
 
 ## Test fixtures
 

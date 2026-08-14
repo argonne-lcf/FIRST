@@ -1,0 +1,40 @@
+# Example systemd unit to keep the PROD Compose stack running across reboots.
+#
+# The WorkingDirectory below must contain .env (selecting the stack via
+# COMPOSE_FILE) and .env.secret. Substitute the real path before installing.
+#
+# Install on the prod host:
+#   sudo cp deploy/first.service.example /etc/systemd/system/first.service
+#   # edit WorkingDirectory / User below to match the host
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now first.service
+#
+# One-time before first start: `make prod-init` (creates the external volumes).
+# Migrations stay manual: after deploying a new image run `make prod-migrate`.
+#
+# This is a lightweight oneshot wrapper: Compose's own `restart: unless-stopped`
+# keeps individual containers alive while dockerd runs; this unit ties the whole
+# stack's lifecycle to boot/shutdown and ordering after docker.
+
+[Unit]
+Description=FIRST inference gateway (prod Compose stack)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/inference-gateway
+User=first
+Environment=COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml
+Environment=COMPOSE_PROJECT_NAME=first
+# Pull is best-effort so a registry outage doesn't block boot on cached images.
+ExecStartPre=-/usr/bin/docker compose pull --quiet
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+# Never use `-v`: prod volumes are external and must survive, but be explicit.
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

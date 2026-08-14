@@ -1,30 +1,20 @@
-services:
-  nginx:
-    image: nginx:latest
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../packages/admin-console/dist:/usr/share/nginx/html/admin-console:ro
-    depends_on:
-      - inference-gateway
-    networks:
-      - gateway
-    restart: unless-stopped
+# Base stack: services common to BOTH dev and prod.
+#
+# This file is never used alone. Layer an environment overlay on top:
+#   dev  : deploy/compose.yaml:deploy/compose.dev.yaml
+#   prod : deploy/compose.yaml:deploy/compose.prod.yaml
+# Optionally append deploy/compose.tunnel.yaml (dev only) for the SOCKS tunnel.
 
+services:
   inference-gateway:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    env_file: &env-files
-      - path: ../.env.default # common
-        required: true
-      - path: ../.env.compose # specific to compose stack
+    env_file: &base-env
+      - path: ../.env.default # common, non-secret
         required: true
       - path: ../.env.secret  # .gitignored secrets
         required: true
-      - path: ../.env.prod    # optional prod overrides
-        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,7 +28,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    env_file: *env-files
+    env_file: *base-env
     command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
     ports:
       - "127.0.0.1:9100:9100"
@@ -58,26 +48,43 @@ services:
       start_period: 10s
 
   postgres:
-    image: postgres:18
-    env_file: *env-files
+    image: postgres:18@sha256:7157393f508fd8eb46119937fab39813783fe3e7d4c6316c45c12ce2ea25e61d
+    env_file: *base-env
     networks:
       - gateway
     ports:
       - "127.0.0.1:5433:5432"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
-    image: redis:8
+    image: redis:8@sha256:344e3945a0b431c8ff1eecd58c5573538126bd756f02fc7e218ddf1fc2546366
+    # Tuned for latency/throughput under concurrency. Data is persistent but
+    # non-critical (no backups): light RDB only, no AOF.
     command:
       - redis-server
       - --port
       - "6380"
-      - --appendonly yes
-      - --appendfsync everysec
-      - --latency-monitor-threshold 10
-      - --slowlog-log-slower-than 10000
-      - --slowlog-max-len 128
-      - --maxmemory-policy noeviction
+      - --appendonly
+      - "no"
+      - --save
+      - "900 1"
+      - --io-threads
+      - "2"
+      - --tcp-backlog
+      - "511"
+      - --maxmemory-policy
+      - noeviction
+      - --latency-monitor-threshold
+      - "10"
+      - --slowlog-log-slower-than
+      - "10000"
+      - --slowlog-max-len
+      - "128"
     networks:
       - gateway
     restart: unless-stopped
@@ -89,18 +96,42 @@ services:
     ports:
       - "127.0.0.1:6380:6380"
 
-  dozzle:
-    container_name: dozzle
-    image: amir20/dozzle:latest
+  prometheus:
+    image: prom/prometheus:latest@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
+    # Finite footprint for a resource-constrained VM: retain ~2 weeks or 5GB,
+    # whichever comes first. Admin API enabled so scripts/prom-snapshot.sh can
+    # take offline snapshots.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=5GB
+      - --web.enable-admin-api
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - dozzle_data:/data
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../pki:/etc/prometheus/certs
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+    networks:
+      - gateway
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+      - ./grafana-dashboards:/var/lib/grafana/dashboards
+    networks:
+      - gateway
+    restart: unless-stopped
 
 networks:
   gateway:
     driver: bridge
-
-volumes:
-  dozzle_data:

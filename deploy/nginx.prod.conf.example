@@ -1,0 +1,67 @@
+upstream app_server {
+    server 127.0.0.1:7000;
+}
+
+map $http_authorization $anon_key {
+    ""      $binary_remote_addr; # Missing header -> key by IP
+    default "";
+}
+map $http_authorization $auth_key {
+    ""      "";
+    default $http_authorization;
+}
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      "";
+}
+
+limit_req_zone $anon_key zone=anon:10m rate=10r/s;
+limit_req_zone $auth_key zone=auth:10m rate=40r/s;
+limit_req_status 429;
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name inference-api.alcf.anl.gov;
+
+    ssl_certificate     /etc/ssl/first/fullchain.pem;
+    ssl_certificate_key /etc/ssl/first/privkey.pem;
+
+    location = /admin-console {
+        return 301 /admin-console/;
+    }
+    location /admin-console/assets/ {
+        root /srv/first/admin-console;          # <-- host path holding dist/
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+    location /admin-console/ {
+        root /srv/first/admin-console;          # <-- host path holding dist/
+        add_header Cache-Control "no-store";
+        try_files $uri /admin-console/index.html;
+    }
+
+    location / {
+        limit_req zone=anon burst=20;
+        limit_req zone=auth burst=80;
+
+        proxy_pass http://app_server;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect off;
+
+        # Stream SSE without buffering (preserves TTFT/ITL).
+        proxy_buffering off;
+        gzip off;
+
+        proxy_connect_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+        send_timeout 600s;
+    }
+}
