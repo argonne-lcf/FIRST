@@ -34,10 +34,12 @@ services:
   inference-gateway:
     environment:
       - ALL_PROXY=socks5h://tunnel:1080
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
 
   controller-manager:
     environment:
       - ALL_PROXY=socks5h://tunnel:1080
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
 
   prometheus:
     environment:
