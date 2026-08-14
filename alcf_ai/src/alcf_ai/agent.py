@@ -67,6 +67,52 @@ def edit_opencode(service_url: URL, api_key: str, endpoints: dict[str, Any]) -> 
     logging.info(f"Updated configuration at {path}")
 
 
+def edit_pi(service_url: URL, api_key: str, endpoints: dict[str, Any]) -> None:
+    path = Path.home() / ".pi" / "agent" / "models.json"
+    try:
+        with path.open() as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        config = {}
+
+    providers = config.get("providers", {})
+    for cluster_name, cluster in endpoints["clusters"].items():
+        for framework_name, framework in cluster["frameworks"].items():
+            if framework_name not in ("vllm", "api"):
+                continue
+
+            models = [
+                {
+                    "id": model,
+                    "contextWindow": ALLOWLIST[cluster_name][model]["limit"]["context"],
+                    "maxTokens": ALLOWLIST[cluster_name][model]["limit"]["output"],
+                }
+                for model in framework["models"]
+                if model in ALLOWLIST.get(cluster_name, {})
+            ]
+
+            if not models:
+                continue
+
+            providers[f"alcf-inference-service-{cluster_name}-{framework_name}"] = {
+                "baseURL": f"{service_url}{cluster_name}/{framework_name}/v1",
+                "api": "openai-completions",
+                "apiKey": f"{api_key}",
+                "compat": {
+                    "supportsDeveloperRole": False,
+                    "supportsReasoningEffort": False,
+                },
+                "models": models,
+            }
+
+    config["providers"] = providers
+    path.parent.mkdir(exist_ok=True, parents=True)
+    with path.open("w") as f:
+        json.dump(config, f, indent=2)
+
+    logging.info(f"Updated configuration at {path}")
+
+
 def edit_codex(service_url: URL, api_key: str, endpoints: dict[str, Any]) -> None:
     path = Path.home() / ".codex" / "config.toml"
     try:
@@ -102,7 +148,9 @@ def edit_codex(service_url: URL, api_key: str, endpoints: dict[str, Any]) -> Non
 
 
 @cli.command()
-def configure(agent: Annotated[Literal["opencode", "codex"], typer.Argument()]) -> None:
+def configure(
+    agent: Annotated[Literal["opencode", "codex", "pi"], typer.Argument()],
+) -> None:
     """
     Generates a configuration template for a given agent.
     """
@@ -120,3 +168,5 @@ def configure(agent: Annotated[Literal["opencode", "codex"], typer.Argument()]) 
             edit_opencode(client.base_url, api_key, endpoints)
         case "codex":
             edit_codex(client.base_url, api_key, endpoints)
+        case "pi":
+            edit_pi(client.base_url, api_key, endpoints)
