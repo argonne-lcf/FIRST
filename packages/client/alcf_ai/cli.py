@@ -14,7 +14,6 @@ from first_common.errors import FirstError
 from .client import InferenceClient
 from .subcommands._context import CliContext
 from .subcommands.access_groups import cli as access_groups_cli
-from .subcommands.admin import cli as admin_cli
 from .subcommands.auth import cli as auth_cli
 from .subcommands.chat import chat as chat_command
 from .subcommands.clusters import cli as clusters_cli
@@ -31,7 +30,6 @@ cli = Typer(no_args_is_help=True)
 
 cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
 cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation service")
-cli.add_typer(admin_cli, name="admin", help="Manage Inference Gateway Resources")
 cli.add_typer(endpoints_cli, name="endpoints", help="Inspect available API endpoints")
 cli.add_typer(clusters_cli, name="clusters", help="Inspect cluster state")
 cli.add_typer(

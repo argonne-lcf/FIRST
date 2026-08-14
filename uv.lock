@@ -634,6 +634,7 @@ name = "first-gateway"
 version = "0.2.0"
 source = { editable = "packages/gateway" }
 dependencies = [
+    { name = "alcf-ai" },
     { name = "alembic" },
     { name = "fastapi" },
     { name = "first-common" },
@@ -655,6 +656,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alcf-ai", editable = "packages/client" },
     { name = "alembic" },
     { name = "fastapi" },
     { name = "first-common", editable = "packages/common" },

@@ -12,6 +12,7 @@ classifiers = [
 # Directly imported dependencies for production:
 dependencies = [
     "first-common",
+    "alcf-ai",
     "alembic",
     "globus-compute-sdk",
     "globus-sdk",
@@ -32,9 +33,11 @@ dependencies = [
 
 [project.scripts]
 pilot-certmanager = "first_gateway.services.certmanager.cli:app"
+first-admin = "first_gateway.admin.cli:main"
 
 [tool.uv.sources]
 first-common = { workspace = true }
+alcf-ai = { workspace = true }
 
 [build-system]
 requires = ["uv_build<0.12"]

@@ -1,6 +1,11 @@
 import logging
-from typing import TYPE_CHECKING
+import os
 
+from dotenv import load_dotenv
+from httpx import Client, Timeout
+
+from alcf_ai._http import raise_for_status
+from alcf_ai.client import AutoGlobusAuth
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
@@ -11,20 +16,24 @@ from first_common.schema.resources.read import (
     PilotDeploymentSummary,
 )
 
-from .._http import raise_for_status
-
-if TYPE_CHECKING:
-    from ..client import InferenceClient
-
 logger = logging.getLogger(__name__)
+load_dotenv()
+DEFAULT_BASE_URL = os.environ.get("admin_base_url", "http://localhost:9100")
 
 
-class AdminAPI:
-    def __init__(self, client: "InferenceClient") -> None:
-        self._client = client
+class AdminClient(Client):
+    def __init__(self, base_url: str | None = None) -> None:
+        if base_url is None:
+            base_url = DEFAULT_BASE_URL
+
+        super().__init__(
+            auth=AutoGlobusAuth(),
+            base_url=base_url,
+            timeout=Timeout(10.0),
+        )
 
     def plan(self, resources: list[ResourceManifest]) -> ResourceChangePlan:
-        resp = self._client.post(
+        resp = self.post(
             "/control/v1/plan",
             json={"resources": [r.model_dump(mode="json") for r in resources]},
         )
@@ -34,7 +43,7 @@ class AdminAPI:
     def apply(
         self, resources: list[ResourceManifest], approved_plan: ResourceChangePlan
     ) -> ConfigVersion | None:
-        resp = self._client.post(
+        resp = self.post(
             "/control/v1/apply",
             json={
                 "resources": [r.model_dump(mode="json") for r in resources],
@@ -45,17 +54,17 @@ class AdminAPI:
         return ConfigVersion.model_validate(resp.json()) if resp.json() else None
 
     def list_config_versions(self) -> list[ConfigVersionSummary]:
-        resp = self._client.get("/control/v1/config-versions")
+        resp = self.get("/control/v1/config-versions")
         raise_for_status(resp)
         return [ConfigVersionSummary.model_validate(v) for v in resp.json()]
 
     def get_config_version(self, uid: int) -> ConfigVersion:
-        resp = self._client.get(f"/control/v1/config-versions/{uid}")
+        resp = self.get(f"/control/v1/config-versions/{uid}")
         raise_for_status(resp)
         return ConfigVersion.model_validate(resp.json())
 
     def reconcile_reset(self, resource: str) -> None:
-        resp = self._client.post(
+        resp = self.post(
             "/control/v1/reconcile-reset",
             json={"resource": resource},
         )
@@ -64,7 +73,7 @@ class AdminAPI:
     def set_desired_pilot_deployment_replicas(
         self, name: str, num_replicas: int
     ) -> PilotDeploymentSummary:
-        resp = self._client.put(
+        resp = self.put(
             f"/control/v1/deployments/pilot/{name}/desired-replicas",
             json={"num_replicas": num_replicas},
         )

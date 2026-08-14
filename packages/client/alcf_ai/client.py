@@ -4,7 +4,7 @@ from typing import Generator
 from dotenv import load_dotenv
 from httpx import Auth, Client, Request, Response, Timeout
 
-from .api import AdminAPI, Sam3API, StagingAPI
+from .api import Sam3API, StagingAPI
 from .auth import get_inference_authorizer
 from .resources import (
     AccessGroupsResource,
@@ -45,7 +45,6 @@ class InferenceClient(Client):
             base_url=base_url,
             timeout=timeout,
         )
-        self.admin = AdminAPI(self)
         self.sam3 = Sam3API(self)
         self.staging = StagingAPI(self)
         self.clusters = ClustersResource(self)

@@ -1,31 +1,58 @@
 import difflib
 import logging
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import typer
 from pydantic import ValidationError
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.pretty import Pretty, pretty_repr
 from rich.table import Table
 from rich.text import Text
+from typer import Typer
 from yaml import safe_load_all
 
-from first_common.errors import InvalidSpecError
+from alcf_ai.cli import _print_error
+from first_common.errors import FirstError, InvalidSpecError
 from first_common.schema.resources import (
     ConfigVersion,
     ResourceChangePlan,
     ResourceManifest,
 )
 
-from ._context import get_client
+from .client import DEFAULT_BASE_URL, AdminClient
 
-cli = typer.Typer(no_args_is_help=True)
 logger = logging.getLogger(__name__)
+console = Console(stderr=True)
+
+cli = Typer(no_args_is_help=True)
+
+
+@cli.callback()
+def _root(
+    ctx: typer.Context,
+    base_url: str | None = DEFAULT_BASE_URL,
+    log_level: str = "INFO",
+) -> None:
+    """
+    Inference Gateway CLI
+    """
+    logging.basicConfig(
+        level=log_level,
+        format="%(name)s:%(lineno)d %(message)s",
+        handlers=[RichHandler(console=console)],
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    client = AdminClient(base_url)
+    ctx.obj = client
+    logger.debug(f"Using client: {client.base_url}")
 
 
 def format_validation_error(
@@ -285,18 +312,24 @@ def print_plan(plan: ResourceChangePlan, labels: _ChangeLabels = PLAN_LABELS) ->
 
 @cli.command()
 def plan(ctx: typer.Context, spec_dir: Path) -> None:
-    client = get_client(ctx)
+    """
+    Compare manifest to current state to review planned changes.
+    """
+    client: AdminClient = ctx.obj
     resources = load_resources_from_yaml(spec_dir)
-    result = client.admin.plan(resources)
+    result = client.plan(resources)
     print_plan(result)
 
 
 @cli.command()
 def apply(ctx: typer.Context, spec_dir: Path) -> None:
-    client = get_client(ctx)
+    """
+    Apply manifests to current state.
+    """
+    client: AdminClient = ctx.obj
     console = Console()
     resources = load_resources_from_yaml(spec_dir)
-    plan = client.admin.plan(resources)
+    plan = client.plan(resources)
     print_plan(plan)
 
     if not (plan.to_add or plan.to_update or plan.to_delete):
@@ -305,7 +338,7 @@ def apply(ctx: typer.Context, spec_dir: Path) -> None:
     if not typer.confirm("Apply these changes?"):
         return
 
-    result = client.admin.apply(resources, plan)
+    result = client.apply(resources, plan)
     if result:
         console.print(
             f"\n[bold green]Applied ConfigVersion {result.uid} successfully.\n"
@@ -337,9 +370,9 @@ def print_config_version(version: ConfigVersion) -> None:
 @cli.command(name="audit")
 def list_config_versions(ctx: typer.Context) -> None:
     """List all ConfigVersions (without the full changes payload)."""
-    client = get_client(ctx)
+    client: AdminClient = ctx.obj
     console = Console()
-    versions = client.admin.list_config_versions()
+    versions = client.list_config_versions()
 
     table = Table(title="ConfigVersions")
     table.add_column("UID", justify="right", style="bold")
@@ -355,16 +388,16 @@ def list_config_versions(ctx: typer.Context) -> None:
 @cli.command(name="audit-detail")
 def get_config_version(ctx: typer.Context, uid: int) -> None:
     """Show the details of a single ConfigVersion, including its changes."""
-    client = get_client(ctx)
-    version = client.admin.get_config_version(uid)
+    client: AdminClient = ctx.obj
+    version = client.get_config_version(uid)
     print_config_version(version)
 
 
 @cli.command(name="reconcile-reset")
 def reconcile_reset(ctx: typer.Context, resource: str) -> None:
     """Reset reconcile backoff state for a resource (e.g. 'PilotJob.my-job')"""
-    client = get_client(ctx)
-    client.admin.reconcile_reset(resource)
+    client: AdminClient = ctx.obj
+    client.reconcile_reset(resource)
     Console().print(f"[bold green]Reconcile state reset for {resource}.[/]")
 
 
@@ -373,8 +406,23 @@ def set_desired_replicas(
     ctx: typer.Context, deployment_name: str, num_replicas: int
 ) -> None:
     """Manually scale the number of replicas in a PilotDeployment"""
-    client = get_client(ctx)
-    deployment = client.admin.set_desired_pilot_deployment_replicas(
+    client: AdminClient = ctx.obj
+    deployment = client.set_desired_pilot_deployment_replicas(
         deployment_name, num_replicas
     )
     Console().print(Pretty(deployment.model_dump(mode="json")))
+
+
+def main() -> None:
+    try:
+        cli()
+    except FirstError as exc:
+        _print_error(f"Error ({exc.status_code})", str(exc), info=exc.info or None)
+        sys.exit(1)
+    except httpx.HTTPError as exc:
+        _print_error("HTTP Error", f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

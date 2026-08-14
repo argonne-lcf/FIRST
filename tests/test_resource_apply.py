@@ -11,12 +11,12 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alcf_ai.subcommands.admin import load_resources_from_yaml
 from first_common.schema.resources import (
     ConfigVersion,
     ResourceChangePlan,
     ResourceManifest,
 )
+from first_gateway.admin.cli import load_resources_from_yaml
 
 from .fixtures.auth import ADMIN_TOKEN, USER_TOKEN, auth_header
 
