@@ -15,7 +15,10 @@ ALLOWLIST = {
     "sophia": {"openai/gpt-oss-120b": {"limit": {"context": 65536, "output": 0}}},
     # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
     # "metis": {"gpt-oss-120b": {"limits": {"context": 65536, "output": 0}}},
-    "minerva": {"nemotron-3-ultra": {"limit": {"context": 96000, "output": 0}}},
+    "minerva": {
+        "nemotron-3-ultra": {"limit": {"context": 262144, "output": 0}},
+        "inkling-bf16": {"limit": {"context": 262144, "output": 0}},
+    },
 }
 
 
