@@ -7,10 +7,11 @@ Do not confuse with admin-created pilot resources inside `resources` subpackage
 import os
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Self
 
 import yaml
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, PrivateAttr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .types import GpuClaim, PilotLaunchSpec, ReplicaState
@@ -111,6 +112,7 @@ class PilotRuntimeConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="pilot_", case_sensitive=False, extra="ignore"
     )
+    _tmpdir: TemporaryDirectory[str] | None = PrivateAttr(default=None)
 
     ca_crt: str
     server_crt: str
@@ -142,8 +144,10 @@ class PilotRuntimeConfig(BaseSettings):
         return self.workdir / "readyfiles"
 
     @property
-    def control_port_internal(self) -> int:
-        return self.external_port + 1
+    def control_uds_path(self) -> Path:
+        if self._tmpdir is None:
+            self._tmpdir = TemporaryDirectory()
+        return Path(self._tmpdir.name) / f"pilot-control-{os.getpid()}.sock"
 
     def ensure_dirs(self) -> None:
         for d in (self.nginx_base_dir, self.replica_base_dir, self.readyfile_dir):

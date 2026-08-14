@@ -43,6 +43,11 @@ _conf_template_str = """
         keepalive_timeout  300s;
         keepalive_requests 10000;
 
+        upstream control_api {
+            server unix:{{config.control_uds_path.as_posix()}};
+            keepalive 8;
+        }
+
         {% for replica in replicas %}
         # Pooled connections to the local vLLM replica over its Unix socket.
         # Keyed by loop index: replica.name contains '/' and '.', invalid in an
@@ -77,7 +82,8 @@ _conf_template_str = """
                 {% endfor -%}
                 allow 127.0.0.1;
                 deny all;
-                proxy_pass http://127.0.0.1:{{config.control_port_internal}}/;
+                proxy_pass http://control_api/;
+
             }
 
             {% for replica in replicas %}

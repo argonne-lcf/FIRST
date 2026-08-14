@@ -128,7 +128,7 @@ class _PilotManager:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    config = PilotRuntimeConfig.load()
+    config: PilotRuntimeConfig = app.state.config
     config.ensure_dirs()
     readyfile = config.readyfile_dir / f"{config.job_name}.ready.json"
 
@@ -192,9 +192,9 @@ def handle_app_error(_request: Request, exc: FirstError) -> JSONResponse:
 
 def entrypoint() -> None:
     config = PilotRuntimeConfig.load()
+    app.state.config = config
     uvicorn.run(
         app,
-        host="127.0.0.1",
-        port=config.control_port_internal,
+        uds=config.control_uds_path.as_posix(),
         log_level="INFO",
     )

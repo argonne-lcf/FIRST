@@ -37,11 +37,10 @@ There is nothing to install on the cluster beyond `uv` and `nginx`:
 PILOT_CONFIG_FILE=/path/to/config.yaml uvx first-pilot
 ```
 
-This invokes `first_pilot.control_api:entrypoint`, which loads the YAML
-config and runs the FastAPI app under uvicorn on
-`127.0.0.1:control_port_internal`. NGINX, started by the app's lifespan,
-is what listens on `external_port` and reverse-proxies inbound mTLS
-traffic to it.
+This invokes `first_pilot.control_api:entrypoint`, which loads the YAML config
+and runs the FastAPI app under uvicorn on a private Unix domain socket.  NGINX,
+started by the app's lifespan, is what listens on `external_port` and
+reverse-proxies inbound mTLS traffic to it.
 
 
 ## Configuration
