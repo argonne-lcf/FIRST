@@ -94,48 +94,6 @@ export type BackendRuntime = {
 };
 
 /**
- * Body_apply_resources_control_v1_apply_post
- */
-export type BodyApplyResourcesControlV1ApplyPost = {
-  /**
-   * Resources
-   */
-  resources: Array<ResourceManifest>;
-  approved_plan: ResourceChangePlan;
-};
-
-/**
- * Body_plan_resources_control_v1_plan_post
- */
-export type BodyPlanResourcesControlV1PlanPost = {
-  /**
-   * Resources
-   */
-  resources: Array<ResourceManifest>;
-};
-
-/**
- * Body_reconcile_reset_control_v1_reconcile_reset_post
- */
-export type BodyReconcileResetControlV1ReconcileResetPost = {
-  /**
-   * Resource
-   */
-  resource: string;
-};
-
-/**
- * Body_set_desired_pilot_replicas_control_v1_deployments_pilot__name__desired_replicas_put
- */
-export type BodySetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut =
-  {
-    /**
-     * Num Replicas
-     */
-    num_replicas: number;
-  };
-
-/**
  * ClusterDetail
  *
  * HPC Cluster information with embedded details of pilot jobs currently
@@ -247,52 +205,6 @@ export type ClusterSummary = {
 };
 
 /**
- * ConfigVersion
- *
- * Audit history of applied configuration changes, with detailed diff.
- */
-export type ConfigVersion = {
-  /**
-   * Uid
-   */
-  uid: number;
-  /**
-   * Applied At
-   */
-  applied_at: string;
-  /**
-   * Applied By
-   */
-  applied_by: string;
-  /**
-   * Changes
-   */
-  changes: {
-    [key: string]: unknown;
-  };
-};
-
-/**
- * ConfigVersionSummary
- *
- * Audit history of applied configuration changes.
- */
-export type ConfigVersionSummary = {
-  /**
-   * Uid
-   */
-  uid: number;
-  /**
-   * Applied At
-   */
-  applied_at: string;
-  /**
-   * Applied By
-   */
-  applied_by: string;
-};
-
-/**
  * DemandSignalConfig
  *
  * Model-level config for the shared demand signal all of a model's
@@ -381,8 +293,6 @@ export type DeploymentConfig = {
    */
   backends: Array<BackendConfig>;
 };
-
-export type FieldChange = [unknown, unknown];
 
 /**
  * GpuClaim
@@ -1098,7 +1008,7 @@ export type PilotJobRuntime = {
  * Specification for launching a model replica inside of a pilot job.
  *
  * The Spec author retains full flexibility to write a bash model startup
- * script in `serve_script_template`. The template must respect the port,
+ * script in `serve_script_template`. The template must respect the uds,
  * served model name, and GPU resources provided as context to the script
  * template.
  */
@@ -1247,24 +1157,6 @@ export type PilotResources = {
 };
 
 /**
- * PrometheusTarget
- *
- * A single target group in a Prometheus HTTP SD response.
- */
-export type PrometheusTarget = {
-  /**
-   * Targets
-   */
-  targets: Array<string>;
-  /**
-   * Labels
-   */
-  labels: {
-    [key: string]: string;
-  };
-};
-
-/**
  * ReplicaState
  *
  * Lifecycle of a single PilotReplica model instance.
@@ -1279,35 +1171,6 @@ export type ReplicaState =
   | "start_timeout"
   | "terminating"
   | "terminated";
-
-/**
- * ResourceChangePlan
- *
- * A complete terraform-style change plan: what resources are being added,
- * updated, deleted relative to the previous declarative version.
- */
-export type ResourceChangePlan = {
-  /**
-   * Previous Version
-   */
-  previous_version: number;
-  /**
-   * No Change
-   */
-  no_change: Array<ResourceRef>;
-  /**
-   * To Delete
-   */
-  to_delete: Array<ResourceRef>;
-  /**
-   * To Add
-   */
-  to_add: Array<ResourceManifest>;
-  /**
-   * To Update
-   */
-  to_update: Array<ResourcePatch>;
-};
 
 /**
  * ResourceHealth
@@ -1342,79 +1205,6 @@ export type ResourceHealth = {
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
-};
-
-/**
- * ResourceManifest
- *
- * Validator of declarative YAML resource specs.
- *
- * `kind` identifies a specific ResourceSpec subclass which is used to validate
- * the content of `spec` dynamically.
- *
- * `name` is the unique identifier of each resource.  Names may contain
- * alphanumerics (a-z, A-Z, 0-9) and ._-/.  The special characters are
- * deliberately chosen so that name:slug mapping is 1:1 (bijective).
- */
-export type ResourceManifest = {
-  /**
-   * Kind
-   */
-  kind: string;
-  /**
-   * Name
-   */
-  name: string;
-  spec: ResourceSpec;
-};
-
-/**
- * ResourcePatch
- *
- * A resource update action: a specific (kind, name) has attributes in `patch`
- * updated.
- */
-export type ResourcePatch = {
-  /**
-   * Kind
-   */
-  kind: string;
-  /**
-   * Name
-   */
-  name: string;
-  /**
-   * Patch
-   */
-  patch: {
-    [key: string]: FieldChange;
-  };
-};
-
-/**
- * ResourceRef
- *
- * Unique Resource Identifier
- */
-export type ResourceRef = {
-  /**
-   * Kind
-   */
-  kind: string;
-  /**
-   * Name
-   */
-  name: string;
-};
-
-/**
- * ResourceSpec
- *
- * Base class for registering specs that can be referenced in a
- * `ResourceManifest`.
- */
-export type ResourceSpec = {
-  [key: string]: unknown;
 };
 
 /**
@@ -2290,16 +2080,6 @@ export type PilotReplicaWritable = {
 };
 
 /**
- * ResourceSpec
- *
- * Base class for registering specs that can be referenced in a
- * `ResourceManifest`.
- */
-export type ResourceSpecWritable = {
-  [key: string]: unknown;
-};
-
-/**
  * StaticDeploymentDetail
  *
  * Static Deployment with backend runtime information.
@@ -2455,25 +2235,6 @@ export type HealthHealthGetResponses = {
 
 export type HealthHealthGetResponse =
   HealthHealthGetResponses[keyof HealthHealthGetResponses];
-
-export type PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData = {
-  body?: never;
-  path?: never;
-  query?: never;
-  url: "/discovery/v1/prometheus";
-};
-
-export type PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses = {
-  /**
-   * Response Prometheus Service Discovery Discovery V1 Prometheus Get
-   *
-   * Successful Response
-   */
-  200: Array<PrometheusTarget>;
-};
-
-export type PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse =
-  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses[keyof PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses];
 
 export type WhoamiWhoamiGetData = {
   body?: never;
@@ -2757,180 +2518,7 @@ export type GetRouterConfigCatalogV1RouterConfigGetResponses = {
 export type GetRouterConfigCatalogV1RouterConfigGetResponse =
   GetRouterConfigCatalogV1RouterConfigGetResponses[keyof GetRouterConfigCatalogV1RouterConfigGetResponses];
 
-export type PlanResourcesControlV1PlanPostData = {
-  body: BodyPlanResourcesControlV1PlanPost;
-  path?: never;
-  query?: never;
-  url: "/control/v1/plan";
-};
-
-export type PlanResourcesControlV1PlanPostErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError;
-};
-
-export type PlanResourcesControlV1PlanPostError =
-  PlanResourcesControlV1PlanPostErrors[keyof PlanResourcesControlV1PlanPostErrors];
-
-export type PlanResourcesControlV1PlanPostResponses = {
-  /**
-   * Successful Response
-   */
-  200: ResourceChangePlan;
-};
-
-export type PlanResourcesControlV1PlanPostResponse =
-  PlanResourcesControlV1PlanPostResponses[keyof PlanResourcesControlV1PlanPostResponses];
-
-export type ApplyResourcesControlV1ApplyPostData = {
-  body: BodyApplyResourcesControlV1ApplyPost;
-  path?: never;
-  query?: never;
-  url: "/control/v1/apply";
-};
-
-export type ApplyResourcesControlV1ApplyPostErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError;
-};
-
-export type ApplyResourcesControlV1ApplyPostError =
-  ApplyResourcesControlV1ApplyPostErrors[keyof ApplyResourcesControlV1ApplyPostErrors];
-
-export type ApplyResourcesControlV1ApplyPostResponses = {
-  /**
-   * Response Apply Resources Control V1 Apply Post
-   *
-   * Successful Response
-   */
-  200: ConfigVersion | null;
-};
-
-export type ApplyResourcesControlV1ApplyPostResponse =
-  ApplyResourcesControlV1ApplyPostResponses[keyof ApplyResourcesControlV1ApplyPostResponses];
-
-export type ListConfigVersionsControlV1ConfigVersionsGetData = {
-  body?: never;
-  path?: never;
-  query?: never;
-  url: "/control/v1/config-versions";
-};
-
-export type ListConfigVersionsControlV1ConfigVersionsGetResponses = {
-  /**
-   * Response List Config Versions Control V1 Config Versions Get
-   *
-   * Successful Response
-   */
-  200: Array<ConfigVersionSummary>;
-};
-
-export type ListConfigVersionsControlV1ConfigVersionsGetResponse =
-  ListConfigVersionsControlV1ConfigVersionsGetResponses[keyof ListConfigVersionsControlV1ConfigVersionsGetResponses];
-
-export type GetConfigVersionControlV1ConfigVersionsUidGetData = {
-  body?: never;
-  path: {
-    /**
-     * Uid
-     */
-    uid: number;
-  };
-  query?: never;
-  url: "/control/v1/config-versions/{uid}";
-};
-
-export type GetConfigVersionControlV1ConfigVersionsUidGetErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError;
-};
-
-export type GetConfigVersionControlV1ConfigVersionsUidGetError =
-  GetConfigVersionControlV1ConfigVersionsUidGetErrors[keyof GetConfigVersionControlV1ConfigVersionsUidGetErrors];
-
-export type GetConfigVersionControlV1ConfigVersionsUidGetResponses = {
-  /**
-   * Successful Response
-   */
-  200: ConfigVersion;
-};
-
-export type GetConfigVersionControlV1ConfigVersionsUidGetResponse =
-  GetConfigVersionControlV1ConfigVersionsUidGetResponses[keyof GetConfigVersionControlV1ConfigVersionsUidGetResponses];
-
-export type SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData =
-  {
-    body: BodySetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut;
-    path: {
-      /**
-       * Name
-       */
-      name: string;
-    };
-    query?: never;
-    url: "/control/v1/deployments/pilot/{name}/desired-replicas";
-  };
-
-export type SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors =
-  {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-  };
-
-export type SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError =
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors[keyof SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors];
-
-export type SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses =
-  {
-    /**
-     * Successful Response
-     */
-    200: PilotDeploymentSummary;
-  };
-
-export type SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse =
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses[keyof SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses];
-
-export type ReconcileResetControlV1ReconcileResetPostData = {
-  body: BodyReconcileResetControlV1ReconcileResetPost;
-  path?: never;
-  query?: never;
-  url: "/control/v1/reconcile-reset";
-};
-
-export type ReconcileResetControlV1ReconcileResetPostErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError;
-};
-
-export type ReconcileResetControlV1ReconcileResetPostError =
-  ReconcileResetControlV1ReconcileResetPostErrors[keyof ReconcileResetControlV1ReconcileResetPostErrors];
-
-export type ReconcileResetControlV1ReconcileResetPostResponses = {
-  /**
-   * Response Reconcile Reset Control V1 Reconcile Reset Post
-   *
-   * Successful Response
-   */
-  200: {
-    [key: string]: string;
-  };
-};
-
-export type ReconcileResetControlV1ReconcileResetPostResponse =
-  ReconcileResetControlV1ReconcileResetPostResponses[keyof ReconcileResetControlV1ReconcileResetPostResponses];
-
-export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetData = {
+export type TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData = {
   body?: never;
   path: {
     /**
@@ -2939,27 +2527,27 @@ export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetData = {
     slug: string;
   };
   query?: never;
-  url: "/control/v1/pilot-replicas/{slug}/logs";
+  url: "/catalog/v1/pilot-replicas/{slug}/logs";
 };
 
-export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors = {
+export type TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors = {
   /**
    * Validation Error
    */
   422: HttpValidationError;
 };
 
-export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetError =
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors[keyof TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors];
+export type TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetError =
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors[keyof TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors];
 
-export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses = {
+export type TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses = {
   /**
-   * Response Tail Replica Logs Control V1 Pilot Replicas  Slug  Logs Get
+   * Response Tail Replica Logs Catalog V1 Pilot Replicas  Slug  Logs Get
    *
    * Successful Response
    */
   200: string;
 };
 
-export type TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponse =
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses[keyof TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses];
+export type TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponse =
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses[keyof TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses];

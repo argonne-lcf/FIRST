@@ -9,9 +9,6 @@ import type {
 } from "./client";
 import { client } from "./client.gen";
 import type {
-  ApplyResourcesControlV1ApplyPostData,
-  ApplyResourcesControlV1ApplyPostErrors,
-  ApplyResourcesControlV1ApplyPostResponses,
   ChatCompletionsFederatedV1ChatCompletionsPostData,
   ChatCompletionsFederatedV1ChatCompletionsPostErrors,
   ChatCompletionsFederatedV1ChatCompletionsPostResponses,
@@ -21,9 +18,6 @@ import type {
   GetClusterCatalogV1ClustersNameGetData,
   GetClusterCatalogV1ClustersNameGetErrors,
   GetClusterCatalogV1ClustersNameGetResponses,
-  GetConfigVersionControlV1ConfigVersionsUidGetData,
-  GetConfigVersionControlV1ConfigVersionsUidGetErrors,
-  GetConfigVersionControlV1ConfigVersionsUidGetResponses,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
@@ -37,31 +31,18 @@ import type {
   ListAccessGroupsCatalogV1AccessGroupsGetResponses,
   ListClustersCatalogV1ClustersGetData,
   ListClustersCatalogV1ClustersGetResponses,
-  ListConfigVersionsControlV1ConfigVersionsGetData,
-  ListConfigVersionsControlV1ConfigVersionsGetResponses,
   ListModelsCatalogV1ModelsGetData,
   ListModelsCatalogV1ModelsGetResponses,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetData,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponses,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetData,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponses,
-  PlanResourcesControlV1PlanPostData,
-  PlanResourcesControlV1PlanPostErrors,
-  PlanResourcesControlV1PlanPostResponses,
-  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData,
-  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses,
-  ReconcileResetControlV1ReconcileResetPostData,
-  ReconcileResetControlV1ReconcileResetPostErrors,
-  ReconcileResetControlV1ReconcileResetPostResponses,
   ResponsesFederatedV1ResponsesPostData,
   ResponsesFederatedV1ResponsesPostErrors,
   ResponsesFederatedV1ResponsesPostResponses,
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors,
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses,
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetData,
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors,
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses,
   WhoamiWhoamiGetData,
   WhoamiWhoamiGetResponses,
 } from "./types.gen";
@@ -97,40 +78,6 @@ export const healthHealthGet = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: "/health", ...options });
-
-/**
- * Prometheus Service Discovery
- *
- * Prometheus HTTP Service Discovery endpoint for live model backends.
- *
- * Advertises every live backend whose deployment exposes a
- * `prometheus_metrics_path` as a scrape target.  The metrics URL is split
- * into the `__address__`/`__scheme__`/`__metrics_path__` magic labels so a
- * single host:port can host many distinct metrics paths; `__scrape_interval__`
- * carries the deployment's scrape interval.  `instance` is pinned to the
- * unique, non-recycling backend id rather than the (shared) address.
- *
- * Returns HTTP 200 with an empty list when there are no targets.  The whole
- * target list is returned on every scrape; Prometheus keeps its cached list
- * if a refresh fails.
- */
-export const prometheusServiceDiscoveryDiscoveryV1PrometheusGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<
-    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/discovery/v1/prometheus", ...options });
 
 /**
  * Whoami
@@ -391,8 +338,7 @@ export const embeddingsFederatedV1EmbeddingsPost = <
 /**
  * Get Cluster
  *
- * Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
- * sensitive operational state.
+ * Get a Cluster with its pilot jobs. Admin-only.
  */
 export const getClusterCatalogV1ClustersNameGet = <
   ThrowOnError extends boolean = false,
@@ -461,207 +407,28 @@ export const getRouterConfigCatalogV1RouterConfigGet = <
   });
 
 /**
- * Plan Resources
- *
- * Create a plan for applying a set of resources without actually applying them.
- *
- * Returns a ResourceChangePlan describing what would be added, updated,
- * deleted, or left unchanged.  This is the "Plan" phase of a Plan/Apply
- * workflow.  The caller reviews the plan and then submits it back to the Apply
- * endpoint to commit changes.
- */
-export const planResourcesControlV1PlanPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<PlanResourcesControlV1PlanPostData, ThrowOnError>,
-): RequestResult<
-  PlanResourcesControlV1PlanPostResponses,
-  PlanResourcesControlV1PlanPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    PlanResourcesControlV1PlanPostResponses,
-    PlanResourcesControlV1PlanPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/control/v1/plan",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Apply Resources
- *
- * Apply a previously-approved plan.
- *
- * Takes the same resources and an approved ResourceChangePlan (one that
- * was returned by the /plan endpoint and reviewed by the caller).
- * Performs a two-phase commit: replans the current state and only
- * proceeds if it matches the approved plan, ensuring no concurrent
- * modifications have occurred.
- */
-export const applyResourcesControlV1ApplyPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<ApplyResourcesControlV1ApplyPostData, ThrowOnError>,
-): RequestResult<
-  ApplyResourcesControlV1ApplyPostResponses,
-  ApplyResourcesControlV1ApplyPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    ApplyResourcesControlV1ApplyPostResponses,
-    ApplyResourcesControlV1ApplyPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/control/v1/apply",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * List Config Versions
- *
- * List all recorded ConfigVersions
- */
-export const listConfigVersionsControlV1ConfigVersionsGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<
-    ListConfigVersionsControlV1ConfigVersionsGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ListConfigVersionsControlV1ConfigVersionsGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    ListConfigVersionsControlV1ConfigVersionsGetResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/control/v1/config-versions",
-    ...options,
-  });
-
-/**
- * Get Config Version
- *
- * Get a single ConfigVersion by uid, including the full `changes` record.
- */
-export const getConfigVersionControlV1ConfigVersionsUidGet = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    GetConfigVersionControlV1ConfigVersionsUidGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  GetConfigVersionControlV1ConfigVersionsUidGetResponses,
-  GetConfigVersionControlV1ConfigVersionsUidGetErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetConfigVersionControlV1ConfigVersionsUidGetResponses,
-    GetConfigVersionControlV1ConfigVersionsUidGetErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/control/v1/config-versions/{uid}",
-    ...options,
-  });
-
-/**
- * Set Desired Pilot Replicas
- *
- * Manually set desired scale of a PilotDeployment
- */
-export const setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut =
-  <ThrowOnError extends boolean = false>(
-    options: Options<
-      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
-      ThrowOnError
-    >,
-  ): RequestResult<
-    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses,
-    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors,
-    ThrowOnError
-  > =>
-    (options.client ?? client).put<
-      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses,
-      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors,
-      ThrowOnError
-    >({
-      security: [{ scheme: "bearer", type: "http" }],
-      url: "/control/v1/deployments/pilot/{name}/desired-replicas",
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
-    });
-
-/**
- * Reconcile Reset
- *
- * Reset reconcile backoff state for a resource and its children.
- */
-export const reconcileResetControlV1ReconcileResetPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<ReconcileResetControlV1ReconcileResetPostData, ThrowOnError>,
-): RequestResult<
-  ReconcileResetControlV1ReconcileResetPostResponses,
-  ReconcileResetControlV1ReconcileResetPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    ReconcileResetControlV1ReconcileResetPostResponses,
-    ReconcileResetControlV1ReconcileResetPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/control/v1/reconcile-reset",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
  * Tail Replica Logs
  *
- * Read tail of logs generated by replica
+ * Read tail of logs generated by replica.
  */
-export const tailReplicaLogsControlV1PilotReplicasSlugLogsGet = <
+export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGet = <
   ThrowOnError extends boolean = false,
 >(
   options: Options<
-    TailReplicaLogsControlV1PilotReplicasSlugLogsGetData,
+    TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData,
     ThrowOnError
   >,
 ): RequestResult<
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses,
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors,
   ThrowOnError
 > =>
   (options.client ?? client).get<
-    TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponses,
-    TailReplicaLogsControlV1PilotReplicasSlugLogsGetErrors,
+    TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses,
+    TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors,
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/control/v1/pilot-replicas/{slug}/logs",
+    url: "/catalog/v1/pilot-replicas/{slug}/logs",
     ...options,
   });

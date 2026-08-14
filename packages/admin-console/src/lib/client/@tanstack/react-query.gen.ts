@@ -8,34 +8,24 @@ import {
 
 import { client } from "../client.gen";
 import {
-  applyResourcesControlV1ApplyPost,
   chatCompletionsFederatedV1ChatCompletionsPost,
   embeddingsFederatedV1EmbeddingsPost,
   getClusterCatalogV1ClustersNameGet,
-  getConfigVersionControlV1ConfigVersionsUidGet,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGet,
   getRouterConfigCatalogV1RouterConfigGet,
   getSystemHealthCatalogV1SystemHealthGet,
   healthHealthGet,
   listAccessGroupsCatalogV1AccessGroupsGet,
   listClustersCatalogV1ClustersGet,
-  listConfigVersionsControlV1ConfigVersionsGet,
   listModelsCatalogV1ModelsGet,
   listPilotDeploymentsCatalogV1DeploymentsPilotGet,
   listStaticDeploymentsCatalogV1DeploymentsStaticGet,
   type Options,
-  planResourcesControlV1PlanPost,
-  prometheusServiceDiscoveryDiscoveryV1PrometheusGet,
-  reconcileResetControlV1ReconcileResetPost,
   responsesFederatedV1ResponsesPost,
-  setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut,
-  tailReplicaLogsControlV1PilotReplicasSlugLogsGet,
+  tailReplicaLogsCatalogV1PilotReplicasSlugLogsGet,
   whoamiWhoamiGet,
 } from "../sdk.gen";
 import type {
-  ApplyResourcesControlV1ApplyPostData,
-  ApplyResourcesControlV1ApplyPostError,
-  ApplyResourcesControlV1ApplyPostResponse,
   ChatCompletionsFederatedV1ChatCompletionsPostData,
   ChatCompletionsFederatedV1ChatCompletionsPostError,
   EmbeddingsFederatedV1EmbeddingsPostData,
@@ -43,9 +33,6 @@ import type {
   GetClusterCatalogV1ClustersNameGetData,
   GetClusterCatalogV1ClustersNameGetError,
   GetClusterCatalogV1ClustersNameGetResponse,
-  GetConfigVersionControlV1ConfigVersionsUidGetData,
-  GetConfigVersionControlV1ConfigVersionsUidGetError,
-  GetConfigVersionControlV1ConfigVersionsUidGetResponse,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetError,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponse,
@@ -59,30 +46,17 @@ import type {
   ListAccessGroupsCatalogV1AccessGroupsGetResponse,
   ListClustersCatalogV1ClustersGetData,
   ListClustersCatalogV1ClustersGetResponse,
-  ListConfigVersionsControlV1ConfigVersionsGetData,
-  ListConfigVersionsControlV1ConfigVersionsGetResponse,
   ListModelsCatalogV1ModelsGetData,
   ListModelsCatalogV1ModelsGetResponse,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetData,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponse,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetData,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponse,
-  PlanResourcesControlV1PlanPostData,
-  PlanResourcesControlV1PlanPostError,
-  PlanResourcesControlV1PlanPostResponse,
-  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData,
-  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse,
-  ReconcileResetControlV1ReconcileResetPostData,
-  ReconcileResetControlV1ReconcileResetPostError,
-  ReconcileResetControlV1ReconcileResetPostResponse,
   ResponsesFederatedV1ResponsesPostData,
   ResponsesFederatedV1ResponsesPostError,
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError,
-  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse,
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetData,
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetError,
-  TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponse,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetError,
+  TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponse,
   WhoamiWhoamiGetData,
   WhoamiWhoamiGetResponse,
 } from "../types.gen";
@@ -155,53 +129,6 @@ export const healthHealthGetOptions = (
       return data;
     },
     queryKey: healthHealthGetQueryKey(options),
-  });
-
-export const prometheusServiceDiscoveryDiscoveryV1PrometheusGetQueryKey = (
-  options?: Options<PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData>,
-) =>
-  createQueryKey("prometheusServiceDiscoveryDiscoveryV1PrometheusGet", options);
-
-/**
- * Prometheus Service Discovery
- *
- * Prometheus HTTP Service Discovery endpoint for live model backends.
- *
- * Advertises every live backend whose deployment exposes a
- * `prometheus_metrics_path` as a scrape target.  The metrics URL is split
- * into the `__address__`/`__scheme__`/`__metrics_path__` magic labels so a
- * single host:port can host many distinct metrics paths; `__scrape_interval__`
- * carries the deployment's scrape interval.  `instance` is pinned to the
- * unique, non-recycling backend id rather than the (shared) address.
- *
- * Returns HTTP 200 with an empty list when there are no targets.  The whole
- * target list is returned on every scrape; Prometheus keeps its cached list
- * if a refresh fails.
- */
-export const prometheusServiceDiscoveryDiscoveryV1PrometheusGetOptions = (
-  options?: Options<PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData>,
-) =>
-  queryOptions<
-    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse,
-    DefaultError,
-    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse,
-    ReturnType<
-      typeof prometheusServiceDiscoveryDiscoveryV1PrometheusGetQueryKey
-    >
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await prometheusServiceDiscoveryDiscoveryV1PrometheusGet(
-        {
-          ...options,
-          ...queryKey[0],
-          signal,
-          throwOnError: true,
-        },
-      );
-      return data;
-    },
-    queryKey:
-      prometheusServiceDiscoveryDiscoveryV1PrometheusGetQueryKey(options),
   });
 
 export const whoamiWhoamiGetQueryKey = (
@@ -519,8 +446,7 @@ export const getClusterCatalogV1ClustersNameGetQueryKey = (
 /**
  * Get Cluster
  *
- * Get a Cluster with its pilot jobs.  Admin-only: pilot job details are
- * sensitive operational state.
+ * Get a Cluster with its pilot jobs. Admin-only.
  */
 export const getClusterCatalogV1ClustersNameGetOptions = (
   options: Options<GetClusterCatalogV1ClustersNameGetData>,
@@ -602,220 +528,27 @@ export const getRouterConfigCatalogV1RouterConfigGetOptions = (
     queryKey: getRouterConfigCatalogV1RouterConfigGetQueryKey(options),
   });
 
-/**
- * Plan Resources
- *
- * Create a plan for applying a set of resources without actually applying them.
- *
- * Returns a ResourceChangePlan describing what would be added, updated,
- * deleted, or left unchanged.  This is the "Plan" phase of a Plan/Apply
- * workflow.  The caller reviews the plan and then submits it back to the Apply
- * endpoint to commit changes.
- */
-export const planResourcesControlV1PlanPostMutation = (
-  options?: Partial<Options<PlanResourcesControlV1PlanPostData>>,
-): UseMutationOptions<
-  PlanResourcesControlV1PlanPostResponse,
-  PlanResourcesControlV1PlanPostError,
-  Options<PlanResourcesControlV1PlanPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    PlanResourcesControlV1PlanPostResponse,
-    PlanResourcesControlV1PlanPostError,
-    Options<PlanResourcesControlV1PlanPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await planResourcesControlV1PlanPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Apply Resources
- *
- * Apply a previously-approved plan.
- *
- * Takes the same resources and an approved ResourceChangePlan (one that
- * was returned by the /plan endpoint and reviewed by the caller).
- * Performs a two-phase commit: replans the current state and only
- * proceeds if it matches the approved plan, ensuring no concurrent
- * modifications have occurred.
- */
-export const applyResourcesControlV1ApplyPostMutation = (
-  options?: Partial<Options<ApplyResourcesControlV1ApplyPostData>>,
-): UseMutationOptions<
-  ApplyResourcesControlV1ApplyPostResponse,
-  ApplyResourcesControlV1ApplyPostError,
-  Options<ApplyResourcesControlV1ApplyPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    ApplyResourcesControlV1ApplyPostResponse,
-    ApplyResourcesControlV1ApplyPostError,
-    Options<ApplyResourcesControlV1ApplyPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await applyResourcesControlV1ApplyPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-export const listConfigVersionsControlV1ConfigVersionsGetQueryKey = (
-  options?: Options<ListConfigVersionsControlV1ConfigVersionsGetData>,
-) => createQueryKey("listConfigVersionsControlV1ConfigVersionsGet", options);
-
-/**
- * List Config Versions
- *
- * List all recorded ConfigVersions
- */
-export const listConfigVersionsControlV1ConfigVersionsGetOptions = (
-  options?: Options<ListConfigVersionsControlV1ConfigVersionsGetData>,
+export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetQueryKey = (
+  options: Options<TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData>,
 ) =>
-  queryOptions<
-    ListConfigVersionsControlV1ConfigVersionsGetResponse,
-    DefaultError,
-    ListConfigVersionsControlV1ConfigVersionsGetResponse,
-    ReturnType<typeof listConfigVersionsControlV1ConfigVersionsGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await listConfigVersionsControlV1ConfigVersionsGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: listConfigVersionsControlV1ConfigVersionsGetQueryKey(options),
-  });
-
-export const getConfigVersionControlV1ConfigVersionsUidGetQueryKey = (
-  options: Options<GetConfigVersionControlV1ConfigVersionsUidGetData>,
-) => createQueryKey("getConfigVersionControlV1ConfigVersionsUidGet", options);
-
-/**
- * Get Config Version
- *
- * Get a single ConfigVersion by uid, including the full `changes` record.
- */
-export const getConfigVersionControlV1ConfigVersionsUidGetOptions = (
-  options: Options<GetConfigVersionControlV1ConfigVersionsUidGetData>,
-) =>
-  queryOptions<
-    GetConfigVersionControlV1ConfigVersionsUidGetResponse,
-    GetConfigVersionControlV1ConfigVersionsUidGetError,
-    GetConfigVersionControlV1ConfigVersionsUidGetResponse,
-    ReturnType<typeof getConfigVersionControlV1ConfigVersionsUidGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await getConfigVersionControlV1ConfigVersionsUidGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: getConfigVersionControlV1ConfigVersionsUidGetQueryKey(options),
-  });
-
-/**
- * Set Desired Pilot Replicas
- *
- * Manually set desired scale of a PilotDeployment
- */
-export const setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutMutation =
-  (
-    options?: Partial<
-      Options<SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData>
-    >,
-  ): UseMutationOptions<
-    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse,
-    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError,
-    Options<SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData>
-  > => {
-    const mutationOptions: UseMutationOptions<
-      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse,
-      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError,
-      Options<SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData>
-    > = {
-      mutationFn: async (fnOptions) => {
-        const { data } =
-          await setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut(
-            {
-              ...options,
-              ...fnOptions,
-              throwOnError: true,
-            },
-          );
-        return data;
-      },
-    };
-    return mutationOptions;
-  };
-
-/**
- * Reconcile Reset
- *
- * Reset reconcile backoff state for a resource and its children.
- */
-export const reconcileResetControlV1ReconcileResetPostMutation = (
-  options?: Partial<Options<ReconcileResetControlV1ReconcileResetPostData>>,
-): UseMutationOptions<
-  ReconcileResetControlV1ReconcileResetPostResponse,
-  ReconcileResetControlV1ReconcileResetPostError,
-  Options<ReconcileResetControlV1ReconcileResetPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    ReconcileResetControlV1ReconcileResetPostResponse,
-    ReconcileResetControlV1ReconcileResetPostError,
-    Options<ReconcileResetControlV1ReconcileResetPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await reconcileResetControlV1ReconcileResetPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-export const tailReplicaLogsControlV1PilotReplicasSlugLogsGetQueryKey = (
-  options: Options<TailReplicaLogsControlV1PilotReplicasSlugLogsGetData>,
-) =>
-  createQueryKey("tailReplicaLogsControlV1PilotReplicasSlugLogsGet", options);
+  createQueryKey("tailReplicaLogsCatalogV1PilotReplicasSlugLogsGet", options);
 
 /**
  * Tail Replica Logs
  *
- * Read tail of logs generated by replica
+ * Read tail of logs generated by replica.
  */
-export const tailReplicaLogsControlV1PilotReplicasSlugLogsGetOptions = (
-  options: Options<TailReplicaLogsControlV1PilotReplicasSlugLogsGetData>,
+export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetOptions = (
+  options: Options<TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData>,
 ) =>
   queryOptions<
-    TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponse,
-    TailReplicaLogsControlV1PilotReplicasSlugLogsGetError,
-    TailReplicaLogsControlV1PilotReplicasSlugLogsGetResponse,
-    ReturnType<typeof tailReplicaLogsControlV1PilotReplicasSlugLogsGetQueryKey>
+    TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponse,
+    TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetError,
+    TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponse,
+    ReturnType<typeof tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetQueryKey>
   >({
     queryFn: async ({ queryKey, signal }) => {
-      const { data } = await tailReplicaLogsControlV1PilotReplicasSlugLogsGet({
+      const { data } = await tailReplicaLogsCatalogV1PilotReplicasSlugLogsGet({
         ...options,
         ...queryKey[0],
         signal,
@@ -823,5 +556,5 @@ export const tailReplicaLogsControlV1PilotReplicasSlugLogsGetOptions = (
       });
       return data;
     },
-    queryKey: tailReplicaLogsControlV1PilotReplicasSlugLogsGetQueryKey(options),
+    queryKey: tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetQueryKey(options),
   });

@@ -3,7 +3,7 @@ import {
   listPilotDeploymentsCatalogV1DeploymentsPilotGetOptions,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGetOptions,
   listStaticDeploymentsCatalogV1DeploymentsStaticGetOptions,
-  tailReplicaLogsControlV1PilotReplicasSlugLogsGetOptions,
+  tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetOptions,
 } from "@/lib/client/@tanstack/react-query.gen";
 
 export const deploymentQueries = {
@@ -31,7 +31,7 @@ export const deploymentQueries = {
    */
   replicaLogs: (slug: string) =>
     queryOptions({
-      ...tailReplicaLogsControlV1PilotReplicasSlugLogsGetOptions({
+      ...tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetOptions({
         path: { slug },
       }),
       enabled: false,
