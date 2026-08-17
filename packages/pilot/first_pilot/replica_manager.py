@@ -4,8 +4,8 @@ import re
 import socket
 import subprocess
 import threading
+import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, wait
 from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -322,7 +322,10 @@ def discover_hosts(node_file_env: str) -> list[str]:
 
 
 class ReplicaManager:
-    _STOP_JOIN_TIMEOUT = 45.0
+    # Mirrors PilotControlClient.STOP_TIMEOUT: pre-stop, model TERM/KILL,
+    # post-stop verification, auxiliary-group cleanup, and monitor join are all
+    # bounded below this ceiling.
+    _STOP_JOIN_TIMEOUT = 120.0
 
     def __init__(self, config: PilotRuntimeConfig) -> None:
         self.config = config
@@ -439,10 +442,21 @@ class ReplicaManager:
         self._next_socket_id += 1
         return str(Path(self._socket_dir.name) / f"replica-{socket_id}.sock")
 
-    def _release_locked(self, name: str, resources: list[GpuClaim]) -> None:
-        # caller must hold self._lock
-        self._replicas.pop(name, None)
+    def _release_locked(
+        self,
+        name: str,
+        resources: list[GpuClaim],
+        *,
+        expected: Replica | ReservedSentinel,
+    ) -> bool:
+        """Release only if ``name`` still refers to the exact owned object."""
+        # Caller must hold self._lock. The identity guard prevents a late
+        # concurrent stop from releasing a replacement Replica's claims.
+        if self._replicas.get(name) is not expected:
+            return False
+        del self._replicas[name]
         self._claimed.difference_update(self._flatten(resources))
+        return True
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
         requested = self._validate_request(replica.name, replica.gpu_indices)
@@ -456,7 +470,7 @@ class ReplicaManager:
             for hostname, gpu_list in host_gpus.items()
         ]
 
-        # Short critical section: reserve name + GPUs + port atomically.
+        # Short critical section: reserve name + GPUs + socket identity atomically.
         with self._lock:
             if replica.name in self._replicas:
                 raise ReplicaAlreadyPlaced(
@@ -492,7 +506,11 @@ class ReplicaManager:
                 "failed to start replica %s; releasing reservation", replica.name
             )
             with self._lock:
-                self._release_locked(replica.name, resources)
+                self._release_locked(
+                    replica.name,
+                    resources,
+                    expected=_RESERVED,
+                )
             raise ReplicaStartError(f"Failed to start replica: {e}") from e
 
         with self._lock:
@@ -503,31 +521,104 @@ class ReplicaManager:
             replica = self._replicas.get(replica_name)
             if replica is None or replica is _RESERVED:
                 raise NotFound(f"Replica {replica_name!r} is not registered")
-            # Claim ownership of teardown by removing the entry now: a concurrent
-            # stop_replica/stop_all then sees it gone and won't call stop()
-            # twice.
-            del self._replicas[replica_name]
 
         logger.info("stopping replica %s", replica_name)
+        # Replica.stop serializes concurrent callers. Keep the object and its
+        # claims addressable until it reports authoritative process-group
+        # absence; an exception is intentionally retryable.
         replica.stop()
 
         with self._lock:
-            self._release_locked(replica_name, replica.resources)
+            released = self._release_locked(
+                replica_name,
+                replica.resources,
+                expected=replica,
+            )
+        if not released:
+            logger.info(
+                "Replica %s stopped, but its manager entry now has a different "
+                "identity; leaving the current entry untouched",
+                replica_name,
+            )
 
     def stop_all(self) -> None:
-
         replicas = self.get_replicas()
         logger.info("stopping all %d replicas", len(replicas))
+        if not replicas:
+            self._socket_dir.cleanup()
+            return
 
-        with ThreadPoolExecutor() as pool:
-            futs = [pool.submit(r.stop) for r in replicas]
-            wait(futs, timeout=self._STOP_JOIN_TIMEOUT)
-            pool.shutdown(wait=False, cancel_futures=True)
+        # ThreadPoolExecutor workers are registered for an unconditional join
+        # at interpreter exit, even after shutdown(wait=False).  A wedged
+        # Replica.stop would therefore keep the pilot process alive past this
+        # method's bound.  Explicit daemon workers preserve the outer deadline
+        # and cannot extend interpreter shutdown.
+        done_events = {id(replica): threading.Event() for replica in replicas}
+        errors: dict[int, BaseException] = {}
 
-        with self._lock:
-            for r in replicas:
-                self._release_locked(r.name, r.resources)
+        def stop_and_release(replica: Replica) -> None:
+            try:
+                replica.stop()
+                # This also handles a completion after stop_all's deadline. If
+                # the manager remains live, resources are released promptly;
+                # if a replacement now owns the name, the identity guard makes
+                # the late completion harmless.
+                with self._lock:
+                    self._release_locked(
+                        replica.name,
+                        replica.resources,
+                        expected=replica,
+                    )
+            except BaseException as exc:
+                errors[id(replica)] = exc
+                logger.exception(
+                    "stop_all teardown failed for replica %s", replica.name
+                )
+            finally:
+                done_events[id(replica)].set()
 
+        for replica in replicas:
+            worker = threading.Thread(
+                target=stop_and_release,
+                args=(replica,),
+                name=f"replica-stop-{replica.name}",
+                daemon=True,
+            )
+            try:
+                worker.start()
+            except BaseException as exc:
+                errors[id(replica)] = exc
+                done_events[id(replica)].set()
+                logger.exception(
+                    "could not start stop_all worker for replica %s", replica.name
+                )
+
+        deadline = time.monotonic() + self._STOP_JOIN_TIMEOUT
+        for replica in replicas:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done_events[id(replica)].wait(timeout=remaining)
+
+        failures: list[str] = []
+        for replica in replicas:
+            done = done_events[id(replica)].is_set()
+            if done and (stop_error := errors.get(id(replica))) is not None:
+                failures.append(f"{replica.name}: {stop_error}")
+                continue
+            if not done:
+                logger.error(
+                    "stop_all timed out after %.1fs waiting for replica %s",
+                    self._STOP_JOIN_TIMEOUT,
+                    replica.name,
+                )
+                failures.append(f"{replica.name}: teardown timed out")
+
+        if failures:
+            raise RuntimeError(
+                "one or more replicas did not stop authoritatively: "
+                + "; ".join(sorted(failures))
+            )
         self._socket_dir.cleanup()
 
     def get_replicas(self) -> list[Replica]:

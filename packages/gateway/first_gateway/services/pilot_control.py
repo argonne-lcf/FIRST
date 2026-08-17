@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # fail fast on connect, but allow start-replica room to do its synchronous
 # on-node work before responding.
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
+# A configured pre-stop hook (maximum 25s), hook cleanup (2s), the pilot's
+# TERM/KILL process-group fallback (13s), a post-stop verifier (maximum 50s),
+# its cleanup (2s), and monitor join fit inside this bounded read deadline.
+STOP_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
 
 # Short retry to ride out ephemeral hiccups (a dropped connection, a manager
 # still binding its port, a momentary 503). A handful of quick attempts only;
@@ -133,7 +137,11 @@ class PilotControlClient:
         replica_name: str,
     ) -> httpx.Response:
         """POST /stop-replica/{name}. Returns the raw response (404 is tolerable)."""
-        return await self._request("POST", f"{manager_url}/stop-replica/{replica_name}")
+        return await self._request(
+            "POST",
+            f"{manager_url}/stop-replica/{replica_name}",
+            timeout=STOP_TIMEOUT,
+        )
 
     async def get_logs(self, manager_url: str, replica_name: str) -> str:
         resp = await self._request("GET", f"{manager_url}/logs/{replica_name}")
