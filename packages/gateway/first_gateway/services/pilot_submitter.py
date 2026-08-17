@@ -152,7 +152,11 @@ class PilotSubmitter:
     async def get_endpoint(self, job_name: str) -> AddressInfo:
         if isinstance(self.adapter, GraphQLPBSAdapter):
             for s in await self.get_statuses():
-                if s.name == job_name and s.head_node_ip_address:
+                if (
+                    s.name == job_name
+                    and s.state == SchedulerJobState.running
+                    and s.head_node_ip_address
+                ):
                     ip = s.head_node_ip_address
                     return AddressInfo(
                         hostname=s.head_node_hostname or ip,
