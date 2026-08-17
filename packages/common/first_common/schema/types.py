@@ -172,6 +172,7 @@ class PilotConfig(BaseModel):
     nginx_path: Path
     ip_allowlist: list[str]
     node_file_env: str
+    pals_path: Path | None = None
     submit_script_preamble: str
     pilot_path: Path
     job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
