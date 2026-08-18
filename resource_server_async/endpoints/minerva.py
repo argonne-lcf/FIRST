@@ -65,9 +65,7 @@ class MinervaEndpoint(DirectAPIEndpoint):
         *,
         stream: bool,
     ) -> tuple[dict[str, Any], dict[str, str]]:
-        api_request_data = {**data["model_params"]}
-        api_request_data["stream"] = stream
-        api_request_data.pop("api_port", None)
+        api_request_data = self._prepare_request_body(data, stream=stream)
         endpoint = str(
             api_request_data.get("openai_endpoint", "chat/completions")
         ).strip("/")
@@ -82,8 +80,8 @@ class MinervaEndpoint(DirectAPIEndpoint):
             ) from exc
 
         if endpoint in CACHE_SALT_ENDPOINTS:
-            # A caller value, if its public request schema ever accepts one,
-            # cannot replace the server-derived namespace.
+            # FIRST rejects a top-level caller value at its public boundary and
+            # still overwrites here so this adapter remains authoritative.
             api_request_data["cache_salt"] = cache_salt
         else:
             api_request_data.pop("cache_salt", None)

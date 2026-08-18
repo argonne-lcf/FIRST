@@ -4,11 +4,11 @@ from django.test import testcases
 from pydantic import ValidationError
 
 from resource_server_async.schemas.batch import BatchSubmit
-from resource_server_async.schemas.openai_chat_completions import (
-    OpenAIChatCompletionsPydantic,
+from resource_server_async.schemas.openai_control import (
+    ChatCompletionsControl,
+    CompletionsControl,
+    EmbeddingsControl,
 )
-from resource_server_async.schemas.openai_completions import OpenAICompletionsPydantic
-from resource_server_async.schemas.openai_embeddings import OpenAIEmbeddingsPydantic
 
 # Constants
 COMPLETIONS = "completions"
@@ -18,10 +18,30 @@ BATCH = "batch"
 
 # Pydantic models
 PYDANTIC_MODELS = {
-    COMPLETIONS: OpenAICompletionsPydantic,
-    CHAT_COMPLETIONS: OpenAIChatCompletionsPydantic,
-    EMBEDDINGS: OpenAIEmbeddingsPydantic,
+    COMPLETIONS: CompletionsControl,
+    CHAT_COMPLETIONS: ChatCompletionsControl,
+    EMBEDDINGS: EmbeddingsControl,
     BATCH: BatchSubmit,
+}
+
+INVALID_CONTROL_PARAMS = {
+    COMPLETIONS: [
+        {"prompt": "missing model"},
+        {"model": 1, "prompt": "wrong model type"},
+        {"model": "model", "prompt": {"wrong": "prompt type"}},
+        {"model": "model", "prompt": "hello", "stream": "false"},
+    ],
+    CHAT_COMPLETIONS: [
+        {"messages": []},
+        {"model": "model"},
+        {"model": "model", "messages": "wrong messages type"},
+        {"model": "model", "messages": ["not an object"]},
+    ],
+    EMBEDDINGS: [
+        {"input": "missing model"},
+        {"model": "model", "input": {"wrong": "input type"}},
+        {"model": "model", "input": "hello", "stream": True},
+    ],
 }
 
 
@@ -41,19 +61,22 @@ class PydanticModelsTestCase(testcases.TestCase):
         for model in PYDANTIC_MODELS:
             with open(f"{base_path}/valid_{model}.json") as json_file:
                 self.valid_params[model] = json.load(json_file)
-            with open(f"{base_path}/invalid_{model}.json") as json_file:
-                self.invalid_params[model] = json.load(json_file)
+            if model == BATCH:
+                with open(f"{base_path}/invalid_{model}.json") as json_file:
+                    self.invalid_params[model] = json.load(json_file)
+            else:
+                self.invalid_params[model] = INVALID_CONTROL_PARAMS[model]
 
     # Test OpenAICompletions pydantic model for validation
-    def test_OpenAICompletions_validation(self):
+    def test_completions_control_validation(self):
         self.__generic_serializer_validation(COMPLETIONS)
 
     # Test OpenAIChatCompletions pydantic model for validation
-    def test_OpenAIChatCompletions_validation(self):
+    def test_chat_completions_control_validation(self):
         self.__generic_serializer_validation(CHAT_COMPLETIONS)
 
     # Test OpenAIEmbeddings pydantic model for validation
-    def test_OpenAIEmbeddings_validation(self):
+    def test_embeddings_control_validation(self):
         self.__generic_serializer_validation(EMBEDDINGS)
 
     # Test Batch pydantic model for validation

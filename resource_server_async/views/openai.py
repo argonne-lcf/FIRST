@@ -1,18 +1,10 @@
 import logging
 from typing import Any
 
-from ninja import Router
+from ninja import Body, Router
 
 from ..logging import get_request_context
 from ..schemas.auth import AuthedRequest
-from ..schemas.openai_chat_completions import (
-    OpenAIChatCompletionsPydantic,
-)
-from ..schemas.openai_completions import OpenAICompletionsPydantic
-from ..schemas.openai_embeddings import OpenAIEmbeddingsPydantic
-from ..schemas.openai_responses import (
-    OpenAIResponsesPydantic,
-)
 from ..services import (
     submit_openai_inference_request,
 )
@@ -26,10 +18,14 @@ async def create_chat_completion(
     request: AuthedRequest,
     cluster_name: str,
     framework: str,
-    payload: OpenAIChatCompletionsPydantic,
+    payload: Body[dict[str, Any]],
 ) -> Any:
     return await submit_openai_inference_request(
-        get_request_context(), cluster_name, framework, payload
+        get_request_context(),
+        cluster_name,
+        framework,
+        payload,
+        openai_endpoint="chat/completions",
     )
 
 
@@ -38,10 +34,14 @@ async def create_completion(
     request: AuthedRequest,
     cluster_name: str,
     framework: str,
-    payload: OpenAICompletionsPydantic,
+    payload: Body[dict[str, Any]],
 ) -> Any:
     return await submit_openai_inference_request(
-        get_request_context(), cluster_name, framework, payload
+        get_request_context(),
+        cluster_name,
+        framework,
+        payload,
+        openai_endpoint="completions",
     )
 
 
@@ -50,10 +50,14 @@ async def create_embedding(
     request: AuthedRequest,
     cluster_name: str,
     framework: str,
-    payload: OpenAIEmbeddingsPydantic,
+    payload: Body[dict[str, Any]],
 ) -> Any:
     return await submit_openai_inference_request(
-        get_request_context(), cluster_name, framework, payload
+        get_request_context(),
+        cluster_name,
+        framework,
+        payload,
+        openai_endpoint="embeddings",
     )
 
 
@@ -62,8 +66,12 @@ async def create_response(
     request: AuthedRequest,
     cluster_name: str,
     framework: str,
-    payload: OpenAIResponsesPydantic,
+    payload: Body[dict[str, Any]],
 ) -> Any:
     return await submit_openai_inference_request(
-        get_request_context(), cluster_name, framework, payload
+        get_request_context(),
+        cluster_name,
+        framework,
+        payload,
+        openai_endpoint="responses",
     )

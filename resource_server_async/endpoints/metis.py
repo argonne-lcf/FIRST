@@ -82,19 +82,12 @@ class MetisEndpoint(DirectAPIEndpoint):
 
         await self.check_endpoint_status()
 
-        # Use validated request data as-is (already in OpenAI format)
-        # Only update the stream parameter to match the request
-        api_request_data = {**data["model_params"]}
-        api_request_data["stream"] = False
-
-        # Remove internal field that shouldn't be sent to Metis
-        api_request_data.pop("api_port", None)
+        api_request_data = self._prepare_request_body(data, stream=False)
 
         # Log model and Metis endpoint ID
         log.info(f"Making Metis API call for model {self.model} (stream=False)")
 
-        # Send request to Metis using parent submit_task
-        return await super().submit_task(api_request_data)
+        return await self._submit_task_with_headers(api_request_data)
 
     # Submit streaming task
     async def submit_streaming_task(
@@ -105,16 +98,9 @@ class MetisEndpoint(DirectAPIEndpoint):
         # Check endpoint status
         await self.check_endpoint_status()
 
-        # Use validated request data as-is (already in OpenAI format)
-        # Only update the stream parameter to match the request
-        api_request_data = {**data["model_params"]}
-        api_request_data["stream"] = True
-
-        # Remove internal field that shouldn't be sent to Metis
-        api_request_data.pop("api_port", None)
+        api_request_data = self._prepare_request_body(data, stream=True)
 
         # Log model and Metis endpoint ID
         log.info(f"Making Metis API call for model {self.model} (stream=True)")
 
-        # Send streaming request to Metis using parent submit_task
-        return await super().submit_streaming_task(api_request_data)
+        return await self._submit_streaming_task_with_headers(api_request_data)

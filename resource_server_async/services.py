@@ -6,16 +6,16 @@ from typing import Any
 from django.conf import settings
 from django.http import StreamingHttpResponse
 from django.utils import timezone
+from pydantic import ValidationError
 
 from resource_server_async.globus_utils import get_transfer_client
 from resource_server_async.schemas.anthropic_messages import AnthropicMessagesPydantic
-from resource_server_async.schemas.openai_chat_completions import (
-    OpenAIChatCompletionsPydantic,
-)
-from resource_server_async.schemas.openai_completions import OpenAICompletionsPydantic
-from resource_server_async.schemas.openai_embeddings import OpenAIEmbeddingsPydantic
-from resource_server_async.schemas.openai_responses import (
-    OpenAIResponsesPydantic,
+from resource_server_async.schemas.openai_control import (
+    FIRST_RESERVED_OPENAI_FIELDS,
+    OPENAI_CONTROL_MODELS,
+    OPENAI_PROMPT_FIELDS,
+    OpenAIControlFields,
+    OpenAIEndpoint,
 )
 from resource_server_async.schemas.structured_logs import (
     RequestLogPydantic,
@@ -27,6 +27,7 @@ from .errors import (
     BatchOngoing,
     BatchUnavailable,
     EndpointNotFound,
+    InvalidRequest,
     QuotaExceeded,
     TooManyRequests,
     UnsupportedEndpoint,
@@ -50,15 +51,53 @@ from .schemas.endpoints import (
 )
 from .schemas.structured_logs import UserPydantic
 
-OpenAIRequestPayload = (
-    OpenAIChatCompletionsPydantic
-    | OpenAICompletionsPydantic
-    | OpenAIEmbeddingsPydantic
-    | OpenAIResponsesPydantic
-    | AnthropicMessagesPydantic
-)
+OpenAIRequestPayload = dict[str, Any] | AnthropicMessagesPydantic
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitized_control_errors(error: ValidationError) -> list[dict[str, str]]:
+    """Return validation details without client-supplied values or context."""
+    return [
+        {
+            "field": ".".join(str(part) for part in detail["loc"]),
+            "message": detail["msg"],
+            "type": detail["type"],
+        }
+        for detail in error.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+    ]
+
+
+def _prepare_openai_request(
+    payload: dict[str, Any], openai_endpoint: OpenAIEndpoint
+) -> tuple[OpenAIControlFields, dict[str, Any], Any]:
+    """Validate FIRST-owned fields while preserving backend-owned JSON values."""
+    supplied_reserved_fields = sorted(
+        FIRST_RESERVED_OPENAI_FIELDS.intersection(payload)
+    )
+    if supplied_reserved_fields:
+        raise InvalidRequest(
+            "FIRST-reserved request fields are not accepted.",
+            info={"fields": supplied_reserved_fields},
+        )
+
+    try:
+        control = OPENAI_CONTROL_MODELS[openai_endpoint].model_validate(payload)
+    except ValidationError as error:
+        raise InvalidRequest(
+            "Invalid FIRST control fields.",
+            info={"errors": _sanitized_control_errors(error)},
+        ) from None
+
+    outbound = dict(payload)
+    outbound["stream"] = control.stream is True
+    outbound["openai_endpoint"] = openai_endpoint
+    prompt = payload[OPENAI_PROMPT_FIELDS[openai_endpoint]]
+    return control, outbound, prompt
 
 
 async def get_all_endpoints(
@@ -242,26 +281,31 @@ async def submit_openai_inference_request(
     cluster_name: str,
     framework: str,
     payload: OpenAIRequestPayload,
+    *,
+    openai_endpoint: OpenAIEndpoint | None = None,
 ) -> StreamingHttpResponse | Any:
-    is_openai_responses = isinstance(payload, OpenAIResponsesPydantic)
-    is_anthropic_messages = isinstance(payload, AnthropicMessagesPydantic)
-    if isinstance(payload, OpenAIChatCompletionsPydantic):
-        stream = payload.stream or False
-        prompt = payload.model_dump(include={"messages"})["messages"]
-    elif isinstance(payload, OpenAICompletionsPydantic):
-        stream = payload.stream or False
-        prompt = payload.prompt
-    elif isinstance(payload, OpenAIEmbeddingsPydantic):
-        stream = False
-        prompt = payload.input
-    elif is_openai_responses:
-        stream = payload.stream or False
-        prompt = payload.model_dump(include={"input"}, mode="json")["input"]
-    elif is_anthropic_messages:
-        stream = payload.stream or False
+    route: str
+    if isinstance(payload, AnthropicMessagesPydantic):
+        is_anthropic_messages = True
+        route = payload.openai_endpoint
+        stream = payload.stream is True
         prompt = payload.model_dump(include={"messages"}, mode="json")["messages"]
+        requested_model = payload.model
+        outbound = payload.model_dump(
+            exclude_none=True, exclude_unset=True, mode="json"
+        )
+        outbound["stream"] = stream
+        outbound["openai_endpoint"] = route
     else:
-        raise ValueError(f"Invalid {payload=}")
+        is_anthropic_messages = False
+        if openai_endpoint is None:
+            raise ValueError("openai_endpoint is required for OpenAI requests")
+        route = openai_endpoint
+        control, outbound, prompt = _prepare_openai_request(payload, openai_endpoint)
+        stream = control.stream is True
+        requested_model = control.model
+
+    is_openai_responses = route == "responses"
 
     assert context.user is not None
 
@@ -278,13 +322,13 @@ async def submit_openai_inference_request(
         )
 
     # Verify that the openAI endpoint is available by the cluster
-    if payload.openai_endpoint not in cluster.openai_endpoints:
+    if route not in cluster.openai_endpoints:
         raise UnsupportedEndpoint(
-            f"{payload.openai_endpoint!r} not available on cluster {cluster.cluster_name!r}"
+            f"{route!r} not available on cluster {cluster.cluster_name!r}"
         )
 
     endpoint = await BaseEndpoint.load_adapter(
-        cluster.cluster_name, framework, payload.model
+        cluster.cluster_name, framework, requested_model
     )
     logger.debug(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
@@ -302,8 +346,9 @@ async def submit_openai_inference_request(
             " API on this endpoint. Re-issue this request with 'stream': false."
         )
 
-    # Overwrite model name in case it has been updated via endpoint slug mapping
-    payload.model = endpoint.model
+    # Keep endpoint aliases useful for routing, but make the backend and logs use
+    # the canonical model selected by FIRST.
+    outbound["model"] = endpoint.model
 
     # Block access if the user is not allowed to use the endpoint
     endpoint.check_permission(context.user)
@@ -327,19 +372,13 @@ async def submit_openai_inference_request(
         user_id=context.user.id,
         cluster=cluster.cluster_name,
         framework=framework,
-        model=payload.model,
-        openai_endpoint=payload.openai_endpoint,
+        model=endpoint.model,
+        openai_endpoint=route,
         prompt=json.dumps(prompt),
         timestamp_compute_request=timezone.now(),
     )
 
-    data = {
-        "model_params": payload.model_dump(
-            exclude_none=True, exclude_unset=True, mode="json"
-        )
-    }
-    data["model_params"]["openai_endpoint"] = payload.openai_endpoint
-    logger.debug("Sending openai inference request", extra={"openai_payload": data})
+    data = {"model_params": outbound}
 
     # Submit task
     task_response: SubmitStreamingTaskResponse | SubmitTaskResult

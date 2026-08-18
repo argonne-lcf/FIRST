@@ -125,7 +125,21 @@ class DirectAPIEndpoint(BaseEndpoint):
 
     # Submit task
     async def submit_task(self, data: dict[str, Any]) -> SubmitTaskResult:
-        return await self._submit_task_with_headers(data)
+        request_data = self._prepare_request_body(data, stream=False)
+        return await self._submit_task_with_headers(request_data)
+
+    def _prepare_request_body(
+        self, data: dict[str, Any], *, stream: bool
+    ) -> dict[str, Any]:
+        """Copy the shared envelope into the body expected by an OpenAI API."""
+        model_params = data.get("model_params")
+        if not isinstance(model_params, dict):
+            raise EndpointError("Invalid internal OpenAI request envelope.")
+
+        request_data = dict(model_params)
+        request_data["stream"] = stream
+        request_data.pop("api_port", None)
+        return request_data
 
     async def _submit_task_with_headers(
         self,
@@ -169,7 +183,8 @@ class DirectAPIEndpoint(BaseEndpoint):
     async def submit_streaming_task(
         self, data: dict[str, Any]
     ) -> SubmitStreamingTaskResponse:
-        return await self._submit_streaming_task_with_headers(data)
+        request_data = self._prepare_request_body(data, stream=True)
+        return await self._submit_streaming_task_with_headers(request_data)
 
     async def _submit_streaming_task_with_headers(
         self,

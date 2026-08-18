@@ -61,6 +61,11 @@ class AccessDenied(BaseError):
     code: str = "access_denied"
 
 
+class InvalidRequest(BaseError):
+    status_code = HTTPStatus.UNPROCESSABLE_ENTITY
+    code = "invalid_request"
+
+
 class ClusterUnderMaintenance(BaseError):
     status_code = HTTPStatus.SERVICE_UNAVAILABLE
     code = "cluster_under_maintenance"

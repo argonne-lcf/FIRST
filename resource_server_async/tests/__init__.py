@@ -59,14 +59,29 @@ STREAMING_TEST_CASES = copy.deepcopy(VALID_PARAMS["chat/completions"])
 for i in range(len(STREAMING_TEST_CASES)):
     STREAMING_TEST_CASES[i]["stream"] = True
 
-# Load invalid test input data (OpenAI format)
-INVALID_PARAMS = {}
-with open(f"{base_path}/invalid_completions.json") as json_file:
-    INVALID_PARAMS["completions"] = json.load(json_file)
-with open(f"{base_path}/invalid_chat_completions.json") as json_file:
-    INVALID_PARAMS["chat/completions"] = json.load(json_file)
-with open(f"{base_path}/invalid_embeddings.json") as json_file:
-    INVALID_PARAMS["embeddings"] = json.load(json_file)
+# FIRST validates only the fields it reads. Backend-owned field errors are
+# intentionally absent here because those requests must reach the backend.
+INVALID_PARAMS = {
+    "completions": [
+        {"prompt": "missing model"},
+        {"model": 123, "prompt": "wrong model type"},
+        {"model": "test-model", "prompt": {"wrong": "prompt type"}},
+        {"model": "test-model", "prompt": "hello", "stream": "false"},
+    ],
+    "chat/completions": [
+        {"messages": [{"role": "user", "content": "missing model"}]},
+        {"model": "test-model"},
+        {"model": "test-model", "messages": "wrong messages type"},
+        {"model": "test-model", "messages": ["not an object"]},
+        {"model": "test-model", "messages": [], "stream": 1},
+    ],
+    "embeddings": [
+        {"input": "missing model"},
+        {"model": [], "input": "wrong model type"},
+        {"model": "test-model", "input": {"wrong": "input type"}},
+        {"model": "test-model", "input": "hello", "stream": True},
+    ],
+}
 with open(f"{base_path}/invalid_batch.json") as json_file:
     INVALID_PARAMS["batch"] = json.load(json_file)
 INVALID_PARAMS["health"] = {}
