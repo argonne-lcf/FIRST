@@ -1,7 +1,8 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
-    fs::{File, OpenOptions},
+    fs::{self, File},
     io::{self, BufWriter, Write},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -20,18 +21,45 @@ use polars::{
 use regex::regex;
 use sonic_rs::JsonValueTrait;
 
+const STREAMS: &[&str] = &[
+    "access_log",
+    "app",
+    "request_log",
+    "request_metrics",
+    "user",
+];
+
 #[derive(Parser)]
 struct Args {
     logs: Vec<PathBuf>,
 }
 
-fn split_log(path: &Path) -> io::Result<HashMap<String, PathBuf>> {
+fn mmap_outdated(path: &Path) -> io::Result<Option<Mmap>> {
     let file = File::open(path)?;
-    let mmap = unsafe {
-        // SAFETY we assume the file is never modified at runtime
-        Mmap::map(&file)?
-    };
 
+    let mtime = file.metadata()?.mtime();
+    let mut stream_mtimes = STREAMS
+        .iter()
+        .filter_map(|s| {
+            let p = path.with_added_extension(s);
+            p.with_extension("ndjson");
+            fs::metadata(p).ok().map(|m| m.mtime())
+        })
+        .peekable();
+
+    Ok(
+        if stream_mtimes.peek().is_none() || stream_mtimes.any(|m| mtime > m) {
+            unsafe {
+                // SAFETY we assume the file is never modified at runtime
+                Some(Mmap::map(&file)?)
+            }
+        } else {
+            None
+        },
+    )
+}
+
+fn split_log(path: &Path, buf: &[u8]) -> io::Result<HashMap<String, PathBuf>> {
     let mut streams: HashMap<String, BufWriter<File>> = HashMap::new();
     let mut partitions: HashMap<String, PathBuf> = HashMap::new();
 
@@ -39,19 +67,14 @@ fn split_log(path: &Path) -> io::Result<HashMap<String, PathBuf>> {
         // get stream and append to partition if wanted
         match sonic_rs::get(line, &["stream"]).as_str() {
             Some(stream) => {
-                if matches!(
-                    stream,
-                    "access_log" | "app" | "request_log" | "request_metrics" | "user"
-                ) {
+                if STREAMS.contains(&stream) {
                     let mut e = match streams.entry(stream.to_string()) {
                         Entry::Occupied(e) => e,
                         Entry::Vacant(e) => {
                             let mut p = path.with_added_extension(stream);
                             p.add_extension("ndjson");
 
-                            let e = e.insert_entry(BufWriter::new(
-                                OpenOptions::new().append(true).create(true).open(&p)?,
-                            ));
+                            let e = e.insert_entry(BufWriter::new(File::create(&p)?));
 
                             partitions.insert(stream.to_string(), p);
                             e
@@ -72,13 +95,13 @@ fn split_log(path: &Path) -> io::Result<HashMap<String, PathBuf>> {
     };
 
     let mut start = 0;
-    for end in memchr::memchr_iter(b'\n', &mmap) {
-        let line = &mmap[start..=end];
+    for end in memchr::memchr_iter(b'\n', buf) {
+        let line = &buf[start..=end];
         write_to_partition(line)?;
         start = end + 1;
     }
-    if start < mmap.len() {
-        let line = &mmap[start..]; // trailing non-\n data
+    if start < buf.len() {
+        let line = &buf[start..]; // trailing non-\n data
         write_to_partition(line)?;
     }
 
@@ -240,9 +263,16 @@ fn write_merged_request_metrics(
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    for l in args.logs {
-        println!("Parsing {}...", l.display());
-        let partitions = split_log(&l)?;
+    for p in args.logs {
+        println!("Parsing {}...", p.display());
+        let partitions = match mmap_outdated(&p)? {
+            Some(b) => split_log(&p, &b)?,
+            None => {
+                println!("Skipped already parsed log {}", p.display());
+                continue;
+            }
+        };
+
         let partitions = partitions_to_parquet(partitions)?;
         partitions
             .values()
