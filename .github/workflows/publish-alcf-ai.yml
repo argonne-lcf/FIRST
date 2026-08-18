@@ -1,0 +1,36 @@
+name: Publish alcf-ai to PyPI
+
+on:
+  push:
+    tags:
+      - 'alcf_ai/*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/alcf-ai
+    permissions:
+      id-token: write
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: "alcf_ai/pyproject.toml"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install deps
+        working-directory: alcf_ai
+        run: uv sync
+      - name: Build package
+        working-directory: alcf_ai
+        run: uv build
+      - name: Publish to PyPI
+        working-directory: alcf_ai
+        run: uv publish
