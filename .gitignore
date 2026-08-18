@@ -65,3 +65,6 @@ site/
 .claude/
 *.code-workspace
 prompt-records/
+
+# Rust
+scripts/logs/first-slogs/target/
