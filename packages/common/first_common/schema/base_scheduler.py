@@ -118,12 +118,12 @@ class SchedulerAdapter(ABC):
         """
 
     async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
-        """Return one exact job, but never infer absence from a bulk listing.
+        """Return one job, returning None only if it is definitively absent. 
 
         Adapters with an authoritative exact-ID lookup should override this and
         may return ``None`` only when that lookup explicitly proves absence.
-        The conservative default can return an exact match from the ordinary
-        list, but fails closed if it is omitted (for example by pagination).
+        The default returns an exact match from the job listing
+        but fails closed if it is omitted (for example by pagination).
         """
         matches = [
             status for status in await self.get_job_statuses() if status.id == job_id
