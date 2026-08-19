@@ -261,27 +261,15 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                 query,
                 {"owner": self.owner, "cursor": cursor},
             )
-            connection = data.get("jobs")
-            if not isinstance(connection, dict):
-                raise RuntimeError("GraphQL jobs query returned no connection")
-            edges = connection.get("edges")
-            if not isinstance(edges, list):
-                raise RuntimeError("GraphQL jobs query returned malformed edges")
+            edges: list[dict[str, Any]] = data["jobs"]["edges"]
             for edge in edges:
-                if not isinstance(edge, dict):
-                    raise RuntimeError("GraphQL jobs query returned a malformed edge")
                 if edge.get("error"):
                     raise RuntimeError(f"GraphQL jobs edge failed:\n{edge['error']}")
-                node = edge.get("node")
-                if not isinstance(node, dict):
-                    raise RuntimeError("GraphQL jobs edge returned no node")
+                node: dict[str, Any] = edge["node"]
                 status = _job_status_from_node(node)
-                if status.id in seen_ids:
-                    raise RuntimeError(
-                        f"GraphQL jobs pages duplicated job ID {status.id!r}"
-                    )
-                seen_ids.add(status.id)
-                results.append(status)
+                if status.id not in seen_ids:
+                    seen_ids.add(status.id)
+                    results.append(status)
 
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or not isinstance(
