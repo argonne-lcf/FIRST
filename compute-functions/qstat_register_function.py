@@ -170,7 +170,8 @@ def qstat_inference_function():
                     jobs_raw.append(current)
                 current = [line]
             else:
-                current.append(line)
+                if current:
+                    current.append(line)
         if current:
             jobs_raw.append(current)
 
