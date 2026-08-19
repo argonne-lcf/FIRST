@@ -71,6 +71,7 @@ async def get_backend(
     model: ModelConfig,
     admission_controller: AdmissionController,
     backend_candidates: list[CandidateBackend],
+    estimated_tokens: int | None = 0,
 ) -> BackendConfig:
     """
     Find and return the backend that will serve the request.
@@ -81,13 +82,12 @@ async def get_backend(
     usage_limits = get_usage_limits(user, model.usage_limits)
 
     # TODO: Incorporate request id
-    # TODO: calculate estimated_tokens
     admit_result = await admission_controller.admit(
         request_id="temporary-request-id",
         model_name=model.name,
         user_id=user.id,
         candidates=backend_candidates,
-        estimated_tokens=1,
+        estimated_tokens=estimated_tokens,
         quota=usage_limits,
     )
     if not admit_result.admitted:

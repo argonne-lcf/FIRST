@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any
 
@@ -33,12 +34,17 @@ async def submit_inference_with_retry(
 
     backend_candidates = get_backend_candidates(model, deployment_name=deployment_name)
 
+    # TODO: figure out a better token estimate and max_output_tokens
+    # estimated_tokens = len(json.dumps(payload)) // 4 + max_output_tokens
+    estimated_tokens = len(json.dumps(payload)) // 2
+
     for attempt in range(len(backend_candidates)):
         backend = await get_backend(
             user,
             model,
             admission_controller,
             backend_candidates,
+            estimated_tokens=estimated_tokens,
         )
 
         try:
