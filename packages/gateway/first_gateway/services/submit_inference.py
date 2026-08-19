@@ -70,7 +70,7 @@ async def submit_inference(
     # TODO: Submit and handle streaming / non-streaming
     return {"Mock response": True}
 
-    payload = payload.model_dump(exclude_none=True)
+    payload = payload.model_dump(exclude_unset=True, mode="json")
     backend = backend  # This is just to mute lint-fix error
 
     # headers = {"Content-Type": "application/json"}
