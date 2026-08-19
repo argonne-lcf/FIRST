@@ -91,7 +91,7 @@ async def get_backend(
         quota=usage_limits,
     )
     if not admit_result.admitted:
-        raise_admit_error(admit_result, usage_limits)
+        raise_admit_error(admit_result, usage_limits, model)
 
     return next(
         (
@@ -122,26 +122,37 @@ def get_usage_limits(user: AuthUser, usage_policy: UsagePolicy) -> UsageLimits:
         return usage_policy.default
 
 
-def raise_admit_error(admit_result: AdmitResult, usage_limits: UsageLimits) -> None:
+def raise_admit_error(
+    admit_result: AdmitResult,
+    usage_limits: UsageLimits,
+    model: ModelConfig,
+) -> None:
     if admit_result.retry_after_sec:
-        retry_str = f" Retry in {admit_result.retry_after_sec} seconds."
+        retry_after_sec = admit_result.retry_after_sec
+        retry_str = f" Retry in {retry_after_sec} seconds."
+    elif model.overload.short_retry_sec:
+        retry_after_sec = model.overload.short_retry_sec
+        retry_str = f" Retry in {retry_after_sec} seconds."
+    else:
+        retry_after_sec = None
+        retry_str = ""
 
     if admit_result.status == AdmitStatus.REJECT_QUOTA:
         if admit_result.quota_reason == QuotaReason.USER_CONCURRENCY:
             raise TooManyRequests(
                 f"Concurent requests above f{usage_limits.max_user_concurrency}."
                 + retry_str,
-                retry_after_sec=admit_result.retry_after_sec,
+                retry_after_sec=retry_after_sec,
             )
         elif admit_result.quota_reason == QuotaReason.USER_RPM:
             raise TooManyRequests(
                 f"Requests per minute above f{usage_limits.rpm}." + retry_str,
-                retry_after_sec=admit_result.retry_after_sec,
+                retry_after_sec=retry_after_sec,
             )
         elif admit_result.quota_reason == QuotaReason.USER_TPM:
             raise TooManyRequests(
                 f"Tokens per minute above f{usage_limits.tpm}." + retry_str,
-                retry_after_sec=admit_result.retry_after_sec,
+                retry_after_sec=retry_after_sec,
             )
         else:
             raise FirstError(
@@ -151,15 +162,18 @@ def raise_admit_error(admit_result: AdmitResult, usage_limits: UsageLimits) -> N
     elif admit_result.status == AdmitStatus.REJECT_CAPACITY:
         if admit_result.capacity_reason == CapacityReason.SATURATED:
             raise ServiceUnavailable(
-                f"Backend saturated. Retry in {admit_result.retry_after_sec} seconds."
+                "Backend saturated." + retry_str,
+                retry_after_sec=retry_after_sec,
             )
         elif admit_result.capacity_reason == CapacityReason.ALL_BENCHED:
             raise ServiceUnavailable(
-                f"Backend in cooldown phase. Retry in {admit_result.retry_after_sec} seconds."
+                "Backend in cooldown phase." + retry_str,
+                retry_after_sec=retry_after_sec,
             )
         elif admit_result.capacity_reason == CapacityReason.NO_CANDIDATES:
             raise ServiceUnavailable(
-                f"Backend not available yet. Retry in {admit_result.retry_after_sec} seconds."
+                "Backend not available yet." + retry_str,
+                retry_after_sec=retry_after_sec,
             )
         else:
             raise FirstError(
