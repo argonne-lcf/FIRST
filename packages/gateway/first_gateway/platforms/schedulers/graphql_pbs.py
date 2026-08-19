@@ -364,7 +364,10 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         }
         """
         data = await self._post(query, {"jobId": job_id})
-        edge = data["jobs"]["edges"][0]
+        edges = data["jobs"]["edges"]
+        if not edges:
+            return None
+        edge = edges[0]
         if edge.get("error"):
             raise RuntimeError(f"GraphQL exact-job edge failed:\n{edge['error']}")
         node = edge["node"]
