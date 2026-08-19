@@ -1,9 +1,9 @@
 import logging
-from typing import Any, TypeVar
+from typing import Any
 
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
+from first_common.schema.endpoints.base import BasePayload
 from first_gateway.apiserver.dependencies import AuthUser
 
 from ..database.redis.admission import AdmissionController
@@ -16,14 +16,12 @@ from .orchestration import (
 
 logger = logging.getLogger(__name__)
 
-PayloadT = TypeVar("PayloadT", bound=BaseModel)
-
 
 async def submit_inference_with_retry(
     user: AuthUser,
     model: ModelConfig,
     admission_controller: AdmissionController,
-    payload: PayloadT,
+    payload: BasePayload,
     deployment_name: str | None = None,
 ) -> StreamingResponse | dict[str, Any]:
     """
@@ -65,7 +63,7 @@ async def submit_inference_with_retry(
 
 async def submit_inference(
     backend: BackendConfig,
-    payload: PayloadT,
+    payload: BasePayload,
 ) -> StreamingResponse | dict[str, Any]:
     """POST to an inference backend."""
 
