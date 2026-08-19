@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import logging
 import re
@@ -44,8 +43,6 @@ _ACTIVE_STATES = frozenset({5, 6, 7, 8, 9})
 
 _HSN_RESOURCE_NAME = "hsn_ips"
 _PBS_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-_DELETE_POLL_ATTEMPTS = 45
-_DELETE_POLL_INTERVAL_SEC = 1.0
 _STATUS_PAGE_SIZE = 500
 _STATUS_MAX_PAGES = 10
 
@@ -322,19 +319,9 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                 f"expected {job_id!r}, got {returned_id!r}"
             )
 
-        # A successful mutation is only an acknowledgement. Retain the DB
-        # allocation until this exact scheduler ID is terminal or absent.
-        for attempt in range(_DELETE_POLL_ATTEMPTS):
-            state = await self._get_exact_job_state(job_id)
-            if state is None or state == SchedulerJobState.gone:
-                return
-            if attempt + 1 < _DELETE_POLL_ATTEMPTS:
-                await asyncio.sleep(_DELETE_POLL_INTERVAL_SEC)
-
-        raise TimeoutError(
-            f"scheduler job {job_id!r} did not become absent/gone after "
-            f"{_DELETE_POLL_ATTEMPTS} polls"
-        )
+        # The mutation acknowledges qdel; it does not prove that PBS has
+        # released the allocation. The controller records the job as exiting,
+        # and the scheduler observer completes deletion after it observes gone.
 
     async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
         job_id = job_id.strip()

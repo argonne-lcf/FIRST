@@ -118,7 +118,7 @@ class SchedulerAdapter(ABC):
         """
 
     async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
-        """Return one job, returning None only if it is definitively absent. 
+        """Return one job, returning None only if it is definitively absent.
 
         Adapters with an authoritative exact-ID lookup should override this and
         may return ``None`` only when that lookup explicitly proves absence.
@@ -139,7 +139,10 @@ class SchedulerAdapter(ABC):
     @abstractmethod
     async def terminate_job(self, job_id: str) -> None:
         """
-        Terminate a job in the scheduler [qdel]
+        Request termination of a job in the scheduler [qdel].
+
+        Returning means the scheduler accepted the request; callers must
+        observe the job as gone before treating its allocation as released.
         """
 
     @abstractmethod
