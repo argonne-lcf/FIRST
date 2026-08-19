@@ -364,25 +364,10 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         }
         """
         data = await self._post(query, {"jobId": job_id})
-        connection = data.get("jobs")
-        if not isinstance(connection, dict):
-            raise RuntimeError("GraphQL exact-job query returned no connection")
-        edges = connection.get("edges")
-        if not isinstance(edges, list):
-            raise RuntimeError("GraphQL exact-job query returned malformed edges")
-        page_info = connection.get("pageInfo")
-        if not isinstance(page_info, dict) or page_info.get("hasNextPage") is not False:
-            raise RuntimeError("GraphQL exact-job query was not an exact page")
-        if not edges:
-            return None
-        if len(edges) != 1 or not isinstance(edges[0], dict):
-            raise RuntimeError("GraphQL exact-job query returned non-exact edges")
-        edge = edges[0]
+        edge = data["jobs"]["edges"][0]
         if edge.get("error"):
             raise RuntimeError(f"GraphQL exact-job edge failed:\n{edge['error']}")
-        node = edge.get("node")
-        if not isinstance(node, dict):
-            raise RuntimeError("GraphQL exact-job edge returned no node")
+        node = edge["node"]
         status = _job_status_from_node(node)
         if status.id != job_id:
             raise RuntimeError(
