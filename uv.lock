@@ -10,7 +10,6 @@ members = [
 
 [[package]]
 name = "alcf-ai"
-version = "0.8.0"
 source = { editable = "alcf_ai" }
 dependencies = [
     { name = "globus-sdk" },

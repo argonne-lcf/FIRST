@@ -1,6 +1,6 @@
 [project]
 name = "alcf-ai"
-version = "0.8.0"
+dynamic = ["version"]
 description = "ALCF Inference Gateway SDK"
 authors = [{ name = "Misha Salim", email = "msalim@anl.gov" }]
 requires-python = ">=3.12"
@@ -23,8 +23,15 @@ dependencies = [
 alcf-ai = "alcf_ai:cli"
 
 [build-system]
-requires = ["uv_build<0.10.0"]
-build-backend = "uv_build"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "^alcf_ai/v(?P<version>[^\\+]+)$"
+
+[tool.hatch.version.raw-options]
+search_parent_directories = true
 
 [tool.ruff]
 line-length = 88
