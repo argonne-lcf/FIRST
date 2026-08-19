@@ -23,7 +23,7 @@ jobs:
           POSTGRES_USER: first_gateway
           POSTGRES_PASSWORD: password
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
           --health-cmd "pg_isready -U first_gateway"
           --health-interval 5s
@@ -33,7 +33,7 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 6380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
@@ -43,6 +43,8 @@ jobs:
     env:
       FIRST_GLOBUS__APP_ID: ci-dummy-app-id
       FIRST_GLOBUS__APP_SECRET: ci-dummy-app-secret
+      FIRST_GLOBUS__COMPUTE_CLIENT_ID: dummy-compute-client-id
+      FIRST_GLOBUS__COMPUTE_CLIENT_SECRET: dummy-compute-client-secret
       FIRST_PILOT_CA_CRT: "certificate"
       FIRST_PILOT_CA_KEY: "begin fake private key"
 
