@@ -38,10 +38,12 @@ class FirstError(Exception):
         *args: Any,
         status_code: HTTPStatus | int | None = None,
         info: dict[str, Any] | None = None,
+        retry_after_sec: int | None = None,
     ):
         if status_code is not None:
             self.status_code = HTTPStatus(status_code)
         self.info = info or {}
+        self.retry_after_sec = retry_after_sec
         super().__init__(*args)
 
 
