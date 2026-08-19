@@ -23,7 +23,7 @@ services:
     networks:
       - gateway
     restart: unless-stopped
-    logging:
+    logging: &logging
       driver: "local"
       options:
         max-size: "10m"
@@ -51,11 +51,7 @@ services:
       timeout: 3s
       retries: 6
       start_period: 10s
-    logging:
-      driver: "local"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
   postgres:
     image: postgres:18@sha256:7157393f508fd8eb46119937fab39813783fe3e7d4c6316c45c12ce2ea25e61d
@@ -70,11 +66,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    logging:
-      driver: "local"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
   redis:
     image: redis:8@sha256:344e3945a0b431c8ff1eecd58c5573538126bd756f02fc7e218ddf1fc2546366
@@ -110,11 +102,7 @@ services:
       retries: 3
     ports:
       - "127.0.0.1:6380:6380"
-    logging:
-      driver: "local"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
   prometheus:
     image: prom/prometheus:latest@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
@@ -127,19 +115,17 @@ services:
       - --storage.tsdb.retention.time=15d
       - --storage.tsdb.retention.size=5GB
       - --web.enable-admin-api
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ../pki:/etc/prometheus/certs
     ports:
       - "127.0.0.1:9090:9090"
     networks:
       - gateway
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../pki/ca.crt:/etc/prometheus/certs/ca.crt:ro
+      - ../pki/client.first-pilot.internal.crt:/etc/prometheus/certs/client.crt:ro
+      - ../pki/client.first-pilot.internal.key:/etc/prometheus/certs/client.key:ro
     restart: unless-stopped
-    logging:
-      driver: "local"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
   grafana:
     image: grafana/grafana:latest@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
@@ -156,11 +142,7 @@ services:
     networks:
       - gateway
     restart: unless-stopped
-    logging:
-      driver: "local"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
 networks:
   gateway:

@@ -36,6 +36,8 @@ services:
       - redis-dev:/data
 
   prometheus:
+    group_add:
+      - "900"
     volumes:
       - prometheus-dev:/prometheus
 

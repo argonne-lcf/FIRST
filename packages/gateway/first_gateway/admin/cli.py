@@ -88,6 +88,8 @@ def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
                 raise InvalidSpecError(f"Failed to load YAML {file}: {e}") from None
 
         for raw in raw_docs:
+            if not raw:
+                continue
             try:
                 resource = ResourceManifest.model_validate(raw, extra="forbid")
             except ValidationError as exc:

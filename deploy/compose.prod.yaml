@@ -31,6 +31,8 @@ services:
       - redis_data_prod:/data
 
   prometheus:
+    group_add:
+      - "900"
     volumes:
       - prometheus_data_prod:/prometheus
 
