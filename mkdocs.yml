@@ -75,6 +75,7 @@ nav:
       - Project Layout: architecture/project-layout.md
       - Control / Data Plane: architecture/control-data-plane.md
       - Request Routing: architecture/request-routing.md
+      - Transport (httpx / NGINX): architecture/nginx-httpx.md
       - Pilot Job System: architecture/pilot-system.md
       - Declarative Configuration: architecture/declarative-config.md
       - Data Model: architecture/data-model.md
