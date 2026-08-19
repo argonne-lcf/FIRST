@@ -1,17 +1,20 @@
 use std::{
+    cell::LazyCell,
     collections::{HashMap, hash_map::Entry},
     fs::{self, File},
     io::{self, BufWriter, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use backhand::{FilesystemCompressor, FilesystemWriter, NodeHeader, compression::Compressor};
 use clap::Parser;
 use memmap2::Mmap;
 use polars::{
     df,
     error::PolarsResult,
-    frame::DataFrame,
+    frame::{DataFrame, UniqueKeepStrategy},
     prelude::{
         FileWriteFormat, IntoLazy, JoinCoalesce, JoinType, LazyFileListReader, LazyFrame,
         LazyJsonLineReader, ParquetWriteOptions, PlRefPath, ScanArgsParquet, SinkDestination,
@@ -32,6 +35,7 @@ const STREAMS: &[&str] = &[
 #[derive(Parser)]
 struct Args {
     logs: Vec<PathBuf>,
+    large_requests: Option<PathBuf>,
 }
 
 fn mmap_outdated(path: &Path) -> io::Result<Option<Mmap>> {
@@ -260,6 +264,77 @@ fn write_merged_request_metrics(
     Ok(request_metrics)
 }
 
+fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let mtime = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+
+    let mut squashfs = LazyFrame::scan_parquet(
+        PlRefPath::try_from_path(&request_log)?,
+        ScanArgsParquet::default(),
+    )?
+    .select([col("id")])
+    .unique(None, UniqueKeepStrategy::Any)
+    .collect()?
+    .column("id")?
+    .str()?
+    .no_null_iter()
+    .try_fold(
+        LazyCell::new(|| {
+            let mut fs = FilesystemWriter::default();
+            fs.set_compressor(FilesystemCompressor::new(Compressor::Zstd, None).unwrap());
+            fs.set_root_uid(uid);
+            fs.set_root_gid(gid);
+            fs.set_root_mode(0o755);
+            fs.set_time(mtime);
+            fs
+        }),
+        |mut fs, request_id| -> anyhow::Result<_> {
+            let mut json = large_requests.join(request_id);
+            json.set_extension("json");
+
+            let mut path = Path::new(&request_id[0..2]).join(&request_id[2..4]);
+
+            if let Some(f) = File::open(&json).ok() {
+                fs.push_dir_all(
+                    &path,
+                    NodeHeader {
+                        permissions: 0o755,
+                        uid,
+                        gid,
+                        mtime,
+                    },
+                )?;
+                path.push(json.file_name().unwrap());
+
+                fs.push_file(
+                    f,
+                    path,
+                    NodeHeader {
+                        permissions: 0o644,
+                        uid,
+                        gid,
+                        mtime,
+                    },
+                )?;
+            }
+
+            Ok(fs)
+        },
+    )?;
+
+    match LazyCell::get_mut(&mut squashfs) {
+        Some(fs) => {
+            let path = request_log.with_extension("large_requests.squashfs");
+            let mut file = File::create(&path)?;
+            fs.write(&mut file)?;
+
+            Ok(Some(path))
+        }
+        None => Ok(None),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
@@ -277,6 +352,15 @@ fn main() -> anyhow::Result<()> {
         partitions
             .values()
             .for_each(|p| println!("Outputted frame {}", p.display()));
+
+        if let Some(request_log) = partitions.get("request_log")
+            && let Some(large_requests) = &args.large_requests
+        {
+            match bundle_requests(request_log, large_requests)? {
+                Some(tarball) => println!("Dumped large requests to {}", tarball.display()),
+                None => println!("No large requests to dump"),
+            }
+        }
     }
 
     Ok(())
