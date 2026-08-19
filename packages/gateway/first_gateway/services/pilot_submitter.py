@@ -64,11 +64,6 @@ class PilotSubmitter:
         scheduler_name = f"{pc.job_name_prefix}{name}"
         log_path = pc.workdir / "submit_scripts" / f"{name}.log"
 
-        if pilot_job.num_nodes > 1 and pc.pals_path is None:
-            raise ValueError(
-                "multi-node pilot submission requires PilotConfig.pals_path"
-            )
-
         script: str | None = None
         script_path: Path | None = None
 
@@ -85,12 +80,14 @@ class PilotSubmitter:
                 "PILOT_JOB_NAME": name,
                 "PILOT_EXTERNAL_PORT": str(pc.external_port),
                 "PILOT_NGINX_PATH": str(pc.nginx_path),
-                "PILOT_IP_ALLOWLIST_JSON": json.dumps(
+                "PILOT_IP_ALLOWLIST": json.dumps(
                     pc.ip_allowlist, separators=(",", ":")
                 ),
                 "PILOT_WORKDIR": str(pc.workdir),
                 "PILOT_NODE_FILE_ENV": pc.node_file_env,
-                "PILOT_PALS_PATH": str(pc.pals_path) if pc.pals_path else "",
+                "PILOT_GPU_DISCOVERY": json.dumps(
+                    pc.gpu_discovery.model_dump(mode="json"), separators=(",", ":")
+                ),
                 "PILOT_NUM_NODES": str(pilot_job.num_nodes),
                 "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
             }
@@ -119,7 +116,7 @@ class PilotSubmitter:
                 ip_allowlist=pc.ip_allowlist,
                 workdir=pc.workdir,
                 node_file_env=pc.node_file_env,
-                pals_path=pc.pals_path,
+                gpu_discovery=pc.gpu_discovery,
                 num_nodes=pilot_job.num_nodes,
                 gpus_per_node=pilot_job.gpus_per_node,
                 job_name=name,

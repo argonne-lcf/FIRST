@@ -13,18 +13,19 @@ from first_common.schema.pilot import (
     PilotResources,
     PilotRuntimeConfig,
 )
+from first_common.schema.types import PalsDiscovery, SSHDiscovery
 from first_pilot.replica_manager import (
     ReplicaManager,
     discover_hosts,
-    query_gpus,
+    query_gpus_local,
     query_gpus_pals,
+    query_gpus_ssh,
 )
 
 
 def _gpu_rows(hostname: str, rank: int, indices: tuple[int, ...]) -> str:
     return "".join(
-        f"{hostname} {rank}: {index}, NVIDIA GH200, 97871, {index}\n"
-        for index in indices
+        f"{hostname} {rank}: {index}, Test GPU, 97871, {index}\n" for index in indices
     )
 
 
@@ -52,23 +53,48 @@ def test_single_host_inventory_runs_nvidia_smi_locally(
     run.return_value = CompletedProcess(
         [],
         0,
-        stdout="".join(
-            f"{index}, NVIDIA GH200, 97871, {index}\n" for index in range(4)
-        ),
+        stdout="".join(f"{index}, Test GPU, 97871, {index}\n" for index in range(4)),
         stderr="",
     )
 
-    resources = query_gpus("head.example.test", 4)
+    resources = query_gpus_local("head.example.test", 4)
 
     assert [gpu.index for gpu in resources.gpus] == ["0", "1", "2", "3"]
     command = run.call_args.args[0]
     assert command[0] == "nvidia-smi"
     assert "ssh" not in command
+    assert run.call_args.kwargs["timeout"] == 5.0
+
+
+@patch("first_pilot.replica_manager.subprocess.run")
+def test_ssh_inventory_queries_every_host_and_preserves_scheduler_order(
+    run: MagicMock,
+) -> None:
+    def response(command: list[str], **_kwargs: object) -> CompletedProcess[str]:
+        hostname = command[1]
+        rows = "".join(
+            f"{index}, GPU on {hostname}, 100, {index}\n" for index in range(2)
+        )
+        return CompletedProcess(command, 0, stdout=rows, stderr="")
+
+    run.side_effect = response
+    hostnames = ["worker-b.example.test", "worker-a.example.test"]
+
+    resources = query_gpus_ssh(hostnames, expected_gpus=2, timeout_sec=7.0)
+
+    assert [host.hostname for host in resources] == hostnames
+    assert [[gpu.index for gpu in host.gpus] for host in resources] == [
+        ["0", "1"],
+        ["0", "1"],
+    ]
+    assert {call.args[0][1] for call in run.call_args_list} == set(hostnames)
+    assert all(call.kwargs["timeout"] == 7.0 for call in run.call_args_list)
+    assert all(call.args[0][0] == "ssh" for call in run.call_args_list)
 
 
 @patch(
     "first_pilot.replica_manager._require_executable",
-    return_value="/opt/site/mpiexec",
+    return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_validates_and_preserves_rank_order(
@@ -85,7 +111,7 @@ def test_pals_inventory_validates_and_preserves_rank_order(
 
     resources = query_gpus_pals(
         ["head.example.test", "worker.example.test"],
-        Path("/opt/cray/pals/1.8/bin/mpiexec"),
+        Path("/opt/test/mpiexec"),
         4,
     )
 
@@ -98,10 +124,12 @@ def test_pals_inventory_validates_and_preserves_rank_order(
         ["0", "1", "2", "3"],
     ]
     command = run.call_args.args[0]
-    assert command[0] == "/opt/site/mpiexec"
+    assert command[0] == "/opt/test/mpiexec"
     assert "ssh" not in command
+    assert command[command.index("--timeout") + 1] == "30"
     assert command[command.index("-n") + 1] == "2"
     assert command[command.index("--ppn") + 1] == "1"
+    assert run.call_args.kwargs["timeout"] == 35.0
 
 
 @pytest.mark.parametrize(
@@ -109,7 +137,7 @@ def test_pals_inventory_validates_and_preserves_rank_order(
     [
         ("not-labeled\n", "unlabeled row"),
         (
-            "head 0: 0, NVIDIA GH200, unknown, 0\n",
+            "head 0: 0, Test GPU, unknown, 0\n",
             "was malformed",
         ),
         (
@@ -124,7 +152,7 @@ def test_pals_inventory_validates_and_preserves_rank_order(
 )
 @patch(
     "first_pilot.replica_manager._require_executable",
-    return_value="/opt/site/mpiexec",
+    return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_rejects_malformed_host_and_rank_rows(
@@ -136,12 +164,12 @@ def test_pals_inventory_rejects_malformed_host_and_rank_rows(
     run.return_value = CompletedProcess([], 0, stdout=output, stderr="")
 
     with pytest.raises(RuntimeError, match=message):
-        query_gpus_pals(["head", "worker"], Path("/opt/cray/pals/1.8/bin/mpiexec"), 4)
+        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
 
 
 @patch(
     "first_pilot.replica_manager._require_executable",
-    return_value="/opt/site/mpiexec",
+    return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_rejects_incomplete_rank(
@@ -152,12 +180,12 @@ def test_pals_inventory_rejects_incomplete_rank(
     )
 
     with pytest.raises(RuntimeError, match=r"incomplete; missing ranks \[1\]"):
-        query_gpus_pals(["head", "worker"], Path("/opt/cray/pals/1.8/bin/mpiexec"), 4)
+        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
 
 
 @patch(
     "first_pilot.replica_manager._require_executable",
-    return_value="/opt/site/mpiexec",
+    return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_rejects_duplicate_gpu(
@@ -173,28 +201,28 @@ def test_pals_inventory_rejects_duplicate_gpu(
     )
 
     with pytest.raises(RuntimeError, match="duplicated an index on host 'head'"):
-        query_gpus_pals(["head", "worker"], Path("/opt/cray/pals/1.8/bin/mpiexec"), 4)
+        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
 
 
 @patch(
     "first_pilot.replica_manager._require_executable",
-    return_value="/opt/site/mpiexec",
+    return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_reports_launcher_failure(
     run: MagicMock, _executable: MagicMock
 ) -> None:
     run.return_value = CompletedProcess(
-        [], 127, stdout="", stderr="CXI endpoint unavailable"
+        [], 127, stdout="", stderr="launcher unavailable"
     )
 
-    with pytest.raises(RuntimeError, match="exited 127: CXI endpoint unavailable"):
-        query_gpus_pals(["head", "worker"], Path("/opt/cray/pals/1.8/bin/mpiexec"), 4)
+    with pytest.raises(RuntimeError, match="exited 127: launcher unavailable"):
+        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
 
 
 @patch(
     "first_pilot.replica_manager._require_executable",
-    return_value="/opt/site/mpiexec",
+    return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_reports_launcher_timeout(
@@ -203,7 +231,7 @@ def test_pals_inventory_reports_launcher_timeout(
     run.side_effect = subprocess.TimeoutExpired("mpiexec", 35)
 
     with pytest.raises(RuntimeError, match="timed out after 35s"):
-        query_gpus_pals(["head", "worker"], Path("/opt/cray/pals/1.8/bin/mpiexec"), 4)
+        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
 
 
 @patch("first_pilot.replica_manager.discover_hosts")
@@ -235,7 +263,7 @@ def test_replica_manager_deduplicates_hosts_in_scheduler_order(
     )
     config = SimpleNamespace(
         node_file_env="TEST_NODEFILE",
-        pals_path=Path("/opt/cray/pals/1.8/bin/mpiexec"),
+        gpu_discovery=PalsDiscovery(launcher_path=Path("/opt/test/mpiexec")),
         num_nodes=2,
         gpus_per_node=1,
     )
@@ -252,7 +280,7 @@ def test_replica_manager_rejects_incomplete_host_inventory(
 ) -> None:
     config = SimpleNamespace(
         node_file_env="TEST_NODEFILE",
-        pals_path=Path("/opt/cray/pals/1.8/bin/mpiexec"),
+        gpu_discovery=SSHDiscovery(),
         num_nodes=2,
         gpus_per_node=4,
     )
@@ -261,7 +289,68 @@ def test_replica_manager_rejects_incomplete_host_inventory(
         ReplicaManager(config)  # type: ignore[arg-type]
 
 
-def test_runtime_config_load_overrides_all_nonsecret_public_fields(
+def _host_resources(hostnames: list[str], gpu_count: int) -> list[HostGpus]:
+    return [
+        HostGpus(
+            hostname=hostname,
+            gpus=[
+                GpuInfo(
+                    index=str(index),
+                    name="Test GPU",
+                    memory_total_mib=100,
+                    memory_used_mib=0,
+                )
+                for index in range(gpu_count)
+            ],
+        )
+        for hostname in hostnames
+    ]
+
+
+def test_replica_manager_dispatches_multi_node_ssh_discovery() -> None:
+    hostnames = ["head", "worker"]
+    config = SimpleNamespace(
+        node_file_env="TEST_NODEFILE",
+        gpu_discovery=SSHDiscovery(timeout_sec=7.0),
+        num_nodes=2,
+        gpus_per_node=2,
+    )
+    with (
+        patch("first_pilot.replica_manager.discover_hosts", return_value=hostnames),
+        patch(
+            "first_pilot.replica_manager.query_gpus_ssh",
+            return_value=_host_resources(hostnames, 2),
+        ) as query_ssh,
+    ):
+        manager = ReplicaManager(config)  # type: ignore[arg-type]
+
+    query_ssh.assert_called_once_with(hostnames, 2, 7.0)
+    manager._socket_dir.cleanup()
+
+
+def test_replica_manager_dispatches_multi_node_pals_discovery() -> None:
+    hostnames = ["head", "worker"]
+    discovery = PalsDiscovery(launcher_path=Path("/opt/test/mpiexec"), timeout_sec=41.0)
+    config = SimpleNamespace(
+        node_file_env="TEST_NODEFILE",
+        gpu_discovery=discovery,
+        num_nodes=2,
+        gpus_per_node=2,
+    )
+    with (
+        patch("first_pilot.replica_manager.discover_hosts", return_value=hostnames),
+        patch(
+            "first_pilot.replica_manager.query_gpus_pals",
+            return_value=_host_resources(hostnames, 2),
+        ) as query_pals,
+    ):
+        manager = ReplicaManager(config)  # type: ignore[arg-type]
+
+    query_pals.assert_called_once_with(hostnames, discovery.launcher_path, 2, 41.0)
+    manager._socket_dir.cleanup()
+
+
+def test_runtime_config_loads_public_fields_from_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = tmp_path / "pilot.yaml"
@@ -271,37 +360,33 @@ def test_runtime_config_load_overrides_all_nonsecret_public_fields(
                 "ca_crt": "ca",
                 "server_crt": "crt",
                 "server_key": "key",
-                "external_port": 18443,
-                "nginx_path": "/malicious/nginx",
-                "ip_allowlist": ["0.0.0.0/0"],
-                "workdir": "/personal/workdir",
-                "node_file_env": "ATTACKER_NODEFILE",
-                "pals_path": "/stale/mpiexec",
-                "num_nodes": 1,
-                "gpus_per_node": 1,
-                "job_name": "stale-job",
             }
         )
     )
     monkeypatch.setenv("PILOT_CONFIG_FILE", str(config_path))
-    monkeypatch.setenv("PILOT_JOB_NAME", "nemotron-canary")
+    monkeypatch.setenv("PILOT_JOB_NAME", "test-pilot")
     monkeypatch.setenv("PILOT_EXTERNAL_PORT", "19443")
-    monkeypatch.setenv("PILOT_NGINX_PATH", "/service/nginx")
-    monkeypatch.setenv("PILOT_IP_ALLOWLIST_JSON", '["10.124.176.33/32"]')
-    monkeypatch.setenv("PILOT_WORKDIR", "/service/workdir")
-    monkeypatch.setenv("PILOT_NODE_FILE_ENV", "PBS_NODEFILE")
-    monkeypatch.setenv("PILOT_PALS_PATH", "/opt/cray/pals/1.8/bin/mpiexec")
+    monkeypatch.setenv("PILOT_NGINX_PATH", "/opt/test/nginx")
+    monkeypatch.setenv("PILOT_IP_ALLOWLIST", '["192.0.2.10/32"]')
+    monkeypatch.setenv("PILOT_WORKDIR", "/opt/test/workdir")
+    monkeypatch.setenv("PILOT_NODE_FILE_ENV", "TEST_NODEFILE")
+    monkeypatch.setenv(
+        "PILOT_GPU_DISCOVERY",
+        '{"method":"pals","launcher_path":"/opt/test/mpiexec"}',
+    )
     monkeypatch.setenv("PILOT_NUM_NODES", "2")
     monkeypatch.setenv("PILOT_GPUS_PER_NODE", "4")
 
     config = PilotRuntimeConfig.load()
 
-    assert config.job_name == "nemotron-canary"
+    assert config.job_name == "test-pilot"
     assert config.external_port == 19443
-    assert config.nginx_path == Path("/service/nginx")
-    assert config.ip_allowlist == ["10.124.176.33/32"]
-    assert config.workdir == Path("/service/workdir")
-    assert config.node_file_env == "PBS_NODEFILE"
-    assert config.pals_path == Path("/opt/cray/pals/1.8/bin/mpiexec")
+    assert config.nginx_path == Path("/opt/test/nginx")
+    assert config.ip_allowlist == ["192.0.2.10/32"]
+    assert config.workdir == Path("/opt/test/workdir")
+    assert config.node_file_env == "TEST_NODEFILE"
+    assert config.gpu_discovery == PalsDiscovery(
+        launcher_path=Path("/opt/test/mpiexec")
+    )
     assert config.num_nodes == 2
     assert config.gpus_per_node == 4

@@ -21,7 +21,7 @@ from first_common.schema.pilot import (
 )
 
 from .nginx_manager import NginxManager, ReplicaUpstream
-from .replica_manager import ReplicaManager, safe_getfqdn
+from .replica_manager import ReplicaManager
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class _PilotManager:
             )
 
         return AddressInfo(
-            hostname=safe_getfqdn(ip),
+            hostname=socket.gethostname(),
             ip=ip,
             external_port=self.config.external_port,
             control_path=self.nginx.control_path,

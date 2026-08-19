@@ -28,17 +28,13 @@ from first_common.schema.pilot import (
 )
 from first_common.schema.types import (
     GpuClaim,
+    PalsDiscovery,
+    SSHDiscovery,
 )
 
 from .replica import Replica
 
 logger = logging.getLogger(__name__)
-
-
-def safe_getfqdn(name: str = "", *, timeout: float = 2.0) -> str:
-    """Return a DNS-free address label; retained for the control API contract."""
-    del timeout
-    return name or socket.gethostname()
 
 
 class _ReservedSentinel(Enum):
@@ -106,30 +102,68 @@ def _validated_host_gpus(
     )
 
 
-def query_gpus(hostname: str, expected_gpus: int) -> HostGpus:
-    """Inventory a single-node pilot locally; never use a remote shell."""
-    nvidia_smi = "nvidia-smi"
+def _query_gpus_command(
+    hostname: str,
+    command: list[str],
+    expected_gpus: int,
+    timeout_sec: float,
+    *,
+    label: str,
+) -> HostGpus:
     try:
         result = subprocess.run(
-            [nvidia_smi, *_NVIDIA_SMI_ARGS],
+            command,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("local GPU inventory timed out after 5s") from exc
+        raise RuntimeError(
+            f"{label} GPU inventory timed out after {timeout_sec:g}s"
+        ) from exc
 
     if result.returncode != 0:
+        diagnostics = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(
-            f"local GPU inventory exited {result.returncode}: "
-            f"{result.stderr.strip()[-2000:]}"
+            f"{label} GPU inventory exited {result.returncode}: {diagnostics[-2000:]}"
         )
 
     try:
         gpus = [_parse_gpu_row(line) for line in result.stdout.splitlines() if line]
     except ValueError as exc:
-        raise RuntimeError(f"local GPU inventory was malformed: {exc}") from exc
+        raise RuntimeError(f"{label} GPU inventory was malformed: {exc}") from exc
     return _validated_host_gpus(hostname, gpus, expected_gpus)
+
+
+def query_gpus_local(
+    hostname: str, expected_gpus: int, timeout_sec: float = 5.0
+) -> HostGpus:
+    """Inventory a single-node pilot locally; never use a remote shell."""
+    return _query_gpus_command(
+        hostname,
+        ["nvidia-smi", *_NVIDIA_SMI_ARGS],
+        expected_gpus,
+        timeout_sec,
+        label="local",
+    )
+
+
+def query_gpus_ssh(
+    hostnames: list[str], expected_gpus: int, timeout_sec: float = 5.0
+) -> list[HostGpus]:
+    """Query every scheduler host concurrently and retain scheduler order."""
+
+    def query_host(hostname: str) -> HostGpus:
+        return _query_gpus_command(
+            hostname,
+            ["ssh", hostname, "nvidia-smi", *_NVIDIA_SMI_ARGS],
+            expected_gpus,
+            timeout_sec,
+            label=f"SSH host {hostname!r}",
+        )
+
+    with ThreadPoolExecutor(max_workers=len(hostnames)) as pool:
+        return list(pool.map(query_host, hostnames))
 
 
 def _normalized_hostname(hostname: str) -> str:
@@ -160,11 +194,14 @@ def _deduplicate_hosts(hostnames: list[str]) -> list[str]:
 
 
 def query_gpus_pals(
-    hostnames: list[str], pals_path: Path, expected_gpus: int
+    hostnames: list[str],
+    launcher_path: Path,
+    expected_gpus: int,
+    timeout_sec: float = 35.0,
 ) -> list[HostGpus]:
     """Run one labeled inventory rank per host through the site PALS launcher."""
     nvidia_smi = "nvidia-smi"
-    pals = _require_executable(pals_path, label="PALS launcher")
+    pals = _require_executable(launcher_path, label="PALS launcher")
 
     command = [
         pals,
@@ -175,7 +212,9 @@ def query_gpus_pals(
         "--label",
         "--abort-on-failure",
         "--timeout",
-        "30",
+        # Leave time for the launcher to report and exit before our outer
+        # subprocess deadline expires.
+        str(max(1, int(timeout_sec) - 5)),
         "-n",
         str(len(hostnames)),
         "--ppn",
@@ -189,10 +228,12 @@ def query_gpus_pals(
             command,
             capture_output=True,
             text=True,
-            timeout=35,
+            timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("PALS GPU inventory timed out after 35s") from exc
+        raise RuntimeError(
+            f"PALS GPU inventory timed out after {timeout_sec:g}s"
+        ) from exc
 
     if result.returncode != 0:
         diagnostics = result.stderr.strip() or result.stdout.strip()
@@ -325,17 +366,30 @@ class ReplicaManager:
 
     @ttl_cache(ttl=60)
     def query_resources(self) -> PilotResources:
-        """Discover the exact scheduler-requested inventory without SSH."""
+        """Discover and validate the exact scheduler-requested inventory."""
+        discovery = self.config.gpu_discovery
         if len(self.node_hostnames) == 1:
-            host_gpus = [query_gpus(self.node_hostnames[0], self.config.gpus_per_node)]
-        else:
-            if self.config.pals_path is None:
-                raise RuntimeError("multi-node GPU inventory requires pals_path")
+            host_gpus = [
+                query_gpus_local(
+                    self.node_hostnames[0],
+                    self.config.gpus_per_node,
+                )
+            ]
+        elif isinstance(discovery, SSHDiscovery):
+            host_gpus = query_gpus_ssh(
+                self.node_hostnames,
+                self.config.gpus_per_node,
+                discovery.timeout_sec,
+            )
+        elif isinstance(discovery, PalsDiscovery):
             host_gpus = query_gpus_pals(
                 self.node_hostnames,
-                self.config.pals_path,
+                discovery.launcher_path,
                 self.config.gpus_per_node,
+                discovery.timeout_sec,
             )
+        else:
+            raise AssertionError(f"unsupported GPU discovery method: {discovery!r}")
 
         return PilotResources(hosts=host_gpus)
 

@@ -3,6 +3,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from shlex import quote
 
 import httpx
 
@@ -23,7 +24,7 @@ def _successful_graphql_transport(queries: list[str]) -> httpx.MockTransport:
             json={
                 "data": {
                     "createJob": {
-                        "node": {"jobId": "1234.tara"},
+                        "node": {"jobId": "1234.test"},
                         "error": None,
                     }
                 }
@@ -44,60 +45,64 @@ async def test_graphql_submit_maps_exact_two_node_four_gpu_request() -> None:
     async with httpx.AsyncClient(
         transport=_successful_graphql_transport(queries)
     ) as client:
-        adapter = GraphQLPBSAdapter(client, "openinference_svc", "https://bridge")
+        adapter = GraphQLPBSAdapter(
+            client, "test-service", "https://scheduler.example.test/graphql"
+        )
         result = await adapter.submit_job(
             JobSubmitPayload(
-                name="first-nemotron",
-                queue="workq",
-                account="inference_service",
+                name="test-pilot",
+                queue="test-queue",
+                account="test-account",
                 scheduler_flags="",
                 num_nodes=2,
                 gpus_per_node=4,
                 walltime_min=90,
-                log_path=Path("/service/logs/nemotron.log"),
-                script="#!/bin/bash\nexec /service/bin/first-pilot\n",
+                log_path=Path("/opt/test/logs/pilot.log"),
+                script="#!/bin/bash\nexec /opt/test/bin/first-pilot\n",
             )
         )
 
-    assert result.scheduler_id == "1234.tara"
+    assert result.scheduler_id == "1234.test"
     assert len(queries) == 1
     query = queries[0]
     assert "wallClockTime: 5400" in query
     assert re.search(r"taskCount:\s*\{\s*min: 2\s*max: 2", query)
     assert re.search(r'tasksResources:\s*\[\s*\{\s*index: "0-1"\s*gpus: 4', query)
-    assert _submitted_script(query) == ("#!/bin/bash\nexec /service/bin/first-pilot\n")
+    assert _submitted_script(query) == ("#!/bin/bash\nexec /opt/test/bin/first-pilot\n")
 
 
 async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
-    config = PilotConfig.model_validate(
-        {
-            "scheduler_adapter": (
-                "first_gateway.platforms.schedulers.graphql_pbs.GraphQLPBSAdapter"
-            ),
-            "scheduler_config": {},
-            "job_walltime_min": 90,
-            "queue": "workq",
-            "account": "inference_service",
-            "max_num_nodes": 2,
-            "gpus_per_node": 4,
-            "workdir": "/service/first-v2/workdir",
-            "external_port": 18443,
-            "nginx_path": "/service/nginx/sbin/nginx",
-            "ip_allowlist": ["10.124.176.33/32"],
-            "node_file_env": "PBS_NODEFILE",
-            "pals_path": "/opt/cray/pals/1.8/bin/mpiexec",
-            "submit_script_preamble": "#!/bin/bash\nset -eu",
-            "pilot_path": "/service/first v2/bin/first-pilot",
-            "pilot_config_path": "/service/first v2/config.yaml",
-        }
-    )
+    config_input = {
+        "scheduler_adapter": (
+            "first_gateway.platforms.schedulers.graphql_pbs.GraphQLPBSAdapter"
+        ),
+        "scheduler_config": {},
+        "job_walltime_min": 90,
+        "queue": "test-queue",
+        "account": "test-account",
+        "max_num_nodes": 2,
+        "gpus_per_node": 4,
+        "workdir": "/opt/test/pilot-workdir",
+        "external_port": 18443,
+        "nginx_path": "/opt/test/nginx",
+        "ip_allowlist": ["192.0.2.10/32"],
+        "node_file_env": "TEST_NODEFILE",
+        "gpu_discovery": {
+            "method": "pals",
+            "launcher_path": "/opt/test/mpiexec",
+        },
+        "submit_script_preamble": "#!/bin/bash\nset -eu",
+        "pilot_path": "/opt/test/first pilot",
+        "pilot_config_path": "/opt/test/pilot config.yaml",
+    }
+    config = PilotConfig.model_validate(config_input)
     pilot_job = PilotJob(
         kind="PilotJob",
-        name="nemotron-canary",
+        name="test-pilot",
         uid=1,
         created_at=datetime.now(timezone.utc),
         scheduler_job_id="",
-        cluster_name="tara-production",
+        cluster_name="test-cluster",
         scheduler_state=SchedulerJobState.pending_submit,
         manager_url="",
         manager_health=HealthCheckResult.unknown,
@@ -113,20 +118,30 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
     async with httpx.AsyncClient(
         transport=_successful_graphql_transport(queries)
     ) as client:
-        adapter = GraphQLPBSAdapter(client, "openinference_svc", "https://bridge")
+        adapter = GraphQLPBSAdapter(
+            client, "test-service", "https://scheduler.example.test/graphql"
+        )
         await PilotSubmitter(config, adapter, "unused-ca", "unused-key").submit(
             pilot_job
         )
 
     script = _submitted_script(queries[0])
-    assert "PILOT_CONFIG_FILE='/service/first v2/config.yaml'" in script
-    assert "PILOT_JOB_NAME=nemotron-canary" in script
-    assert "PILOT_NUM_NODES=2" in script
-    assert "PILOT_GPUS_PER_NODE=4" in script
-    assert "PILOT_PALS_PATH=/opt/cray/pals/1.8/bin/mpiexec" in script
-    assert "PILOT_EXTERNAL_PORT=18443" in script
-    assert "PILOT_NGINX_PATH=/service/nginx/sbin/nginx" in script
-    assert "PILOT_IP_ALLOWLIST_JSON='[\"10.124.176.33/32\"]'" in script
-    assert "PILOT_WORKDIR=/service/first-v2/workdir" in script
-    assert "PILOT_NODE_FILE_ENV=PBS_NODEFILE" in script
-    assert script.endswith("'/service/first v2/bin/first-pilot'\n")
+    expected_runtime_env = {
+        "PILOT_CONFIG_FILE": str(config.pilot_config_path),
+        "PILOT_JOB_NAME": pilot_job.name,
+        "PILOT_EXTERNAL_PORT": str(config.external_port),
+        "PILOT_NGINX_PATH": str(config.nginx_path),
+        "PILOT_IP_ALLOWLIST": json.dumps(config.ip_allowlist, separators=(",", ":")),
+        "PILOT_WORKDIR": str(config.workdir),
+        "PILOT_NODE_FILE_ENV": config.node_file_env,
+        "PILOT_GPU_DISCOVERY": json.dumps(
+            config.gpu_discovery.model_dump(mode="json"), separators=(",", ":")
+        ),
+        "PILOT_NUM_NODES": str(pilot_job.num_nodes),
+        "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
+    }
+    for key, value in expected_runtime_env.items():
+        assert f"{key}={quote(value)}" in script
+    assert "PILOT_PALS_PATH" not in script
+    assert "PILOT_IP_ALLOWLIST_JSON" not in script
+    assert script.endswith(f"{quote(str(config.pilot_path))}\n")

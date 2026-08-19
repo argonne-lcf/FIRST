@@ -4,7 +4,6 @@ These schemas describe the communication between first-gateway and first-pilot.
 Do not confuse with admin-created pilot resources inside `resources` subpackage
 """
 
-import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +14,13 @@ import yaml
 from pydantic import BaseModel, Field, PrivateAttr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .types import GpuClaim, PilotLaunchSpec, ReplicaState
+from .types import (
+    GpuClaim,
+    GpuDiscovery,
+    PilotLaunchSpec,
+    ReplicaState,
+    SSHDiscovery,
+)
 
 
 class ReplicaStartRequest(BaseModel):
@@ -124,7 +129,7 @@ class PilotRuntimeConfig(BaseSettings):
     ip_allowlist: list[str]
     workdir: Path
     node_file_env: str
-    pals_path: Path | None = None
+    gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)
     num_nodes: int = Field(ge=1)
     gpus_per_node: int = Field(ge=1)
     job_name: str
@@ -169,32 +174,4 @@ class PilotRuntimeConfig(BaseSettings):
         if not isinstance(config_raw, dict):
             raise ValueError("pilot runtime config must be a YAML mapping")
 
-        # GraphQL-backed schedulers cannot stage a per-job YAML file. Overlay
-        # the submitted job's identity, topology, runtime paths, and allowlist;
-        # credentials and other static settings remain in the reviewed YAML.
-        for field_name in (
-            "job_name",
-            "external_port",
-            "nginx_path",
-            "workdir",
-            "node_file_env",
-            "pals_path",
-            "num_nodes",
-            "gpus_per_node",
-        ):
-            env_name = f"PILOT_{field_name.upper()}"
-            if env_name in os.environ:
-                value = os.environ[env_name]
-                config_raw[field_name] = None if value == "" else value
-
-        if "PILOT_IP_ALLOWLIST_JSON" in os.environ:
-            try:
-                allowlist = json.loads(os.environ["PILOT_IP_ALLOWLIST_JSON"])
-            except json.JSONDecodeError as exc:
-                raise ValueError("PILOT_IP_ALLOWLIST_JSON is invalid JSON") from exc
-            if not isinstance(allowlist, list) or not all(
-                isinstance(value, str) for value in allowlist
-            ):
-                raise ValueError("PILOT_IP_ALLOWLIST_JSON must be a string list")
-            config_raw["ip_allowlist"] = allowlist
-        return cls.model_validate(config_raw)
+        return cls(**config_raw)
