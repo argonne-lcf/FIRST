@@ -276,7 +276,7 @@ async def test_reconcile_cluster_without_pilot_system(
 # ---------------------------------------------------------------------------
 
 
-async def test_scheduled_deletion_requests_nonblocking_termination(
+async def test_scheduled_deletion_terminates_running_job(
     db: async_sessionmaker[AsyncSession],
     ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
@@ -297,33 +297,7 @@ async def test_scheduled_deletion_requests_nonblocking_termination(
     assert "100.pbs" in adapter.terminated
 
     job = await _get_job(db, uid)
-    assert job.deleted_at is None
-    assert job.scheduler_state == SchedulerJobState.exiting.value
-
-
-async def test_scheduled_deletion_waits_for_exiting_job_to_become_gone(
-    db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
-    adapter: FakeSchedulerAdapter,
-) -> None:
-    async with db.begin() as sess:
-        await _seed_cluster(sess)
-        uid = await _insert_pilot_job(
-            sess,
-            "job-exiting",
-            scheduler_job_id="101.pbs",
-            scheduler_state=SchedulerJobState.exiting,
-            scheduled_deletion_at=NOW,
-        )
-
-    controller = _make_controller(db, ca_pair)
-    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
-        await controller.reconcile(uid)
-
-    assert adapter.terminated == []
-    job = await _get_job(db, uid)
-    assert job.deleted_at is None
-    assert job.scheduler_state == SchedulerJobState.exiting.value
+    assert job.deleted_at is not None
 
 
 async def test_scheduled_deletion_without_scheduler_job_skips_terminate(
@@ -541,37 +515,6 @@ async def test_submit_deferred_by_concurrent_jobs_cap(
 
     job = await _get_job(db, uid)
     assert job.scheduler_job_id is None
-    assert job.scheduler_state == SchedulerJobState.pending_submit.value
-
-
-async def test_exiting_job_still_counts_toward_concurrent_cap(
-    db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
-    adapter: FakeSchedulerAdapter,
-) -> None:
-    """A qdel-acknowledged allocation remains active until observed gone."""
-    async with db.begin() as sess:
-        await _seed_cluster(sess)
-        await _insert_pilot_job(sess, "running-0")
-        await _insert_pilot_job(sess, "running-1")
-        await _insert_pilot_job(
-            sess,
-            "exiting",
-            scheduler_state=SchedulerJobState.exiting,
-            scheduled_deletion_at=NOW,
-        )
-        uid = await _insert_pilot_job(
-            sess,
-            "waiting",
-            scheduler_state=SchedulerJobState.pending_submit,
-        )
-
-    controller = _make_controller(db, ca_pair)
-    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
-        await controller.reconcile(uid)
-
-    assert adapter.submitted == []
-    job = await _get_job(db, uid)
     assert job.scheduler_state == SchedulerJobState.pending_submit.value
 
 

@@ -118,7 +118,6 @@ async def _insert_pilot_job(
     scheduler_job_id: str,
     state: SchedulerJobState = SchedulerJobState.pending_submit,
     manager_url: str | None = None,
-    scheduled_deletion_at: datetime | None = None,
 ) -> int:
     job = PilotJob(
         name=name,
@@ -126,7 +125,6 @@ async def _insert_pilot_job(
         scheduler_job_id=scheduler_job_id,
         scheduler_state=state.value,
         manager_url=manager_url,
-        scheduled_deletion_at=scheduled_deletion_at,
         manager_health=HealthCheckResult.unknown.value,
         walltime_min=60,
         num_nodes=1,
@@ -262,32 +260,6 @@ async def test_no_update_when_state_unchanged(
     async with db() as sess:
         job = (await sess.scalars(select(PilotJob).where(PilotJob.uid == uid))).one()
     assert job.scheduler_state == SchedulerJobState.running.value
-
-
-async def test_missing_exiting_job_completes_nonblocking_termination(
-    db: async_sessionmaker[AsyncSession],
-) -> None:
-    adapter = FakeSchedulerAdapter()
-
-    async with db.begin() as sess:
-        await _seed_cluster(sess)
-        uid = await _insert_pilot_job(
-            sess,
-            "job-exiting",
-            "457.pbs",
-            state=SchedulerJobState.exiting,
-            scheduled_deletion_at=NOW,
-        )
-
-    observer = _make_observer(db)
-    pilot_config = PilotConfig.model_validate(PILOT_SYSTEM)
-    submitter = PilotSubmitter(pilot_config, adapter, "fake-ca-crt", "fake-ca-key")
-    await observer._poll_cluster(submitter, "polaris")
-
-    async with db() as sess:
-        job = (await sess.scalars(select(PilotJob).where(PilotJob.uid == uid))).one()
-    assert job.scheduler_state == SchedulerJobState.gone.value
-    assert job.deleted_at is not None
 
 
 async def test_cluster_without_pilot_system_skipped(

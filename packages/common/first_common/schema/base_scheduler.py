@@ -141,8 +141,8 @@ class SchedulerAdapter(ABC):
         """
         Request termination of a job in the scheduler [qdel].
 
-        Returning means the scheduler accepted the request; callers must
-        observe the job as gone before treating its allocation as released.
+        Returning means the scheduler accepted the request. Scheduler cleanup
+        may continue asynchronously after the acknowledgement.
         """
 
     @abstractmethod
