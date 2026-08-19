@@ -20,41 +20,11 @@ from ..database.redis.admission import (
 from ..database.redis.router_config import BackendConfig, DeploymentConfig, ModelConfig
 
 
-async def get_backend(
-    user: AuthUser,
+def get_backend_candidates(
     model: ModelConfig,
-    admission_controler: AdmissionController,
     deployment_name: str | None = None,
-) -> BackendConfig:
-    """
-    Find and return the backend that will serve the request.
-    This uses probabilities through the admission controler, which
-    takes in to account weights and recent activities.
-    """
-
-    backend_id = await get_backend_id(user, model, admission_controler, deployment_name)
-    return next(
-        (
-            backend
-            for d in model.deployments
-            for backend in d.backends
-            if backend.id == backend_id
-        ),
-        None,
-    )
-
-
-async def get_backend_id(
-    user: AuthUser,
-    model: ModelConfig,
-    admission_controler: AdmissionController,
-    deployment_name: str | None = None,
-) -> str:
-    """
-    Return the ID of the backend that will serve the request.
-    This uses probabilities through the admission controler, which
-    takes in to account weights and recent activities.
-    """
+) -> list[CandidateBackend]:
+    """Generate list of backend candidates for a given model and deployment (if provided)."""
 
     if deployment_name:
         d = next((d for d in model.deployments if d.name == deployment_name), None)
@@ -64,25 +34,7 @@ async def get_backend_id(
     else:
         deployments = model.deployments
 
-    backend_candidates = get_candidates_from_deployments(deployments)
-
-    usage_limits = get_usage_limits(user, model.usage_limits)
-
-    # TODO: find where the request id is
-    # TODO: calculate estimated_tokens
-    admit_result = await admission_controler.admit(
-        request_id="temporary",
-        model_name=model.name,
-        user_id=user.id,
-        candidates=backend_candidates,
-        estimated_tokens=1,
-        quota=usage_limits,
-    )
-
-    if admit_result.admitted:
-        return admit_result.backend_id
-    else:
-        raise_admit_error(admit_result, usage_limits)
+    return get_candidates_from_deployments(deployments)
 
 
 def get_candidates_from_deployments(
@@ -114,6 +66,60 @@ def get_candidates_from_deployments(
         )
         for i in idx
     ]
+
+
+async def get_backend(
+    user: AuthUser,
+    model: ModelConfig,
+    admission_controller: AdmissionController,
+    backend_candidates: list[CandidateBackend],
+) -> BackendConfig:
+    """
+    Find and return the backend that will serve the request.
+    This uses probabilities through the admission controler, which
+    takes in to account weights and recent activities.
+    """
+
+    usage_limits = get_usage_limits(user, model.usage_limits)
+
+    # TODO: Incorporate request id
+    # TODO: calculate estimated_tokens
+    admit_result = await admission_controller.admit(
+        request_id="temporary-request-id",
+        model_name=model.name,
+        user_id=user.id,
+        candidates=backend_candidates,
+        estimated_tokens=1,
+        quota=usage_limits,
+    )
+    if not admit_result.admitted:
+        raise_admit_error(admit_result, usage_limits)
+
+    return next(
+        (
+            backend
+            for deployment in model.deployments
+            for backend in deployment.backends
+            if backend.id == admit_result.backend_id
+        ),
+        None,
+    )
+
+
+def get_deployment_from_backend(
+    deployments: list[DeploymentConfig],
+    backend: BackendConfig,
+) -> DeploymentConfig:
+    """Return the deployment that includes a specific backend."""
+
+    deployment = next(
+        (deployment for deployment in deployments if backend in deployment.backends),
+        None,
+    )
+    if deployment is None:
+        raise NotFound(f"Could not find a deployment for backend ID {backend.id}.")
+
+    return deployment
 
 
 def get_usage_limits(user: AuthUser, usage_policy: UsagePolicy) -> UsageLimits:
