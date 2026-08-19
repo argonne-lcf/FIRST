@@ -27,9 +27,7 @@ def get_backend_candidates(
     """Generate list of backend candidates for a given model and deployment (if provided)."""
 
     if deployment_name:
-        d = next((d for d in model.deployments if d.name == deployment_name), None)
-        if d is None:
-            raise NotFound(f"Deployment {deployment_name} does not exist.")
+        d = next((d for d in model.deployments if d.name == deployment_name))
         deployments = [d]
     else:
         deployments = model.deployments
@@ -98,11 +96,10 @@ async def get_backend(
     return next(
         (
             backend
-            for deployment in model.deployments
-            for backend in deployment.backends
+            for d in model.deployments
+            for backend in d.backends
             if backend.id == admit_result.backend_id
-        ),
-        None,
+        )
     )
 
 
@@ -112,12 +109,7 @@ def get_deployment_from_backend(
 ) -> DeploymentConfig:
     """Return the deployment that includes a specific backend."""
 
-    deployment = next(
-        (deployment for deployment in deployments if backend in deployment.backends),
-        None,
-    )
-    if deployment is None:
-        raise NotFound(f"Could not find a deployment for backend ID {backend.id}.")
+    deployment = next((d for d in deployments if backend in d.backends))
 
     return deployment
 
