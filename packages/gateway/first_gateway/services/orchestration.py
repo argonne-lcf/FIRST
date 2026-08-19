@@ -123,15 +123,26 @@ def get_usage_limits(user: AuthUser, usage_policy: UsagePolicy) -> UsageLimits:
 
 
 def raise_admit_error(admit_result: AdmitResult, usage_limits: UsageLimits) -> None:
+    if admit_result.retry_after_sec:
+        retry_str = f" Retry in {admit_result.retry_after_sec} seconds."
+
     if admit_result.status == AdmitStatus.REJECT_QUOTA:
         if admit_result.quota_reason == QuotaReason.USER_CONCURRENCY:
             raise TooManyRequests(
                 f"Concurent requests above f{usage_limits.max_user_concurrency}."
+                + retry_str,
+                retry_after_sec=admit_result.retry_after_sec,
             )
         elif admit_result.quota_reason == QuotaReason.USER_RPM:
-            raise TooManyRequests(f"Requests per minute above f{usage_limits.rpm}.")
+            raise TooManyRequests(
+                f"Requests per minute above f{usage_limits.rpm}." + retry_str,
+                retry_after_sec=admit_result.retry_after_sec,
+            )
         elif admit_result.quota_reason == QuotaReason.USER_TPM:
-            raise TooManyRequests(f"Tokens per minute above f{usage_limits.tpm}.")
+            raise TooManyRequests(
+                f"Tokens per minute above f{usage_limits.tpm}." + retry_str,
+                retry_after_sec=admit_result.retry_after_sec,
+            )
         else:
             raise FirstError(
                 f"Uncaught reject reason for status {AdmitStatus.REJECT_QUOTA}: {admit_result.quota_reason}."
