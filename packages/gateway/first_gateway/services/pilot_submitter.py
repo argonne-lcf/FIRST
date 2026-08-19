@@ -1,6 +1,8 @@
+import json
 from dataclasses import replace
 from math import ceil
 from pathlib import Path
+from shlex import quote
 
 import yaml
 
@@ -73,10 +75,28 @@ class PilotSubmitter:
                 raise ValueError(
                     "GraphQLPBSAdapter requires PilotConfig.pilot_config_path"
                 )
+            runtime_env = {
+                "PILOT_CONFIG_FILE": str(pc.pilot_config_path),
+                "PILOT_JOB_NAME": name,
+                "PILOT_EXTERNAL_PORT": str(pc.external_port),
+                "PILOT_NGINX_PATH": str(pc.nginx_path),
+                "PILOT_IP_ALLOWLIST": json.dumps(
+                    pc.ip_allowlist, separators=(",", ":")
+                ),
+                "PILOT_WORKDIR": str(pc.workdir),
+                "PILOT_NODE_FILE_ENV": pc.node_file_env,
+                "PILOT_GPU_DISCOVERY": json.dumps(
+                    pc.gpu_discovery.model_dump(mode="json"), separators=(",", ":")
+                ),
+                "PILOT_NUM_NODES": str(pilot_job.num_nodes),
+                "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
+            }
+            assignments = " ".join(
+                f"{key}={quote(value)}" for key, value in runtime_env.items()
+            )
             script = (
                 f"{pc.submit_script_preamble}\n"
-                f'PILOT_CONFIG_FILE={pc.pilot_config_path} PILOT_JOB_NAME="{name}" '
-                f"{pc.pilot_path}\n"
+                f"{assignments} {quote(str(pc.pilot_path))}\n"
             )
         else:
             # Filesystem-backed: render the runtime config and submit script
@@ -96,6 +116,9 @@ class PilotSubmitter:
                 ip_allowlist=pc.ip_allowlist,
                 workdir=pc.workdir,
                 node_file_env=pc.node_file_env,
+                gpu_discovery=pc.gpu_discovery,
+                num_nodes=pilot_job.num_nodes,
+                gpus_per_node=pilot_job.gpus_per_node,
                 job_name=name,
             )
             config_yaml = yaml.dump(
@@ -106,7 +129,8 @@ class PilotSubmitter:
             script_path = pc.workdir / "submit_scripts" / f"{name}.sh"
             body = (
                 f"{pc.submit_script_preamble}\n"
-                f"PILOT_CONFIG_FILE={config_path} {pc.pilot_path}\n"
+                f"PILOT_CONFIG_FILE={quote(str(config_path))} "
+                f"{quote(str(pc.pilot_path))}\n"
             )
 
             await self.adapter.put_file(config_yaml, config_path, mode=0o600)

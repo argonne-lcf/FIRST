@@ -11,10 +11,16 @@ from tempfile import TemporaryDirectory
 from typing import Self
 
 import yaml
-from pydantic import BaseModel, PrivateAttr, computed_field
+from pydantic import BaseModel, Field, PrivateAttr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .types import GpuClaim, PilotLaunchSpec, ReplicaState
+from .types import (
+    GpuClaim,
+    GpuDiscovery,
+    PilotLaunchSpec,
+    ReplicaState,
+    SSHDiscovery,
+)
 
 
 class ReplicaStartRequest(BaseModel):
@@ -123,6 +129,9 @@ class PilotRuntimeConfig(BaseSettings):
     ip_allowlist: list[str]
     workdir: Path
     node_file_env: str
+    gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)
+    num_nodes: int = Field(ge=1)
+    gpus_per_node: int = Field(ge=1)
     job_name: str
 
     # Name of the IPv4 network interface (e.g. "hsn0") whose address the pilot
@@ -162,4 +171,7 @@ class PilotRuntimeConfig(BaseSettings):
         """
         yaml_path = os.environ["PILOT_CONFIG_FILE"]
         config_raw = yaml.safe_load(Path(yaml_path).read_text())
-        return cls.model_validate(config_raw)
+        if not isinstance(config_raw, dict):
+            raise ValueError("pilot runtime config must be a YAML mapping")
+
+        return cls(**config_raw)

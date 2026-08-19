@@ -4,6 +4,7 @@ from typing import Any, Self
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
@@ -14,7 +15,13 @@ from first_common.schema.base_scheduler import (
 )
 from first_common.schema.pilot import AddressInfo, PilotResources
 from first_common.schema.resources.read import PilotJob
-from first_common.schema.types import HealthCheckResult, PilotConfig
+from first_common.schema.types import (
+    HealthCheckResult,
+    PalsDiscovery,
+    PilotConfig,
+    SSHDiscovery,
+)
+from first_gateway.platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from first_gateway.services.certmanager import gen_ca_pem
 from first_gateway.services.pilot_submitter import PilotSubmitter
 
@@ -52,6 +59,17 @@ class FakeSchedulerAdapter(SchedulerAdapter):
         return self.files[str(path)][0]
 
 
+class FakeGraphQLSchedulerAdapter(GraphQLPBSAdapter):
+    """GraphQL marker adapter that only records the rendered submit payload."""
+
+    def __init__(self) -> None:
+        self.submitted: list[JobSubmitPayload] = []
+
+    async def submit_job(self, job_spec: JobSubmitPayload) -> JobSubmitResult:
+        self.submitted.append(job_spec)
+        return JobSubmitResult(job_name=job_spec.name, scheduler_id="42.fake")
+
+
 @pytest.fixture
 def ca_pair() -> tuple[str, str]:
     return gen_ca_pem(name="test-ca")
@@ -76,6 +94,10 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
             "nginx_path": str(nginx_path),
             "ip_allowlist": ["10.0.0.0/8"],
             "node_file_env": "PBS_NODEFILE",
+            "gpu_discovery": {
+                "method": "pals",
+                "launcher_path": "/opt/test/mpiexec",
+            },
             "submit_script_preamble": "#!/bin/bash\nset -eu\nmodule load python",
             "pilot_path": "/test/first-pilot",
         }
@@ -125,6 +147,13 @@ async def test_submit_renders_config_and_script(
     assert parsed["job_name"] == "alpha-7"
     assert parsed["ca_crt"] == ca_crt
     assert parsed["external_port"] == 8443
+    assert parsed["gpu_discovery"] == {
+        "method": "pals",
+        "launcher_path": "/opt/test/mpiexec",
+        "timeout_sec": 35.0,
+    }
+    assert parsed["num_nodes"] == 2
+    assert parsed["gpus_per_node"] == 4
     assert "BEGIN CERTIFICATE" in parsed["server_crt"]
     assert "BEGIN" in parsed["server_key"]
 
@@ -145,6 +174,69 @@ async def test_submit_renders_config_and_script(
 
     assert result.job_name == f"{pilot_config.job_name_prefix}alpha-7"
     assert result.scheduler_id == "42.fake"
+
+
+async def test_submit_accepts_multi_node_ssh_discovery(
+    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+) -> None:
+    ssh_config = pilot_config.model_copy(update={"gpu_discovery": SSHDiscovery()})
+    adapter = FakeSchedulerAdapter()
+    submitter = PilotSubmitter(ssh_config, adapter, *ca_pair)
+
+    await submitter.submit(_make_pilot_job("portable-ssh"))
+
+    assert len(adapter.submitted) == 1
+    config_path = ssh_config.workdir / "submit_scripts" / "portable-ssh.config.yaml"
+    parsed = yaml.safe_load(adapter.files[str(config_path)][0])
+    assert parsed["gpu_discovery"] == {"method": "ssh", "timeout_sec": 5.0}
+
+
+def test_pals_discovery_requires_launcher_path(pilot_config: PilotConfig) -> None:
+    raw_config = pilot_config.model_dump()
+    raw_config["gpu_discovery"] = {"method": "pals"}
+
+    with pytest.raises(ValidationError, match="launcher_path"):
+        PilotConfig.model_validate(raw_config)
+
+
+def test_gpu_discovery_defaults_to_ssh(pilot_config: PilotConfig) -> None:
+    raw_config = pilot_config.model_dump(exclude={"gpu_discovery"})
+
+    config = PilotConfig.model_validate(raw_config)
+
+    assert config.gpu_discovery == SSHDiscovery()
+
+
+async def test_graphql_submit_serializes_and_quotes_discovery_environment(
+    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+) -> None:
+    config = pilot_config.model_copy(
+        update={
+            "gpu_discovery": PalsDiscovery(launcher_path=Path("/opt/test/mpiexec")),
+            "ip_allowlist": ["192.0.2.10/32"],
+            "pilot_config_path": Path("/opt/test/pilot config.yaml"),
+            "pilot_path": Path("/opt/test/first pilot"),
+        }
+    )
+    adapter = FakeGraphQLSchedulerAdapter()
+
+    await PilotSubmitter(config, adapter, *ca_pair).submit(
+        _make_pilot_job("graphql-pilot")
+    )
+
+    assert len(adapter.submitted) == 1
+    script = adapter.submitted[0].script
+    assert script is not None
+    assert "PILOT_CONFIG_FILE='/opt/test/pilot config.yaml'" in script
+    assert "PILOT_IP_ALLOWLIST='[\"192.0.2.10/32\"]'" in script
+    assert (
+        "PILOT_GPU_DISCOVERY="
+        '\'{"method":"pals","launcher_path":"/opt/test/mpiexec",'
+        '"timeout_sec":35.0}\''
+    ) in script
+    assert "PILOT_PALS_PATH" not in script
+    assert "PILOT_IP_ALLOWLIST_JSON" not in script
+    assert script.endswith("'/opt/test/first pilot'\n")
 
 
 async def test_get_statuses_filters_by_prefix(

@@ -2,7 +2,7 @@ import os
 from enum import Enum
 from http import HTTPMethod
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Literal, NewType, TypedDict
+from typing import Annotated, Any, Callable, ClassVar, Literal, NewType, TypedDict
 
 from dotenv import dotenv_values
 from jinja2 import Environment, TemplateSyntaxError, meta
@@ -148,6 +148,27 @@ class RouterParams(BaseModel):
     cooldown_bench_sec: int = 60
 
 
+class SSHDiscovery(BaseModel):
+    """Discover each host's GPUs through concurrent SSH commands."""
+
+    method: Literal["ssh"] = "ssh"
+    timeout_sec: float = Field(5.0, gt=0)
+
+
+class PalsDiscovery(BaseModel):
+    """Discover GPUs with one labeled PALS rank per scheduler host."""
+
+    method: Literal["pals"] = "pals"
+    launcher_path: Path
+    timeout_sec: float = Field(35.0, gt=0)
+
+
+GpuDiscovery = Annotated[
+    SSHDiscovery | PalsDiscovery,
+    Field(discriminator="method"),
+]
+
+
 class PilotConfig(BaseModel):
     """
     HPC Cluster-wide configuration for the pilot system.
@@ -172,6 +193,7 @@ class PilotConfig(BaseModel):
     nginx_path: Path
     ip_allowlist: list[str]
     node_file_env: str
+    gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)
     submit_script_preamble: str
     pilot_path: Path
     job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
