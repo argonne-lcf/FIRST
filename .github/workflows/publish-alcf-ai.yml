@@ -34,5 +34,4 @@ jobs:
         working-directory: alcf_ai
         run: uv build
       - name: Publish to PyPI
-        working-directory: alcf_ai
         run: uv publish
