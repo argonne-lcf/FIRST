@@ -104,7 +104,7 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
 
     return JobStatusInfo(
         id=job_id,
-        name=node.get("name") or "",
+        name=node["name"],
         state=state,
         created_at=_parse_epoch_micros(node.get("submitTime"))
         or datetime.now(timezone.utc),
