@@ -326,10 +326,6 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         data = await self._post(query, {"jobId": job_id})
         payload = data["deleteJob"]
         if payload.get("error"):
-            # A retry after a lost acknowledgement can legitimately receive a
-            # not-found mutation error.  The error alone is never release
-            # evidence; accept it only if a separate exact lookup proves the
-            # same ID absent or gone.
             state = await self._get_exact_job_state(job_id)
             if state is None or state == SchedulerJobState.gone:
                 logger.warning(f"terminate {job_id=} error: job is already gone.")
