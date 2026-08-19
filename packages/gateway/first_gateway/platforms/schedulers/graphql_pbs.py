@@ -271,11 +271,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                     seen_ids.add(status.id)
                     results.append(status)
 
-            page_info = connection.get("pageInfo")
-            if not isinstance(page_info, dict) or not isinstance(
-                page_info.get("hasNextPage"), bool
-            ):
-                raise RuntimeError("GraphQL jobs query returned malformed pageInfo")
+            page_info = data["jobs"]["pageInfo"]
             if not page_info["hasNextPage"]:
                 return results
             next_cursor = page_info.get("endCursor")
