@@ -332,6 +332,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
             # same ID absent or gone.
             state = await self._get_exact_job_state(job_id)
             if state is None or state == SchedulerJobState.gone:
+                logger.warning(f"terminate {job_id=} error: job is already gone.")
                 return
             raise RuntimeError(f"GraphQL deleteJob failed:\n{payload['error']}")
         returned_id = ((payload.get("node") or {}).get("jobId") or "").strip()
