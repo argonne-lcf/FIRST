@@ -117,10 +117,33 @@ class SchedulerAdapter(ABC):
         List job statuses from the scheduler [qstat]
         """
 
+    async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
+        """Return one job, returning None only if it is definitively absent.
+
+        Adapters with an authoritative exact-ID lookup should override this and
+        may return ``None`` only when that lookup explicitly proves absence.
+        The default returns an exact match from the job listing
+        but fails closed if it is omitted (for example by pagination).
+        """
+        matches = [
+            status for status in await self.get_job_statuses() if status.id == job_id
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RuntimeError(f"scheduler returned duplicate exact job ID {job_id!r}")
+        raise RuntimeError(
+            f"scheduler adapter cannot prove exact job {job_id!r} is absent"
+        )
+
     @abstractmethod
     async def terminate_job(self, job_id: str) -> None:
         """
-        Terminate a job in the scheduler [qdel]
+        Request termination of a job in the scheduler [qdel].
+
+        Returning means the scheduler accepted the request. Scheduler cleanup
+        may continue asynchronously after the acknowledgement; callers that
+        need allocation-release proof must observe the job as gone.
         """
 
     @abstractmethod
