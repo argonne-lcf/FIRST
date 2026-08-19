@@ -17,10 +17,9 @@ from ..controller import Controller, StaleReconcile
 logger = logging.getLogger(__name__)
 
 _RPC_TIMEOUT = 60.0
-_TERMINAL_STATES = frozenset(
-    {SchedulerJobState.exiting.value, SchedulerJobState.gone.value}
-)
-_ACTIVE_STATES = [
+_DYING_STATES = frozenset({SchedulerJobState.exiting.value})
+_GONE_STATES = frozenset({SchedulerJobState.gone.value})
+_SUBMISSION_CAPACITY_STATES = [
     SchedulerJobState.queued.value,
     SchedulerJobState.starting.value,
     SchedulerJobState.running.value,
@@ -67,14 +66,15 @@ class PilotJobController(Controller):
             await self._terminate_and_delete(job, pilot_config)
             return
 
-        if job.scheduler_state in _TERMINAL_STATES:
+        if job.scheduler_state in _DYING_STATES | _GONE_STATES:
             logger.info(
-                "PilotJob %s in terminal state %s, scheduling deletion",
+                "PilotJob %s in dying/gone state %s, scheduling deletion",
                 job.name,
                 job.scheduler_state,
             )
             await self._mark_scheduled_deletion(
-                job, PilotJob.scheduler_state.in_(list(_TERMINAL_STATES))
+                job,
+                PilotJob.scheduler_state.in_(list(_DYING_STATES | _GONE_STATES)),
             )
             return
 
@@ -134,20 +134,30 @@ class PilotJobController(Controller):
     async def _terminate_and_delete(
         self, job: PilotJob, pilot_config: PilotConfig
     ) -> None:
-        if (
-            job.scheduler_job_id is not None
-            and job.scheduler_state not in _TERMINAL_STATES
-        ):
-            adapter = await build_scheduler(pilot_config, self.client_state)
-            await asyncio.wait_for(
-                adapter.terminate_job(job.scheduler_job_id), timeout=_RPC_TIMEOUT
-            )
+        if job.scheduler_job_id is None or job.scheduler_state in _GONE_STATES:
+            await self._finalize_deletion(job)
+            return
+
+        if job.scheduler_state in _DYING_STATES:
             logger.info(
-                "PilotJob %s: terminated scheduler job %s",
+                "PilotJob %s: waiting for scheduler job %s to become gone",
                 job.name,
                 job.scheduler_job_id,
             )
+            return
 
+        adapter = await build_scheduler(pilot_config, self.client_state)
+        await asyncio.wait_for(
+            adapter.terminate_job(job.scheduler_job_id), timeout=_RPC_TIMEOUT
+        )
+        logger.info(
+            "PilotJob %s: requested termination of scheduler job %s",
+            job.name,
+            job.scheduler_job_id,
+        )
+
+        # Keep observing the scheduler after qdel acknowledgement, but release
+        # this job's FIRST submission slot by moving it to the exiting state.
         async with self.client_state.db_sessionmaker.begin() as sess:
             result = await sess.execute(
                 sa.update(PilotJob)
@@ -155,6 +165,29 @@ class PilotJobController(Controller):
                     PilotJob.uid == job.uid,
                     PilotJob.scheduled_deletion_at.is_not(None),
                     PilotJob.deleted_at.is_(None),
+                    PilotJob.scheduler_state == job.scheduler_state,
+                )
+                .values(scheduler_state=SchedulerJobState.exiting.value)
+            )
+            if result.rowcount == 0:  # type: ignore[attr-defined]
+                raise StaleReconcile(
+                    f"PilotJob {job.name}: scheduler state changed after qdel"
+                )
+
+    async def _finalize_deletion(self, job: PilotJob) -> None:
+        scheduler_gone = (
+            PilotJob.scheduler_job_id.is_(None)
+            if job.scheduler_job_id is None
+            else PilotJob.scheduler_state.in_(list(_GONE_STATES))
+        )
+        async with self.client_state.db_sessionmaker.begin() as sess:
+            result = await sess.execute(
+                sa.update(PilotJob)
+                .where(
+                    PilotJob.uid == job.uid,
+                    PilotJob.scheduled_deletion_at.is_not(None),
+                    PilotJob.deleted_at.is_(None),
+                    scheduler_gone,
                 )
                 .values(
                     deleted_at=datetime.now(timezone.utc),
@@ -162,7 +195,9 @@ class PilotJobController(Controller):
                 )
             )
             if result.rowcount == 0:  # type: ignore[attr-defined]
-                raise StaleReconcile(f"PilotJob {job.name}: terminate_and_delete stale")
+                raise StaleReconcile(
+                    f"PilotJob {job.name}: scheduler absence changed before deletion"
+                )
 
     async def _mark_scheduled_deletion(
         self,
@@ -191,7 +226,7 @@ class PilotJobController(Controller):
                 .select_from(PilotJob)
                 .where(
                     PilotJob.cluster_name == job.cluster_name,
-                    PilotJob.scheduler_state.in_(_ACTIVE_STATES),
+                    PilotJob.scheduler_state.in_(_SUBMISSION_CAPACITY_STATES),
                     PilotJob.deleted_at.is_(None),
                 )
             )
@@ -209,7 +244,7 @@ class PilotJobController(Controller):
             active_nodes = await sess.scalar(
                 sa.select(sa.func.coalesce(sa.func.sum(PilotJob.num_nodes), 0)).where(
                     PilotJob.cluster_name == job.cluster_name,
-                    PilotJob.scheduler_state.in_(_ACTIVE_STATES),
+                    PilotJob.scheduler_state.in_(_SUBMISSION_CAPACITY_STATES),
                     PilotJob.deleted_at.is_(None),
                 )
             )

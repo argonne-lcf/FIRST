@@ -276,7 +276,7 @@ async def test_reconcile_cluster_without_pilot_system(
 # ---------------------------------------------------------------------------
 
 
-async def test_scheduled_deletion_terminates_running_job(
+async def test_scheduled_deletion_requests_nonblocking_termination(
     db: async_sessionmaker[AsyncSession],
     ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
@@ -297,7 +297,33 @@ async def test_scheduled_deletion_terminates_running_job(
     assert "100.pbs" in adapter.terminated
 
     job = await _get_job(db, uid)
-    assert job.deleted_at is not None
+    assert job.deleted_at is None
+    assert job.scheduler_state == SchedulerJobState.exiting.value
+
+
+async def test_scheduled_deletion_waits_for_exiting_job_to_become_gone(
+    db: async_sessionmaker[AsyncSession],
+    ca_pair: tuple[str, str],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "job-exiting",
+            scheduler_job_id="101.pbs",
+            scheduler_state=SchedulerJobState.exiting,
+            scheduled_deletion_at=NOW,
+        )
+
+    controller = _make_controller(db, ca_pair)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+
+    assert adapter.terminated == []
+    job = await _get_job(db, uid)
+    assert job.deleted_at is None
+    assert job.scheduler_state == SchedulerJobState.exiting.value
 
 
 async def test_scheduled_deletion_without_scheduler_job_skips_terminate(
@@ -518,6 +544,38 @@ async def test_submit_deferred_by_concurrent_jobs_cap(
     assert job.scheduler_state == SchedulerJobState.pending_submit.value
 
 
+async def test_exiting_job_does_not_delay_replacement_submission(
+    db: async_sessionmaker[AsyncSession],
+    ca_pair: tuple[str, str],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    """An acknowledged qdel frees its FIRST submission-capacity slot."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _insert_pilot_job(sess, "running-0")
+        await _insert_pilot_job(sess, "running-1")
+        await _insert_pilot_job(
+            sess,
+            "exiting",
+            scheduler_state=SchedulerJobState.exiting,
+            scheduled_deletion_at=NOW,
+        )
+        uid = await _insert_pilot_job(
+            sess,
+            "replacement",
+            scheduler_state=SchedulerJobState.pending_submit,
+        )
+
+    controller = _make_controller(db, ca_pair)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+
+    assert len(adapter.submitted) == 1
+    job = await _get_job(db, uid)
+    assert job.scheduler_job_id == "42.pbs"
+    assert job.scheduler_state == SchedulerJobState.queued.value
+
+
 async def test_submit_deferred_by_node_cap(
     db: async_sessionmaker[AsyncSession],
     ca_pair: tuple[str, str],
@@ -542,6 +600,38 @@ async def test_submit_deferred_by_node_cap(
 
     job = await _get_job(db, uid)
     assert job.scheduler_job_id is None
+
+
+async def test_exiting_job_does_not_delay_replacement_at_node_cap(
+    db: async_sessionmaker[AsyncSession],
+    ca_pair: tuple[str, str],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    """Exiting nodes remain PBS-owned but do not consume FIRST submit capacity."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _insert_pilot_job(
+            sess,
+            "exiting-large-job",
+            scheduler_state=SchedulerJobState.exiting,
+            scheduled_deletion_at=NOW,
+            num_nodes=9,
+        )
+        uid = await _insert_pilot_job(
+            sess,
+            "replacement",
+            scheduler_state=SchedulerJobState.pending_submit,
+            num_nodes=2,
+        )
+
+    controller = _make_controller(db, ca_pair)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+
+    assert len(adapter.submitted) == 1
+    job = await _get_job(db, uid)
+    assert job.scheduler_job_id == "42.pbs"
+    assert job.scheduler_state == SchedulerJobState.queued.value
 
 
 # ---------------------------------------------------------------------------
