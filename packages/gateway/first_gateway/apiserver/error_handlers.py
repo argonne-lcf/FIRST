@@ -10,22 +10,20 @@ logger = logging.getLogger(__name__)
 
 
 def register_error_handlers(app: FastAPI) -> None:
-    """Install the shared FirstError/TaskPending/uncaught exception handlers."""
+    """Install the shared FirstError/uncaught exception handlers."""
 
     @app.exception_handler(FirstError)
     def handle_app_error(_request: Request, exc: FirstError) -> JSONResponse:
-        return JSONResponse(
-            {"error": {"code": exc.code, "message": str(exc), "info": exc.info}},
-            status_code=exc.status_code,
-        )
+        headers = {}
+        if exc.retry_after_sec is not None:
+            headers["Retry-After"] = str(exc.retry_after_sec)
 
-    @app.exception_handler(TaskPending)
-    def handle_pending(_request: Request, exc: TaskPending) -> JSONResponse:
-        return JSONResponse(
-            {"status": exc.code, "task_id": exc.task_id},
-            status_code=exc.status_code,
-            headers={"Retry-After": str(exc.retry_after)},
-        )
+        if isinstance(exc, TaskPending):
+            body = {"status": exc.code, "task_id": exc.task_id}
+        else:
+            body = {"error": {"code": exc.code, "message": str(exc), "info": exc.info}}
+
+        return JSONResponse(body, status_code=exc.status_code, headers=headers or None)
 
     @app.exception_handler(Exception)
     def handle_uncaught_error(request: Request, exc: Exception) -> JSONResponse:
