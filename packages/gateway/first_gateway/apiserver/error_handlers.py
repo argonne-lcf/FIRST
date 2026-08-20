@@ -1,5 +1,6 @@
 import logging
 import uuid
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -18,6 +19,7 @@ def register_error_handlers(app: FastAPI) -> None:
         if exc.retry_after_sec is not None:
             headers["Retry-After"] = str(exc.retry_after_sec)
 
+        body: dict[str, Any]
         if isinstance(exc, TaskPending):
             body = {"status": exc.code, "task_id": exc.task_id}
         else:
