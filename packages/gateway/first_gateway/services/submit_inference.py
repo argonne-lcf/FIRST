@@ -40,7 +40,7 @@ async def submit_inference_with_retry(
     # estimated_tokens = len(json.dumps(payload)) // 4 + max_output_tokens
     estimated_tokens = len(payload.model_dump()) // 2
 
-    for attempt in range(len(backend_candidates)):
+    for attempt in range(min(3, len(backend_candidates))):
         backend = await get_backend(
             user,
             model,
