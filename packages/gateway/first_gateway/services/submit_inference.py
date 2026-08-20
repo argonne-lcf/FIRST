@@ -68,6 +68,9 @@ async def submit_inference_with_retry(
                 "temporary_request_id", actual_tokens=token_usage
             )
 
+    # Error if none of the attempts worked
+    raise ServiceUnavailable(f"Too many failed attempts on backends for model {model}.")
+
 
 async def submit_inference(
     backend: BackendConfig,
