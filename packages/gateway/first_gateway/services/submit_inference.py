@@ -53,7 +53,9 @@ async def submit_inference_with_retry(
             response = await submit_inference(backend, payload)
         except:
             deployment = get_deployment_from_backend(model.deployments, backend)
-            admission_controller.record_error(backend.id, deployment.router_params)
+            await admission_controller.record_error(
+                backend.id, deployment.router_params
+            )
             backend_candidates = [b for b in backend_candidates if b.uid != backend.id]
             token_usage = 0
             logger.warning(f"Backend {backend.id} failed, trying next one.")
@@ -64,7 +66,7 @@ async def submit_inference_with_retry(
             return response
         finally:
             # TODO: Incorporate request ID
-            admission_controller.settle(
+            await admission_controller.settle(
                 "temporary_request_id", actual_tokens=token_usage
             )
 
