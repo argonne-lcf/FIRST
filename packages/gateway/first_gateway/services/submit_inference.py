@@ -80,12 +80,16 @@ async def submit_inference(
 ) -> StreamingResponse | dict[str, Any]:
     """POST to an inference backend."""
 
-    # TODO: Submit and handle streaming / non-streaming
-    return {"Mock response": True}
+    _ = backend
+    _ = payload
 
-    payload = payload.model_dump(exclude_unset=True, mode="json")
-    backend = backend  # This is just to mute lint-fix error
+    # payload = payload.model_dump(exclude_unset=True, mode="json")
+    # backend = backend  # This is just to mute lint-fix error
+    # payload = payload  # This is just to mute lint-fix error
 
     # headers = {"Content-Type": "application/json"}
     # if backend.api_key:
     #    headers = {"Authorization": f"Bearer {backend.api_key}"}
+
+    # TODO: Submit and handle streaming / non-streaming
+    return {"Mock response": True}
