@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from httpx import Client, HTTPTransport
 from jinja2 import Environment, StrictUndefined
 
+from first_common.errors import ReplicaTeardownError
 from first_common.health import perform_health_check_sync
 from first_common.schema.types import (
     GpuClaim,
@@ -22,10 +23,6 @@ from first_common.schema.types import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class ReplicaTeardownError(RuntimeError):
-    """Teardown attempt ended with a process group still present."""
 
 
 def _pgid_alive(pgid: int) -> bool:
@@ -78,18 +75,6 @@ class _ManagedGroup:
         """Drive the group to proven absence with a bounded TERM->KILL pass."""
         if not self.alive():
             return True
-
-        # There is an unavoidable check->act gap: we probe ``alive()`` and then
-        # ``killpg`` as two separate syscalls, and in between the group could
-        # empty and its pgid be freed. This is safe because Linux allocates pids
-        # cyclically -- a freed number is the *last* to be handed out again, only
-        # after the allocator wraps ``pid_max`` (millions of pids later). The
-        # number cannot be recycled to an unrelated process inside this
-        # microsecond window, so we never risk signalling the wrong group.
-        # TODO: an elevated risk may exist for a *long-lived* pgid that
-        # coexists in a ~40 day pilot job alongside neighboring models with frequent
-        # start/stop churn.  The neighbors could exhaust and cycle pid space leading to a
-        # collision and incorrectly targeted process when this one is killed.
 
         self._signal(signal.SIGTERM)
         if self._wait_for_exit(self._term_grace):
@@ -534,7 +519,7 @@ class Replica:
         try:
             if self._pre_stop_script_path is not None and not self._pre_stop_ran:
                 self._pre_stop_ran = True
-                self._pre_stop_group, self._pre_stop_ok = self._run_hook(
+                self._pre_stop_ok = self._run_hook(
                     "pre-stop",
                     self._pre_stop_script_path,
                     self.launch_spec.pre_stop_timeout_sec,
@@ -561,33 +546,35 @@ class Replica:
         #    descendants) after the model is gone. Never start a new run while
         #    a previous run's process group survives.
         if self._post_stop_script_path is not None and not self._post_stop_ok:
-            prior_gone = (
-                self._post_stop_group is None or self._post_stop_group.ensure_absent()
-            )
-            if prior_gone:
-                self._post_stop_attempts += 1
-                self._post_stop_group, self._post_stop_ok = self._run_hook(
-                    "post-stop",
-                    self._post_stop_script_path,
-                    self.launch_spec.post_stop_timeout_sec,
+            try:
+                prior_gone = (
+                    self._post_stop_group is None
+                    or self._post_stop_group.ensure_absent()
                 )
-                if not self._post_stop_ok and self._post_stop_group is not None:
-                    self._post_stop_group.ensure_absent()  # sweep leftovers now
+                if prior_gone:
+                    self._post_stop_attempts += 1
+                    self._post_stop_ok = self._run_hook(
+                        "post-stop",
+                        self._post_stop_script_path,
+                        self.launch_spec.post_stop_timeout_sec,
+                    )
+                    if not self._post_stop_ok and self._post_stop_group is not None:
+                        self._post_stop_group.ensure_absent()  # sweep leftovers now
+            except Exception:
+                logger.exception(
+                    "post-stop verification failed for replica %s", self.name
+                )
             if not self._post_stop_ok:
                 survivors.append("post-stop hook or verification")
 
         return survivors
 
-    def _run_hook(
-        self, label: str, script_path: Path, timeout: float
-    ) -> tuple[_ManagedGroup | None, bool]:
+    def _run_hook(self, label: str, script_path: Path, timeout: float) -> bool:
         """Run a hook script in its own session and wait for it to finish.
 
-        Returns ``(group, ok)``. ``ok`` means the hook exited 0 within
-        ``timeout`` and left no descendants in its process group -- the group
-        is then already proven absent. ``group`` is ``None`` only when the
-        hook could not be started; on failure the caller owns sweeping the
-        group with ``ensure_absent``.
+        The group is stored on the Replica immediately after launch, before any
+        wait or validation that can raise. ``True`` means the hook exited 0
+        within ``timeout`` and left no descendants in its process group.
         """
         logger.info(
             "running %s hook for replica %s (timeout=%.1fs)", label, self.name, timeout
@@ -605,7 +592,7 @@ class Replica:
         except Exception:
             logger.exception("failed to start %s hook for replica %s", label, self.name)
             self._write_lifecycle_log(f"{label} hook failed to start")
-            return None, False
+            return False
 
         group = _ManagedGroup(
             proc,
@@ -614,6 +601,10 @@ class Replica:
             kill_grace=self._HOOK_KILL_GRACE,
             poll_interval=self._GROUP_POLL_INTERVAL,
         )
+        if label == "pre-stop":
+            self._pre_stop_group = group
+        else:
+            self._post_stop_group = group
 
         try:
             rc = proc.wait(timeout=timeout)
@@ -622,12 +613,12 @@ class Replica:
                 "%s hook for replica %s exceeded %.1fs", label, self.name, timeout
             )
             self._write_lifecycle_log(f"{label} hook timed out")
-            return group, False
+            return False
 
         if rc != 0:
             logger.error("%s hook for replica %s exited %d", label, self.name, rc)
             self._write_lifecycle_log(f"{label} hook exited {rc}")
-            return group, False
+            return False
 
         if group.alive():
             # The leader exited 0 but orphaned descendants in its private
@@ -636,11 +627,11 @@ class Replica:
                 "%s hook for replica %s left descendant processes", label, self.name
             )
             self._write_lifecycle_log(f"{label} hook left descendant processes")
-            return group, False
+            return False
 
         logger.info("%s hook completed for replica %s", label, self.name)
         self._write_lifecycle_log(f"{label} hook completed")
-        return group, True
+        return True
 
     def _write_lifecycle_log(self, message: str) -> None:
         try:

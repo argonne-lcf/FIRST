@@ -1,9 +1,13 @@
 """Tests for PilotControlClient's built-in timeout/retry behavior."""
 
+from unittest.mock import MagicMock
+
 import httpx
 import pytest
 
+from first_common.errors import ReplicaTeardownError
 from first_gateway.services.pilot_control import PilotControlClient
+from first_pilot.control_api import app, get_manager
 
 
 def _make_client(handler: object) -> PilotControlClient:
@@ -99,3 +103,30 @@ async def test_4xx_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert resp.status_code == 409
     assert calls["n"] == 1
+
+
+async def test_pilot_api_returns_structured_teardown_error() -> None:
+    manager = MagicMock()
+    manager.stop_replica.side_effect = ReplicaTeardownError(
+        "Replica r0 teardown incomplete; still present: model process group"
+    )
+    app.dependency_overrides[get_manager] = lambda: manager
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://pilot",
+        ) as client:
+            response = await client.post("/stop-replica/r0")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": {
+            "code": "replica_teardown_incomplete",
+            "message": (
+                "Replica r0 teardown incomplete; still present: model process group"
+            ),
+            "info": {},
+        }
+    }

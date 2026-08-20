@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _replica_counter = itertools.count()
@@ -50,7 +51,21 @@ def _not_found(request: httpx.Request) -> httpx.Response:
 
 def _server_error(request: httpx.Request) -> httpx.Response:
     """Handler simulating a transient manager failure."""
-    return httpx.Response(500)
+    return httpx.Response(500, text="pilot unavailable")
+
+
+def _teardown_incomplete(request: httpx.Request) -> httpx.Response:
+    """Handler simulating a structured teardown failure from the pilot."""
+    return httpx.Response(
+        409,
+        json={
+            "error": {
+                "code": "replica_teardown_incomplete",
+                "message": "model process group survived SIGKILL",
+                "info": {},
+            }
+        },
+    )
 
 
 def _make_controller(
@@ -71,6 +86,35 @@ def _make_controller(
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ctrl.client = client
     return ctrl
+
+
+async def test_stop_on_manager_surfaces_structured_teardown_message() -> None:
+    ctrl = ReplicaDrainer.__new__(ReplicaDrainer)
+    client = PilotControlClient.__new__(PilotControlClient)
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(_teardown_incomplete)
+    )
+    ctrl.client = client
+    try:
+        with pytest.raises(
+            httpx.HTTPStatusError,
+            match="model process group survived SIGKILL",
+        ):
+            await ctrl._stop_on_manager(MANAGER_URL, "replica-a")
+    finally:
+        await client._client.aclose()
+
+
+async def test_stop_on_manager_uses_text_fallback_for_malformed_error() -> None:
+    ctrl = ReplicaDrainer.__new__(ReplicaDrainer)
+    client = PilotControlClient.__new__(PilotControlClient)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(_server_error))
+    ctrl.client = client
+    try:
+        with pytest.raises(httpx.HTTPStatusError, match="pilot unavailable"):
+            await ctrl._stop_on_manager(MANAGER_URL, "replica-a")
+    finally:
+        await client._client.aclose()
 
 
 # ── Seed helpers ────────────────────────────────────────────────────────
@@ -437,16 +481,33 @@ async def test_reconcile_raises_on_manager_500(
         uid = await _insert_replica(sess, state=ReplicaState.launching)
 
     ctrl = _make_controller(db, _server_error)
-    try:
+    with pytest.raises(httpx.HTTPStatusError, match="pilot unavailable"):
         await ctrl.reconcile(uid)
-    except httpx.HTTPStatusError:
-        pass
-    else:
-        raise AssertionError("expected HTTPStatusError on 500")
 
     replica = await _get_replica(db, uid)
     assert replica.deleted_at is None
     assert replica.state == ReplicaState.launching.value
+
+
+async def test_reconcile_records_structured_teardown_message(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        uid = await _insert_replica(sess, state=ReplicaState.launching)
+
+    ctrl = _make_controller(db, _teardown_incomplete)
+    await ctrl._reconcile_one(uid)
+
+    replica = await _get_replica(db, uid)
+    assert replica.deleted_at is None
+    assert replica.reconcile_failures == 1
+    assert replica.reconcile_last_error == (
+        "Pilot manager could not stop replica "
+        f"{replica.name}: model process group survived SIGKILL"
+    )
 
 
 # ── reconcile: ready eligibility gate ────────────────────────────────────

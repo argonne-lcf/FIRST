@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from pydantic import ValidationError
 
+from first_common.errors import ReplicaTeardownError
 from first_common.schema.types import (
     GpuClaim,
     HealthCheckParams,
@@ -17,7 +18,6 @@ from first_common.schema.types import (
 from first_gateway.services.pilot_control import STOP_TIMEOUT
 from first_pilot.replica import (
     Replica,
-    ReplicaTeardownError,
     _ManagedGroup,
     _pgid_alive,
 )
@@ -322,6 +322,63 @@ done
     assert "pre-stop hook timed out" in lifecycle_log
     assert "pre-stop hook failed; using process-group fallback" in lifecycle_log
     assert not replica._model_group.alive()
+
+
+def test_pre_stop_group_is_owned_when_wait_raises_after_launch(tmp_path: Path) -> None:
+    replica = _replica(
+        tmp_path,
+        _launch_spec(pre_stop_script_template="true", pre_stop_timeout_sec=2),
+    )
+    hook = MagicMock()
+    hook.pid = 2_000_000_000
+    hook.wait.side_effect = RuntimeError("injected failure after hook launch")
+    hook.poll.return_value = 1
+
+    try:
+        with patch("first_pilot.replica.subprocess.Popen", return_value=hook) as popen:
+            with pytest.raises(ReplicaTeardownError, match="pre-stop hook"):
+                replica.stop(timeout=0.2)
+
+            assert replica._pre_stop_group is not None
+            assert replica._pre_stop_group.pgid == hook.pid
+
+            # The retained group is swept on retry; the cooperative hook is not
+            # launched a second time.
+            replica.stop(timeout=0.2)
+            popen.assert_called_once()
+    finally:
+        if not _teardown_complete(replica):
+            replica.stop(timeout=0.2)
+
+
+def test_retry_does_not_relaunch_post_stop_while_prior_group_survives(
+    tmp_path: Path,
+) -> None:
+    replica = _replica(
+        tmp_path,
+        _launch_spec(post_stop_script_template="true", post_stop_timeout_sec=2),
+    )
+    hook = MagicMock()
+    hook.pid = 2_000_000_000
+    hook.wait.side_effect = RuntimeError("injected failure after hook launch")
+    hook.poll.return_value = 1
+
+    try:
+        with patch("first_pilot.replica.subprocess.Popen", return_value=hook) as popen:
+            with pytest.raises(ReplicaTeardownError, match="post-stop"):
+                replica.stop(timeout=0.2)
+
+            group = replica._post_stop_group
+            assert group is not None
+            with patch.object(group, "ensure_absent", return_value=False):
+                with pytest.raises(ReplicaTeardownError, match="post-stop"):
+                    replica.stop(timeout=0.2)
+
+            popen.assert_called_once()
+            assert replica._post_stop_attempts == 1
+    finally:
+        if not _teardown_complete(replica):
+            replica.stop(timeout=0.2)
 
 
 def test_hook_leader_exit_cannot_leave_term_ignoring_child(

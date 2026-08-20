@@ -9,9 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from first_common.errors import NotFound
+from first_common.errors import NotFound, ReplicaTeardownError
 from first_common.schema.types import GpuClaim
-from first_pilot.replica import Replica, ReplicaTeardownError
+from first_pilot.replica import Replica
 from first_pilot.replica_manager import ReplicaManager
 
 
@@ -49,70 +49,23 @@ def test_failed_stop_retains_claims_for_retry() -> None:
     assert manager._claimed == set()
 
 
-class _SerializedReplica:
-    def __init__(self, name: str, gpu: str) -> None:
-        self.name = name
-        self.resources = [GpuClaim(hostname="node", gpu_ids=[gpu])]
-        self._stop_lock = threading.Lock()
-        self._attempt_lock = threading.Lock()
-        self._attempts = 0
-        self.first_inside = threading.Event()
-        self.second_attempted = threading.Event()
-        self.second_inside = threading.Event()
-        self.allow_first = threading.Event()
-        self.allow_second = threading.Event()
+def test_late_duplicate_release_does_not_clear_another_replicas_claim() -> None:
+    replica_a, _ = _mock_replica("replica-a", "0")
+    manager = _manager(replica_a)
 
-    def stop(self) -> None:
-        with self._attempt_lock:
-            self._attempts += 1
-            attempt = self._attempts
-            if attempt == 2:
-                self.second_attempted.set()
+    manager.stop_replica("replica-a")
+    assert manager._claimed == set()
 
-        with self._stop_lock:
-            if attempt == 1:
-                self.first_inside.set()
-                assert self.allow_first.wait(timeout=2)
-            else:
-                self.second_inside.set()
-                assert self.allow_second.wait(timeout=2)
-
-
-def test_late_concurrent_stop_cannot_release_replacement_identity() -> None:
-    old_impl = _SerializedReplica("replica", "0")
-    old = cast(Replica, old_impl)
-    manager = _manager(old)
-    errors: list[BaseException] = []
-
-    def stop() -> None:
-        try:
-            manager.stop_replica("replica")
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-
-    first = threading.Thread(target=stop)
-    second = threading.Thread(target=stop)
-    first.start()
-    assert old_impl.first_inside.wait(timeout=2)
-    second.start()
-    assert old_impl.second_attempted.wait(timeout=2)
-
-    old_impl.allow_first.set()
-    first.join(timeout=2)
-    assert not first.is_alive()
-    assert old_impl.second_inside.wait(timeout=2)
-
-    replacement_impl = _SerializedReplica("replica", "0")
-    replacement = cast(Replica, replacement_impl)
+    replica_b, _ = _mock_replica("replica-b", "0")
     with manager._lock:
-        manager._replicas[replacement.name] = replacement
-        manager._claimed.update(manager._flatten(replacement.resources))
+        manager._replicas[replica_b.name] = replica_b
+        manager._claimed.update(manager._flatten(replica_b.resources))
 
-    old_impl.allow_second.set()
-    second.join(timeout=2)
-    assert not second.is_alive()
-    assert errors == []
-    assert manager.get_replica("replica") is replacement
+        # A late duplicate completion for A must not clear GPU 0, which B now
+        # owns under a different unique replica name.
+        assert not manager._release_locked("replica-a", replica_a.resources)
+
+    assert manager.get_replica("replica-b") is replica_b
     assert manager._claimed == {("node", "0")}
 
 

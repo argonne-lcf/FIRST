@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 
+import httpx
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -32,6 +33,19 @@ _PRESERVE_STATES = frozenset(
 _MIN_DRAIN_WAIT_SEC = 20.0
 # Hard cap: after this long we drain regardless of remaining in-flight work.
 _MAX_DRAIN_WAIT_SEC = 300.0
+
+
+def _pilot_error_message(response: httpx.Response) -> str:
+    """Extract a useful pilot error message with a simple text fallback."""
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    except ValueError:
+        pass
+    return response.text.strip() or response.reason_phrase or "unknown pilot error"
 
 
 class ReplicaDrainer(Controller):
@@ -138,7 +152,13 @@ class ReplicaDrainer(Controller):
             return
         # Any other non-2xx (or lingering transport error from the helper) is
         # transient: raise so the reconcile cooldown/retry kicks in.
-        resp.raise_for_status()
+        if not resp.is_success:
+            message = _pilot_error_message(resp)
+            raise httpx.HTTPStatusError(
+                f"Pilot manager could not stop replica {replica_name}: {message}",
+                request=resp.request,
+                response=resp,
+            )
         logger.info("Stopped replica %s", replica_name)
 
     async def _finalize_deletion(self, replica: PilotReplica) -> None:

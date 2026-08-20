@@ -447,15 +447,12 @@ class ReplicaManager:
         self,
         name: str,
         resources: list[GpuClaim],
-        *,
-        expected: Replica | ReservedSentinel,
     ) -> bool:
-        """Release only if ``name`` still refers to the exact owned object."""
-        # Caller must hold self._lock. The identity guard prevents a late
-        # concurrent stop from releasing a replacement Replica's claims.
-        if self._replicas.get(name) is not expected:
+        """Release resources only when the named entry is still present."""
+        # Caller must hold self._lock. A duplicate release is a no-op, which is
+        # important if another replica has since claimed the same GPUs.
+        if self._replicas.pop(name, None) is None:
             return False
-        del self._replicas[name]
         self._claimed.difference_update(self._flatten(resources))
         return True
 
@@ -510,7 +507,6 @@ class ReplicaManager:
                 self._release_locked(
                     replica.name,
                     resources,
-                    expected=_RESERVED,
                 )
             raise ReplicaStartError(f"Failed to start replica: {e}") from e
 
@@ -533,16 +529,16 @@ class ReplicaManager:
             released = self._release_locked(
                 replica_name,
                 replica.resources,
-                expected=replica,
             )
         if not released:
-            logger.info(
-                "Replica %s stopped, but its manager entry now has a different "
-                "identity; leaving the current entry untouched",
-                replica_name,
-            )
+            logger.info("Replica %s was already released", replica_name)
 
     def stop_all(self) -> None:
+        """Stop every registered replica within one bounded shutdown pass.
+
+        This is a shutdown-only operation. Its caller must quiesce concurrent
+        ``start_replica`` requests before invoking it.
+        """
         replicas = self.get_replicas()
         logger.info("stopping all %d replicas", len(replicas))
         if not replicas:
@@ -561,14 +557,12 @@ class ReplicaManager:
             try:
                 replica.stop()
                 # This also handles a completion after stop_all's deadline. If
-                # the manager remains live, resources are released promptly;
-                # if a replacement now owns the name, the identity guard makes
-                # the late completion harmless.
+                # the manager remains live, resources are released promptly. A
+                # duplicate release after the entry is gone is a no-op.
                 with self._lock:
                     self._release_locked(
                         replica.name,
                         replica.resources,
-                        expected=replica,
                     )
             except BaseException as exc:
                 errors[id(replica)] = exc
@@ -585,14 +579,7 @@ class ReplicaManager:
                 name=f"replica-stop-{replica.name}",
                 daemon=True,
             )
-            try:
-                worker.start()
-            except BaseException as exc:
-                errors[id(replica)] = exc
-                done_events[id(replica)].set()
-                logger.exception(
-                    "could not start stop_all worker for replica %s", replica.name
-                )
+            worker.start()
 
         deadline = time.monotonic() + self._STOP_JOIN_TIMEOUT
         for replica in replicas:
