@@ -127,11 +127,12 @@ def raise_admit_error(
     usage_limits: UsageLimits,
     model: ModelConfig,
 ) -> None:
+    retry_after_sec: int | None
     if admit_result.retry_after_sec:
-        retry_after_sec = admit_result.retry_after_sec
+        retry_after_sec = int(admit_result.retry_after_sec)
         retry_str = f" Retry in {retry_after_sec} seconds."
     elif model.overload.short_retry_sec:
-        retry_after_sec = model.overload.short_retry_sec
+        retry_after_sec = int(model.overload.short_retry_sec)
         retry_str = f" Retry in {retry_after_sec} seconds."
     else:
         retry_after_sec = None
