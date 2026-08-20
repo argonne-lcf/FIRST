@@ -284,7 +284,9 @@ def test_nonzero_pre_stop_uses_process_group_fallback(tmp_path: Path) -> None:
 
     assert replica.state == ReplicaState.terminated
     assert "process-group fallback" in replica.state_message
-    assert "pre-stop hook exited 7; using fallback" in replica.log_path.read_text()
+    lifecycle_log = replica.log_path.read_text()
+    assert "pre-stop hook exited 7" in lifecycle_log
+    assert "pre-stop hook failed; using process-group fallback" in lifecycle_log
     assert not replica._model_group.alive()
 
 
@@ -316,7 +318,9 @@ done
 
     assert replica.state == ReplicaState.terminated
     assert "process-group fallback" in replica.state_message
-    assert "pre-stop hook timed out; using fallback" in replica.log_path.read_text()
+    lifecycle_log = replica.log_path.read_text()
+    assert "pre-stop hook timed out" in lifecycle_log
+    assert "pre-stop hook failed; using process-group fallback" in lifecycle_log
     assert not replica._model_group.alive()
 
 
@@ -350,7 +354,9 @@ exit 0
 
     hook_pgid = int((replica.workdir / "hook-pgid").read_text())
     assert "process-group fallback" in replica.state_message
-    assert "left descendant processes; using fallback" in replica.log_path.read_text()
+    lifecycle_log = replica.log_path.read_text()
+    assert "left descendant processes" in lifecycle_log
+    assert "pre-stop hook failed; using process-group fallback" in lifecycle_log
     assert not _pgid_alive(hook_pgid)
     assert not replica._model_group.alive()
 

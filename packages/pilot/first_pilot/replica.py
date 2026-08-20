@@ -6,9 +6,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timezone
-from enum import Enum, auto
 from pathlib import Path
-from typing import NoReturn
 from urllib.parse import urlparse
 
 from httpx import Client, HTTPTransport
@@ -28,14 +26,6 @@ logger = logging.getLogger(__name__)
 
 class ReplicaTeardownError(RuntimeError):
     """Teardown attempt ended with a process group still present."""
-
-
-class _HookOutcome(Enum):
-    """Result of a pre/post-stop hook attempt"""
-
-    NOT_CONFIGURED = auto()  # no hook script for this phase
-    SUCCEEDED = auto()  # hook exited 0 and left no descendants
-    FELL_BACK = auto()  # hook failed; fallback cleanup was used instead
 
 
 def _pgid_alive(pgid: int) -> bool:
@@ -243,9 +233,6 @@ class Replica:
         self._env = os.environ.copy()
         self._env.update(self.launch_spec.env)
 
-        # Created before the Popen so the failure path below can close it.
-        self._health_client = Client(transport=HTTPTransport(uds=self.uds))
-
         logger.info(
             "starting replica %s on uds %s (workdir=%s)",
             self.name,
@@ -264,7 +251,6 @@ class Replica:
         except Exception:
             logger.exception("failed to Popen model replica %s", self.name)
             self._close_log_handles()
-            self._health_client.close()
             raise
 
         self.state = ReplicaState.launching
@@ -281,6 +267,8 @@ class Replica:
         # uses smaller debounce values, but at our 2s poll interval anything
         # below 5 makes replica ready/unhealthy flapping too twitchy.
         self._health_debounce = max(5, self._health_params.debounce)
+        self._health_client = Client(transport=HTTPTransport(uds=self.uds))
+
         if self._health_params.url:
             path = urlparse(self._health_params.url).path
             url = f"http://localhost/{path.lstrip('/')}"
@@ -291,9 +279,9 @@ class Replica:
 
         self._stop_lock = threading.Lock()
         self._teardown_complete: bool = False
-        self._pre_stop_attempted: bool = False
-        self._pre_stop_outcome = _HookOutcome.NOT_CONFIGURED
-        self._post_stop_outcome = _HookOutcome.NOT_CONFIGURED
+        self._pre_stop_ran: bool = False  # cooperative hook runs at most once, ever
+        self._pre_stop_ok: bool = False  # ...and exited 0 with no descendants
+        self._post_stop_ok: bool = False  # one post-stop run verified cleanly
         self._post_stop_attempts = 0
 
         # The three private groups this replica drives to proven absence. The
@@ -492,168 +480,118 @@ class Replica:
             # Re-assert terminating in case monitor changed it before joining
             self.state = ReplicaState.terminating
 
-            self._run_teardown_stages()  # raises if any group survives
+            survivors = self._teardown()
+            if survivors:
+                message = (
+                    f"Replica {self.name} teardown incomplete; still present: "
+                    + ", ".join(survivors)
+                )
+                logger.error(message)
+                self.state_message = message
+                self._write_lifecycle_log(message)
+                raise ReplicaTeardownError(message)
 
+            self._teardown_complete = True
+            self._close_log_handles()
+            self._health_client.close()
             self.state = ReplicaState.terminated
             self.state_message = self._terminated_message()
 
     def _terminated_message(self) -> str:
-        """Describe a completed teardown from the recorded hook outcomes."""
-        pre, post = self._pre_stop_outcome, self._post_stop_outcome
-        if pre is _HookOutcome.SUCCEEDED and post is _HookOutcome.SUCCEEDED:
+        """Describe a completed teardown from the recorded hook results."""
+        if self._pre_stop_ok and self._post_stop_ok:
             return (
                 "Model replica terminated after cooperative pre-stop and "
                 "verified post-stop hooks."
             )
-        if post is _HookOutcome.SUCCEEDED:
+        if self._post_stop_ok:
             return "Model replica terminated after verified post-stop hook."
-        if pre is _HookOutcome.SUCCEEDED:
+        if self._pre_stop_ok:
             return "Model replica terminated after cooperative pre-stop hook."
-        if pre is _HookOutcome.FELL_BACK:
+        if self._pre_stop_ran:  # ran (implies configured) but did not succeed
             return (
                 "Model replica terminated with process-group fallback after "
                 "pre-stop hook failure."
             )
         return "Model replica has terminated."
 
-    def _run_teardown_stages(self) -> None:
-        """
-        Run one bounded teardown attempt through the three fixed stages.
+    def _teardown(self) -> list[str]:
+        """Run one bounded teardown attempt, top to bottom; return survivors.
 
-        Only the pre-stop stage is exception-guarded: a fault in the hook
-        machinery must not skip the TERM/KILL sequence for the GPU-bearing
-        model group. The later stages handle OS-level failures internally; an
-        unexpected exception there simply propagates, and the attempt stays
-        retryable either way because success is latched only when all three
-        stages report proven absence. Serialized by ``stop()``'s
-        ``_stop_lock``, so no internal locking is needed.
+        Stage order is fixed: quiesce (pre-stop) -> kill the model group no
+        matter what the hook did -> verify (post-stop) only once the model is
+        gone. A retry re-runs only what is unsettled: the cooperative pre-stop
+        hook runs at most once ever, the model kill is idempotent, and the
+        post-stop hook re-runs until one attempt verifies cleanly. Serialized
+        by ``stop()``'s ``_stop_lock``, so no internal locking is needed.
         """
+        survivors: list[str] = []
+
+        # 1. Pre-stop quiesce. Exception-guarded so a fault in the hook
+        #    machinery can never skip the model kill below. A failed hook is
+        #    tolerated -- the kill below is the fallback -- but its private
+        #    process group must still be proven absent.
         try:
-            hook_absent = self._quiesce_pre_stop()
+            if self._pre_stop_script_path is not None and not self._pre_stop_ran:
+                self._pre_stop_ran = True
+                self._pre_stop_group, self._pre_stop_ok = self._run_hook(
+                    "pre-stop",
+                    self._pre_stop_script_path,
+                    self.launch_spec.pre_stop_timeout_sec,
+                )
+                if not self._pre_stop_ok:
+                    self._write_lifecycle_log(
+                        "pre-stop hook failed; using process-group fallback"
+                    )
+            pre_stop_gone = (
+                self._pre_stop_group is None or self._pre_stop_group.ensure_absent()
+            )
         except Exception:
             logger.exception("pre-stop cleanup failed for replica %s", self.name)
-            self._pre_stop_outcome = _HookOutcome.FELL_BACK
-            hook_absent = False
-
-        model_absent = self._model_group.ensure_absent()
-
-        # The post-stop verifier is meaningful only once the model group is
-        # gone, so it is gated on that authoritative absence.
-        post_ready = True
-        if model_absent:
-            post_ready = self._verify_post_stop()
-
-        if hook_absent and model_absent and post_ready:
-            self._teardown_complete = True
-            self._close_log_handles()
-            self._health_client.close()
-            return
-
-        self._raise_incomplete(hook_absent, model_absent, post_ready)
-
-    def _raise_incomplete(
-        self, hook_absent: bool, model_absent: bool, post_ready: bool
-    ) -> NoReturn:
-        """Record the surviving groups and raise a retryable teardown error."""
-        survivors = []
-        if not hook_absent:
+            pre_stop_gone = False
+        if not pre_stop_gone:
             survivors.append("pre-stop hook process group")
-        if not model_absent:
+
+        # 2. The GPU-bearing model group, driven to proven absence.
+        if not self._model_group.ensure_absent():
             survivors.append("model process group")
-        if not post_ready:
-            survivors.append("post-stop hook or verification")
-        message = (
-            f"Replica {self.name} teardown incomplete; still present: "
-            + ", ".join(survivors)
-        )
-        logger.error(message)
-        self.state_message = message
-        self._write_lifecycle_log(message)
-        raise ReplicaTeardownError(message)
+            return survivors  # post-stop is meaningless while the model lives
 
-    def _quiesce_pre_stop(self) -> bool:
-        """Stage 1: run the pre-stop hook once, or confirm a prior one is gone.
-
-        The cooperative hook runs at most once (on the first stop attempt);
-        every retry just proves any group it left is absent.
-        """
-        if not self._pre_stop_attempted:
-            self._pre_stop_outcome, absent = self._run_pre_stop_hook()
-            return absent
-        return self._pre_stop_group is None or self._pre_stop_group.ensure_absent()
-
-    def _verify_post_stop(self) -> bool:
-        """Stage 3: prove a clean post-stop verification, or fail retryably.
-
-        Any non-success outcome is retained as a stop failure even when fallback
-        cleanup removed the hook group, so a later attempt must rerun and obtain
-        an explicit successful verification.
-        """
-        self._post_stop_outcome, group_absent = self._run_post_stop_hook()
-        return self._post_stop_outcome is not _HookOutcome.FELL_BACK and group_absent
-
-    def _run_pre_stop_hook(self) -> tuple[_HookOutcome, bool]:
-        self._pre_stop_attempted = True
-        script_path = self._pre_stop_script_path
-        if script_path is None:
-            return _HookOutcome.NOT_CONFIGURED, True
-
-        timeout = self.launch_spec.pre_stop_timeout_sec
-        logger.info(
-            "running pre-stop hook for replica %s (timeout=%.1fs)", self.name, timeout
-        )
-        group, outcome, absent = self._execute_hook(
-            script_path, timeout, label="pre-stop"
-        )
-        self._pre_stop_group = group
-        return outcome, absent
-
-    def _run_post_stop_hook(self) -> tuple[_HookOutcome, bool]:
-        script_path = self._post_stop_script_path
-        if script_path is None:
-            return _HookOutcome.NOT_CONFIGURED, True
-        if self._post_stop_outcome is _HookOutcome.SUCCEEDED:
-            # Already verified on a prior attempt; only confirm the group is gone.
-            return _HookOutcome.SUCCEEDED, (
+        # 3. Post-stop verification: one clean hook run (exit 0, no
+        #    descendants) after the model is gone. Never start a new run while
+        #    a previous run's process group survives.
+        if self._post_stop_script_path is not None and not self._post_stop_ok:
+            prior_gone = (
                 self._post_stop_group is None or self._post_stop_group.ensure_absent()
             )
+            if prior_gone:
+                self._post_stop_attempts += 1
+                self._post_stop_group, self._post_stop_ok = self._run_hook(
+                    "post-stop",
+                    self._post_stop_script_path,
+                    self.launch_spec.post_stop_timeout_sec,
+                )
+                if not self._post_stop_ok and self._post_stop_group is not None:
+                    self._post_stop_group.ensure_absent()  # sweep leftovers now
+            if not self._post_stop_ok:
+                survivors.append("post-stop hook or verification")
 
-        # A prior failed attempt may still own descendants.  Never start a new
-        # verifier until that exact private process group is absent.
-        if (
-            self._post_stop_group is not None
-            and not self._post_stop_group.ensure_absent()
-        ):
-            return _HookOutcome.FELL_BACK, False
+        return survivors
 
-        self._post_stop_attempts += 1
-        timeout = self.launch_spec.post_stop_timeout_sec
-        logger.info(
-            "running post-stop hook for replica %s (attempt=%d, timeout=%.1fs)",
-            self.name,
-            self._post_stop_attempts,
-            timeout,
-        )
-        group, outcome, absent = self._execute_hook(
-            script_path, timeout, label="post-stop"
-        )
-        self._post_stop_group = group
-        return outcome, absent
+    def _run_hook(
+        self, label: str, script_path: Path, timeout: float
+    ) -> tuple[_ManagedGroup | None, bool]:
+        """Run a hook script in its own session and wait for it to finish.
 
-    def _execute_hook(
-        self,
-        script_path: Path,
-        timeout: float,
-        *,
-        label: str,
-    ) -> tuple[_ManagedGroup | None, _HookOutcome, bool]:
-        """Launch a hook in its own session, wait, and classify the outcome.
-
-        Returns ``(group, outcome, group_absent)``. ``group`` is ``None`` only
-        when the hook could not be started. A ``FELL_BACK`` outcome means the
-        bounded fallback cleanup already ran; ``group_absent`` then reports
-        whether that cleanup proved the whole hook group gone.
+        Returns ``(group, ok)``. ``ok`` means the hook exited 0 within
+        ``timeout`` and left no descendants in its process group -- the group
+        is then already proven absent. ``group`` is ``None`` only when the
+        hook could not be started; on failure the caller owns sweeping the
+        group with ``ensure_absent``.
         """
+        logger.info(
+            "running %s hook for replica %s (timeout=%.1fs)", label, self.name, timeout
+        )
         self._write_lifecycle_log(f"{label} hook started (timeout={timeout:.1f}s)")
         try:
             proc = subprocess.Popen(
@@ -667,7 +605,7 @@ class Replica:
         except Exception:
             logger.exception("failed to start %s hook for replica %s", label, self.name)
             self._write_lifecycle_log(f"{label} hook failed to start")
-            return None, _HookOutcome.FELL_BACK, True
+            return None, False
 
         group = _ManagedGroup(
             proc,
@@ -684,26 +622,25 @@ class Replica:
                 "%s hook for replica %s exceeded %.1fs", label, self.name, timeout
             )
             self._write_lifecycle_log(f"{label} hook timed out")
-            return group, _HookOutcome.FELL_BACK, group.ensure_absent()
+            return group, False
 
         if rc != 0:
             logger.error("%s hook for replica %s exited %d", label, self.name, rc)
             self._write_lifecycle_log(f"{label} hook exited {rc}")
-            # The leader is reaped, but it may have orphaned descendants in its
-            # private session. Absence of the whole group is the cleanup
-            # condition for every hook outcome.
-            return group, _HookOutcome.FELL_BACK, group.ensure_absent()
+            return group, False
 
         if group.alive():
+            # The leader exited 0 but orphaned descendants in its private
+            # session; the whole group must be gone for the hook to count.
             logger.error(
                 "%s hook for replica %s left descendant processes", label, self.name
             )
             self._write_lifecycle_log(f"{label} hook left descendant processes")
-            return group, _HookOutcome.FELL_BACK, group.ensure_absent()
+            return group, False
 
         logger.info("%s hook completed for replica %s", label, self.name)
         self._write_lifecycle_log(f"{label} hook completed")
-        return group, _HookOutcome.SUCCEEDED, True
+        return group, True
 
     def _write_lifecycle_log(self, message: str) -> None:
         try:
