@@ -71,7 +71,7 @@ async def get_backend(
     model: ModelConfig,
     admission_controller: AdmissionController,
     backend_candidates: list[CandidateBackend],
-    estimated_tokens: int | None = 0,
+    estimated_tokens: int = 0,
 ) -> BackendConfig:
     """
     Find and return the backend that will serve the request.
