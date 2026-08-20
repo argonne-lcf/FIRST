@@ -2,20 +2,6 @@ from http import HTTPStatus
 from typing import Any
 
 
-class TaskPending(Exception):
-    """
-    202 ACCEPTED is widely used for async http clients polling on a task ID.
-    """
-
-    status_code = HTTPStatus.ACCEPTED
-    code = "task_accepted_and_pending"
-
-    def __init__(self, task_id: str, *args: str, retry_after: int = 2):
-        self.task_id = task_id
-        self.retry_after = retry_after
-        super().__init__(*args)
-
-
 class FirstError(Exception):
     """
     Base class for all errors.
@@ -112,3 +98,16 @@ class StatusCASFailed(FirstError):
     """Raised when CAS keeps losing the race past max_cas_attempts."""
 
     code: str = "status_cas_failed"
+
+
+class TaskPending(FirstError):
+    """
+    202 ACCEPTED is widely used for async http clients polling on a task ID.
+    """
+
+    status_code = HTTPStatus.ACCEPTED
+    code = "task_accepted_and_pending"
+
+    def __init__(self, task_id: str, *args: str, retry_after_sec: int = 2):
+        self.task_id = task_id
+        super().__init__(*args, retry_after_sec=retry_after_sec)
