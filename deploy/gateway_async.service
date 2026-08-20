@@ -8,9 +8,9 @@ Group=webportal
 WorkingDirectory=/home/webportal/inference-gateway
 Environment=PATH=/home/webportal/inference-gateway/.venv/bin/
 Environment="PYTHONUNBUFFERED=1"
-ExecStartPre=+/bin/mkdir -p /var/log/inference-service
-ExecStartPre=+/bin/chown webportal:webportal /var/log/inference-service
-ExecStart=/bin/sh -c '/home/webportal/inference-gateway/.venv/bin/gunicorn -c deploy/gateway_asgi.config.py inference_gateway.asgi:application 2>>/var/log/inference-service/error.log | /usr/bin/rotatelogs -c -f -L /var/log/inference-service/out.log /var/log/inference-service/out.log.%%Y-%%m-%%d 86400'
+ExecStartPre=+/bin/mkdir -p /home/webportal/raw-prod-logs
+ExecStartPre=+/bin/chown webportal:webportal /home/webportal/raw-prod-logs
+ExecStart=/bin/sh -c '/home/webportal/inference-gateway/.venv/bin/gunicorn -c deploy/gateway_asgi.config.py inference_gateway.asgi:application 2>>/home/webportal/raw-prod-logs/error.log | /usr/bin/rotatelogs -c -f -L /home/webportal/raw-prod-logs/out.log /home/webportal/raw-prod-logs/out.log.%%Y-%%m-%%d 86400'
 ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=mixed
 TimeoutStopSec=5
