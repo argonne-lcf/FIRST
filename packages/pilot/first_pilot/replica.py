@@ -76,6 +76,18 @@ class _ManagedGroup:
         if not self.alive():
             return True
 
+        # There is an unavoidable check->act gap: we probe ``alive()`` and then
+        # ``killpg`` as two separate syscalls, and in between the group could
+        # empty and its pgid be freed. This is safe because Linux allocates pids
+        # cyclically -- a freed number is the *last* to be handed out again, only
+        # after the allocator wraps ``pid_max`` (millions of pids later). The
+        # number cannot be recycled to an unrelated process inside this
+        # microsecond window, so we never risk signalling the wrong group.
+        # TODO: an elevated risk may exist for a *long-lived* pgid that
+        # coexists in a ~40 day pilot job alongside neighboring models with frequent
+        # start/stop churn.  The neighbors could exhaust and cycle pid space leading to a
+        # collision and incorrectly targeted process when this one is killed.
+
         self._signal(signal.SIGTERM)
         if self._wait_for_exit(self._term_grace):
             return True
