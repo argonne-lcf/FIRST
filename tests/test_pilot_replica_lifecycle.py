@@ -1,5 +1,6 @@
 """Focused tests for cooperative replica quiesce and bounded fallback."""
 
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call, patch
@@ -14,7 +15,12 @@ from first_common.schema.types import (
     ReplicaState,
 )
 from first_gateway.services.pilot_control import STOP_TIMEOUT
-from first_pilot.replica import Replica, ReplicaTeardownError
+from first_pilot.replica import (
+    Replica,
+    ReplicaTeardownError,
+    _ManagedGroup,
+    _pgid_alive,
+)
 from first_pilot.replica_manager import ReplicaManager
 
 _SERVE_UNTIL_TERM = """
@@ -76,11 +82,11 @@ def test_pre_stop_template_validation_and_unhealthy_deadline() -> None:
 
     explicit = Replica.__new__(Replica)
     explicit.launch_spec = _launch_spec(max_unhealthy_sec=7)
-    assert explicit._unhealthy_timeout_sec() == 7
+    assert explicit._unhealthy_timeout_sec == 7
 
     fallback = Replica.__new__(Replica)
     fallback.launch_spec = _launch_spec()
-    assert fallback._unhealthy_timeout_sec() == 30
+    assert fallback._unhealthy_timeout_sec == 30
 
 
 def test_stop_rpc_and_join_budgets_cover_sequential_hooks() -> None:
@@ -90,9 +96,9 @@ def test_stop_rpc_and_join_budgets_cover_sequential_hooks() -> None:
 
 def test_process_group_probe_is_fail_closed_on_permission_error() -> None:
     with patch("first_pilot.replica.os.killpg", side_effect=PermissionError):
-        assert Replica._process_group_alive(12345)
+        assert _pgid_alive(12345)
     with patch("first_pilot.replica.os.killpg", side_effect=ProcessLookupError):
-        assert not Replica._process_group_alive(12345)
+        assert not _pgid_alive(12345)
 
 
 def test_cooperative_pre_stop_renders_exact_allocation_and_is_idempotent(
@@ -121,7 +127,7 @@ printf '%s\n' '{{ replica_name }}|{{ gpus_by_host["node-a"] | join(",") }}|{{ en
     lifecycle_log = replica.log_path.read_text()
     assert lifecycle_log.count("pre-stop hook started") == 1
     assert lifecycle_log.count("pre-stop hook completed") == 1
-    assert not replica._group_alive()
+    assert not replica._model_group.alive()
 
 
 def test_post_stop_runs_only_after_model_absence_and_latches_success(
@@ -214,7 +220,7 @@ while true; do sleep 1; done
         with pytest.raises(ReplicaTeardownError, match="post-stop"):
             replica.stop(timeout=0.2)
         hook_pgid = int((replica.workdir / "post-hook-pgid").read_text())
-        assert not Replica._process_group_alive(hook_pgid)
+        assert not _pgid_alive(hook_pgid)
         assert not _teardown_complete(replica)
 
         replica._post_stop_script_path.write_text("exit 0\n")  # type: ignore[union-attr]
@@ -254,7 +260,7 @@ exit 0
         with pytest.raises(ReplicaTeardownError, match="post-stop"):
             replica.stop(timeout=0.2)
         old_pgid = int((replica.workdir / "post-descendant-pgid").read_text())
-        assert not Replica._process_group_alive(old_pgid)
+        assert not _pgid_alive(old_pgid)
 
         (replica.workdir / "retry-post-stop").touch()
         replica.stop(timeout=0.2)
@@ -279,7 +285,7 @@ def test_nonzero_pre_stop_uses_process_group_fallback(tmp_path: Path) -> None:
     assert replica.state == ReplicaState.terminated
     assert "process-group fallback" in replica.state_message
     assert "pre-stop hook exited 7; using fallback" in replica.log_path.read_text()
-    assert not replica._group_alive()
+    assert not replica._model_group.alive()
 
 
 def test_timed_out_pre_stop_kills_hook_tree_then_model_group(
@@ -311,7 +317,7 @@ done
     assert replica.state == ReplicaState.terminated
     assert "process-group fallback" in replica.state_message
     assert "pre-stop hook timed out; using fallback" in replica.log_path.read_text()
-    assert not replica._group_alive()
+    assert not replica._model_group.alive()
 
 
 def test_hook_leader_exit_cannot_leave_term_ignoring_child(
@@ -345,8 +351,8 @@ exit 0
     hook_pgid = int((replica.workdir / "hook-pgid").read_text())
     assert "process-group fallback" in replica.state_message
     assert "left descendant processes; using fallback" in replica.log_path.read_text()
-    assert not Replica._process_group_alive(hook_pgid)
-    assert not replica._group_alive()
+    assert not _pgid_alive(hook_pgid)
+    assert not replica._model_group.alive()
 
 
 def test_model_group_survival_is_not_success_and_stop_is_retryable(
@@ -354,7 +360,7 @@ def test_model_group_survival_is_not_success_and_stop_is_retryable(
 ) -> None:
     replica = _replica(tmp_path, _launch_spec())
     try:
-        with patch.object(replica, "_terminate_process_group", return_value=False):
+        with patch.object(replica._model_group, "ensure_absent", return_value=False):
             with pytest.raises(ReplicaTeardownError, match="model process group"):
                 replica.stop(timeout=0.2)
 
@@ -376,67 +382,77 @@ def test_model_group_survival_is_not_success_and_stop_is_retryable(
 
 def test_model_group_surviving_sigkill_returns_failure(tmp_path: Path) -> None:
     replica = _replica(tmp_path, _launch_spec())
+    group = replica._model_group
     try:
         with (
-            patch.object(replica, "_group_alive", return_value=True),
-            patch.object(
-                replica,
-                "_wait_for_group_exit",
-                side_effect=[False, False],
-            ),
+            patch.object(group, "alive", return_value=True),
+            patch.object(group, "_wait_for_exit", side_effect=[False, False]),
             patch("first_pilot.replica.os.killpg") as killpg,
         ):
-            assert not replica._terminate_process_group()
+            assert not group.ensure_absent()
 
         assert killpg.call_args_list == [
-            call(replica._pgid, 15),
-            call(replica._pgid, 9),
+            call(group.pgid, 15),
+            call(group.pgid, 9),
         ]
     finally:
         replica.stop(timeout=0.2)
 
 
 def test_permission_denied_hook_kill_is_retained_as_alive() -> None:
-    replica = Replica.__new__(Replica)
-    replica._GROUP_POLL_INTERVAL = 0.001
-    replica._HOOK_TERM_GRACE = 0.001
-    replica._HOOK_KILL_GRACE = 0.001
-    replica._hook_cleanup_attempts = 0
-    replica._hook_survivors = None
-    hook = MagicMock()
-    hook.pid = 12345
+    leader = MagicMock()
+    leader.pid = 12345
+    group = _ManagedGroup(
+        leader,
+        label="test hook",
+        term_grace=0.001,
+        kill_grace=0.001,
+        poll_interval=0.001,
+    )
 
     with (
-        patch.object(replica, "_process_group_alive", return_value=True),
-        patch.object(replica, "_wait_for_process_group_exit", return_value=False),
+        patch.object(group, "alive", return_value=True),
+        patch.object(group, "_wait_for_exit", return_value=False),
         patch("first_pilot.replica.os.killpg", side_effect=PermissionError) as killpg,
     ):
-        assert not replica._terminate_hook_group(hook)
+        assert not group.ensure_absent()
 
     assert killpg.call_args_list == [call(12345, 15), call(12345, 9)]
 
 
-def test_retry_refuses_signal_when_process_group_identity_changed() -> None:
-    replica = Replica.__new__(Replica)
-    leader = MagicMock()
-    leader.pid = 12345
-    leader.poll.return_value = 1
-
-    with (
-        patch.object(
-            replica,
-            "_snapshot_process_group",
-            return_value={45678: 222},
+def test_stop_is_the_only_teardown_path_monitor_only_records_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crashed model parks in `error` via the monitor but is NOT swept until
+    the controller calls stop(); the leftover group is gone only afterwards."""
+    monkeypatch.setattr(Replica, "_HEALTH_INTERVAL", 0.02)
+    replica = _replica(
+        tmp_path,
+        _launch_spec(
+            serve_script_template="""
+printf '%s\n' "$$" > model-pgid
+(trap '' TERM HUP; while true; do sleep 1; done) &
+exit 3
+""",
         ),
-        patch("first_pilot.replica.os.getpgid") as getpgid,
-        patch("first_pilot.replica.os.getsid") as getsid,
-    ):
-        assert not replica._retry_owns_process_group(
-            12345,
-            leader,
-            {45678: 111},
-            label="model",
-        )
+    )
+    try:
+        # The monitor observes the unexpected exit and records error state, but
+        # the orphaned child keeps the model process group alive.
+        for _ in range(200):
+            if replica.state == ReplicaState.error:
+                break
+            time.sleep(0.02)
+        assert replica.state == ReplicaState.error
+        assert "exited unexpectedly with code 3" in replica.state_message
+        model_pgid = int((replica.workdir / "model-pgid").read_text())
+        assert _pgid_alive(model_pgid)
+        assert not _teardown_complete(replica)
 
-    getpgid.assert_not_called()
-    getsid.assert_not_called()
+        # Only the controller's stop() sweeps the surviving group.
+        replica.stop(timeout=0.2)
+        assert _teardown_complete(replica)
+        assert not _pgid_alive(model_pgid)
+    finally:
+        if not _teardown_complete(replica):
+            replica.stop(timeout=0.2)
