@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi.responses import StreamingResponse
 
+from first_common.errors import ServiceUnavailable
 from first_common.schema.endpoints.base import BasePayload
 from first_gateway.apiserver.dependencies import AuthUser
 
@@ -32,6 +33,8 @@ async def submit_inference_with_retry(
     """
 
     backend_candidates = get_backend_candidates(model, deployment_name=deployment_name)
+    if not backend_candidates:
+        raise ServiceUnavailable(f"No backend available for model {model}.")
 
     # TODO: figure out a better token estimate and max_output_tokens
     # estimated_tokens = len(json.dumps(payload)) // 4 + max_output_tokens
