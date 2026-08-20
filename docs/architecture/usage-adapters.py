@@ -1,3 +1,5 @@
+# ruff: noqa
+# type: ignore
 """
 usage_adapters.py — off-hot-path token usage extraction for an LLM gateway.
 

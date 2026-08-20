@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from first_common.errors import InvalidSpecError, NotFound
-from first_common.schema.endpoints.openai import BasePayload
+from first_common.schema.endpoints.base import BasePayload
 
 from ....database.redis.router_config import ModelConfig
 from ...auth import enforce_permission

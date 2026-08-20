@@ -1,12 +1,68 @@
+from typing import Any
+
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
-router = APIRouter(prefix="/deployments/{slug}/v1")
+from first_common.schema.endpoints.openai import (
+    OpenAIChatCompletionsPayload,
+    OpenAIEmbeddingsPayload,
+    OpenAIResponsesPayload,
+)
 
-# @router.post("/chat/completions")
-# ...
+from ....services.orchestration import get_name_from_slug
+from ....services.submit_inference import submit_inference_with_retry
+from ...dependencies import AdmissionControllerDep, AuthUser
+from .dependencies import AuthorizedModel
 
-# @router.post("/embeddings")
-# ...
+router = APIRouter(prefix="/deployments/{deployment_slug}/v1")
 
-# @router.post("/responses")
-# ...
+
+@router.post("/chat/completions", response_model=None)
+async def chat_completions(
+    deployment_slug: str,
+    user: AuthUser,
+    model: AuthorizedModel,
+    admission_controller: AdmissionControllerDep,
+    payload: OpenAIChatCompletionsPayload,
+) -> StreamingResponse | dict[str, Any]:
+    return await submit_inference_with_retry(
+        user,
+        model,
+        admission_controller,
+        payload,
+        deployment_name=get_name_from_slug(deployment_slug),
+    )
+
+
+@router.post("/responses", response_model=None)
+async def responses(
+    deployment_slug: str,
+    user: AuthUser,
+    model: AuthorizedModel,
+    admission_controller: AdmissionControllerDep,
+    payload: OpenAIResponsesPayload,
+) -> StreamingResponse | dict[str, Any]:
+    return await submit_inference_with_retry(
+        user,
+        model,
+        admission_controller,
+        payload,
+        deployment_name=get_name_from_slug(deployment_slug),
+    )
+
+
+@router.post("/embeddings", response_model=None)
+async def embeddings(
+    deployment_slug: str,
+    user: AuthUser,
+    model: AuthorizedModel,
+    admission_controller: AdmissionControllerDep,
+    payload: OpenAIEmbeddingsPayload,
+) -> StreamingResponse | dict[str, Any]:
+    return await submit_inference_with_retry(
+        user,
+        model,
+        admission_controller,
+        payload,
+        deployment_name=get_name_from_slug(deployment_slug),
+    )

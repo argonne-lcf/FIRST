@@ -1,19 +1,9 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-)
+from pydantic import Field
 
-
-class BaseModelAllowExtra(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-
-class BasePayload(BaseModelAllowExtra):
-    model: str = Field(..., min_length=1)
+from .base import BasePayload
 
 
 # https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create

@@ -2,6 +2,7 @@ from typing import Annotated, AsyncGenerator, cast
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from redis.asyncio import Redis as _AsyncRedis
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
 )
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.resources.spec import AccessGroupSpec
 
+from ..database.redis.admission import AdmissionController as _AdmissionController
 from ..database.redis.pubsub import RedisPubSub as _RedisPubSub
 from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
@@ -41,6 +43,10 @@ async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
     """
     async with state.db_sessionmaker() as sess:
         yield sess
+
+
+async def get_redis(state: AppState) -> _AsyncRedis:
+    return state.redis
 
 
 async def get_redis_repo(state: AppState) -> _RedisRepo:
@@ -87,9 +93,19 @@ async def is_user_admin(
 
 BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]
 DbSession = Annotated[AsyncSession, Depends(get_session)]
+RedisDep = Annotated[_AsyncRedis, Depends(get_redis)]
 RedisRepo = Annotated[_RedisRepo, Depends(get_redis_repo)]
 RedisPubSub = Annotated[_RedisPubSub, Depends(get_redis_pubsub)]
 RouterConfigDep = Annotated[_RouterConfig, Depends(get_router_config)]
 AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
 IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
+
+
+async def get_admission_controller(redis_client: RedisDep) -> _AdmissionController:
+    return _AdmissionController(client=redis_client)
+
+
+AdmissionControllerDep = Annotated[
+    _AdmissionController, Depends(get_admission_controller)
+]
