@@ -1,5 +1,6 @@
 """Tests for PilotJobObserver: scheduler state sync and endpoint discovery."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self, cast
@@ -118,6 +119,7 @@ def _make_observer(
     # the candidate-endpoint /status result through this AsyncMock.
     observer = PilotJobObserver.__new__(PilotJobObserver)
     Worker.__init__(observer, "pilot-job-observer", _make_client_state(db), MagicMock())
+    observer.hb = observer.register_heartbeat("poll")
     observer.client = MagicMock()
     observer.client.get_status = AsyncMock(
         return_value=PilotJobStatus(resources=PilotResources(), replicas=[])
@@ -479,6 +481,38 @@ async def test_orphan_scheduler_job_reaped(
 
     assert "999.pbs" in adapter.terminated
     assert "998.pbs" in adapter.terminated
+
+
+async def test_hanging_scheduler_rpc_is_bounded(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """An unresponsive adapter is bounded per-RPC; the sweep survives and marks
+    the cluster unhealthy instead of hanging past the heartbeat deadline."""
+
+    class HangingAdapter(FakeSchedulerAdapter):
+        async def get_job_statuses(self) -> list[JobStatusInfo]:
+            await asyncio.sleep(3600)
+            return []
+
+    adapter = HangingAdapter()
+
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+
+    observer = _make_observer(db)
+
+    with (
+        patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter),
+        patch(
+            "first_gateway.controllers.workers.pilot_job_observer._RPC_TIMEOUT",
+            0.05,
+        ),
+    ):
+        await asyncio.wait_for(observer._poll_all_clusters(), timeout=5)
+
+    async with db.begin() as sess:
+        cluster = (await Cluster.list(sess))[0]
+    assert cluster.health == HealthCheckResult.unhealthy.value
 
 
 async def test_no_update_when_state_unchanged(

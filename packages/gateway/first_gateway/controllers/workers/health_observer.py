@@ -60,7 +60,9 @@ class HealthObserver(Worker):
             clusters = await Cluster.list(sess)
             deployments = await StaticDeployment.list(sess)
 
-        checks = [self._check(c) for c in clusters] + [
+        # Skip the broader health check on clusters with reconcile failures:
+        # those take precedence
+        checks = [self._check(c) for c in clusters if c.reconcile_failures == 0] + [
             self._check(d) for d in deployments
         ]
         results = [r for r in await asyncio.gather(*checks) if r is not None]

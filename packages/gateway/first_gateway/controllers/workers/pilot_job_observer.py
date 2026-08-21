@@ -1,5 +1,8 @@
+import asyncio
 import logging
+from collections.abc import Awaitable
 from datetime import datetime, timezone
+from typing import TypeVar
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +21,11 @@ from ..worker import Worker
 
 logger = logging.getLogger(__name__)
 
+_RPC_TIMEOUT = 60.0
+
 _TERMINAL_STATES = frozenset({SchedulerJobState.gone.value})
+
+_T = TypeVar("_T")
 
 
 class PilotJobObserver(Worker):
@@ -51,16 +58,33 @@ class PilotJobObserver(Worker):
             heartbeat_timeout=heartbeat_timeout,
         )
         self.client = PilotControlClient(client_state, cn="pilot-job-observer")
+        self.hb = self.register_heartbeat("poll")
 
     async def run(self) -> None:
-        hb = self.register_heartbeat("poll")
+        # Re-register: supervise() clears the heartbeat list on every restart,
+        # so the __init__ registration only survives the first run.
+        self.hb = self.register_heartbeat("poll")
         while True:
-            hb.beat()
+            self.hb.beat()
             try:
                 await self._poll_all_clusters()
             except Exception:
                 logger.exception("%s: poll failed", self.name)
             await self.wait_for_wake()
+
+    async def _rpc(self, awaitable: Awaitable[_T]) -> _T:
+        """Await a scheduler RPC with a hard timeout, beating the heartbeat.
+
+        Bounds each remote call so an unresponsive adapter can't stall the sweep
+        past the heartbeat deadline, and resets the heartbeat around every call
+        so a legitimately slow (but progressing) sweep is never mistaken for a
+        wedged worker.
+        """
+        self.hb.beat()
+        try:
+            return await asyncio.wait_for(awaitable, timeout=_RPC_TIMEOUT)
+        finally:
+            self.hb.beat()
 
     async def _poll_all_clusters(self) -> None:
         async with self.client_state.db_sessionmaker() as sess:
@@ -119,7 +143,7 @@ class PilotJobObserver(Worker):
                 )
             ).all()
 
-        statuses = {s.id: s for s in await submitter.get_statuses()}
+        statuses = {s.id: s for s in await self._rpc(submitter.get_statuses())}
 
         for job in db_jobs:
             assert job.scheduler_job_id is not None
@@ -129,8 +153,8 @@ class PilotJobObserver(Worker):
                 logger.info(
                     f"{job.scheduler_job_id} is missing in job status list; querying by exact job ID"
                 )
-                status = await submitter.adapter.get_exact_job_status(
-                    job.scheduler_job_id
+                status = await self._rpc(
+                    submitter.adapter.get_exact_job_status(job.scheduler_job_id)
                 )
             await self._update_job(job, status)
 
@@ -152,7 +176,7 @@ class PilotJobObserver(Worker):
         for orphan_id in orphan_job_ids:
             logger.warning("Reaping orphan scheduler job id=%s", orphan_id)
             try:
-                await submitter.adapter.terminate_job(orphan_id)
+                await self._rpc(submitter.adapter.terminate_job(orphan_id))
             except Exception:
                 logger.exception("Failed to terminate orphan job %s", orphan_id)
 
@@ -259,12 +283,12 @@ class PilotJobObserver(Worker):
             return
 
         actionable_by_name: dict[str, int] = {name: uid for uid, name in actionable}
-        ready_names = await submitter.list_ready_endpoints()
+        ready_names = await self._rpc(submitter.list_ready_endpoints())
         ready_jobs = set(ready_names) & set(actionable_by_name)
 
         for job_name in sorted(ready_jobs):
             try:
-                addr = await submitter.get_endpoint(job_name)
+                addr = await self._rpc(submitter.get_endpoint(job_name))
             except Exception:
                 logger.exception("Failed to read endpoint for job %s", job_name)
                 continue

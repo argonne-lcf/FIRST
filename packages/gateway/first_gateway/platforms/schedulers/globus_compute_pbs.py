@@ -4,7 +4,7 @@ import shlex
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Self, TypedDict
+from typing import Any, Literal, Self, TypedDict
 
 from globus_compute_sdk import Client
 from globus_compute_sdk.errors import TaskExecutionFailed, TaskPending
@@ -36,6 +36,7 @@ _STATE_MAP: dict[str, SchedulerJobState] = {
     "W": SchedulerJobState.queued,  # Waiting (future Execution_Time)
     "X": SchedulerJobState.gone,  # Expired (finished subjob)
 }
+_RPC_TIMEOUT = 10
 
 
 class FuncRegistry(TypedDict):
@@ -45,6 +46,9 @@ class FuncRegistry(TypedDict):
     list_files: str
     put_file: str
     read_file: str
+
+
+FuncName = Literal["qsub", "qstat", "qdel", "list_files", "put_file", "read_file"]
 
 
 _func_registry: FuncRegistry | None = None
@@ -119,14 +123,15 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         client = deps.compute_client
 
         if _func_registry is None:
-            uuids = await asyncio.gather(
-                asyncio.to_thread(client.register_function, fns.qsub),
-                asyncio.to_thread(client.register_function, fns.qstat),
-                asyncio.to_thread(client.register_function, fns.qdel),
-                asyncio.to_thread(client.register_function, fns.list_files),
-                asyncio.to_thread(client.register_function, fns.put_file),
-                asyncio.to_thread(client.register_function, fns.read_file),
-            )
+            async with asyncio.timeout(_RPC_TIMEOUT):
+                uuids = await asyncio.gather(
+                    asyncio.to_thread(client.register_function, fns.qsub),
+                    asyncio.to_thread(client.register_function, fns.qstat),
+                    asyncio.to_thread(client.register_function, fns.qdel),
+                    asyncio.to_thread(client.register_function, fns.list_files),
+                    asyncio.to_thread(client.register_function, fns.put_file),
+                    asyncio.to_thread(client.register_function, fns.read_file),
+                )
             _func_registry = FuncRegistry(
                 qsub=uuids[0],
                 qstat=uuids[1],
@@ -138,14 +143,26 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
 
         return cls(client, config["endpoint_id"], _func_registry)
 
+    async def _invoke(self, func: FuncName, *args: Any, **kwargs: Any) -> str:
+        async with asyncio.timeout(_RPC_TIMEOUT):
+            task_id = await asyncio.to_thread(
+                self.client.run,
+                *args,
+                endpoint_id=self.endpoint_id,
+                function_id=self.func_ids[func],
+                **kwargs,
+            )
+        return task_id
+
     async def _poll_for_result(
-        self, task_id: str, *, timeout: int = 30, interval: float = 1.0
+        self, task_id: str, *, timeout: int = 10, interval: float = 1.0
     ) -> Any:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                result = await asyncio.to_thread(self.client.get_result, task_id)
-            except TaskPending:
+                async with asyncio.timeout(_RPC_TIMEOUT):
+                    result = await asyncio.to_thread(self.client.get_result, task_id)
+            except (TaskPending, TimeoutError):
                 await asyncio.sleep(interval)
             else:
                 return result
@@ -164,12 +181,7 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             {job.scheduler_flags}
             {job.script_path}
         """)
-        task_id = await asyncio.to_thread(
-            self.client.run,
-            endpoint_id=self.endpoint_id,
-            function_id=self.func_ids["qsub"],
-            args=args,
-        )
+        task_id = await self._invoke("qsub", args=args)
         try:
             scheduler_id: str = await self._poll_for_result(task_id)
         except TaskExecutionFailed as e:
@@ -180,11 +192,7 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         return JobSubmitResult(job_name=job.name, scheduler_id=scheduler_id)
 
     async def get_job_statuses(self) -> list[JobStatusInfo]:
-        task_id = await asyncio.to_thread(
-            self.client.run,
-            endpoint_id=self.endpoint_id,
-            function_id=self.func_ids["qstat"],
-        )
+        task_id = await self._invoke("qstat")
         try:
             raw: dict[str, Any] = await self._poll_for_result(task_id)
         except TaskExecutionFailed as e:
@@ -194,12 +202,7 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         return _parse_qstat(raw)
 
     async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
-        task_id = await asyncio.to_thread(
-            self.client.run,
-            job_id,
-            endpoint_id=self.endpoint_id,
-            function_id=self.func_ids["qstat"],
-        )
+        task_id = await self._invoke("qstat", job_id=job_id)
         try:
             raw: dict[str, Any] = await self._poll_for_result(task_id)
         except TaskExecutionFailed as e:
@@ -217,22 +220,15 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         return None
 
     async def terminate_job(self, job_id: str) -> None:
-        task_id = await asyncio.to_thread(
-            self.client.run,
-            endpoint_id=self.endpoint_id,
-            function_id=self.func_ids["qdel"],
-            job_id=job_id,
-        )
+        task_id = await self._invoke("qdel", job_id=job_id)
         try:
             await self._poll_for_result(task_id)
         except TaskExecutionFailed as e:
             raise RuntimeError(f"GlobusCompute qdel failed:\n{e.remote_data}") from None
 
     async def put_file(self, content: str, path: Path, mode: int) -> None:
-        task_id = await asyncio.to_thread(
-            self.client.run,
-            endpoint_id=self.endpoint_id,
-            function_id=self.func_ids["put_file"],
+        task_id = await self._invoke(
+            "put_file",
             content=content,
             path=path.as_posix(),
             mode=mode,
@@ -245,12 +241,7 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             ) from None
 
     async def list_files(self, directory: Path) -> list[str]:
-        task_id = await asyncio.to_thread(
-            self.client.run,
-            endpoint_id=self.endpoint_id,
-            function_id=self.func_ids["list_files"],
-            directory=directory.as_posix(),
-        )
+        task_id = await self._invoke("list_files", directory=directory.as_posix())
         try:
             filenames: list[str] = await self._poll_for_result(task_id)
         except TaskExecutionFailed as e:
@@ -260,12 +251,7 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         return filenames
 
     async def read_file(self, path: Path) -> str:
-        task_id = await asyncio.to_thread(
-            self.client.run,
-            endpoint_id=self.endpoint_id,
-            function_id=self.func_ids["read_file"],
-            path=path.as_posix(),
-        )
+        task_id = await self._invoke("read_file", path=path.as_posix())
         try:
             content: str = await self._poll_for_result(task_id)
         except TaskExecutionFailed as e:
