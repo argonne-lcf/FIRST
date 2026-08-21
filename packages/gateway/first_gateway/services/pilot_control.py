@@ -28,6 +28,7 @@ DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 # TERM/KILL process-group fallback (13s), a post-stop verifier (maximum 50s),
 # its cleanup (2s), and monitor join fit inside this bounded read deadline.
 STOP_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
+STATUS_TIMEOUT = httpx.Timeout(connect=5.0, read=5.0, write=3.0, pool=5.0)
 
 # Short retry to ride out ephemeral hiccups (a dropped connection, a manager
 # still binding its port, a momentary 503). A handful of quick attempts only;
@@ -112,7 +113,9 @@ class PilotControlClient:
         raise last_exc
 
     async def get_status(self, manager_url: str) -> PilotJobStatus:
-        resp = await self._request("GET", f"{manager_url}/status")
+        resp = await self._request(
+            "GET", f"{manager_url}/status", timeout=STATUS_TIMEOUT
+        )
         resp.raise_for_status()
         return PilotJobStatus.model_validate(resp.json())
 

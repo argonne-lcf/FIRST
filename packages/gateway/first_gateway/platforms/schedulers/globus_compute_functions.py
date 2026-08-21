@@ -18,22 +18,30 @@ def qsub(args: list[str]) -> str:
     return p.stdout.strip()
 
 
-def qstat() -> dict[str, Any]:
+def qstat(job_id: str | None = None) -> dict[str, Any]:
     """
     Globus Compute Function to execute qstat and capture JSON Jobs output.
+    Lists all active jobs if job_id=None; otherwise retrieves one job.
     """
     import json
     import subprocess
 
+    if job_id is None:
+        args = ["qstat", "-fF", "JSON"]
+    else:
+        args = ["qstat", job_id, "-xfF", "JSON"]
+
     try:
         p = subprocess.run(
-            ["qstat", "-fF", "JSON"],
+            args,
             text=True,
             check=True,
             capture_output=True,
             timeout=15,
         )
     except subprocess.CalledProcessError as e:
+        if e.returncode == 153 and "Unknown Job Id" in e.stderr:
+            return {}
         raise RuntimeError(
             f"{e.cmd!r} failed (returncode {e.returncode}):\nStderr:\n{e.stderr.strip()}"
         ) from None

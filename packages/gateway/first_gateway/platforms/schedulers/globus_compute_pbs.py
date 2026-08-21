@@ -193,6 +193,29 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
             ) from None
         return _parse_qstat(raw)
 
+    async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
+        task_id = await asyncio.to_thread(
+            self.client.run,
+            job_id,
+            endpoint_id=self.endpoint_id,
+            function_id=self.func_ids["qstat"],
+        )
+        try:
+            raw: dict[str, Any] = await self._poll_for_result(task_id)
+        except TaskExecutionFailed as e:
+            raise RuntimeError(
+                f"GlobusCompute qstat failed:\n{e.remote_data}"
+            ) from None
+        jobs = _parse_qstat(raw)
+        if jobs:
+            job = jobs[0]
+            if job.id.partition(".")[0] != job_id.strip().partition(".")[0]:
+                raise AssertionError(
+                    f"qstat queried {job_id=!r} but returned {job.id=!r}"
+                )
+            return job
+        return None
+
     async def terminate_job(self, job_id: str) -> None:
         task_id = await asyncio.to_thread(
             self.client.run,

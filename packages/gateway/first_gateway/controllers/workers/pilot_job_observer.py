@@ -5,15 +5,20 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
-from first_common.schema.types import HealthCheckResult, PilotConfig
+from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaState
 
-from ...database.models import Cluster, PilotJob
+from ...database.models import Cluster, PilotDeployment, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
 from ...platforms.schedulers import build_scheduler
+from ...services.pilot_control import PilotControlClient
 from ...services.pilot_submitter import PilotSubmitter
+from ...settings import ClientState
+from ..wakeup import WakeupDispatcher
 from ..worker import Worker
 
 logger = logging.getLogger(__name__)
+
+_TERMINAL_STATES = frozenset({SchedulerJobState.gone.value})
 
 
 class PilotJobObserver(Worker):
@@ -26,6 +31,26 @@ class PilotJobObserver(Worker):
     """
 
     poll_interval = 10.0
+
+    def __init__(
+        self,
+        name: str,
+        client_state: ClientState,
+        wakeup_dispatcher: WakeupDispatcher,
+        *,
+        restart_backoff: float = 1.0,
+        max_backoff: float = 30.0,
+        heartbeat_timeout: float = 120.0,
+    ) -> None:
+        super().__init__(
+            name,
+            client_state,
+            wakeup_dispatcher,
+            restart_backoff=restart_backoff,
+            max_backoff=max_backoff,
+            heartbeat_timeout=heartbeat_timeout,
+        )
+        self.client = PilotControlClient(client_state, cn="pilot-job-observer")
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -99,6 +124,14 @@ class PilotJobObserver(Worker):
         for job in db_jobs:
             assert job.scheduler_job_id is not None
             status = statuses.get(job.scheduler_job_id)
+            if status is None:
+                # Bulk scheduler listings can be truncated or active-only.
+                logger.info(
+                    f"{job.scheduler_job_id} is missing in job status list; querying by exact job ID"
+                )
+                status = await submitter.adapter.get_exact_job_status(
+                    job.scheduler_job_id
+                )
             await self._update_job(job, status)
 
         now = datetime.now(timezone.utc)
@@ -111,6 +144,7 @@ class PilotJobObserver(Worker):
                 SchedulerJobState.queued,
                 SchedulerJobState.starting,
                 SchedulerJobState.running,
+                SchedulerJobState.exiting,
             )
         )
         orphan_job_ids = queued_steady - {db_job.scheduler_job_id for db_job in db_jobs}
@@ -125,49 +159,86 @@ class PilotJobObserver(Worker):
         await self._discover_endpoints(submitter, cluster_name)
 
     async def _update_job(self, db_job: PilotJob, status: JobStatusInfo | None) -> None:
-        if status is None:
-            async with self.client_state.db_sessionmaker.begin() as sess:
-                await sess.execute(
-                    sa.update(PilotJob)
-                    .where(
-                        PilotJob.uid == db_job.uid,
-                        PilotJob.scheduler_state.is_distinct_from(
-                            SchedulerJobState.gone.value
-                        ),
-                    )
-                    .values(
-                        scheduler_state=SchedulerJobState.gone.value,
-                        scheduled_deletion_at=datetime.now(timezone.utc),
-                        deleted_at=datetime.now(timezone.utc),
-                    )
-                )
-            logger.warning(
-                f"PilotJob {db_job.name}: {db_job.scheduler_job_id!r} is no longer in the scheduler. "
-                "Assuming gone; marking terminated."
+        async with self.client_state.db_sessionmaker.begin() as sess:
+            current = await sess.get(PilotJob, db_job.uid)
+            if current is None:
+                return
+
+            prev_state = current.scheduler_state
+
+            if status is None:
+                target_state = SchedulerJobState.gone.value
+                new_started = current.time_started
+            else:
+                target_state = status.state.value
+                new_started = status.started_at
+
+            if prev_state == target_state and current.time_started == new_started:
+                return
+
+            charge = (
+                target_state in _TERMINAL_STATES
+                and prev_state not in _TERMINAL_STATES
+                and current.manager_url is None
+                and current.scheduled_deletion_at is None
             )
-        elif (
-            status.state != db_job.scheduler_state
-            or status.started_at != db_job.time_started
-        ):
-            async with self.client_state.db_sessionmaker.begin() as sess:
-                await sess.execute(
-                    sa.update(PilotJob)
-                    .where(
-                        PilotJob.uid == db_job.uid,
-                        sa.or_(
-                            PilotJob.scheduler_state.is_distinct_from(
-                                status.state.value
-                            ),
-                            PilotJob.time_started.is_distinct_from(status.started_at),
-                        ),
-                    )
-                    .values(
-                        scheduler_state=status.state.value,
-                        time_started=status.started_at,
-                    )
+
+            current.scheduler_state = target_state
+            current.time_started = new_started
+            if status is None:
+                now = datetime.now(timezone.utc)
+                current.scheduled_deletion_at = now
+                current.deleted_at = now
+                logger.warning(
+                    f"PilotJob {current.name}: {current.scheduler_job_id!r} is no longer "
+                    "in the scheduler. Assuming gone; marking terminated."
                 )
-            logger.info(
-                f"PilotJob {db_job.name}: {db_job.scheduler_state} -> {status.state.value}"
+            else:
+                logger.info(f"PilotJob {current.name}: {prev_state} -> {target_state}")
+
+            if charge:
+                await self._record_pre_manager_launch_failure(sess, db_job)
+
+    @staticmethod
+    async def _record_pre_manager_launch_failure(
+        sess: AsyncSession, job: PilotJob
+    ) -> None:
+        """Charge each actively assigned deployment once for a dead pilot.
+
+        A PilotJob that reaches a scheduler terminal state before publishing its
+        manager endpoint never had an opportunity to launch its placed replicas.
+        Count the failed allocation against each distinct affected deployment so
+        ``max_consecutive_launch_failures`` bounds automatic replacements.  Rows
+        already draining are excluded: their allocation is being intentionally
+        retired, rather than replaced after a launch failure.
+        """
+        affected_deployments = (
+            sa.select(PilotReplica.pilot_deployment_name)
+            .where(
+                PilotReplica.pilot_job_name == job.name,
+                PilotReplica.state == ReplicaState.placed.value,
+                PilotReplica.scheduled_deletion_at.is_(None),
+                PilotReplica.deleted_at.is_(None),
+            )
+            .distinct()
+        )
+        result = await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name.in_(affected_deployments))
+            .values(
+                consecutive_launch_failures=(
+                    PilotDeployment.consecutive_launch_failures + 1
+                )
+            )
+        )
+        affected = result.rowcount  # type: ignore[attr-defined]
+
+        if affected:
+            logger.warning(
+                "PilotJob %s terminated before manager readiness; charged one "
+                "launch failure to %d assigned deployment(s)",
+                job.name,
+                affected,
             )
 
     async def _discover_endpoints(
@@ -197,20 +268,37 @@ class PilotJobObserver(Worker):
             except Exception:
                 logger.exception("Failed to read endpoint for job %s", job_name)
                 continue
+
+            # Do not wake ReplicaLauncher until control API is live
+            try:
+                await self.client.get_status(addr.control_url)
+            except Exception as exc:
+                logger.info(
+                    "Job %s pilot manager is not ready at %s: %r",
+                    job_name,
+                    addr.control_url,
+                    exc,
+                )
+                continue
+
             logger.info(
-                "Discovered manager endpoint for job %s: %s",
+                "Discovered ready manager endpoint for job %s: %s",
                 job_name,
                 addr.control_url,
             )
             async with self.client_state.db_sessionmaker.begin() as sess:
-                await sess.execute(
+                result = await sess.execute(
                     sa.update(PilotJob)
                     .where(
                         PilotJob.uid == actionable_by_name[job_name],
+                        PilotJob.scheduler_state == SchedulerJobState.running.value,
                         PilotJob.manager_url.is_(None),
                     )
                     .values(manager_url=addr.control_url)
                 )
+
+            if result.rowcount == 0:  # type: ignore[attr-defined]
+                continue
 
             await self.client_state.redis_pubsub.publish(
                 Channel.pilot_job_ready, job_name
