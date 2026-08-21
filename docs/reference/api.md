@@ -32,6 +32,49 @@ POST /v1/completions
 POST /{cluster}/{framework}/v1/completions
 ```
 
+### Model Metadata
+
+```http
+GET /{cluster}/models
+GET /{cluster}/models?model_id={model}
+```
+
+The response contains only models the authenticated caller is authorized to
+use. Every model includes its identifier, cluster, and framework. Deployments
+may also expose explicitly allowlisted public metadata from the endpoint
+fixture, such as a display name, description, and a versioned capabilities
+object:
+
+```json
+[
+  {
+    "id": "example-model",
+    "object": "model",
+    "cluster": "example-cluster",
+    "framework": "api",
+    "display_name": "Example Model",
+    "description": "Example model served through FIRST",
+    "capabilities": {
+      "schema_version": 1,
+      "api_protocols": ["chat_completions", "responses"],
+      "context_window_tokens": 131072,
+      "input_modalities": ["text"],
+      "streaming": true,
+      "reasoning": {
+        "supported": true,
+        "separate_output": true
+      },
+      "tool_calling": {
+        "supported": true
+      }
+    }
+  }
+]
+```
+
+Capability metadata describes the deployed model API. It is intentionally
+client-neutral and must not contain backend connection details or secrets.
+
 ### Batch Processing
 
 ```http
@@ -44,4 +87,3 @@ For detailed API documentation, refer to the [OpenAI API Reference](https://plat
 ## Request Parameters
 
 See the [User Guide](../user-guide/index.md#request-parameters) for detailed parameter documentation.
-
