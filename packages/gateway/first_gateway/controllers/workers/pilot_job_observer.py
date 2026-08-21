@@ -127,6 +127,9 @@ class PilotJobObserver(Worker):
             status = statuses.get(job.scheduler_job_id)
             if status is None:
                 # Bulk scheduler listings can be truncated or active-only.
+                logger.info(
+                    f"{job.scheduler_job_id} is missing in job status list; querying by exact job ID"
+                )
                 status = await submitter.adapter.get_exact_job_status(
                     job.scheduler_job_id
                 )
