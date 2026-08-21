@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from first_common.errors import ServiceUnavailable
 from first_common.schema.endpoints.base import BasePayload
+from first_common.schema.endpoints.openai import OpenAIEndpoints
 from first_gateway.apiserver.dependencies import AuthUser
 
 from ..apiserver.backend_client_manager import BackendClientManager
@@ -25,6 +26,7 @@ async def submit_inference_with_retry(
     admission_controller: AdmissionController,
     backend_client_manager: BackendClientManager,
     payload: BasePayload,
+    endpoint: OpenAIEndpoints,
     deployment_name: str | None = None,
 ) -> StreamingResponse | dict[str, Any]:
     """
@@ -53,7 +55,7 @@ async def submit_inference_with_retry(
 
         try:
             response = await submit_inference(
-                backend_id, backend_client_manager, payload
+                backend_id, backend_client_manager, payload, endpoint
             )
         except:
             # TODO: figure out a way to gather and report errors
@@ -85,14 +87,19 @@ async def submit_inference(
     backend_id: str,
     backend_client_manager: BackendClientManager,
     payload: BasePayload,
-) -> StreamingResponse | dict[str, Any]:
+    endpoint: OpenAIEndpoints,
+) -> dict[str, Any]:
     """POST to an inference backend."""
 
     client = backend_client_manager.get(backend_id)
     if client is None:
         raise ServiceUnavailable(f"No client exist for backend ID {backend_id}.")
 
-    _ = payload
-
-    # TODO: Submit and handle streaming / non-streaming
-    return {"Mock response": True}
+    # TODO: handle streaming
+    # TODO: make endpoint generic and not specific to openai
+    response = await client.post(
+        f"/v1/{endpoint.value}",
+        json=payload.model_dump(exclude_unset=True, mode="json"),
+    )
+    response.raise_for_status()
+    return response.json()
