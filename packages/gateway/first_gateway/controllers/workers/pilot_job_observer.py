@@ -160,61 +160,45 @@ class PilotJobObserver(Worker):
         await self._discover_endpoints(submitter, cluster_name)
 
     async def _update_job(self, db_job: PilotJob, status: JobStatusInfo | None) -> None:
-        if status is not None and (
-            status.state.value == db_job.scheduler_state
-            and status.started_at == db_job.time_started
-        ):
-            return
-
-        target_state = (
-            SchedulerJobState.gone.value if status is None else status.state.value
-        )
-        now = datetime.now(timezone.utc)
-
-        # Lock the row so a terminal transition and its launch-failure accounting
-        # are one atomic, exactly-once operation.  Multiple gateway observers (or
-        # an exiting -> gone transition) must not charge the same failed pilot
-        # allocation more than once.
         async with self.client_state.db_sessionmaker.begin() as sess:
-            job = await sess.scalar(
-                sa.select(PilotJob)
-                .where(PilotJob.uid == db_job.uid)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-            if job is None:
+            current = await sess.get(PilotJob, db_job.uid)
+            if current is None:
                 return
 
-            previous_state = job.scheduler_state
-            pre_manager_failure = (
-                target_state in _TERMINAL_STATES
-                and previous_state not in _TERMINAL_STATES
-                and job.manager_url is None
-                and job.scheduled_deletion_at is None
-            )
+            prev_state = current.scheduler_state
 
-            job.scheduler_state = target_state
             if status is None:
-                job.scheduled_deletion_at = now
-                job.deleted_at = now
+                target_state = SchedulerJobState.gone.value
+                new_started = current.time_started
             else:
-                job.time_started = status.started_at
+                target_state = status.state.value
+                new_started = status.started_at
 
-            if pre_manager_failure:
-                await self._record_pre_manager_launch_failure(sess, job)
+            if prev_state == target_state and current.time_started == new_started:
+                return
 
-        if status is None:
-            logger.warning(
-                f"PilotJob {db_job.name}: {db_job.scheduler_job_id!r} is no longer in the scheduler. "
-                "Assuming gone; marking terminated."
+            charge = (
+                target_state in _TERMINAL_STATES
+                and prev_state not in _TERMINAL_STATES
+                and current.manager_url is None
+                and current.scheduled_deletion_at is None
             )
-        elif (
-            target_state != db_job.scheduler_state
-            or status.started_at != db_job.time_started
-        ):
-            logger.info(
-                f"PilotJob {db_job.name}: {db_job.scheduler_state} -> {target_state}"
-            )
+
+            current.scheduler_state = target_state
+            current.time_started = new_started
+            if status is None:
+                now = datetime.now(timezone.utc)
+                current.scheduled_deletion_at = now
+                current.deleted_at = now
+                logger.warning(
+                    f"PilotJob {current.name}: {current.scheduler_job_id!r} is no longer "
+                    "in the scheduler. Assuming gone; marking terminated."
+                )
+            else:
+                logger.info(f"PilotJob {current.name}: {prev_state} -> {target_state}")
+
+            if charge:
+                await self._record_pre_manager_launch_failure(sess, db_job)
 
     @staticmethod
     async def _record_pre_manager_launch_failure(
@@ -249,6 +233,7 @@ class PilotJobObserver(Worker):
             )
         )
         affected = result.rowcount  # type: ignore[attr-defined]
+
         if affected:
             logger.warning(
                 "PilotJob %s terminated before manager readiness; charged one "
