@@ -10,7 +10,6 @@ from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaSta
 from ...database.models import Cluster, PilotDeployment, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
 from ...platforms.schedulers import build_scheduler
-from ...platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from ...services.pilot_control import PilotControlClient
 from ...services.pilot_submitter import PilotSubmitter
 from ...settings import ClientState
@@ -269,22 +268,19 @@ class PilotJobObserver(Worker):
             except Exception:
                 logger.exception("Failed to read endpoint for job %s", job_name)
                 continue
-            if isinstance(submitter.adapter, GraphQLPBSAdapter):
-                # GraphQL exposes the allocated head-node IP as soon as PBS says
-                # the job is running.  It is only a candidate address: the pilot
-                # may still be validating its all-node GPU inventory (or may have
-                # failed before binding).  Do not wake the ReplicaLauncher until
-                # the mTLS control API has answered at least one /status request.
-                try:
-                    await self.client.get_status(addr.control_url)
-                except Exception as exc:
-                    logger.info(
-                        "GraphQL candidate endpoint for job %s is not ready at %s: %r",
-                        job_name,
-                        addr.control_url,
-                        exc,
-                    )
-                    continue
+
+            # Do not wake ReplicaLauncher until control API is live
+            try:
+                await self.client.get_status(addr.control_url)
+            except Exception as exc:
+                logger.info(
+                    "Job %s pilot manager is not ready at %s: %r",
+                    job_name,
+                    addr.control_url,
+                    exc,
+                )
+                continue
+
             logger.info(
                 "Discovered ready manager endpoint for job %s: %s",
                 job_name,
