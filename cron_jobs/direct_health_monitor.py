@@ -348,7 +348,6 @@ async def check_sophia_models() -> list[HealthRecord]:
 
     try:
         gcc = globus_utils.get_compute_client_from_globus_app()
-        gce = globus_utils.get_compute_executor(client=gcc)
     except Exception as e:
         return [
             HealthRecord(
@@ -463,6 +462,7 @@ async def check_sophia_models() -> list[HealthRecord]:
         )
         start = time.monotonic()
         try:
+            gce = globus_utils.get_compute_executor(client=gcc)
             result = await globus_utils.submit_and_get_result(
                 gce,
                 info.endpoint_uuid,
