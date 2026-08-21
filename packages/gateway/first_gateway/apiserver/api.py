@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from first_gateway.settings import Settings
 
 from ..log_config import config_logging
+from .backend_client_manager import BackendClientManager
 from .error_handlers import register_error_handlers
 from .log_middleware import log_request
 from .router_config_manager import RouterConfigManager
@@ -25,13 +26,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config_logging(settings.log_level)
     async with settings.build_clients() as client_state:
         app.state.client_state = client_state
+        backend_client_manager = BackendClientManager()
         router_config_manager = RouterConfigManager(client_state.redis)
+        router_config_manager.add_swap_callback(backend_client_manager.on_config_swap)
         await router_config_manager.start()
         app.state.router_config_manager = router_config_manager
+        app.state.backend_client_manager = backend_client_manager
         try:
             yield
         finally:
             await router_config_manager.stop()
+            await backend_client_manager.close_all()
 
 
 app = FastAPI(title="ALCF Inference Service", lifespan=lifespan)
