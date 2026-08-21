@@ -66,10 +66,21 @@ All configuration is done through environment variables, typically stored in a `
 | `STREAMING_SERVER_HOST` | No | - | Internal streaming server host:port |
 | `INTERNAL_STREAMING_SECRET` | No | - | Secret for internal streaming authentication |
 | `MINERVA_AFFINITY_HMAC_KEY` | For Minerva inference | - | Dedicated secret of at least 32 bytes used to derive opaque Minerva session-affinity keys and per-user/model cache salts |
+| `MODEL_DETAILS_KEYS` | No | `[]` | JSON array of endpoint fixture `config` keys that the authenticated `/{cluster}/models` route may return |
 
 Rotating `MINERVA_AFFINITY_HMAC_KEY` remaps all Minerva sessions and cache
 namespaces. Treat rotation as a planned cold-cache event. See
 [Minerva Direct API Affinity](../inference-setup/minerva.md).
+
+`MODEL_DETAILS_KEYS` is a public-data allowlist. A typical deployment that
+publishes client-neutral model metadata uses:
+
+```dotenv
+MODEL_DETAILS_KEYS='["display_name","description","capabilities"]'
+```
+
+Never allowlist operational fixture fields such as `api_url`,
+`api_key_env_name`, `ca_cert_path`, `client_cert_path`, or `client_key_path`.
 
 ### Metis (Direct API) Configuration
 

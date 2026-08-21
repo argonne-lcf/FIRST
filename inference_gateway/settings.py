@@ -125,7 +125,7 @@ AUTHORIZED_GLOBUS_SERVICE_USERNAMES = json.loads(
     os.getenv("AUTHORIZED_GLOBUS_SERVICE_USERNAMES", "[]")
 )
 
-# Model details key for the models/ API route
+# Model detail keys that may be returned by the models/ API route
 MODEL_DETAILS_KEYS = json.loads(os.getenv("MODEL_DETAILS_KEYS", "[]"))
 
 # Load maintenance notices to be displayed for individual clusters
