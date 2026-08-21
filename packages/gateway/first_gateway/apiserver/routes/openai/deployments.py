@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from first_common.schema.endpoints.openai import (
     OpenAIChatCompletionsPayload,
     OpenAIEmbeddingsPayload,
+    OpenAIEndpoints,
     OpenAIResponsesPayload,
 )
 
@@ -32,6 +33,7 @@ async def chat_completions(
         admission_controller,
         backend_client_manager,
         payload,
+        endpoint=OpenAIEndpoints.chat_completions,
         deployment_name=get_name_from_slug(deployment_slug),
     )
 
@@ -51,6 +53,7 @@ async def responses(
         admission_controller,
         backend_client_manager,
         payload,
+        endpoint=OpenAIEndpoints.responses,
         deployment_name=get_name_from_slug(deployment_slug),
     )
 
@@ -70,5 +73,6 @@ async def embeddings(
         admission_controller,
         backend_client_manager,
         payload,
+        endpoint=OpenAIEndpoints.embeddings,
         deployment_name=get_name_from_slug(deployment_slug),
     )
