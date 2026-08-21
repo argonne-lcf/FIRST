@@ -7,12 +7,13 @@ from first_common.errors import ServiceUnavailable
 from first_common.schema.endpoints.base import BasePayload
 from first_gateway.apiserver.dependencies import AuthUser
 
+from ..apiserver.backend_client_manager import BackendClientManager
 from ..database.redis.admission import AdmissionController
-from ..database.redis.router_config import BackendConfig, ModelConfig
+from ..database.redis.router_config import ModelConfig
 from .orchestration import (
-    get_backend,
     get_backend_candidates,
-    get_deployment_from_backend,
+    get_backend_id,
+    get_deployment_from_backend_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ async def submit_inference_with_retry(
     user: AuthUser,
     model: ModelConfig,
     admission_controller: AdmissionController,
+    backend_client_manager: BackendClientManager,
     payload: BasePayload,
     deployment_name: str | None = None,
 ) -> StreamingResponse | dict[str, Any]:
@@ -41,7 +43,7 @@ async def submit_inference_with_retry(
     estimated_tokens = len(payload.model_dump()) // 2
 
     for attempt in range(min(3, len(backend_candidates))):
-        backend = await get_backend(
+        backend_id = await get_backend_id(
             user,
             model,
             admission_controller,
@@ -50,15 +52,18 @@ async def submit_inference_with_retry(
         )
 
         try:
-            response = await submit_inference(backend, payload)
-        except:
-            deployment = get_deployment_from_backend(model.deployments, backend)
-            await admission_controller.record_error(
-                backend.id, deployment.router_params
+            response = await submit_inference(
+                backend_id, backend_client_manager, payload
             )
-            backend_candidates = [b for b in backend_candidates if b.uid != backend.id]
+        except:
+            # TODO: figure out a way to gather and report errors
+            deployment = get_deployment_from_backend_id(model.deployments, backend_id)
+            await admission_controller.record_error(
+                backend_id, deployment.router_params
+            )
+            backend_candidates = [b for b in backend_candidates if b.uid != backend_id]
             token_usage = 0
-            logger.warning(f"Backend {backend.id} failed, trying next one.")
+            logger.warning(f"Backend {backend_id} failed, trying next one.")
         else:
             # TODO: implement parse_token_usage
             # token_usage = parse_token_usage(response)
@@ -71,25 +76,23 @@ async def submit_inference_with_retry(
             )
 
     # Error if none of the attempts worked
-    raise ServiceUnavailable(f"Too many failed attempts on backends for model {model}.")
+    raise ServiceUnavailable(
+        f"Too many failed attempts on backends for model {model.name}."
+    )
 
 
 async def submit_inference(
-    backend: BackendConfig,
+    backend_id: str,
+    backend_client_manager: BackendClientManager,
     payload: BasePayload,
 ) -> StreamingResponse | dict[str, Any]:
     """POST to an inference backend."""
 
-    _ = backend
+    client = backend_client_manager.get(backend_id)
+    if client is None:
+        raise ServiceUnavailable(f"No client exist for backend ID {backend_id}.")
+
     _ = payload
-
-    # payload = payload.model_dump(exclude_unset=True, mode="json")
-    # backend = backend  # This is just to mute lint-fix error
-    # payload = payload  # This is just to mute lint-fix error
-
-    # headers = {"Content-Type": "application/json"}
-    # if backend.api_key:
-    #    headers = {"Authorization": f"Bearer {backend.api_key}"}
 
     # TODO: Submit and handle streaming / non-streaming
     return {"Mock response": True}
