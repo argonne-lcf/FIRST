@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config_logging(settings.log_level)
     async with settings.build_clients() as client_state:
         app.state.client_state = client_state
-        backend_client_manager = BackendClientManager()
+        backend_client_manager = BackendClientManager(client_state.settings)
         router_config_manager = RouterConfigManager(client_state.redis)
         router_config_manager.add_swap_callback(backend_client_manager.on_config_swap)
         await router_config_manager.start()
