@@ -16,9 +16,13 @@ from first_common.schema.base_scheduler import (
     SchedulerJobState,
 )
 from first_common.schema.pilot import AddressInfo, PilotJobStatus, PilotResources
-from first_common.schema.types import HealthCheckResult, PilotConfig
+from first_common.schema.resources.runtime import AutoscalerModelRuntime, ModelRuntime
+from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaState
 from first_gateway.controllers.worker import Worker
+from first_gateway.controllers.workers.autoscaler import PilotAutoscaler
 from first_gateway.controllers.workers.pilot_job_observer import PilotJobObserver
+from first_gateway.controllers.workers.replica_placement import ReplicaPlacer
+from first_gateway.controllers.workers.replica_reconciler import ReplicaReconciler
 from first_gateway.database.models import (
     AccessGroup,
     Cluster,
@@ -639,6 +643,106 @@ async def test_pre_manager_terminal_jobs_count_once_per_assigned_deployment(
         assert dep_a.consecutive_launch_failures == 2
         assert dep_a.max_consecutive_launch_failures == 1
         assert dep_b.consecutive_launch_failures == 1
+
+
+async def test_autoscaler_latch_bounds_pre_manager_replacement_cycle(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """The real reconcile path cannot replace an unready pilot forever.
+
+    Each terminal pilot creates a capacity deficit, so ReplicaReconciler and
+    ReplicaPlacer produce a fresh allocation. After the replacement fails the
+    same way, an autoscaler pass lowers desired replicas to zero and the next
+    reconciliation does not create a third allocation.
+    """
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_deployment_parents(sess)
+        await _insert_deployment(
+            sess,
+            "dep-replacement-loop",
+            max_consecutive_launch_failures=1,
+        )
+        dep = await PilotDeployment.get_by_name(sess, "dep-replacement-loop")
+        dep.launch_spec = {"num_nodes": 1, "gpus_per_node": 4}
+        model = await Model.get_by_name(sess, "model")
+        dep_uid = dep.uid
+        model_uid = model.uid
+
+    client_state = _make_client_state(db)
+    client_state.redis_repo.get_autoscaler_model_runtime = AsyncMock(
+        return_value=AutoscalerModelRuntime()
+    )
+    client_state.redis_repo.get_model_runtime = AsyncMock(return_value=ModelRuntime())
+    client_state.redis_repo.set_autoscaler_model_runtime = AsyncMock()
+
+    reconciler = ReplicaReconciler("replica-reconciler", client_state, MagicMock())
+    placer = ReplicaPlacer("replica-placer", client_state, MagicMock())
+    autoscaler = PilotAutoscaler("pilot-autoscaler", client_state, MagicMock())
+    observer = _make_observer(db)
+
+    async def place_and_fail_next_pilot(cycle: int) -> None:
+        async with db() as sess:
+            replica = await sess.scalar(
+                select(PilotReplica)
+                .where(
+                    PilotReplica.pilot_deployment_name == "dep-replacement-loop",
+                    PilotReplica.state == ReplicaState.pending.value,
+                    PilotReplica.scheduled_deletion_at.is_(None),
+                )
+                .order_by(PilotReplica.uid.desc())
+            )
+        assert replica is not None
+
+        await placer.reconcile(replica.uid)
+
+        async with db.begin() as sess:
+            current_replica = await sess.get(PilotReplica, replica.uid)
+            assert current_replica is not None
+            assert current_replica.pilot_job_name is not None
+            job_name = current_replica.pilot_job_name
+            job = await PilotJob.get_by_name(sess, job_name)
+            job.scheduler_job_id = f"replacement-{cycle}.pbs"
+            job.scheduler_state = SchedulerJobState.running.value
+
+        async with db() as sess:
+            failed_job = await PilotJob.get_by_name(sess, job_name)
+        await observer._update_job(failed_job, None)
+
+    # The normal desired-count path creates and places the first allocation.
+    await reconciler.reconcile(dep_uid)
+    await place_and_fail_next_pilot(1)
+
+    # The first pre-manager death creates a replacement allocation.
+    await reconciler.reconcile(dep_uid)
+    await place_and_fail_next_pilot(2)
+
+    # The autoscaler's existing one-way latch closes the loop before another
+    # ReplicaReconciler pass can create a third allocation.
+    await autoscaler.reconcile(model_uid)
+    await reconciler.reconcile(dep_uid)
+
+    async with db() as sess:
+        dep = await PilotDeployment.get_by_name(sess, "dep-replacement-loop")
+        replicas = (
+            await sess.scalars(
+                select(PilotReplica).where(
+                    PilotReplica.pilot_deployment_name == "dep-replacement-loop"
+                )
+            )
+        ).all()
+        jobs = (
+            await sess.scalars(
+                select(PilotJob).where(PilotJob.cluster_name == "polaris")
+            )
+        ).all()
+
+    assert len(replicas) == 2  # no third replacement
+    assert len(jobs) == 2
+    assert dep.consecutive_launch_failures == 2
+    assert dep.max_consecutive_launch_failures == 1
+    assert dep.desired_replicas == 0
+    assert all(replica.scheduled_deletion_at is not None for replica in replicas)
 
 
 async def test_intentional_or_ready_terminal_job_is_not_charged(
