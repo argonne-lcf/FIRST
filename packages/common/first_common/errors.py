@@ -94,6 +94,11 @@ class ReplicaStartError(FirstError):
     code: str = "replica_start_error"
 
 
+class ReplicaTeardownError(FirstError):
+    status_code = HTTPStatus.CONFLICT
+    code: str = "replica_teardown_incomplete"
+
+
 class StatusCASFailed(FirstError):
     """Raised when CAS keeps losing the race past max_cas_attempts."""
 
