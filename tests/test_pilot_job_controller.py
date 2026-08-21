@@ -18,7 +18,14 @@ from first_common.schema.base_scheduler import (
 from first_common.schema.types import HealthCheckResult
 from first_gateway.controllers.controller import StaleReconcile
 from first_gateway.controllers.workers.pilot_job_controller import PilotJobController
-from first_gateway.database.models import Cluster, PilotJob
+from first_gateway.database.models import (
+    AccessGroup,
+    Cluster,
+    Model,
+    PilotDeployment,
+    PilotJob,
+    PilotReplica,
+)
 from first_gateway.services.certmanager import gen_ca_pem
 
 _PATCH_BUILD = "first_gateway.controllers.workers.pilot_job_controller.build_scheduler"
@@ -126,6 +133,51 @@ async def _seed_cluster(
             name="polaris",
             health_check={"url": "http://x/health", "debounce": 2},
             pilot_system=pilot_system if pilot_system is not None else PILOT_SYSTEM,
+        )
+    )
+    await sess.flush()
+
+
+async def _seed_replica_parents(sess: AsyncSession) -> None:
+    sess.add(AccessGroup(name="default-ag", allowed_groups=[], allowed_domains=[]))
+    await sess.flush()
+    sess.add(
+        Model(
+            name="test-model",
+            access_group_name="default-ag",
+            supported_endpoints=["chat/completions"],
+        )
+    )
+    await sess.flush()
+    sess.add(
+        PilotDeployment(
+            name="test-deployment",
+            cluster_name="polaris",
+            model_name="test-model",
+            router_params={},
+            prometheus_scrape_interval_sec=30,
+            min_replicas=0,
+            max_replicas=1,
+            launch_spec={},
+        )
+    )
+    await sess.flush()
+
+
+async def _insert_assigned_replica(
+    sess: AsyncSession,
+    job_name: str,
+    *,
+    name: str,
+    deleted_at: datetime | None = None,
+) -> None:
+    sess.add(
+        PilotReplica(
+            name=name,
+            pilot_deployment_name="test-deployment",
+            pilot_job_name=job_name,
+            state="placed",
+            deleted_at=deleted_at,
         )
     )
     await sess.flush()
@@ -642,11 +694,10 @@ async def test_exiting_job_does_not_delay_replacement_at_node_cap(
 # ---------------------------------------------------------------------------
 
 
-async def test_idle_premise_prevents_stale_mark(
+async def test_restarted_idle_period_prevents_stale_mark(
     db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
 ) -> None:
-    """If idle_since is cleared between the read and write phase, the
-    premised UPDATE correctly rejects the stale mark."""
+    """A newly restarted idle interval cannot inherit an old interval's age."""
     async with db.begin() as sess:
         await _seed_cluster(sess)
         uid = await _insert_pilot_job(
@@ -660,18 +711,97 @@ async def test_idle_premise_prevents_stale_mark(
         job = await sess.get(PilotJob, uid)
     assert job is not None
 
-    # Simulate the observer clearing idle_since concurrently
+    # Simulate activity clearing the old interval and a later observation
+    # starting a fresh one before this detached controller snapshot is used.
+    restarted_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     async with db.begin() as sess:
         await sess.execute(
-            sa.update(PilotJob).where(PilotJob.uid == uid).values(idle_since=None)
+            sa.update(PilotJob)
+            .where(PilotJob.uid == uid)
+            .values(idle_since=restarted_at)
         )
 
     controller = _make_controller(db, ca_pair)
     with pytest.raises(StaleReconcile):
-        await controller._mark_scheduled_deletion(job, PilotJob.idle_since.is_not(None))
+        await controller._mark_idle_deletion(job)
 
     job = await _get_job(db, uid)
     assert job.scheduled_deletion is False
+    assert job.idle_since == restarted_at
+
+
+async def test_expired_idle_job_with_live_assignment_is_not_actionable(
+    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_replica_parents(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "idle-assigned",
+            idle_since=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        await _insert_assigned_replica(
+            sess, "idle-assigned", name="test-deployment/replica/live"
+        )
+
+    controller = _make_controller(db, ca_pair)
+    async with db() as sess:
+        assert uid not in await controller.list_actionable(sess)
+    with pytest.raises(StaleReconcile):
+        await controller.reconcile(uid)
+    assert not (await _get_job(db, uid)).scheduled_deletion
+
+
+async def test_assignment_inserted_between_idle_read_and_update_blocks_delete(
+    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_replica_parents(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "idle-assignment-race",
+            idle_since=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+
+    async with db() as sess:
+        job = await sess.get(PilotJob, uid)
+    assert job is not None
+    async with db.begin() as sess:
+        await _insert_assigned_replica(
+            sess,
+            "idle-assignment-race",
+            name="test-deployment/replica/racing",
+        )
+
+    controller = _make_controller(db, ca_pair)
+    with pytest.raises(StaleReconcile):
+        await controller._mark_idle_deletion(job)
+    assert not (await _get_job(db, uid)).scheduled_deletion
+
+
+async def test_deleted_historical_assignment_does_not_block_idle_delete(
+    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_replica_parents(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "idle-historical",
+            idle_since=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        await _insert_assigned_replica(
+            sess,
+            "idle-historical",
+            name="test-deployment/replica/historical",
+            deleted_at=datetime.now(timezone.utc),
+        )
+
+    controller = _make_controller(db, ca_pair)
+    await controller.reconcile(uid)
+    assert (await _get_job(db, uid)).scheduled_deletion
 
 
 async def test_unhealthy_premise_prevents_stale_mark(

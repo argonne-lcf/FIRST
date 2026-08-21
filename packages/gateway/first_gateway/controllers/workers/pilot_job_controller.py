@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from first_common.schema.base_scheduler import JobSubmitResult, SchedulerJobState
 from first_common.schema.types import HealthCheckResult, PilotConfig
 
-from ...database.models import Cluster, PilotJob
+from ...database.models import Cluster, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
 from ...platforms.schedulers import build_scheduler
 from ...services.pilot_submitter import PilotSubmitter
@@ -46,7 +46,10 @@ class PilotJobController(Controller):
                         SchedulerJobState.running.value,
                     ]
                 ),
-                PilotJob.idle_since.is_not(None),
+                sa.and_(
+                    PilotJob.idle_since.is_not(None),
+                    self._no_live_assigned_replicas(),
+                ),
                 PilotJob.manager_health == HealthCheckResult.unhealthy.value,
             ),
         )
@@ -89,9 +92,7 @@ class PilotJobController(Controller):
                     idle_min,
                     pilot_config.pilot_max_idle_time_min,
                 )
-                await self._mark_scheduled_deletion(
-                    job, PilotJob.idle_since.is_not(None)
-                )
+                await self._mark_idle_deletion(job)
                 return
 
         if (
@@ -218,6 +219,25 @@ class PilotJobController(Controller):
                 raise StaleReconcile(
                     f"PilotJob {job.name}: mark_scheduled_deletion stale"
                 )
+
+    @staticmethod
+    def _no_live_assigned_replicas() -> sa.ColumnElement[bool]:
+        """Return a correlated guard against deleting an assigned pilot."""
+        return ~sa.exists().where(
+            PilotReplica.pilot_job_name == PilotJob.name,
+            PilotReplica.deleted_at.is_(None),
+        )
+
+    async def _mark_idle_deletion(self, job: PilotJob) -> None:
+        # Placement and idle deletion run in separate controllers. Keep the
+        # assignment check in the UPDATE so a detached idle read cannot mark a
+        # pilot after a replica has been assigned to it.
+        assert job.idle_since is not None
+        await self._mark_scheduled_deletion(
+            job,
+            PilotJob.idle_since == job.idle_since,
+            self._no_live_assigned_replicas(),
+        )
 
     async def _submit(self, job: PilotJob, pilot_config: PilotConfig) -> None:
         async with self.client_state.db_sessionmaker() as sess:
