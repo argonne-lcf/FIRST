@@ -125,11 +125,8 @@ class PilotJobObserver(Worker):
         for job in db_jobs:
             assert job.scheduler_job_id is not None
             status = statuses.get(job.scheduler_job_id)
-            if status is None and isinstance(submitter.adapter, GraphQLPBSAdapter):
+            if status is None:
                 # Bulk scheduler listings can be truncated or active-only.
-                # Absence is lifecycle evidence only when the adapter's exact-ID
-                # lookup explicitly proves it. Other adapters retain their
-                # existing missing-means-gone behavior.
                 status = await submitter.adapter.get_exact_job_status(
                     job.scheduler_job_id
                 )

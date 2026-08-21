@@ -55,6 +55,9 @@ class FakeSchedulerAdapter(SchedulerAdapter):
     async def get_job_statuses(self) -> list[JobStatusInfo]:
         return list(self.statuses)
 
+    async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
+        return None
+
     async def terminate_job(self, job_id: str) -> None:
         self.terminated.append(job_id)
 

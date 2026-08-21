@@ -122,6 +122,12 @@ class LocalSchedulerAdapter(SchedulerAdapter):
             for name, t in self._jobs.items()
         ]
 
+    async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
+        for status in await self.get_job_statuses():
+            if status.id == job_id:
+                return status
+        return None
+
     async def terminate_job(self, job_id: str) -> None:
         for tracked in self._jobs.values():
             if str(tracked.proc.pid) == job_id:
