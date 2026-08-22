@@ -62,9 +62,13 @@ class HealthObserver(Worker):
 
         # Skip the broader health check on clusters with reconcile failures:
         # those take precedence
-        checks = [self._check(c) for c in clusters if c.reconcile_failures == 0] + [
-            self._check(d) for d in deployments
+        cluster_checks = [
+            self._check(c)
+            for c in clusters
+            if c.reconcile_failures == 0 and not c.maintenance_notice
         ]
+        sd_checks = [self._check(d) for d in deployments]
+        checks = cluster_checks + sd_checks
         results = [r for r in await asyncio.gather(*checks) if r is not None]
 
         by_health: dict[str, dict[HealthCheckResult, list[int]]] = {

@@ -59,6 +59,8 @@ class PilotJobObserver(Worker):
         )
         self.client = PilotControlClient(client_state, cn="pilot-job-observer")
         self.hb = self.register_heartbeat("poll")
+        # Per-cluster throttle for the "skipping (maintenance)" log line.
+        self._maintenance_logged_at: dict[int, datetime] = {}
 
     async def run(self) -> None:
         # Re-register: supervise() clears the heartbeat list on every restart,
@@ -83,6 +85,13 @@ class PilotJobObserver(Worker):
         self.hb.beat()
         try:
             return await asyncio.wait_for(awaitable, timeout=_RPC_TIMEOUT)
+        except TimeoutError as e:
+            # asyncio.wait_for raises a bare TimeoutError with an empty message;
+            # name the RPC so record_failure() stores something actionable.
+            name = getattr(awaitable, "__qualname__", None) or repr(awaitable)
+            raise TimeoutError(
+                f"Scheduler {name} RPC timed out after {_RPC_TIMEOUT:g}s"
+            ) from e
         finally:
             self.hb.beat()
 
@@ -90,9 +99,23 @@ class PilotJobObserver(Worker):
         async with self.client_state.db_sessionmaker() as sess:
             clusters = await Cluster.list(sess)
 
+        now = datetime.now(timezone.utc)
         for cluster in clusters:
             if cluster.pilot_system is None:
                 continue
+
+            if cluster.maintenance_notice:
+                self._log_maintenance_skip(cluster, now)
+                continue
+
+            # Honor the reconcile backoff written by record_failure() so a cluster
+            # with an unreachable scheduler isn't polled every 10s indefinitely.
+            if (
+                cluster.reconcile_retry_at is not None
+                and cluster.reconcile_retry_at > now
+            ):
+                continue
+
             pilot_config = PilotConfig.model_validate(cluster.pilot_system)
             adapter = await build_scheduler(pilot_config, self.client_state)
 
@@ -126,6 +149,19 @@ class PilotJobObserver(Worker):
                         await self._mark_cluster_health(
                             sess, cluster, HealthCheckResult.healthy
                         )
+
+    def _log_maintenance_skip(self, cluster: Cluster, now: datetime) -> None:
+        """Log that a cluster in maintenance is being skipped, at most once/min."""
+        last = self._maintenance_logged_at.get(cluster.uid)
+        if last is not None and (now - last).total_seconds() < 60:
+            return
+        self._maintenance_logged_at[cluster.uid] = now
+        logger.info(
+            "%s: skipping cluster %r in maintenance mode: %s",
+            self.name,
+            cluster.name,
+            cluster.maintenance_notice,
+        )
 
     async def _poll_cluster(
         self,
