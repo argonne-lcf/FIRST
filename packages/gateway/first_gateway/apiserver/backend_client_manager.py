@@ -29,7 +29,7 @@ def _on_done(task: asyncio.Task[None]) -> None:
 if hasattr(socket, "TCP_KEEPALIVE"):
     TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPALIVE
 else:
-    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPIDLE
+    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPIDLE  # type: ignore[attr-defined]
 
 SOCKET_OPTS = [
     (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
