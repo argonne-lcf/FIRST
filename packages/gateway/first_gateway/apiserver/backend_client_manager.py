@@ -41,7 +41,7 @@ class BackendClientManager:
                 deployment,
             ) != self._configs.get(backend_id):
                 # Remove existing clients that require an update
-                await self._close_backend(backend_id)
+                await self._close_backend(backend_id, sleep=0)
             if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
                 self._configs[backend_id] = (backend, deployment)
