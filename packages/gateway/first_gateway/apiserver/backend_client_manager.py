@@ -26,10 +26,9 @@ def _on_done(task: asyncio.Task[None]) -> None:
 
 
 # To accomodate different OS platform (MacOS/Linux)
-if hasattr(socket, "TCP_KEEPALIVE"):
-    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPALIVE
-else:
-    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPIDLE  # type: ignore[attr-defined]
+TCP_KEEPIDLE_OR_KEEPALIVE: int = getattr(socket, "TCP_KEEPALIVE", None) or getattr(
+    socket, "TCP_KEEPIDLE"
+)
 
 SOCKET_OPTS = [
     (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
