@@ -13,7 +13,7 @@ from ..settings import Settings
 
 SOCKET_OPTS = [
     (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
     (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15),
     (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
 ]
