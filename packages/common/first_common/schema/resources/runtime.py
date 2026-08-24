@@ -67,8 +67,11 @@ class StagedTransition(BaseModel):
     status: str  # target status being confirmed ("" == recovering to ok)
     severity: Severity = "crit"
     summary: str = ""
+    display_name: str = ""
+    recovery_hint: str = ""  # e.g. "5 reconcile failures" -> "recovered after ..."
     group: AlertGroup = "Other"  # Slack category, carried from the Observation
     owner: str = ""  # check function that produced this, for recovery scoping
+    debounce_s: float | None = None
     first_seen: datetime  # debounce timer start (reset when target changes)
 
 
@@ -80,8 +83,12 @@ class CommittedAlert(BaseModel):
     key: str
     status: str
     severity: Severity = "crit"
+    summary: str = ""  # latest human-readable detail (refreshed each tick)
+    display_name: str = ""  # human-readable resource name
+    recovery_hint: str = ""  # latest recovery context, e.g. "12 reconcile failures"
     group: AlertGroup = "Other"
     owner: str = ""  # check function that owns this key
+    debounce_s: float | None = None  # per-key debounce override, carried to recovery
 
 
 class HealthAlertState(BaseModel):

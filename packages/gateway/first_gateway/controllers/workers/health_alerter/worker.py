@@ -69,30 +69,45 @@ def advance(
             status=o.status,
             severity=o.severity,
             summary=o.summary,
+            display_name=o.display_name,
+            recovery_hint=o.recovery_hint,
             group=o.group,
             owner=o.owner,
+            debounce_s=o.debounce_s,
             first_seen=now,
         )
         for o in observed
     }
 
-    # Populate recoveries (check ran successfully & did not observe issue)
+    # Populate recoveries (check ran successfully & did not observe issue).
+    # Carry the committed alert's human context so the recovery line reads
+    # "{resource} recovered after {recovery_hint}" rather than a bare key.
     for key, ca in state.committed.items():
         if key not in observed_keys and ca.owner in ran_checks:
             candidates[key] = StagedTransition(
                 key=key,
                 status="",
                 severity=ca.severity,
+                display_name=ca.display_name,
+                recovery_hint=ca.recovery_hint,
                 group=ca.group,
                 owner=ca.owner,
+                debounce_s=ca.debounce_s,
                 first_seen=now,
             )
 
-    # Stage all new issues, changed statuses, recoveries:
+    # Stage all new issues, changed statuses, recoveries. A benign change to
+    # summary/recovery_hint alone (same status) refreshes the staged detail in
+    # place without resetting the debounce timer, so a rising retry count does
+    # not re-alert.
     for key, cand in candidates.items():
         existing = state.staging.get(key)
         if existing is None or existing.status != cand.status:
             state.staging[key] = cand
+        else:
+            state.staging[key] = cand.model_copy(
+                update={"first_seen": existing.first_seen}
+            )
 
     # Unstage entries that no longer represent a real transition:
     for key in list(state.staging):
@@ -100,7 +115,13 @@ def advance(
         committed = state.committed.get(key)
         committed_status = committed.status if committed else ""
         if staged.status == committed_status:
-            # Flapped back to what Slack already believes
+            # Flapped back to what Slack already believes. If the underlying
+            # resource is still observed (same status, but e.g. a higher retry
+            # count), refresh the committed human context so a later recovery
+            # line reports the latest detail — without re-alerting.
+            if committed is not None and key in observed_keys:
+                committed.summary = staged.summary
+                committed.recovery_hint = staged.recovery_hint
             del state.staging[key]
         elif (
             key not in observed_keys
@@ -110,11 +131,17 @@ def advance(
             # The problem resolved itself before we alerted Slack
             del state.staging[key]
 
-    # Return matured transitions (held steady past the debounce window)
-    matured = [s for s in state.staging.values() if (now - s.first_seen) >= debounce]
+    # Return matured transitions (held steady past the debounce window). A
+    # transition may set its own debounce (e.g. flappy health checks use a
+    # longer window); otherwise the worker default applies.
+    def _matured(s: StagedTransition) -> bool:
+        window = timedelta(seconds=s.debounce_s) if s.debounce_s else debounce
+        return (now - s.first_seen) >= window
+
+    matured = [s for s in state.staging.values() if _matured(s)]
     return FlushPlan(
         degradations=[s for s in matured if s.status != ""],
-        recoveries=[s.key for s in matured if s.status == ""],
+        recoveries=[s for s in matured if s.status == ""],
     )
 
 
@@ -124,7 +151,7 @@ class HealthAlerter(Worker):
     poll_interval = 30.0
     wakeup_channels: ClassVar[list[Any]] = []
 
-    DEBOUNCE_S = 45.0
+    DEBOUNCE_S = 110.0
     CHECK_TIMEOUT_S = 30.0
     DAILY_HOUR_UTC = 13
 
@@ -206,18 +233,17 @@ class HealthAlerter(Worker):
             state, observed, ran_checks, now, timedelta(seconds=self.DEBOUNCE_S)
         )
 
-        # 3. Flush matured transitions. Recovery from info-level is silent.
-        visible_recoveries = [
-            state.staging[k]
-            for k in plan.recoveries
-            if state.staging[k].severity != "info"
-        ]
-        if plan.degradations or visible_recoveries:
-            blocks = build_alert_blocks(plan.degradations, visible_recoveries, [])
+        # 3. Flush matured transitions. info-level transitions (offline, idle)
+        # are digest-only: they are committed so the daily digest reflects them,
+        # but never posted in real time. Only warn/crit transitions ping Slack.
+        visible_degradations = [d for d in plan.degradations if d.severity != "info"]
+        visible_recoveries = [r for r in plan.recoveries if r.severity != "info"]
+        if visible_degradations or visible_recoveries:
+            blocks = build_alert_blocks(visible_degradations, visible_recoveries, [])
             if await self._post_slack(blocks):
                 self._commit(state, plan)
-        elif plan.recoveries:
-            # Only silent info recoveries matured — commit without posting.
+        elif plan.degradations or plan.recoveries:
+            # Only silent info transitions matured — commit without posting.
             self._commit(state, plan)
 
         # 4. Flush check-execution failures (new or changed error messages).
@@ -236,9 +262,9 @@ class HealthAlerter(Worker):
     @staticmethod
     def _commit(state: HealthAlertState, plan: FlushPlan) -> None:
         """Apply a flushed plan to committed state and clear its staging entries."""
-        for key in plan.recoveries:
-            state.staging.pop(key, None)
-            state.committed.pop(key, None)
+        for staged in plan.recoveries:
+            state.staging.pop(staged.key, None)
+            state.committed.pop(staged.key, None)
 
         for staged in plan.degradations:
             state.staging.pop(staged.key, None)
@@ -246,8 +272,12 @@ class HealthAlerter(Worker):
                 key=staged.key,
                 status=staged.status,
                 severity=staged.severity,
+                summary=staged.summary,
+                display_name=staged.display_name,
+                recovery_hint=staged.recovery_hint,
                 group=staged.group,
                 owner=staged.owner,
+                debounce_s=staged.debounce_s,
             )
 
     async def _flush_failed_checks(
@@ -288,5 +318,8 @@ class HealthAlerter(Worker):
             group: (total, issues_by_group.get(group, 0))
             for group, total in totals.items()
         }
-        current_degradations = {k: ca.status for k, ca in committed.items()}
+        current_degradations = {
+            k: (ca.summary or f"{ca.display_name or k}: {ca.status}")
+            for k, ca in committed.items()
+        }
         return build_digest_blocks(resource_counts, current_degradations)

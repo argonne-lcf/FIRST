@@ -27,6 +27,7 @@ from first_common.schema.types import (
 )
 from first_gateway import Settings
 from first_gateway.controllers.workers.health_alerter.checks import (
+    CHECK_REGISTRY,
     check_cluster_health,
     check_db_liveness,
     check_pilot_deployment,
@@ -123,7 +124,7 @@ def test_advance_recovery_matures_and_commits() -> None:
     advance(state, [], {"check_x"}, t0, DEBOUNCE)
     plan = advance(state, [], {"check_x"}, t0 + timedelta(seconds=46), DEBOUNCE)
 
-    assert plan.recoveries == [key]
+    assert [s.key for s in plan.recoveries] == [key]
     HealthAlerter._commit(state, plan)
     assert key not in state.committed
     assert key not in state.staging
@@ -144,9 +145,73 @@ def test_advance_info_recovery_clears_committed() -> None:
     advance(state, [], {"check_pilot_job"}, t0, DEBOUNCE)
     plan = advance(state, [], {"check_pilot_job"}, t0 + timedelta(seconds=46), DEBOUNCE)
 
-    assert plan.recoveries == [key]  # reported so the caller can clear committed
+    # reported so the caller can clear committed
+    assert [s.key for s in plan.recoveries] == [key]
     HealthAlerter._commit(state, plan)
     assert key not in state.committed  # cleared despite info severity
+
+
+def test_advance_stable_status_no_realert_on_rising_count() -> None:
+    """A rising reconcile count (same status) must not re-mature after commit."""
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    key = "pilotjob/1/reconcile"
+    state = HealthAlertState(
+        committed={
+            key: CommittedAlert(
+                key=key,
+                status="reconcile_failing",
+                display_name="PilotJob p1",
+                recovery_hint="4 reconcile failures",
+                owner="check_pilot_job",
+            )
+        }
+    )
+
+    def _rec(n: int) -> Observation:
+        return Observation(
+            key=key,
+            status="reconcile_failing",
+            summary=f"PilotJob p1: {n} reconcile failures",
+            display_name="PilotJob p1",
+            recovery_hint=f"{n} reconcile failures",
+            severity="crit",
+            owner="check_pilot_job",
+        )
+
+    # Count climbs 5 -> 6; status is unchanged so nothing re-alerts...
+    plan = advance(state, [_rec(5)], {"check_pilot_job"}, t0, DEBOUNCE)
+    assert plan.degradations == []
+    plan = advance(
+        state, [_rec(6)], {"check_pilot_job"}, t0 + timedelta(seconds=60), DEBOUNCE
+    )
+    assert plan.degradations == []
+    assert key not in state.staging
+    # ...but the committed recovery context tracks the latest count.
+    assert state.committed[key].recovery_hint == "6 reconcile failures"
+
+
+def test_advance_per_key_debounce_override() -> None:
+    """A transition with its own debounce_s uses it instead of the default."""
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    state = HealthAlertState()
+    obs = [
+        Observation(
+            key="cluster/1/health",
+            status="unhealthy",
+            summary="Cluster c: unhealthy",
+            severity="crit",
+            owner="check_x",
+            debounce_s=300.0,
+        )
+    ]
+
+    advance(state, obs, {"check_x"}, t0, DEBOUNCE)
+    # Past the 45s default but inside the 300s override → not matured yet.
+    plan = advance(state, obs, {"check_x"}, t0 + timedelta(seconds=60), DEBOUNCE)
+    assert plan.degradations == []
+    # Past the override window → matured.
+    plan = advance(state, obs, {"check_x"}, t0 + timedelta(seconds=301), DEBOUNCE)
+    assert [s.key for s in plan.degradations] == ["cluster/1/health"]
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +245,60 @@ def test_alert_blocks_recovery_header() -> None:
 def test_alert_blocks_failed_checks() -> None:
     blocks = build_alert_blocks([], [], [("check_db_liveness", "connection refused")])
     assert "check_db_liveness" in blocks[1]["text"]["text"]
+
+
+def test_alert_blocks_omit_internal_key() -> None:
+    """Degradation lines show the human summary, never the internal PK/key."""
+    now = datetime.now(timezone.utc)
+    staged = StagedTransition(
+        key="pilotreplica/8/reconcile",
+        status="reconcile_failing",
+        severity="crit",
+        summary="PilotReplica tara/openai/gpt-oss-20b/replica/753c6653: 4 reconcile failures",
+        display_name="PilotReplica tara/openai/gpt-oss-20b/replica/753c6653",
+        group="Pilot Replicas",
+        first_seen=now,
+    )
+    text = build_alert_blocks([staged], [], [])[1]["text"]["text"]
+    assert "pilotreplica/8/reconcile" not in text
+    assert "753c6653: 4 reconcile failures" in text
+
+
+def test_alert_blocks_contextual_recovery() -> None:
+    """Recovery maps to '{resource} recovered after {hint}', no bare key."""
+    now = datetime.now(timezone.utc)
+    staged = StagedTransition(
+        key="pilotreplica/8/reconcile",
+        status="",
+        severity="crit",
+        display_name="PilotReplica tara/openai/gpt-oss-20b/replica/cc23c780",
+        recovery_hint="5 reconcile failures",
+        group="Pilot Replicas",
+        first_seen=now,
+    )
+    text = build_alert_blocks([], [staged], [])[1]["text"]["text"]
+    assert (
+        "PilotReplica tara/openai/gpt-oss-20b/replica/cc23c780 "
+        "recovered after 5 reconcile failures" in text
+    )
+    assert "pilotreplica/8/reconcile" not in text
+
+
+def test_error_tail_keeps_meaningful_end() -> None:
+    """A traceback keeps the final exception line, not the boilerplate head."""
+    from first_gateway.controllers.workers.health_alerter.checks import _error_tail
+
+    tb = (
+        "Traceback (most recent call last):\n"
+        '  File "/x/subprocess.py", line 573, in run\n'
+        "    raise CalledProcessError(retcode, process.args)\n"
+        "subprocess.CalledProcessError: Command '['qsub']' returned non-zero exit status 1"
+    )
+    tail = _error_tail(tb)
+    assert tail.startswith("subprocess.CalledProcessError")
+    assert "Traceback" not in tail
+    assert _error_tail(None) == ""
+    assert _error_tail("   ") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +375,11 @@ def _digest_posted(mock_post: AsyncMock) -> bool:
 async def test_degradation_flush_and_commit(
     db: async_sessionmaker[AsyncSession], redis: Redis
 ) -> None:
-    """Hold unhealthy past the debounce → one POST, committed after 2xx, round-tripped through Redis."""
+    """Hold unhealthy past the debounce → one POST, committed after 2xx, round-tripped through Redis.
+
+    StaticDeployment health uses the longer flappy debounce, so maturation is
+    checked at >300s rather than the 45s worker default.
+    """
     alerter = _make_alerter(db, redis)
     async with db.begin() as sess:
         await _seed_parents(sess)
@@ -270,7 +393,7 @@ async def test_degradation_flush_and_commit(
         await alerter.poll(t0)
         mock_post.assert_not_called()
 
-        await alerter.poll(t0 + timedelta(seconds=46))
+        await alerter.poll(t0 + timedelta(seconds=301))
         mock_post.assert_called_once()
 
         state = await _redis_state(redis)
@@ -297,8 +420,10 @@ async def test_recovery_after_committed(
 
     with patch.object(alerter, "_post_slack", new_callable=AsyncMock) as mock_post:
         mock_post.return_value = True
+        # Cluster health uses the flappy debounce; degradation matures at >300s
+        # and the recovery inherits the same window from the committed alert.
         await alerter.poll(t0)
-        await alerter.poll(t0 + timedelta(seconds=46))
+        await alerter.poll(t0 + timedelta(seconds=301))
         assert any(
             k.startswith("cluster/") for k in (await _redis_state(redis)).committed
         )
@@ -310,9 +435,9 @@ async def test_recovery_after_committed(
                 .values(health=HealthCheckResult.healthy.value)
             )
 
-        t1 = t0 + timedelta(seconds=100)
+        t1 = t0 + timedelta(seconds=400)
         await alerter.poll(t1)
-        await alerter.poll(t1 + timedelta(seconds=46))
+        await alerter.poll(t1 + timedelta(seconds=301))
 
         assert not any(
             k.startswith("cluster/") for k in (await _redis_state(redis)).committed
@@ -339,6 +464,47 @@ async def test_slack_failure_preserves_state(
         state = await _redis_state(redis)
         assert len(state.committed) == 0
         assert len(state.staging) > 0
+
+
+async def test_info_transition_is_digest_only(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """info-level states (idle) commit for the digest but never post in real time."""
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(
+            PilotJob(
+                name="cl/pilot-job/idle1",
+                cluster_name="cl",
+                walltime_min=60,
+                num_nodes=1,
+                gpus_per_node=4,
+                idle_since=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+
+    t0 = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Restrict to the pilot-job check so unrelated infra checks (gateway /
+    # controller unreachable in the test env) don't post.
+    only_job = [c for c in CHECK_REGISTRY if c.func is check_pilot_job]
+    with (
+        patch.object(alerter, "_post_slack", new_callable=AsyncMock) as mock_post,
+        patch(
+            "first_gateway.controllers.workers.health_alerter.worker.CHECK_REGISTRY",
+            only_job,
+        ),
+    ):
+        mock_post.return_value = True
+
+        await alerter.poll(t0)
+        await alerter.poll(t0 + timedelta(seconds=46))
+
+        # No real-time alert posted for the idle state...
+        assert not mock_post.called
+        # ...but it is committed so the daily digest reflects it.
+        assert any(k.endswith("/idle") for k in (await _redis_state(redis)).committed)
 
 
 async def test_daily_digest(db: async_sessionmaker[AsyncSession], redis: Redis) -> None:

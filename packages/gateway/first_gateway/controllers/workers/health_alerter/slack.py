@@ -12,6 +12,13 @@ _SEVERITY_RANK: list[Severity] = ["crit", "warn", "info"]
 _GROUP_ORDER: list[AlertGroup] = list(get_args(AlertGroup))
 
 
+def _recovery_line(staged: StagedTransition) -> str:
+    resource = staged.display_name or staged.key
+    if staged.recovery_hint:
+        return f"✅ {resource} recovered after {staged.recovery_hint}"
+    return f"✅ {resource} recovered"
+
+
 def _render_grouped(lines_by_group: dict[AlertGroup, list[str]]) -> str:
     """Render `{group: [line, ...]}` under group headers in canonical order."""
     out: list[str] = []
@@ -48,13 +55,13 @@ def build_alert_blocks(
     grouped = defaultdict(list)
     for staged in sorted(degradations, key=lambda s: _SEVERITY_RANK.index(s.severity)):
         icon = _SEVERITY_ICON.get(staged.severity, "")
-        grouped[staged.group].append(f"{icon} {staged.key} — {staged.summary}")
+        grouped[staged.group].append(f"{icon} {staged.summary}")
     if text := _render_grouped(grouped):
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
 
     grouped = defaultdict(list)
     for staged in recoveries:
-        grouped[staged.group].append(f"✅ {staged.key} — recovered")
+        grouped[staged.group].append(_recovery_line(staged))
     if text := _render_grouped(grouped):
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
 
@@ -82,13 +89,13 @@ def build_digest_blocks(
         if issues > 0:
             lines.append(f"*{category}*: {total} total, {issues} open issue(s)")
         else:
-            lines.append(f"*{category}*: {total} healthy")
+            lines.append(f"*{category}*: {total} total, all healthy")
 
     if current_degradations:
         lines.append("")
         lines.append("*Current degradations:*")
-        for key, status in sorted(current_degradations.items()):
-            lines.append(f"  • {key}: {status}")
+        for line in sorted(current_degradations.values()):
+            lines.append(f"  • {line}")
 
     text = "\n".join(lines) or "All systems healthy."
     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})

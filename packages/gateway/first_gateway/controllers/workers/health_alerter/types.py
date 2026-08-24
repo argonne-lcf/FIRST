@@ -12,14 +12,22 @@ class Observation:
     """
     A single health check observation.
 
-    - `key` is stable identity.
-    - The system alerts whenever `status` changes from what was last sent to Slack.
+    - `key` is stable internal identity
+    - The system alerts whenever `status` changes from what was last sent to
+      Slack, so `status` must be stable across benign churn (e.g. a rising
+      retry count belongs in `summary`, not `status`).
+    - `summary` is the human-readable degradation line shown in Slack.
+    - `display_name` is the human-readable resource name alone, used to render the
+      recovery line
     """
 
     key: str
     status: str
     summary: str
     severity: Severity
+    display_name: str = ""
+    recovery_hint: str = ""
+    debounce_s: float | None = None
     owner: str = ""
     group: AlertGroup = "Other"
 
@@ -43,4 +51,4 @@ class FlushPlan:
     """
 
     degradations: list[StagedTransition]  # status != ""
-    recoveries: list[str]  # just the keys where status == ""
+    recoveries: list[StagedTransition]  # status == ""

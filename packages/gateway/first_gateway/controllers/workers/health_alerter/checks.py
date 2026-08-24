@@ -28,8 +28,19 @@ from first_gateway.settings import ClientState
 
 logger = logging.getLogger(__name__)
 
-# Per-cluster scheduler probe budget
 _SCHEDULER_CHECK_TIMEOUT_S = 10.0
+_DEBOUNCE_S = 150.0
+
+
+def _error_tail(err: str | None, limit: int = 300) -> str:
+    if not err:
+        return ""
+    lines = [ln.strip() for ln in err.strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    tail = lines[-1]
+    return tail[:limit]
+
 
 _BAD_REPLICA_STATES = {
     ReplicaState.unhealthy.value,
@@ -75,8 +86,10 @@ async def check_cluster_health(client_state: ClientState) -> list[Observation]:
         Observation(
             key=f"cluster/{c.uid}/health",
             status="unhealthy",
-            summary=f"Cluster {c.name}: health unhealthy",
+            summary=f"Cluster {c.name}: health check failing",
+            display_name=f"Cluster {c.name}",
             severity="crit",
+            debounce_s=_DEBOUNCE_S,
         )
         for c in clusters
     ]
@@ -92,18 +105,23 @@ async def _check_scheduler(
             key=key,
             status="error",
             summary=f"Cluster {name}: failed to build scheduler adapter",
+            display_name=f"Cluster {name} scheduler",
             severity="crit",
+            debounce_s=_DEBOUNCE_S,
         )
 
     try:
         async with asyncio.timeout(_SCHEDULER_CHECK_TIMEOUT_S):
             await adapter.get_job_statuses()
     except Exception as e:
+        detail = _error_tail(str(e)) or "scheduler check failed"
         return Observation(
             key=key,
             status="error",
-            summary=f"Cluster {name}: scheduler check failed: {str(e)[:600]}",
+            summary=f"Cluster {name}: scheduler check failed: {detail}",
+            display_name=f"Cluster {name} scheduler",
             severity="crit",
+            debounce_s=_DEBOUNCE_S,
         )
     else:
         return None
@@ -140,7 +158,9 @@ async def check_static_deployment(client_state: ClientState) -> list[Observation
             key=f"staticdeployment/{d.uid}/health",
             status="unhealthy",
             summary=f"StaticDeployment {d.name}: health unhealthy",
+            display_name=f"StaticDeployment {d.name}",
             severity="crit",
+            debounce_s=_DEBOUNCE_S,
         )
         for d in deps
     ]
@@ -172,6 +192,7 @@ async def check_pilot_deployment(client_state: ClientState) -> list[Observation]
                     key=f"pilotdeployment/{d.uid}/state",
                     status=d.state,
                     summary=f"PilotDeployment {d.name}: state={d.state}",
+                    display_name=f"PilotDeployment {d.name}",
                     severity=sev,
                 )
             )
@@ -187,6 +208,7 @@ async def check_pilot_deployment(client_state: ClientState) -> list[Observation]
                     key=f"pilotdeployment/{d.uid}/capacity",
                     status="replicas_awaiting_capacity",
                     summary=f"PilotDeployment {d.name}: all replicas awaiting cluster capacity",
+                    display_name=f"PilotDeployment {d.name}",
                     severity="info",
                 )
             )
@@ -203,12 +225,18 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
 
     for j in jobs:
         if j.reconcile_failures > 0:
-            err = (j.reconcile_last_error or "")[:600]
+            err = _error_tail(j.reconcile_last_error)
+            n = j.reconcile_failures
+            summary = f"PilotJob {j.name}: {n} reconcile failures"
+            if err:
+                summary = f"{summary} — {err}"
             obs.append(
                 Observation(
                     key=f"pilotjob/{j.uid}/reconcile",
-                    status=f"failures={j.reconcile_failures}",
-                    summary=f"PilotJob {j.name}: {j.reconcile_failures} reconcile failures — {err}",
+                    status="reconcile_failing",
+                    summary=summary,
+                    display_name=f"PilotJob {j.name}",
+                    recovery_hint=f"{n} reconcile failures",
                     severity="crit",
                 )
             )
@@ -223,6 +251,8 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
                     key=f"pilotjob/{j.uid}/health",
                     status="manager_unhealthy",
                     summary=f"PilotJob {j.name}: manager unhealthy{since}",
+                    display_name=f"PilotJob {j.name}",
+                    recovery_hint="manager unhealthy",
                     severity="crit",
                 )
             )
@@ -232,6 +262,7 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
                     key=f"pilotjob/{j.uid}/idle",
                     status="idle",
                     summary=f"PilotJob {j.name}: idle since {j.idle_since}",
+                    display_name=f"PilotJob {j.name}",
                     severity="info",
                 )
             )
@@ -250,21 +281,33 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
 
     for r in replicas:
         if r.state in _BAD_REPLICA_STATES:
+            msg = r.state_message or ""
+            summary = f"PilotReplica {r.name}: {r.state}"
+            if msg:
+                summary = f"{summary} — {msg}"
             obs.append(
                 Observation(
                     key=f"pilotreplica/{r.uid}/state",
                     status=r.state,
-                    summary=f"PilotReplica {r.name}: {r.state} — {r.state_message or ''}",
+                    summary=summary,
+                    display_name=f"PilotReplica {r.name}",
+                    recovery_hint=r.state,
                     severity="crit",
                 )
             )
         if r.reconcile_failures > 0:
-            err = (r.reconcile_last_error or "")[:600]
+            err = _error_tail(r.reconcile_last_error)
+            n = r.reconcile_failures
+            summary = f"PilotReplica {r.name}: {n} reconcile failures"
+            if err:
+                summary = f"{summary} — {err}"
             obs.append(
                 Observation(
                     key=f"pilotreplica/{r.uid}/reconcile",
-                    status=f"failures={r.reconcile_failures}",
-                    summary=f"PilotReplica {r.name}: {r.reconcile_failures} reconcile failures — {err}",
+                    status="reconcile_failing",
+                    summary=summary,
+                    display_name=f"PilotReplica {r.name}",
+                    recovery_hint=f"{n} reconcile failures",
                     severity="crit",
                 )
             )
@@ -282,7 +325,8 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="postgres",
                 status="down",
-                summary=f"Postgres unreachable: {str(e)[:600]}",
+                summary=f"Postgres unreachable: {_error_tail(str(e))}",
+                display_name="Postgres",
                 severity="crit",
             )
         )
@@ -293,7 +337,8 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="redis",
                 status="down",
-                summary=f"Redis unreachable: {str(e)[:600]}",
+                summary=f"Redis unreachable: {_error_tail(str(e))}",
+                display_name="Redis",
                 severity="crit",
             )
         )
@@ -313,6 +358,7 @@ async def check_host(client_state: ClientState) -> list[Observation]:
                     key="gateway_health",
                     status="unreachable",
                     summary=f"Gateway /health returned {resp.status_code}",
+                    display_name="Gateway /health",
                     severity="crit",
                 )
             )
@@ -321,7 +367,8 @@ async def check_host(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="gateway_health",
                 status="unreachable",
-                summary=f"Gateway /health unreachable: {str(e)[:600]}",
+                summary=f"Gateway /health unreachable: {_error_tail(str(e))}",
+                display_name="Gateway /health",
                 severity="crit",
             )
         )
@@ -333,7 +380,8 @@ async def check_host(client_state: ClientState) -> list[Observation]:
                 Observation(
                     key="controller_healthz",
                     status="stale",
-                    summary=f"Controller /healthz: {resp.text[:600]}",
+                    summary=f"Controller /healthz: {_error_tail(resp.text)}",
+                    display_name="Controller /healthz",
                     severity="crit",
                 )
             )
@@ -342,7 +390,8 @@ async def check_host(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="controller_healthz",
                 status="stale",
-                summary=f"Controller /healthz unreachable: {str(e)[:600]}",
+                summary=f"Controller /healthz unreachable: {_error_tail(str(e))}",
+                display_name="Controller /healthz",
                 severity="crit",
             )
         )
@@ -377,8 +426,9 @@ async def check_host(client_state: ClientState) -> list[Observation]:
                 obs.append(
                     Observation(
                         key=f"disk:{mount}",
-                        status=f"{use}%",
+                        status=sev,
                         summary=f"{mount} {use}% full",
+                        display_name=f"Disk {mount}",
                         severity=sev,
                     )
                 )
