@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, cast
 
 from fastapi.responses import StreamingResponse
 
@@ -102,4 +102,4 @@ async def submit_inference(
         json=payload.model_dump(exclude_unset=True, mode="json"),
     )
     response.raise_for_status()
-    return response.json()
+    return cast(dict[str, Any], response.json())
