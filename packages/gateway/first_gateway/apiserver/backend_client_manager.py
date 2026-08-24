@@ -11,9 +11,17 @@ from ..database.redis.router_config import BackendConfig, DeploymentConfig, Rout
 from ..services.certmanager import generate_client_cert
 from ..settings import Settings
 
+# To accomodate different OS platform (MacOS/Linux)
+if hasattr(socket, "TCP_KEEPIDLE"):
+    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPIDLE
+elif hasattr(socket, "TCP_KEEPALIVE"):
+    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPALIVE
+else:
+    TCP_KEEPIDLE_OR_KEEPALIVE = None
+
 SOCKET_OPTS = [
     (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-    (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
+    (socket.IPPROTO_TCP, TCP_KEEPIDLE_OR_KEEPALIVE, 60),
     (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15),
     (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
 ]
