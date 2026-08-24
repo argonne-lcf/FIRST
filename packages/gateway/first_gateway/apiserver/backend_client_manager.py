@@ -20,6 +20,7 @@ class BackendClientManager:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._clients: dict[str, httpx.AsyncClient] = {}
+        self._configs: dict[str, tuple[BackendConfig, DeploymentConfig]] = {}
 
     def get(self, backend_id: str) -> httpx.AsyncClient | None:
         return self._clients.get(backend_id)
@@ -32,23 +33,32 @@ class BackendClientManager:
             for backend in deployment.backends
         }
 
-        current_ids = set(self._clients)
-
+        # Backends that should be added or updated
         for backend_id, (backend, deployment) in incoming.items():
-            # New backends
-            if backend_id not in current_ids:
+            if backend_id in self._clients and (
+                backend,
+                deployment,
+            ) != self._configs.get(backend_id):
+                # Remove existing clients that require an update
+                await self._close_backend(backend_id)
+            if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
-            # TODO: Do something if existing backend had some properties changed?
+                self._configs[backend_id] = (backend, deployment)
 
-        # Deprecated backends
-        for backend_id in current_ids - incoming.keys():
-            client = self._clients.pop(backend_id)
-            await client.aclose()
+        # Backends that should be removed
+        for backend_id in set(self._clients) - incoming.keys():
+            await self._close_backend(backend_id)
+
+    async def _close_backend(self, backend_id: str) -> None:
+        client = self._clients.pop(backend_id)
+        self._configs.pop(backend_id)
+        await client.aclose()
 
     async def close_all(self) -> None:
         for client in list(self._clients.values()):
             await client.aclose()
         self._clients.clear()
+        self._configs.clear()
 
     def _create_client(
         self, backend: BackendConfig, deployment: DeploymentConfig
