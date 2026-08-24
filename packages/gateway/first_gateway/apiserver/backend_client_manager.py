@@ -12,12 +12,10 @@ from ..services.certmanager import generate_client_cert
 from ..settings import Settings
 
 # To accomodate different OS platform (MacOS/Linux)
-if hasattr(socket, "TCP_KEEPIDLE"):
-    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPIDLE
-elif hasattr(socket, "TCP_KEEPALIVE"):
+if hasattr(socket, "TCP_KEEPALIVE"):
     TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPALIVE
 else:
-    TCP_KEEPIDLE_OR_KEEPALIVE = None
+    TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPIDLE
 
 SOCKET_OPTS = [
     (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
