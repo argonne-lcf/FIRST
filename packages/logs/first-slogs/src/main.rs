@@ -2,7 +2,7 @@ use std::{
     cell::LazyCell,
     collections::{HashMap, hash_map::Entry},
     fs::{self, File},
-    io::{self, BufWriter, Write},
+    io::{self, BufWriter, Cursor, Read, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -36,6 +36,58 @@ const STREAMS: &[&str] = &[
 struct Args {
     logs: Vec<PathBuf>,
     large_requests: Option<PathBuf>,
+}
+
+struct LazyMmap<P>
+where
+    P: AsRef<Path>,
+{
+    path: P,
+    cur: CursorStatus,
+}
+
+enum CursorStatus {
+    Uninit,
+    Mapped(Cursor<Mmap>),
+    Dropped,
+}
+
+impl<P> LazyMmap<P>
+where
+    P: AsRef<Path>,
+{
+    fn new(path: P) -> Self {
+        Self {
+            path,
+            cur: CursorStatus::Uninit,
+        }
+    }
+}
+
+impl<P> Read for LazyMmap<P>
+where
+    P: AsRef<Path>,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.cur {
+            CursorStatus::Uninit => {
+                let file = File::open(&self.path)?;
+                let mmap = unsafe { Mmap::map(&file) }?;
+
+                self.cur = CursorStatus::Mapped(Cursor::new(mmap));
+                self.read(buf)
+            }
+            CursorStatus::Mapped(ref mut c) => {
+                let bytes = c.read(buf)?;
+                if bytes == 0 && !buf.is_empty() {
+                    self.cur = CursorStatus::Dropped;
+                }
+
+                Ok(bytes)
+            }
+            CursorStatus::Dropped => Ok(0),
+        }
+    }
 }
 
 fn mmap_outdated(path: &Path) -> io::Result<Option<Mmap>> {
@@ -293,9 +345,9 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
             let mut json = large_requests.join(request_id);
             json.set_extension("json");
 
-            let mut path = Path::new(&request_id[0..2]).join(&request_id[2..4]);
+            if json.is_file() {
+                let mut path = Path::new(&request_id[0..2]).join(&request_id[2..4]);
 
-            if let Some(f) = File::open(&json).ok() {
                 fs.push_dir_all(
                     &path,
                     NodeHeader {
@@ -308,7 +360,7 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
                 path.push(json.file_name().unwrap());
 
                 fs.push_file(
-                    f,
+                    LazyMmap::new(json),
                     path,
                     NodeHeader {
                         permissions: 0o644,
