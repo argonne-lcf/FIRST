@@ -77,7 +77,9 @@ class BackendClientManager:
         # Backends that should be added or updated
         for backend_id, (backend, deployment) in incoming.items():
             if self._should_recreate(backend_id, backend, deployment):
-                logger.info(f"Closing client for {backend_id}: configuration updated")
+                logger.info(
+                    f"Scheduled _close_client for {backend_id}: configuration updated"
+                )
                 await self._close_client(backend_id, sleep=0)
             if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
@@ -85,6 +87,7 @@ class BackendClientManager:
 
         # Backends that should be removed
         for backend_id in set(self._clients) - incoming.keys():
+            logger.info(f"Scheduled _close_client for {backend_id}: backend removed")
             await self._close_client(backend_id, sleep=60)
 
     def _should_recreate(
