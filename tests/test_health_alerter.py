@@ -499,7 +499,7 @@ async def test_info_transition_is_digest_only(
         mock_post.return_value = True
 
         await alerter.poll(t0)
-        await alerter.poll(t0 + timedelta(seconds=46))
+        await alerter.poll(t0 + timedelta(seconds=111))
 
         # No real-time alert posted for the idle state...
         assert not mock_post.called
