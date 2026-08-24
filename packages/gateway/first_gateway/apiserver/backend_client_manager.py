@@ -1,3 +1,4 @@
+import asyncio
 import ssl
 import tempfile
 from pathlib import Path
@@ -47,9 +48,10 @@ class BackendClientManager:
 
         # Backends that should be removed
         for backend_id in set(self._clients) - incoming.keys():
-            await self._close_backend(backend_id)
+            await self._close_backend(backend_id, sleep=60)
 
-    async def _close_backend(self, backend_id: str) -> None:
+    async def _close_backend(self, backend_id: str, sleep: int = 0) -> None:
+        await asyncio.sleep(sleep)
         client = self._clients.pop(backend_id)
         self._configs.pop(backend_id)
         if client:
