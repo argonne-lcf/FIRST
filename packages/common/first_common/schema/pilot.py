@@ -12,7 +12,7 @@ from typing import Self
 
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr, computed_field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 from .types import (
     GpuClaim,
@@ -20,6 +20,20 @@ from .types import (
     PilotLaunchSpec,
     ReplicaState,
     SSHDiscovery,
+)
+
+_JOB_ENV_OVERRIDE_FIELDS = frozenset(
+    {
+        "job_name",
+        "external_port",
+        "nginx_path",
+        "ip_allowlist",
+        "workdir",
+        "node_file_env",
+        "gpu_discovery",
+        "num_nodes",
+        "gpus_per_node",
+    }
 )
 
 
@@ -166,12 +180,18 @@ class PilotRuntimeConfig(BaseSettings):
     def load(cls) -> Self:
         """
         Load from PILOT_CONFIG_FILE environment variable pointing to a yaml
-        config file.  Missing fields in the file are supplanted by "pilot_" prefixed
-        environment variables.
+        config file. ``PILOT_``-prefixed environment variables override values
+        from that file so the submitter can specialize a pre-baked GraphQL pilot
+        config for each job.
         """
         yaml_path = os.environ["PILOT_CONFIG_FILE"]
         config_raw = yaml.safe_load(Path(yaml_path).read_text())
         if not isinstance(config_raw, dict):
             raise ValueError("pilot runtime config must be a YAML mapping")
 
-        return cls(**config_raw)
+        env_raw = {
+            name: value
+            for name, value in EnvSettingsSource(cls)().items()
+            if name in _JOB_ENV_OVERRIDE_FIELDS
+        }
+        return cls.model_validate({**config_raw, **env_raw})
