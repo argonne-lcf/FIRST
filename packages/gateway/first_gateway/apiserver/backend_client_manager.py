@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import socket
 import tempfile
 from pathlib import Path
@@ -10,6 +11,8 @@ import httpx
 from ..database.redis.router_config import BackendConfig, DeploymentConfig, RouterConfig
 from ..services.certmanager import generate_client_cert
 from ..settings import Settings
+
+logger = logging.getLogger(__name__)
 
 # To accomodate different OS platform (MacOS/Linux)
 if hasattr(socket, "TCP_KEEPALIVE"):
@@ -74,6 +77,7 @@ class BackendClientManager:
         # Backends that should be added or updated
         for backend_id, (backend, deployment) in incoming.items():
             if self._should_recreate(backend_id, backend, deployment):
+                logger.info(f"Closing client for {backend_id}: configuration updated")
                 await self._close_client(backend_id, sleep=0)
             if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
