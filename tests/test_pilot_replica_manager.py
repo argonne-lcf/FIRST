@@ -93,12 +93,16 @@ def test_ssh_inventory_queries_every_host_and_preserves_scheduler_order(
 
 
 @patch(
+    "first_pilot.replica_manager.shutil.which",
+    return_value="/usr/bin/nvidia-smi",
+)
+@patch(
     "first_pilot.replica_manager._require_executable",
     return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_validates_and_preserves_rank_order(
-    run: MagicMock, _executable: MagicMock
+    run: MagicMock, _executable: MagicMock, which: MagicMock
 ) -> None:
     run.return_value = CompletedProcess(
         [],
@@ -125,11 +129,30 @@ def test_pals_inventory_validates_and_preserves_rank_order(
     ]
     command = run.call_args.args[0]
     assert command[0] == "/opt/test/mpiexec"
+    assert command[command.index("--cpu-bind=none") + 1] == "/usr/bin/nvidia-smi"
     assert "ssh" not in command
     assert command[command.index("--timeout") + 1] == "30"
     assert command[command.index("-n") + 1] == "2"
     assert command[command.index("--ppn") + 1] == "1"
     assert run.call_args.kwargs["timeout"] == 35.0
+    which.assert_called_once_with("nvidia-smi")
+
+
+@patch(
+    "first_pilot.replica_manager._require_executable",
+    return_value="/opt/test/mpiexec",
+)
+@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.replica_manager.shutil.which", return_value=None)
+def test_pals_inventory_reports_missing_nvidia_smi(
+    _which: MagicMock, run: MagicMock, _executable: MagicMock
+) -> None:
+    with pytest.raises(
+        RuntimeError, match="nvidia-smi is unavailable on the pilot PATH"
+    ):
+        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
+
+    run.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -151,6 +174,10 @@ def test_pals_inventory_validates_and_preserves_rank_order(
     ],
 )
 @patch(
+    "first_pilot.replica_manager.shutil.which",
+    return_value="/usr/bin/nvidia-smi",
+)
+@patch(
     "first_pilot.replica_manager._require_executable",
     return_value="/opt/test/mpiexec",
 )
@@ -158,6 +185,7 @@ def test_pals_inventory_validates_and_preserves_rank_order(
 def test_pals_inventory_rejects_malformed_host_and_rank_rows(
     run: MagicMock,
     _executable: MagicMock,
+    _which: MagicMock,
     output: str,
     message: str,
 ) -> None:
@@ -168,12 +196,16 @@ def test_pals_inventory_rejects_malformed_host_and_rank_rows(
 
 
 @patch(
+    "first_pilot.replica_manager.shutil.which",
+    return_value="/usr/bin/nvidia-smi",
+)
+@patch(
     "first_pilot.replica_manager._require_executable",
     return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_rejects_incomplete_rank(
-    run: MagicMock, _executable: MagicMock
+    run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
     run.return_value = CompletedProcess(
         [], 0, stdout=_gpu_rows("head", 0, (0, 1, 2, 3)), stderr=""
@@ -184,12 +216,16 @@ def test_pals_inventory_rejects_incomplete_rank(
 
 
 @patch(
+    "first_pilot.replica_manager.shutil.which",
+    return_value="/usr/bin/nvidia-smi",
+)
+@patch(
     "first_pilot.replica_manager._require_executable",
     return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_rejects_duplicate_gpu(
-    run: MagicMock, _executable: MagicMock
+    run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
     run.return_value = CompletedProcess(
         [],
@@ -205,12 +241,16 @@ def test_pals_inventory_rejects_duplicate_gpu(
 
 
 @patch(
+    "first_pilot.replica_manager.shutil.which",
+    return_value="/usr/bin/nvidia-smi",
+)
+@patch(
     "first_pilot.replica_manager._require_executable",
     return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_reports_launcher_failure(
-    run: MagicMock, _executable: MagicMock
+    run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
     run.return_value = CompletedProcess(
         [], 127, stdout="", stderr="launcher unavailable"
@@ -221,12 +261,16 @@ def test_pals_inventory_reports_launcher_failure(
 
 
 @patch(
+    "first_pilot.replica_manager.shutil.which",
+    return_value="/usr/bin/nvidia-smi",
+)
+@patch(
     "first_pilot.replica_manager._require_executable",
     return_value="/opt/test/mpiexec",
 )
 @patch("first_pilot.replica_manager.subprocess.run")
 def test_pals_inventory_reports_launcher_timeout(
-    run: MagicMock, _executable: MagicMock
+    run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
     run.side_effect = subprocess.TimeoutExpired("mpiexec", 35)
 
