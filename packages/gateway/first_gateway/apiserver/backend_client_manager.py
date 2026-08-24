@@ -108,8 +108,8 @@ class BackendClientManager:
 
     async def _close_client(self, backend_id: str, sleep: int = 0) -> None:
         await asyncio.sleep(sleep)
-        client = self._clients.pop(backend_id)
-        self._configs.pop(backend_id)
+        client = self._clients.pop(backend_id, None)
+        self._configs.pop(backend_id, None)
         if client:
             await client.aclose()
 
