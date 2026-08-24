@@ -138,7 +138,10 @@ class PilotJobObserver(Worker):
                         sess, cluster, HealthCheckResult.unhealthy
                     )
             else:
-                if cluster.health != HealthCheckResult.healthy:
+                if (
+                    cluster.health != HealthCheckResult.healthy
+                    or cluster.reconcile_failures
+                ):
                     logger.info(
                         "%s: cluster %r poll succeeded; recovering",
                         self.name,
