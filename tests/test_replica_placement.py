@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -12,6 +13,7 @@ _replica_counter = itertools.count()
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.types import ReplicaState
+from first_gateway.controllers.controller import StaleReconcile
 from first_gateway.controllers.workers.replica_placement import (
     AT_CAPACITY,
     ReplicaPlacer,
@@ -365,6 +367,43 @@ async def test_place_on_pending_submit_job(
     replica = await _get_replica(db, uid)
     assert replica.pilot_job_name == "job-pending"
     assert await _count_jobs(db) == 1
+
+
+async def test_stale_selected_job_cannot_be_assigned_after_idle_delete_mark(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Placement rechecks a candidate after acquiring its existing row lock."""
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess, "dep", num_nodes=1, gpus_per_node=2)
+        await _insert_pilot_job(sess, "job-selected", num_nodes=1, gpus_per_node=4)
+        replica_uid = await _insert_replica(sess, "dep")
+
+    # ReplicaPlacer selected this detached candidate while it was placeable.
+    selected = await _get_job(db, "job-selected")
+
+    # PilotJobController wins the inter-controller gap and marks it deleting.
+    async with db.begin() as sess:
+        job = await sess.get(PilotJob, selected.uid)
+        assert job is not None
+        job.scheduled_deletion_at = NOW
+
+    ctrl = _make_controller(db)
+    with pytest.raises(StaleReconcile, match="lost race for GPUs"):
+        await ctrl._place(
+            replica_uid,
+            "dep/replica/stale-selection",
+            selected.uid,
+            selected.name,
+            {(0, 0), (0, 1)},
+        )
+
+    replica = await _get_replica(db, replica_uid)
+    assert replica.state == ReplicaState.pending.value
+    assert replica.pilot_job_name is None
+    assert replica.claimed_gpu_ids == []
+    job = await _get_job(db, "job-selected")
+    assert job.claimed_gpu_ids == []
 
 
 # ---------------------------------------------------------------------------
