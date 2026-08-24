@@ -51,7 +51,6 @@ class RouterConfigManager:
                 try:
                     await cb(cfg)
                 except Exception:
-                    # TODO: Find a better way to handle errors here (might need to raise exception)
                     logger.warning(
                         "RouterConfigManager swap callback failed", exc_info=True
                     )
