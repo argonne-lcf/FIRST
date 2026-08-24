@@ -1,7 +1,8 @@
 import asyncio
-import ssl
 import tempfile
 from pathlib import Path
+from ssl import SSLContext, create_default_context
+from uuid import uuid4
 
 import httpx
 
@@ -19,9 +20,26 @@ class BackendClientManager:
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._settings = settings
         self._clients: dict[str, httpx.AsyncClient] = {}
         self._configs: dict[str, tuple[BackendConfig, DeploymentConfig]] = {}
+        self._ctx: SSLContext = self._get_ssl_context(settings)
+
+    def _get_ssl_context(self, settings: Settings) -> SSLContext:
+        ctx = create_default_context(cadata=settings.pilot_ca_crt)
+        ctx.check_hostname = False
+        client_crt_pem, client_key_pem = generate_client_cert(
+            cn=str(uuid4()),
+            ca_cert_pem=settings.pilot_ca_crt,
+            ca_key_pem=settings.pilot_ca_key.get_secret_value(),
+        )
+        with tempfile.TemporaryDirectory(delete=True) as tmpdir:
+            crt_path = Path(tmpdir) / "client.crt"
+            key_path = Path(tmpdir) / "client.key"
+            crt_path.write_text(client_crt_pem)
+            key_path.write_text(client_key_pem)
+            ctx.load_cert_chain(crt_path, key_path)
+
+        return ctx
 
     def get(self, backend_id: str) -> httpx.AsyncClient | None:
         return self._clients.get(backend_id)
@@ -72,24 +90,10 @@ class BackendClientManager:
             headers["Authorization"] = f"Bearer {backend.api_key}"
 
         if deployment.kind == "pilot":
-            settings = self._settings
-            ctx = ssl.create_default_context(cadata=settings.pilot_ca_crt)
-            ctx.check_hostname = False
-            client_crt_pem, client_key_pem = generate_client_cert(
-                cn=backend.id,
-                ca_cert_pem=settings.pilot_ca_crt,
-                ca_key_pem=settings.pilot_ca_key.get_secret_value(),
-            )
-            with tempfile.TemporaryDirectory(delete=True) as tmpdir:
-                crt_path = Path(tmpdir) / "client.crt"
-                key_path = Path(tmpdir) / "client.key"
-                crt_path.write_text(client_crt_pem)
-                key_path.write_text(client_key_pem)
-                ctx.load_cert_chain(crt_path, key_path)
             return httpx.AsyncClient(
                 base_url=backend.model_url,
                 headers=headers,
-                verify=ctx,
+                verify=self._ctx,
             )
 
         return httpx.AsyncClient(
