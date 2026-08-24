@@ -1,9 +1,12 @@
 """Authoritative ReplicaManager release and bounded stop-all tests."""
 
+import socket
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -27,8 +30,10 @@ def _manager(*replicas: Replica) -> ReplicaManager:
     manager._lock = threading.Lock()
     manager._replicas = {replica.name: replica for replica in replicas}
     manager._claimed = set()
-    for replica in replicas:
+    manager._socket_dir = TemporaryDirectory(prefix="first-pilot-uds-test-")
+    for socket_id, replica in enumerate(replicas):
         manager._claimed.update(manager._flatten(replica.resources))
+        replica.uds = str(Path(manager._socket_dir.name) / f"replica-{socket_id}.sock")
     return manager
 
 
@@ -36,36 +41,113 @@ def test_failed_stop_retains_claims_for_retry() -> None:
     replica, mock = _mock_replica("replica", "0")
     mock.stop.side_effect = [ReplicaTeardownError("group survived"), None]
     manager = _manager(replica)
+    stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale_socket.bind(replica.uds)
+    stale_socket.close()
 
     with pytest.raises(ReplicaTeardownError, match="group survived"):
         manager.stop_replica("replica")
 
     assert manager.get_replica("replica") is replica
     assert manager._claimed == {("node", "0")}
+    assert Path(replica.uds).exists()
 
     manager.stop_replica("replica")
     with pytest.raises(NotFound):
         manager.get_replica("replica")
     assert manager._claimed == set()
+    assert not Path(replica.uds).exists()
 
 
-def test_late_duplicate_release_does_not_clear_another_replicas_claim() -> None:
+def test_successful_stop_unlinks_inert_owned_socket() -> None:
+    replica, _ = _mock_replica("replica", "0")
+    manager = _manager(replica)
+    stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale_socket.bind(replica.uds)
+    stale_socket.close()
+
+    manager.stop_replica("replica")
+
+    assert not Path(replica.uds).exists()
+
+
+def test_active_listener_blocks_release_until_retry() -> None:
+    replica, mock = _mock_replica("replica", "0")
+    manager = _manager(replica)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(replica.uds)
+    listener.listen()
+    try:
+        with pytest.raises(ReplicaTeardownError, match="active listener"):
+            manager.stop_replica("replica")
+
+        assert manager.get_replica("replica") is replica
+        assert manager._claimed == {("node", "0")}
+        assert Path(replica.uds).exists()
+    finally:
+        listener.close()
+
+    manager.stop_replica("replica")
+    assert not Path(replica.uds).exists()
+    assert mock.stop.call_count == 2
+
+
+@pytest.mark.parametrize("unsafe_kind", ["regular file", "symlink"])
+def test_non_socket_entries_are_never_unlinked(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    replica, _ = _mock_replica("replica", "0")
+    manager = _manager(replica)
+    uds = Path(replica.uds)
+    if unsafe_kind == "regular file":
+        uds.write_text("do not remove")
+    else:
+        target = tmp_path / "target"
+        target.write_text("do not remove")
+        uds.symlink_to(target)
+
+    with pytest.raises(ReplicaTeardownError, match="non-socket"):
+        manager.stop_replica("replica")
+
+    assert uds.is_symlink() or uds.exists()
+    assert manager.get_replica("replica") is replica
+    assert manager._claimed == {("node", "0")}
+
+
+def test_socket_outside_private_directory_is_never_unlinked(tmp_path: Path) -> None:
+    replica, _ = _mock_replica("replica", "0")
+    manager = _manager(replica)
+    outside = tmp_path / "replica-0.sock"
+    external_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    external_socket.bind(str(outside))
+    external_socket.close()
+    replica.uds = str(outside)
+
+    with pytest.raises(ReplicaTeardownError, match="unsafe path"):
+        manager.stop_replica("replica")
+
+    assert outside.exists()
+    assert manager.get_replica("replica") is replica
+    assert manager._claimed == {("node", "0")}
+
+
+def test_late_duplicate_release_does_not_clear_same_name_replacement() -> None:
     replica_a, _ = _mock_replica("replica-a", "0")
     manager = _manager(replica_a)
 
     manager.stop_replica("replica-a")
     assert manager._claimed == set()
 
-    replica_b, _ = _mock_replica("replica-b", "0")
+    replica_b, _ = _mock_replica("replica-a", "0")
     with manager._lock:
         manager._replicas[replica_b.name] = replica_b
         manager._claimed.update(manager._flatten(replica_b.resources))
 
-        # A late duplicate completion for A must not clear GPU 0, which B now
-        # owns under a different unique replica name.
-        assert not manager._release_locked("replica-a", replica_a.resources)
+        # A late duplicate completion for the old A must not clear GPU 0 or
+        # remove a newer replica that reused A's name.
+        assert not manager._release_locked("replica-a", replica_a.resources, replica_a)
 
-    assert manager.get_replica("replica-b") is replica_b
+    assert manager.get_replica("replica-a") is replica_b
     assert manager._claimed == {("node", "0")}
 
 
