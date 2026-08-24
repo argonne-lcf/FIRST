@@ -66,7 +66,7 @@ def get_candidates_from_deployments(
     ]
 
 
-async def get_backend_id(
+async def admit_request(
     user: AuthUser,
     model: ModelConfig,
     admission_controller: AdmissionController,
