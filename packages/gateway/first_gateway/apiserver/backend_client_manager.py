@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import tempfile
 from pathlib import Path
 from ssl import SSLContext, create_default_context
@@ -9,6 +10,18 @@ import httpx
 from ..database.redis.router_config import BackendConfig, DeploymentConfig, RouterConfig
 from ..services.certmanager import generate_client_cert
 from ..settings import Settings
+
+SOCKET_OPTS = [
+    (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15),
+    (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
+]
+
+STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=60.0, pool=5.0)
+UNARY_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
+
+KEEPALIVE_EXPIRY = 30.0
 
 
 class BackendClientManager:
@@ -58,7 +71,6 @@ class BackendClientManager:
                 backend,
                 deployment,
             ) != self._configs.get(backend_id):
-                # Remove existing clients that require an update
                 await self._close_client(backend_id, sleep=0)
             if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
@@ -74,7 +86,6 @@ class BackendClientManager:
         self._configs.pop(backend_id)
         if client:
             await client.aclose()
-        # TODO: raise a warning here if client is None?
 
     async def close_all(self) -> None:
         for client in list(self._clients.values()):
@@ -85,19 +96,30 @@ class BackendClientManager:
     def _create_client(
         self, backend: BackendConfig, deployment: DeploymentConfig
     ) -> httpx.AsyncClient:
-        headers = {}
+        headers = {"Accept-Encoding": "identity"}
         if backend.api_key:
             headers["Authorization"] = f"Bearer {backend.api_key}"
 
-        if deployment.kind == "pilot":
-            return httpx.AsyncClient(
-                base_url=backend.model_url,
-                headers=headers,
-                verify=self._ctx,
-            )
+        max_concurrency = deployment.router_params.max_backend_concurrency
+        limits = httpx.Limits(
+            max_connections=max_concurrency,
+            max_keepalive_connections=max_concurrency,
+            keepalive_expiry=KEEPALIVE_EXPIRY,
+        )
+
+        verify = self._ctx if deployment.kind == "pilot" else True
+        transport = httpx.AsyncHTTPTransport(
+            verify=verify,
+            retries=2,
+            limits=limits,
+            http2=False,
+            socket_options=SOCKET_OPTS,
+        )
 
         return httpx.AsyncClient(
             base_url=backend.model_url,
+            transport=transport,
+            timeout=STREAM_TIMEOUT,
             headers=headers,
         )
 
