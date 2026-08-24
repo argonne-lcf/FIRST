@@ -73,10 +73,7 @@ class BackendClientManager:
 
         # Backends that should be added or updated
         for backend_id, (backend, deployment) in incoming.items():
-            if backend_id in self._clients and (
-                backend,
-                deployment,
-            ) != self._configs.get(backend_id):
+            if self._should_recreate(backend_id, backend, deployment):
                 await self._close_client(backend_id, sleep=0)
             if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
@@ -86,6 +83,22 @@ class BackendClientManager:
         for backend_id in set(self._clients) - incoming.keys():
             await self._close_client(backend_id, sleep=60)
 
+    def _should_recreate(
+        self, backend_id: str, backend: BackendConfig, deployment: DeploymentConfig
+    ) -> bool:
+        """Return True if backend in self._clients and in need of update."""
+        if backend_id in self._clients:
+            current_backend, current_deployment = self._configs[backend_id]
+            if (
+                current_backend.api_key != backend.api_key
+                or current_backend.model_url != backend.model_url
+                or current_deployment.kind != deployment.kind
+                or current_deployment.router_params.max_backend_concurrency
+                != deployment.router_params.max_backend_concurrency
+            ):
+                return True
+        return False
+
     async def _close_client(self, backend_id: str, sleep: int = 0) -> None:
         await asyncio.sleep(sleep)
         client = self._clients.pop(backend_id)
@@ -94,8 +107,8 @@ class BackendClientManager:
             await client.aclose()
 
     async def close_all(self) -> None:
-        for backend_id in self._clients:
-            await self._close_client(backend_id, sleep=0)
+        for client in self._clients.values():
+            await client.aclose()
         self._clients.clear()
         self._configs.clear()
 
