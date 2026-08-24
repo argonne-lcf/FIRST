@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -204,8 +205,13 @@ def query_gpus_pals(
     timeout_sec: float = 35.0,
 ) -> list[HostGpus]:
     """Run one labeled inventory rank per host through the site PALS launcher."""
-    nvidia_smi = "nvidia-smi"
     pals = _require_executable(launcher_path, label="PALS launcher")
+    nvidia_smi_path = shutil.which("nvidia-smi")
+    if nvidia_smi_path is None:
+        raise RuntimeError("required nvidia-smi is unavailable on the pilot PATH")
+    # PALS does not reliably search PATH for the launched application. Resolve
+    # it on the allocation head and give every rank a canonical absolute path.
+    nvidia_smi = str(Path(nvidia_smi_path).resolve())
 
     command = [
         pals,
