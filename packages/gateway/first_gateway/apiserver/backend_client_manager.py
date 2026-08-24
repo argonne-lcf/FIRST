@@ -59,16 +59,16 @@ class BackendClientManager:
                 deployment,
             ) != self._configs.get(backend_id):
                 # Remove existing clients that require an update
-                await self._close_backend(backend_id, sleep=0)
+                await self._close_client(backend_id, sleep=0)
             if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
                 self._configs[backend_id] = (backend, deployment)
 
         # Backends that should be removed
         for backend_id in set(self._clients) - incoming.keys():
-            await self._close_backend(backend_id, sleep=60)
+            await self._close_client(backend_id, sleep=60)
 
-    async def _close_backend(self, backend_id: str, sleep: int = 0) -> None:
+    async def _close_client(self, backend_id: str, sleep: int = 0) -> None:
         await asyncio.sleep(sleep)
         client = self._clients.pop(backend_id)
         self._configs.pop(backend_id)
