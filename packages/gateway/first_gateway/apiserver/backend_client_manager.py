@@ -14,6 +14,17 @@ from ..settings import Settings
 
 logger = logging.getLogger(__name__)
 
+_background_tasks: set[asyncio.Task[None]] = set()
+
+
+def _on_done(task: asyncio.Task[None]) -> None:
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    if exc := task.exception():
+        logger.error("Background _close_client failed", exc_info=exc)
+
+
 # To accomodate different OS platform (MacOS/Linux)
 if hasattr(socket, "TCP_KEEPALIVE"):
     TCP_KEEPIDLE_OR_KEEPALIVE = socket.TCP_KEEPALIVE
@@ -88,7 +99,9 @@ class BackendClientManager:
         # Backends that should be removed
         for backend_id in set(self._clients) - incoming.keys():
             logger.info(f"Scheduled _close_client for {backend_id}: backend removed")
-            await self._close_client(backend_id, sleep=60)
+            task = asyncio.create_task(self._close_client(backend_id, sleep=60))
+            _background_tasks.add(task)
+            task.add_done_callback(_on_done)
 
     def _should_recreate(
         self, backend_id: str, backend: BackendConfig, deployment: DeploymentConfig
