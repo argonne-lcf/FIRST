@@ -11,8 +11,8 @@ from ..apiserver.backend_client_manager import BackendClientManager
 from ..database.redis.admission import AdmissionController
 from ..database.redis.router_config import ModelConfig
 from .orchestration import (
+    admit_request,
     get_backend_candidates,
-    get_backend_id,
     get_deployment_from_backend_id,
 )
 
@@ -43,7 +43,7 @@ async def submit_inference_with_retry(
     estimated_tokens = len(payload.model_dump()) // 2
 
     for attempt in range(min(3, len(backend_candidates))):
-        backend_id = await get_backend_id(
+        backend_id = await admit_request(
             user,
             model,
             admission_controller,
