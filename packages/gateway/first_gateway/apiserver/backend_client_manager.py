@@ -88,8 +88,8 @@ class BackendClientManager:
             await client.aclose()
 
     async def close_all(self) -> None:
-        for client in list(self._clients.values()):
-            await client.aclose()
+        for backend_id in self._clients:
+            await self._close_client(backend_id, sleep=0)
         self._clients.clear()
         self._configs.clear()
 
