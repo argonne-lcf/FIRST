@@ -52,7 +52,9 @@ class BackendClientManager:
     async def _close_backend(self, backend_id: str) -> None:
         client = self._clients.pop(backend_id)
         self._configs.pop(backend_id)
-        await client.aclose()
+        if client:
+            await client.aclose()
+        # TODO: raise a warning here if client is None?
 
     async def close_all(self) -> None:
         for client in list(self._clients.values()):
