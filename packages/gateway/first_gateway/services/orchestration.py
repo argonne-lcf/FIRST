@@ -93,7 +93,10 @@ async def get_backend_id(
     if not admit_result.admitted:
         raise_admit_error(admit_result, usage_limits, model)
 
-    return admit_result.backend_id
+    if admit_result.backend_id:
+        return admit_result.backend_id
+    else:
+        raise NotFound(f"Backend not found for model {model.name}.")
 
 
 def get_deployment_from_backend_id(
