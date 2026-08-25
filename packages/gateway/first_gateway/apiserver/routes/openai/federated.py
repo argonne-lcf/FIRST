@@ -10,7 +10,12 @@ from first_common.schema.endpoints.openai import (
 )
 
 from ....services.submit_inference import submit_inference_with_retry
-from ...dependencies import AdmissionControllerDep, AuthUser, BackendClientManagerDep
+from ...dependencies import (
+    AdmissionControllerDep,
+    AuthUser,
+    BackendClientManagerDep,
+    RequestId,
+)
 from .dependencies import AuthorizedModel
 
 router = APIRouter(prefix="/federated/v1")
@@ -23,6 +28,7 @@ async def chat_completions(
     admission_controller: AdmissionControllerDep,
     backend_client_manager: BackendClientManagerDep,
     payload: OpenAIChatCompletionsPayload,
+    request_id: RequestId,
 ) -> StreamingResponse | dict[str, Any]:
     return await submit_inference_with_retry(
         user,
@@ -30,6 +36,7 @@ async def chat_completions(
         admission_controller,
         backend_client_manager,
         payload,
+        request_id,
     )
 
 
@@ -40,6 +47,7 @@ async def responses(
     admission_controller: AdmissionControllerDep,
     backend_client_manager: BackendClientManagerDep,
     payload: OpenAIResponsesPayload,
+    request_id: RequestId,
 ) -> StreamingResponse | dict[str, Any]:
     return await submit_inference_with_retry(
         user,
@@ -47,6 +55,7 @@ async def responses(
         admission_controller,
         backend_client_manager,
         payload,
+        request_id,
     )
 
 
@@ -57,6 +66,7 @@ async def embeddings(
     admission_controller: AdmissionControllerDep,
     backend_client_manager: BackendClientManagerDep,
     payload: OpenAIEmbeddingsPayload,
+    request_id: RequestId,
 ) -> StreamingResponse | dict[str, Any]:
     return await submit_inference_with_retry(
         user,
@@ -64,4 +74,5 @@ async def embeddings(
         admission_controller,
         backend_client_manager,
         payload,
+        request_id,
     )
