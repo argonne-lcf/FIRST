@@ -25,6 +25,9 @@ async def get_state(request: Request) -> ClientState:
     return cast(ClientState, request.app.state.client_state)
 
 
+AppState = Annotated[ClientState, Depends(get_state)]
+
+
 async def get_router_config(request: Request) -> _RouterConfig:
     """Return the current hot-swapped RouterConfig snapshot.
 
@@ -35,7 +38,7 @@ async def get_router_config(request: Request) -> _RouterConfig:
     return manager.current
 
 
-AppState = Annotated[ClientState, Depends(get_state)]
+RouterConfigDep = Annotated[_RouterConfig, Depends(get_router_config)]
 
 
 async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
@@ -47,16 +50,28 @@ async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
         yield sess
 
 
+DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+
 async def get_redis(state: AppState) -> _AsyncRedis:
     return state.redis
+
+
+RedisDep = Annotated[_AsyncRedis, Depends(get_redis)]
 
 
 async def get_redis_repo(state: AppState) -> _RedisRepo:
     return state.redis_repo
 
 
+RedisRepo = Annotated[_RedisRepo, Depends(get_redis_repo)]
+
+
 async def get_redis_pubsub(state: AppState) -> _RedisPubSub:
     return state.redis_pubsub
+
+
+RedisPubSub = Annotated[_RedisPubSub, Depends(get_redis_pubsub)]
 
 
 async def get_auth_user(
@@ -69,6 +84,10 @@ async def get_auth_user(
     auth_svc = GlobusAuthService(state)
     user = await auth_svc.validate_access_token(token)
     return user
+
+
+BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]
+AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 
 
 async def get_admin_user(
@@ -85,6 +104,9 @@ async def get_admin_user(
     return user
 
 
+AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
+
+
 async def is_user_admin(
     state: AppState, user: UserAuthEvent = Depends(get_auth_user)
 ) -> bool:
@@ -93,12 +115,7 @@ async def is_user_admin(
     return admin_group in user.user_group_uuids
 
 
-BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]
-DbSession = Annotated[AsyncSession, Depends(get_session)]
-RedisDep = Annotated[_AsyncRedis, Depends(get_redis)]
-RedisRepo = Annotated[_RedisRepo, Depends(get_redis_repo)]
-RedisPubSub = Annotated[_RedisPubSub, Depends(get_redis_pubsub)]
-RouterConfigDep = Annotated[_RouterConfig, Depends(get_router_config)]
+IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
 
 
 async def get_backend_client_manager(request: Request) -> _BackendClientManager:
@@ -108,9 +125,6 @@ async def get_backend_client_manager(request: Request) -> _BackendClientManager:
 BackendClientManagerDep = Annotated[
     _BackendClientManager, Depends(get_backend_client_manager)
 ]
-AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
-AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
-IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
 
 
 async def get_admission_controller(redis_client: RedisDep) -> _AdmissionController:
