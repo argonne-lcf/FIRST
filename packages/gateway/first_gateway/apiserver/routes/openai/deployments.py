@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from first_common.schema.endpoints.openai import (
+from first_common.schema.endpoints.llm import (
     OpenAIChatCompletionsPayload,
     OpenAIEmbeddingsPayload,
     OpenAIResponsesPayload,

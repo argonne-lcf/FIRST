@@ -32,6 +32,7 @@ class ModelConfig(BaseModel):
     allowed_groups: list[str]
     allowed_domains: list[str]
     supported_endpoints: list[str]
+    max_model_len: int | None = None
     usage_limits: UsagePolicy
     overload: OverloadPolicy
     deployments: list[DeploymentConfig]

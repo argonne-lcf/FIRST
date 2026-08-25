@@ -255,6 +255,7 @@ class Model(ResourceRow):
     usage_limits: Mapped[DictJsonb] = mapped_column(default=dict)
     overload: Mapped[DictJsonb] = mapped_column(default=dict)
     demand_signal: Mapped[DictJsonb] = mapped_column(default=dict)
+    max_model_len: Mapped[int | None]
 
     access_group: Mapped[AccessGroup] = relationship(lazy="raise")
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(

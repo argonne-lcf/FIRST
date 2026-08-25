@@ -39,9 +39,7 @@ async def submit_inference_with_retry(
     if not backend_candidates:
         raise ServiceUnavailable(f"No backend available for model {model}.")
 
-    # TODO: figure out a better token estimate and max_output_tokens
-    # estimated_tokens = len(json.dumps(payload)) // 4 + max_output_tokens
-    estimated_tokens = len(payload.model_dump()) // 2
+    estimated_tokens = payload.estimate_tokens(model.max_model_len)
 
     for attempt in range(min(3, len(backend_candidates))):
         backend_id = await admit_request(
