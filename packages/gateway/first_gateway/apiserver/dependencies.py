@@ -1,3 +1,4 @@
+import uuid
 from typing import Annotated, AsyncGenerator, cast
 
 from fastapi import Depends, Request
@@ -119,3 +120,10 @@ async def get_admission_controller(redis_client: RedisDep) -> _AdmissionControll
 AdmissionControllerDep = Annotated[
     _AdmissionController, Depends(get_admission_controller)
 ]
+
+
+def get_request_id() -> str:
+    return str(uuid.uuid4())
+
+
+RequestId = Annotated[str, Depends(get_request_id)]
