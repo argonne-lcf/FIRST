@@ -25,6 +25,7 @@ async def submit_inference_with_retry(
     admission_controller: AdmissionController,
     backend_client_manager: BackendClientManager,
     payload: BasePayload,
+    request_id: str,
     deployment_name: str | None = None,
 ) -> StreamingResponse | dict[str, Any]:
     """
@@ -48,6 +49,7 @@ async def submit_inference_with_retry(
             model,
             admission_controller,
             backend_candidates,
+            request_id,
             estimated_tokens=estimated_tokens,
         )
 
@@ -70,10 +72,7 @@ async def submit_inference_with_retry(
             token_usage = 1  # TEMPORARY
             return response
         finally:
-            # TODO: Incorporate request ID
-            await admission_controller.settle(
-                "temporary_request_id", actual_tokens=token_usage
-            )
+            await admission_controller.settle(request_id, actual_tokens=token_usage)
 
     # Error if none of the attempts worked
     raise ServiceUnavailable(
