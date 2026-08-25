@@ -71,6 +71,7 @@ async def admit_request(
     model: ModelConfig,
     admission_controller: AdmissionController,
     backend_candidates: list[CandidateBackend],
+    request_id: str,
     estimated_tokens: int = 0,
 ) -> str:
     """
@@ -81,9 +82,8 @@ async def admit_request(
 
     usage_limits = get_usage_limits(user, model.usage_limits)
 
-    # TODO: Incorporate request id
     admit_result = await admission_controller.admit(
-        request_id="temporary-request-id",
+        request_id=request_id,
         model_name=model.name,
         user_id=user.id,
         candidates=backend_candidates,
