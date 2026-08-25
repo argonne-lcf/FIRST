@@ -17,7 +17,7 @@ from ..database.redis.admission import (
     CapacityReason,
     QuotaReason,
 )
-from ..database.redis.router_config import BackendConfig, DeploymentConfig, ModelConfig
+from ..database.redis.router_config import DeploymentConfig, ModelConfig
 
 
 def get_backend_candidates(
@@ -66,15 +66,15 @@ def get_candidates_from_deployments(
     ]
 
 
-async def get_backend(
+async def admit_request(
     user: AuthUser,
     model: ModelConfig,
     admission_controller: AdmissionController,
     backend_candidates: list[CandidateBackend],
     estimated_tokens: int = 0,
-) -> BackendConfig:
+) -> str:
     """
-    Find and return the backend that will serve the request.
+    Find and return the backend ID that will serve the request.
     This uses probabilities through the admission controler, which
     takes in to account weights and recent activities.
     """
@@ -93,25 +93,23 @@ async def get_backend(
     if not admit_result.admitted:
         raise_admit_error(admit_result, usage_limits, model)
 
-    return next(
-        (
-            backend
-            for d in model.deployments
-            for backend in d.backends
-            if backend.id == admit_result.backend_id
-        )
-    )
+    if admit_result.backend_id:
+        return admit_result.backend_id
+    else:
+        raise NotFound(f"Backend not found for model {model.name}.")
 
 
-def get_deployment_from_backend(
+def get_deployment_from_backend_id(
     deployments: list[DeploymentConfig],
-    backend: BackendConfig,
+    backend_id: str,
 ) -> DeploymentConfig:
-    """Return the deployment that includes a specific backend."""
+    """Return the deployment that includes a specific backend ID."""
 
-    deployment = next((d for d in deployments if backend in d.backends))
-
-    return deployment
+    return next(
+        d
+        for d in deployments
+        if any(backend.id == backend_id for backend in d.backends)
+    )
 
 
 def get_usage_limits(user: AuthUser, usage_policy: UsagePolicy) -> UsageLimits:

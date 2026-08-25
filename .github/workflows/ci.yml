@@ -62,6 +62,17 @@ jobs:
       - run: make format-check
       - run: make lint
       - run: make mypy
+      - name: Generate test CA
+        run: |
+          uv run pilot-certmanager ca --name test
+          {
+            echo "FIRST_PILOT_CA_CRT<<PEM_EOF"
+            cat pki/ca.crt
+            echo "PEM_EOF"
+            echo "FIRST_PILOT_CA_KEY<<PEM_EOF"
+            cat pki/ca.key
+            echo "PEM_EOF"
+          } >> "$GITHUB_ENV"
       - run: make test
 
   docker:

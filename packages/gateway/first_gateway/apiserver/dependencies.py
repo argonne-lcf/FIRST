@@ -16,6 +16,7 @@ from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
+from .backend_client_manager import BackendClientManager as _BackendClientManager
 from .router_config_manager import RouterConfigManager
 
 
@@ -97,6 +98,15 @@ RedisDep = Annotated[_AsyncRedis, Depends(get_redis)]
 RedisRepo = Annotated[_RedisRepo, Depends(get_redis_repo)]
 RedisPubSub = Annotated[_RedisPubSub, Depends(get_redis_pubsub)]
 RouterConfigDep = Annotated[_RouterConfig, Depends(get_router_config)]
+
+
+async def get_backend_client_manager(request: Request) -> _BackendClientManager:
+    return cast(_BackendClientManager, request.app.state.backend_client_manager)
+
+
+BackendClientManagerDep = Annotated[
+    _BackendClientManager, Depends(get_backend_client_manager)
+]
 AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
 IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
