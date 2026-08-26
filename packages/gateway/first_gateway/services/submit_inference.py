@@ -67,6 +67,8 @@ async def submit_inference_with_retry(
                     payload,
                     admission_controller,
                     request_id,
+                    user,
+                    model,
                 )
             else:
                 response = await submit_inference(
@@ -74,6 +76,8 @@ async def submit_inference_with_retry(
                     payload,
                     admission_controller,
                     request_id,
+                    user,
+                    model,
                 )
         except:
             # TODO: figure out a way to gather and report errors
@@ -98,6 +102,8 @@ async def submit_inference(
     payload: BasePayload,
     admission_controller: AdmissionController,
     request_id: str,
+    user: AuthUser,
+    model: ModelConfig,
 ) -> dict[str, Any]:
     """POST to an inference backend."""
 
@@ -110,6 +116,8 @@ async def submit_inference(
     body = cast(dict[str, Any], response.json())
     parser = USAGE_PARSERS.get(payload.endpoint)
     usage = parser.parse_unary(body) if parser else TokenUsage()
+    # TODO: emit structured log events (this is a placeholder for visibility):
+    logger.info(f"{payload.endpoint} - {model.name} - {user.username} - {usage}")
     await admission_controller.settle(request_id, actual_tokens=usage.total_tokens or 0)
     return body
 
@@ -119,6 +127,8 @@ async def submit_inference_streaming(
     payload: BasePayload,
     admission_controller: AdmissionController,
     request_id: str,
+    user: AuthUser,
+    model: ModelConfig,
 ) -> StreamingResponse:
     """POST to an inference backend and relay the SSE stream to the caller."""
 
@@ -145,6 +155,9 @@ async def submit_inference_streaming(
                 await response.aclose()
             usage = parser.parse_stream(tap.first, tap.last) if parser else TokenUsage()
             total_tokens = usage.total_tokens or 0
+            logger.info(
+                f"{payload.endpoint} - {model.name} - {user.username} - {usage}"
+            )
             await admission_controller.settle(request_id, actual_tokens=total_tokens)
 
     return StreamingResponse(
