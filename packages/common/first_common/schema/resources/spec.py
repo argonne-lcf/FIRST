@@ -3,6 +3,7 @@ from typing import Any, ClassVar
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
 )
 
 from ..types import (
@@ -57,6 +58,10 @@ class ModelSpec(ResourceSpec):
 
     The model resource specifies access permissions and what gateway API
     endpoints the model supports.
+
+    max_model_len specifies the maximum context window for LLM models.  It is shared
+    across all deployments of the model.  The same model at different context lengths
+    is represented by multiple entries (e.g. claude-opus-4-8 vs. claude-opus-4-8-1m).
     """
 
     access_group_name: ResourceName
@@ -65,6 +70,7 @@ class ModelSpec(ResourceSpec):
     usage_limits: UsagePolicy = UsagePolicy()
     overload: OverloadPolicy = OverloadPolicy()
     demand_signal: DemandSignalConfig = DemandSignalConfig()
+    max_model_len: int | None = Field(None, ge=1)
 
 
 class ClusterSpec(ResourceSpec):

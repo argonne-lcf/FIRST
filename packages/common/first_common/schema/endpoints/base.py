@@ -21,3 +21,10 @@ class BasePayload(BaseModelAllowExtra):
             raise TypeError(
                 f"{cls.__name__} must set a non-empty `endpoint` class variable."
             )
+
+    def estimate_tokens(self, _max_context: int | None) -> int:
+        """
+        Estimate the total tokens from the payload and the models's maximum
+        context.  Defaults to always 0.  Override for LLM request payloads.
+        """
+        return 0

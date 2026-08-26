@@ -55,6 +55,7 @@ class RouterConfigObserver(Worker):
                 allowed_groups=model.access_group.allowed_groups,
                 allowed_domains=model.access_group.allowed_domains,
                 supported_endpoints=model.supported_endpoints,
+                max_model_len=model.max_model_len,
                 usage_limits=UsagePolicy.model_validate(model.usage_limits),
                 overload=OverloadPolicy.model_validate(model.overload),
                 deployments=self._build_deployments(
