@@ -15,7 +15,7 @@ from .orchestration import (
     get_backend_candidates,
     get_deployment_from_backend_id,
 )
-from .usage import USAGE_PARSERS
+from .usage import USAGE_PARSERS, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,8 @@ async def submit_inference_with_retry(
             backend_candidates = [b for b in backend_candidates if b.uid != backend_id]
             logger.warning(f"Backend {backend_id} failed, trying next one.")
         else:
-            usage = USAGE_PARSERS[payload.endpoint].parse_unary(response)
+            parser = USAGE_PARSERS.get(payload.endpoint)
+            usage = parser.parse_unary(response) if parser else TokenUsage()
             total_tokens = usage.total_tokens or 0
             # TODO: emit structured log events (this is a placeholder for visibility):
             logger.info(
