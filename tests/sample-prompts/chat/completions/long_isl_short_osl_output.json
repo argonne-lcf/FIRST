@@ -1,0 +1,39 @@
+{
+  "id": "chatcmpl-e642c3ee-4b90-4f64-9a64-6f5a92cab29c",
+  "object": "chat.completion",
+  "created": 1787693100,
+  "model": "inkling-bf16",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "annotations": null,
+        "audio": null,
+        "function_call": null,
+        "reasoning": "We need answer: summarize root cause in one sentence based on postmortem. Need be concise. Root cause: deploy changed retry policy to fixed 50ms with 5 attempts causing retry storm amplifying traffic ~5x when fraud-check GC pause, saturating workers and cascading timeouts."
+      },
+      "logprobs": null,
+      "finish_reason": "length",
+      "stop_reason": null,
+      "token_ids": null,
+      "routed_experts": null
+    }
+  ],
+  "service_tier": null,
+  "system_fingerprint": "vllm-0.26.0-tp8-dp2-ep-f7707858",
+  "usage": {
+    "prompt_tokens": 307,
+    "total_tokens": 367,
+    "completion_tokens": 60,
+    "prompt_tokens_details": null
+  },
+  "prompt_logprobs": null,
+  "prompt_token_ids": null,
+  "prompt_text": null,
+  "kv_transfer_params": null,
+  "ec_transfer_params": null,
+  "metrics": null
+}

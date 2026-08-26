@@ -15,6 +15,7 @@ from .orchestration import (
     get_backend_candidates,
     get_deployment_from_backend_id,
 )
+from .usage import USAGE_PARSERS, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ async def submit_inference_with_retry(
             request_id,
             estimated_tokens=estimated_tokens,
         )
+        total_tokens = 0
 
         try:
             response = await submit_inference(
@@ -62,15 +64,18 @@ async def submit_inference_with_retry(
                 backend_id, deployment.router_params
             )
             backend_candidates = [b for b in backend_candidates if b.uid != backend_id]
-            token_usage = 0
             logger.warning(f"Backend {backend_id} failed, trying next one.")
         else:
-            # TODO: implement parse_token_usage
-            # token_usage = parse_token_usage(response)
-            token_usage = 1  # TEMPORARY
+            parser = USAGE_PARSERS.get(payload.endpoint)
+            usage = parser.parse_unary(response) if parser else TokenUsage()
+            total_tokens = usage.total_tokens or 0
+            # TODO: emit structured log events (this is a placeholder for visibility):
+            logger.info(
+                f"{payload.endpoint} - {model.name} - {user.username} - {usage}"
+            )
             return response
         finally:
-            await admission_controller.settle(request_id, actual_tokens=token_usage)
+            await admission_controller.settle(request_id, actual_tokens=total_tokens)
 
     # Error if none of the attempts worked
     raise ServiceUnavailable(

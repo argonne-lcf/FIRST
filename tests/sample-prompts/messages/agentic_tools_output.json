@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-d7df2692-0a87-4aed-8871-08b8a5332a78",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "chatcmpl-tool-a728a62110f6fbd0",
+      "name": "get_weather",
+      "input": {
+        "city": "Tokyo"
+      }
+    }
+  ],
+  "model": "inkling-bf16",
+  "stop_reason": "tool_use",
+  "usage": {
+    "input_tokens": 189,
+    "output_tokens": 17
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "id": "resp_870ba76a6a6d27c8",
+  "created_at": 1787693130,
+  "incomplete_details": {
+    "reason": "max_output_tokens"
+  },
+  "instructions": "You are a concise assistant.",
+  "metadata": null,
+  "model": "inkling-bf16",
+  "object": "response",
+  "output": [
+    {
+      "id": "rs_a2892e0d151c6182",
+      "summary": [],
+      "type": "reasoning",
+      "content": [
+        {
+          "text": "The user wants a one-sentence summary of the root cause based on the postmortem. Let me identify the root cause.\n\nKey points:\n- Deploy at 09:05 changed retry policy on downstream fraud-check client from exponential backoff to fixed 50ms retry with 5 attempts",
+          "type": "reasoning_text"
+        }
+      ],
+      "encrypted_content": null,
+      "status": null
+    }
+  ],
+  "parallel_tool_calls": true,
+  "temperature": 1.0,
+  "tool_choice": "none",
+  "tools": [],
+  "top_p": 1.0,
+  "background": false,
+  "max_output_tokens": 60,
+  "max_tool_calls": null,
+  "previous_response_id": null,
+  "prompt": null,
+  "reasoning": null,
+  "service_tier": "auto",
+  "status": "incomplete",
+  "text": null,
+  "top_logprobs": null,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 307,
+    "input_tokens_details": {
+      "cached_tokens": 288,
+      "input_tokens_per_turn": [],
+      "cached_tokens_per_turn": []
+    },
+    "output_tokens": 60,
+    "output_tokens_details": {
+      "reasoning_tokens": 59,
+      "tool_output_tokens": 0,
+      "output_tokens_per_turn": [],
+      "tool_output_tokens_per_turn": []
+    },
+    "total_tokens": 367
+  },
+  "user": null,
+  "presence_penalty": 0.0,
+  "frequency_penalty": 0.0,
+  "kv_transfer_params": null,
+  "ec_transfer_params": null,
+  "input_messages": null,
+  "output_messages": null
+}

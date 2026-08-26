@@ -1,0 +1,18 @@
+{
+  "id": "chatcmpl-c8fcb67f-a94e-4d60-9746-a87642e1fc46",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The user wants a one-sentence summary of the root cause based on the postmortem.\n\nKey elements:\n- Deploy at 09:05 changed retry policy on downstream fraud-check client\n- Changed from exponential backoff to fixed 50ms retry with 5 attempts\n- Fraud-check service",
+      "signature": "6644843d91274a9baee949384b340f48"
+    }
+  ],
+  "model": "inkling-bf16",
+  "stop_reason": "max_tokens",
+  "usage": {
+    "input_tokens": 307,
+    "output_tokens": 60
+  }
+}
