@@ -8,7 +8,8 @@ rejecting user requests.
 from typing import Any
 
 CHARS_PER_TOKEN = 4
-DEFAULT_OUTPUT_ESTIMATE = 1024
+DEFAULT_OUTPUT_ESTIMATE = 2048
+MAX_OUTPUT_ESTIMATE = 32768
 IMAGE_TOKEN_ESTIMATE = 1000
 
 
@@ -86,7 +87,12 @@ def estimate_total_tokens(
     Output is the client's cap if given, else DEFAULT_OUTPUT_ESTIMATE, and in
     either case no more than the context window leaves room for.
     """
-    output_tokens = max_output if max_output is not None else DEFAULT_OUTPUT_ESTIMATE
+    if max_output is not None:
+        output_tokens = min(max_output, MAX_OUTPUT_ESTIMATE)
+    else:
+        output_tokens = DEFAULT_OUTPUT_ESTIMATE
+
     if max_context is not None:
         output_tokens = min(output_tokens, max(0, max_context - input_tokens))
+
     return input_tokens + output_tokens
