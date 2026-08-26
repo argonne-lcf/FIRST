@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -109,21 +110,28 @@ class AdmissionController:
         lease_sec: float = 30.0,
         max_request_sec: float = 3600.0,
         chunk_size: int = 500,
+        renew_interval_sec: float = 10.0,
     ) -> None:
         """
         - lease_sec: default reservation duration
         - max_request_sec: lease can be renewed for up to this long (backstop
           for stuck requests that never stop renewing the lease)
         - chunk_size: batch size for lease renewal and repair ops
+        - renew_interval_sec: period of the background lease-renewal loop
         """
         self.client = client
         self.lease_sec = lease_sec
         self.max_request_sec = max_request_sec
         self.chunk_size = chunk_size
+        self.renew_interval_sec = renew_interval_sec
         self._admit = client.register_script(_ADMIT_LUA)
         self._settle = client.register_script(_SETTLE_LUA)
         self._renew = client.register_script(_RENEW_LUA)
         self._record_error = client.register_script(_RECORD_ERROR_LUA)
+        # request_ids admitted by this worker and not yet settled; the renew
+        # loop keeps their leases alive so healthy workers hold their slots.
+        self._inflight: set[str] = set()
+        self._renew_task: asyncio.Task[None] | None = None
 
     async def admit(
         self,
@@ -187,7 +195,10 @@ class AdmissionController:
             args.extend([c.uid, c.max_backend_concurrency, c.cooldown_threshold])
 
         raw = await self._admit(keys=keys, args=args)
-        return AdmitResult.from_lua(raw)
+        result = AdmitResult.from_lua(raw)
+        if result.admitted:
+            self._inflight.add(request_id)
+        return result
 
     async def settle(
         self,
@@ -208,6 +219,7 @@ class AdmissionController:
         skip the pre-read round trip on the hot path.  The sweeper omits them
         and pays one extra GET to discover the reservation's identity.
         """
+        self._inflight.discard(request_id)
         reservation_key = Keys.reservation(request_id)
 
         if not model_name or not user_id or not backend_id:
@@ -269,6 +281,35 @@ class AdmissionController:
                 )
             )
         return renewed
+
+    async def start(self) -> None:
+        """Start the background loop renewing this worker's in-flight leases.
+
+        Call once from the app lifespan; pair with stop() on shutdown.
+        """
+        self._renew_task = asyncio.create_task(
+            self._renew_loop(), name="admission-renew"
+        )
+
+    async def stop(self) -> None:
+        if self._renew_task is None:
+            return
+        self._renew_task.cancel()
+        try:
+            await self._renew_task
+        except asyncio.CancelledError:
+            pass
+        self._renew_task = None
+
+    async def _renew_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.renew_interval_sec)
+            if not self._inflight:
+                continue
+            try:
+                await self.renew(list(self._inflight))
+            except Exception:
+                logger.warning("Inflight lease renewal failed", exc_info=True)
 
     async def sweep(self, batch: int = 100) -> int:
         """

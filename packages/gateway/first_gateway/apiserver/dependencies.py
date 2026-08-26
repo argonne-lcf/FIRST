@@ -127,8 +127,8 @@ BackendClientManagerDep = Annotated[
 ]
 
 
-async def get_admission_controller(redis_client: RedisDep) -> _AdmissionController:
-    return _AdmissionController(client=redis_client)
+async def get_admission_controller(request: Request) -> _AdmissionController:
+    return cast(_AdmissionController, request.app.state.admission_controller)
 
 
 AdmissionControllerDep = Annotated[

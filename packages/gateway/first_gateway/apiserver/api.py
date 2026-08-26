@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from first_gateway.settings import Settings
 
+from ..database.redis.admission import AdmissionController
 from ..log_config import config_logging
 from .backend_client_manager import BackendClientManager
 from .error_handlers import register_error_handlers
@@ -30,11 +31,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         router_config_manager = RouterConfigManager(client_state.redis)
         router_config_manager.add_swap_callback(backend_client_manager.on_config_swap)
         await router_config_manager.start()
+        admission_controller = AdmissionController(client=client_state.redis)
+        await admission_controller.start()
         app.state.router_config_manager = router_config_manager
         app.state.backend_client_manager = backend_client_manager
+        app.state.admission_controller = admission_controller
         try:
             yield
         finally:
+            await admission_controller.stop()
             await router_config_manager.stop()
             await backend_client_manager.close_all()
 
