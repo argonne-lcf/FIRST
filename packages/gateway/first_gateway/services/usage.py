@@ -291,8 +291,18 @@ class AnthropicMessagesAdapter(BaseAdapter):
         return u
 
 
+class EmbeddingsAdapter(BaseAdapter):
+    def parse_unary(self, body: str | bytes | dict[str, Any]) -> TokenUsage:
+        try:
+            obj = json.loads(body) if isinstance(body, (bytes, str)) else body
+        except (ValueError, UnicodeDecodeError):
+            return TokenUsage()
+        return _from_chat(obj.get("usage")) if isinstance(obj, dict) else TokenUsage()
+
+
 USAGE_PARSERS: dict[str, BaseAdapter] = {
     "chat/completions": ChatCompletionsAdapter(),
     "responses": ResponsesAdapter(),
     "messages": AnthropicMessagesAdapter(),
+    "embeddings": EmbeddingsAdapter(),
 }
