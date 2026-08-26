@@ -4,6 +4,7 @@ members = [
     "packages/common",
     "packages/dashboard",
     "packages/gateway",
+    "packages/logs/first_stats_query",
     "packages/pilot",
 ]
 
@@ -42,7 +43,7 @@ select = ["F", "I", "ARG"]
 "tests/**" = ["ARG001", "ARG002"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["alcf_ai", "first_common", "first_dashboard", "first_gateway", "first_pilot"]
+known-first-party = ["alcf_ai", "first_common", "first_dashboard", "first_gateway", "first_pilot", "first_stats_query"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -51,6 +52,7 @@ mypy_path = [
     "packages/common",
     "packages/dashboard",
     "packages/gateway",
+    "packages/logs/first_stats_query",
     "packages/pilot",
     "tests",
 ]
@@ -60,6 +62,7 @@ packages = [
     "first_dashboard",
     "first_gateway",
     "first_pilot",
+    "first_stats_query",
     "tests",
 ]
 plugins = [ "pydantic.mypy" ]
