@@ -1,0 +1,122 @@
+{
+  "id": "resp_8ee81c7e5de6e8fa",
+  "created_at": 1787693153,
+  "incomplete_details": null,
+  "instructions": null,
+  "metadata": null,
+  "model": "inkling-bf16",
+  "object": "response",
+  "output": [
+    {
+      "arguments": "{\"city\":\"Tokyo\"}",
+      "call_id": "chatcmpl-tool-a570436de18adbba",
+      "name": "get_weather",
+      "type": "function_call",
+      "id": "fc_995cdffe920ebe33",
+      "caller": null,
+      "namespace": null,
+      "status": "completed"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "temperature": 1.0,
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "name": "get_weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "City name"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      },
+      "strict": null,
+      "type": "function",
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Get current weather for a city",
+      "output_schema": null
+    },
+    {
+      "name": "search_web",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "strict": null,
+      "type": "function",
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Search the web",
+      "output_schema": null
+    },
+    {
+      "name": "calculate",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression"
+        ]
+      },
+      "strict": null,
+      "type": "function",
+      "allowed_callers": null,
+      "defer_loading": null,
+      "description": "Evaluate a math expression",
+      "output_schema": null
+    }
+  ],
+  "top_p": 1.0,
+  "background": false,
+  "max_output_tokens": 200,
+  "max_tool_calls": null,
+  "previous_response_id": null,
+  "prompt": null,
+  "reasoning": null,
+  "service_tier": "auto",
+  "status": "completed",
+  "text": null,
+  "top_logprobs": null,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 189,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "input_tokens_per_turn": [],
+      "cached_tokens_per_turn": []
+    },
+    "output_tokens": 17,
+    "output_tokens_details": {
+      "reasoning_tokens": 0,
+      "tool_output_tokens": 0,
+      "output_tokens_per_turn": [],
+      "tool_output_tokens_per_turn": []
+    },
+    "total_tokens": 206
+  },
+  "user": null,
+  "presence_penalty": 0.0,
+  "frequency_penalty": 0.0,
+  "kv_transfer_params": null,
+  "ec_transfer_params": null,
+  "input_messages": null,
+  "output_messages": null
+}
