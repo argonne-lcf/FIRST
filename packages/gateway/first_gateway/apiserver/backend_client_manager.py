@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import socket
 import tempfile
 from pathlib import Path
@@ -151,6 +152,7 @@ class BackendClientManager:
             retries=2,
             limits=limits,
             http2=False,
+            proxy=os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY"),
             socket_options=SOCKET_OPTS,
         )
 
