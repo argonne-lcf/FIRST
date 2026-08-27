@@ -120,7 +120,9 @@ async def submit_inference(
         body = await response.aread()
         await response.aclose()
         # TODO: streaming error handling
-        logger.warning(f"Received error from backend: {body[-512:]}")
+        logger.warning(
+            f"Received error from backend: {body[-512:].decode(errors='replace')}"
+        )
         response.raise_for_status()
 
     body = cast(dict[str, Any], response.json())
