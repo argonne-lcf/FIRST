@@ -144,7 +144,7 @@ async def submit_inference_streaming(
 ) -> StreamingResponse:
     """POST to an inference backend and relay the SSE stream to the caller."""
 
-    payload.stream = True
+    setattr(payload, "stream", True)
     request = client.build_request(
         "POST",
         f"/v1/{payload.endpoint}",
