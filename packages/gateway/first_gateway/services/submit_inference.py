@@ -152,7 +152,12 @@ async def submit_inference_streaming(
     )
 
     response = await client.send(request, stream=True)
-    response.raise_for_status()
+    if response.status_code != 200:
+        body = (await response.aread()).decode(errors="ignore")
+        await response.aclose()
+        # TODO: streaming error handling
+        logger.warning(f"Received error from backend: {body[-512:]}")
+        response.raise_for_status()
 
     parser = USAGE_PARSERS.get(payload.endpoint)
 
