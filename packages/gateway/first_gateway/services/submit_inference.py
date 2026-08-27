@@ -125,13 +125,13 @@ async def submit_inference(
         )
         response.raise_for_status()
 
-    body = cast(dict[str, Any], response.json())
+    json_body = cast(dict[str, Any], response.json())
     parser = USAGE_PARSERS.get(payload.endpoint)
-    usage = parser.parse_unary(body) if parser else TokenUsage()
+    usage = parser.parse_unary(json_body) if parser else TokenUsage()
     # TODO: emit structured log events (this is a placeholder for visibility):
     logger.info(f"{payload.endpoint} - {model.name} - {user.username} - {usage}")
     await admission_controller.settle(request_id, actual_tokens=usage.total_tokens or 0)
-    return body
+    return json_body
 
 
 async def submit_inference_streaming(
