@@ -39,7 +39,7 @@ def get_candidates_from_deployments(
     deployments: list[DeploymentConfig],
 ) -> list[CandidateBackend]:
     if not deployments:
-        raise NotFound("Attempt to sort models with empty list of deployments.")
+        return []
 
     items = [
         (backend, d.router_params.weight, d.router_params)
