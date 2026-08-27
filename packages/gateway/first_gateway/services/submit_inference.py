@@ -59,6 +59,7 @@ async def submit_inference_with_retry(
         )
 
         client = backend_client_manager.get(backend_id)
+        assert client is not None  # To mute make mypy error
 
         try:
             response: StreamingResponse | dict[str, Any]
