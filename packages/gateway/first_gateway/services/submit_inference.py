@@ -41,7 +41,7 @@ async def submit_inference_with_retry(
     # Only collect backend candidates that have a httpx client ready
     backend_candidates = get_backend_candidates(model, deployment_name=deployment_name)
     backend_candidates = [
-        b for b in backend_candidates if b.uid in backend_client_manager
+        b for b in backend_candidates if b.uid in backend_client_manager.clients
     ]
 
     estimated_tokens = payload.estimate_tokens(model.max_model_len)
