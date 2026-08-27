@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 from pathlib import Path
@@ -61,10 +62,19 @@ def main(
 @cli.command()
 def ls_endpoints() -> None:
     """
-    List all endpoints available across clusters
+    List all endpoints available across clusters (raw API response)
     """
     client = _cli_state["client"]
-    print(client.list_endpoints())
+    print(json.dumps(client.list_endpoints(), indent=2))
+
+
+@cli.command()
+def ls_models(cluster: str) -> None:
+    """
+    List models available on a cluster (raw API response)
+    """
+    client = _cli_state["client"]
+    print(json.dumps(client.list_models(cluster), indent=2))
 
 
 @cli.command()
