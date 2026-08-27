@@ -9,6 +9,8 @@ from uuid import uuid4
 
 import httpx
 
+from first_common.schema.types import SecretRef
+
 from ..database.redis.router_config import BackendConfig, DeploymentConfig, RouterConfig
 from ..services.certmanager import generate_client_cert
 from ..settings import Settings
@@ -137,7 +139,8 @@ class BackendClientManager:
     ) -> httpx.AsyncClient:
         headers = {"Accept-Encoding": "identity"}
         if backend.api_key:
-            headers["Authorization"] = f"Bearer {backend.api_key}"
+            resolved = SecretRef(backend.api_key).resolve().get_secret_value()
+            headers["Authorization"] = f"Bearer {resolved}"
 
         max_concurrency = deployment.router_params.max_backend_concurrency
         limits = httpx.Limits(

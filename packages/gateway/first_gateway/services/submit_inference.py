@@ -61,6 +61,11 @@ async def submit_inference_with_retry(
         client = backend_client_manager.get(backend_id)
         assert client is not None  # To mute make mypy error
 
+        deployment = get_deployment_from_backend_id(model.deployments, backend_id)
+        payload.model = next(
+            b.backend_model_name for b in deployment.backends if b.id == backend_id
+        )
+
         try:
             response: StreamingResponse | dict[str, Any]
             if streaming:
@@ -83,7 +88,6 @@ async def submit_inference_with_retry(
                 )
         except:
             # TODO: figure out a way to gather and report errors
-            deployment = get_deployment_from_backend_id(model.deployments, backend_id)
             await admission_controller.record_error(
                 backend_id, deployment.router_params
             )
