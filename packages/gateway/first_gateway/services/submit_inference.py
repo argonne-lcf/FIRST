@@ -87,7 +87,9 @@ async def submit_inference_with_retry(
             )
             await admission_controller.settle(request_id, actual_tokens=0)
             backend_candidates = [b for b in backend_candidates if b.uid != backend_id]
-            logger.warning(f"Backend {backend_id} failed, trying next one.")
+            logger.error(
+                f"Backend {backend_id} failed, trying next one.", exc_info=True
+            )
         else:
             return response
 
