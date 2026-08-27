@@ -39,13 +39,12 @@ async def submit_inference_with_retry(
     """
 
     backend_candidates = get_backend_candidates(model, deployment_name=deployment_name)
-    if not backend_candidates:
-        raise ServiceUnavailable(f"No backend available for model {model.name}.")
 
     estimated_tokens = payload.estimate_tokens(model.max_model_len)
     streaming = getattr(payload, "stream", False) or False
 
-    for attempt in range(min(3, len(backend_candidates))):
+    # Attempt at least once to make sure admit_request is called
+    for attempt in range(max(1, min(3, len(backend_candidates)))):
         backend_id = await admit_request(
             user,
             model,
