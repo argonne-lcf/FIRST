@@ -114,7 +114,13 @@ async def submit_inference(
         f"/v1/{payload.endpoint}",
         json=payload.model_dump(exclude_unset=True, mode="json"),
     )
-    response.raise_for_status()
+
+    if response.status_code != 200:
+        body = await response.aread()
+        await response.aclose()
+        # TODO: streaming error handling
+        logger.warning(f"Received error from backend: {body[-512:]}")
+        response.raise_for_status()
 
     body = cast(dict[str, Any], response.json())
     parser = USAGE_PARSERS.get(payload.endpoint)
