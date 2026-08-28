@@ -12,11 +12,13 @@ from pydantic import (
     Field,
     GetCoreSchemaHandler,
     ImportString,
+    PrivateAttr,
     SecretStr,
     field_validator,
 )
 from pydantic_core import core_schema
 
+from .auth import UserAuthEvent
 from .base_scheduler import SchedulerAdapter
 
 ResourceName = NewType("ResourceName", str)
@@ -117,14 +119,67 @@ class UsageLimits(BaseModel):
         return self.rpm / 60.0
 
 
+class UsageOverride(BaseModel):
+    """
+    Override usage limits, targetting a user ID, username, or group ID.
+    Only fields that are set to an integer are overridden.
+    """
+
+    kind: Literal["user_id", "username", "group_id"]
+    id: str
+    tpm: int | None = None
+    burst_tokens: int | None = None
+    rpm: int | None = None
+    burst_requests: int | None = None
+    max_user_concurrency: int | None = None
+
+
 class UsagePolicy(BaseModel):
     """
-    Default usage rate limits, applied per-model x per-user.
-    Allows overriding usage limits for specific user or group IDs.
+    Usage rate limits, applied per-model x per-user.
+
+    Allows overriding usage limits for specific users and groups.  Overrides are
+    partial: only explicitly set fields are overwritten.
+
+    Overrides are layered sequentially over the default: in case of conflicts,
+    the last override wins.
     """
 
     default: UsageLimits = UsageLimits()
-    overrides: dict[str, UsageLimits] = {}
+    overrides: list[UsageOverride] = []
+    _cache: dict[tuple[str, str, frozenset[str]], UsageLimits] = PrivateAttr(
+        default_factory=dict
+    )
+
+    def get_limits(self, user: UserAuthEvent) -> UsageLimits:
+        """
+        Get the usage limits for a specific user, including any overrides.
+        """
+        key = (user.id, user.username, frozenset(user.user_group_uuids))
+
+        if key in self._cache:
+            return self._cache[key]
+
+        patch: dict[str, int] = {}
+        group_ids = set(user.user_group_uuids)
+
+        for override in self.overrides:
+            if override.kind == "user_id" and override.id == user.id:
+                patch.update(
+                    override.model_dump(exclude_none=True, exclude={"kind", "id"})
+                )
+            elif override.kind == "username" and override.id == user.username:
+                patch.update(
+                    override.model_dump(exclude_none=True, exclude={"kind", "id"})
+                )
+            elif override.kind == "group_id" and override.id in group_ids:
+                patch.update(
+                    override.model_dump(exclude_none=True, exclude={"kind", "id"})
+                )
+
+        result = self.default.model_copy(update=patch)
+        self._cache[key] = result
+        return result
 
 
 class OverloadPolicy(BaseModel):

@@ -6,7 +6,7 @@ from first_common.errors import (
     ServiceUnavailable,
     TooManyRequests,
 )
-from first_common.schema.types import UsageLimits, UsagePolicy
+from first_common.schema.types import UsageLimits
 from first_gateway.apiserver.dependencies import AuthUser
 
 from ..database.redis.admission import (
@@ -80,7 +80,7 @@ async def admit_request(
     takes in to account weights and recent activities.
     """
 
-    usage_limits = get_usage_limits(user, model.usage_limits)
+    usage_limits = model.usage_limits.get_limits(user)
 
     admit_result = await admission_controller.admit(
         request_id=request_id,
@@ -110,14 +110,6 @@ def get_deployment_from_backend_id(
         for d in deployments
         if any(backend.id == backend_id for backend in d.backends)
     )
-
-
-def get_usage_limits(user: AuthUser, usage_policy: UsagePolicy) -> UsageLimits:
-    # TODO: check groups too, but what happen if more than 1 user groups are in overrides?
-    if user.id in usage_policy.overrides:
-        return usage_policy.overrides[user.id]
-    else:
-        return usage_policy.default
 
 
 def raise_admit_error(
