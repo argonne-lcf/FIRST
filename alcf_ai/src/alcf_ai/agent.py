@@ -193,6 +193,7 @@ def generate_codex_model_configs(
                         context_window=ctx,
                         version=version,
                     )
+                    catalog_path.parent.mkdir(exist_ok=True, parents=True)
                     catalog_path.write_text(json.dumps(catalog, indent=2))
                     logging.info(f"Created {catalog_path} for Codex {version}")
 
