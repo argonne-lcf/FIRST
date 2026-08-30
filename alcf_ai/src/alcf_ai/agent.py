@@ -261,7 +261,9 @@ def edit_opencode(
                         }
 
                     if reasoning.get("separate_output", False):
-                        entry["interleaved"] = "reasoning_content"
+                        entry["interleaved"] = {
+                            "field": "reasoning_content",
+                        }
 
                 if m_id := model.get("id"):
                     entries[m_id] = entry
