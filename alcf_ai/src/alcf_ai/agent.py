@@ -3,6 +3,7 @@ import json
 import logging
 import shutil
 import subprocess
+from collections import defaultdict
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -27,6 +28,54 @@ DEFAULT_CAPABILITIES: dict[str, Any] = {
     "context_window_tokens": 65536,
     "input_modalities": ["text"],
 }
+
+
+def _load_json_config(path: Path) -> dict:
+    try:
+        with path.open() as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _load_toml_config(path: Path) -> tomlkit.TOMLDocument:
+    try:
+        with path.open() as f:
+            return tomlkit.load(f)
+    except (FileNotFoundError, tomlkit.exceptions.ParseError):
+        return tomlkit.TOMLDocument()
+
+
+def _write_json_config(path: Path, config: dict) -> None:
+    path.parent.mkdir(exist_ok=True, parents=True)
+    with path.open("w") as f:
+        json.dump(config, f, indent=2)
+
+
+def _write_toml_config(path: Path, config: tomlkit.TOMLDocument) -> None:
+    path.parent.mkdir(exist_ok=True, parents=True)
+    with path.open("w") as f:
+        tomlkit.dump(config, f)
+
+
+
+def _group_by_framework(models: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for m in models:
+        if framework := m.get("framework"):
+            groups[framework].append(m)
+    return dict(groups)
+
+
+def _provider_key(cluster_name: str, framework: str) -> str:
+    return f"alcf-inference-service-{cluster_name}-{framework}"
+
+
+def _provider_name(cluster_name: str, framework: str) -> str:
+    return (
+        f"ALCF Inference Service ({cluster_name.title()}, "
+        f"{'vLLM' if framework == 'vllm' else 'Direct API'})"
+    )
 
 
 def _merge_capabilities(model: dict[str, Any]) -> dict[str, Any]:
@@ -159,23 +208,14 @@ def generate_codex_model_configs(
     try:
         upstream, prompt_text = _fetch_catalog_and_prompt(version)
         template = json.loads(upstream)
-    except (
-        OSError,
-        RuntimeError,
-        subprocess.SubprocessError,
-        httpx.HTTPError,
-        ValueError,
-        json.JSONDecodeError,
-    ) as err:
+    except (httpx.HTTPError, OSError, ValueError) as err:
         logging.warning(f"Skipping codex model catalog generation: {err}")
         return
 
     for cluster_name, models in model_infos.items():
-        for framework in [f for m in models if (f := m.get("framework"))]:
-            provider_name = f"alcf-inference-service-{cluster_name}-{framework}"
-            for model in models:
-                if model.get("framework") != framework:
-                    continue
+        for framework, group in _group_by_framework(models).items():
+            provider_key = _provider_key(cluster_name, framework)
+            for model in group:
 
                 caps = _merge_capabilities(model)
                 if (
@@ -202,7 +242,7 @@ def generate_codex_model_configs(
                         / f"alcf-{cluster_name}-{slug.replace('/', '-')}.config.toml"
                     )
                     profile = tomlkit.TOMLDocument()
-                    profile["model_provider"] = provider_name
+                    profile["model_provider"] = provider_key
                     profile["model"] = slug
                     profile["model_catalog_json"] = str(catalog_path)
                     profile_path.write_text(tomlkit.dumps(profile))
@@ -215,19 +255,13 @@ def edit_opencode(
     model_infos: dict[str, list[dict[str, Any]]],
 ) -> None:
     path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
-    try:
-        with path.open() as f:
-            config = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        config = {}
+    config = _load_json_config(path)
 
     providers = config.get("provider", {})
     for cluster_name, models in model_infos.items():
-        for framework in [f for m in models if (f := m.get("framework"))]:
+        for framework, group in _group_by_framework(models).items():
             entries = {}
-            for model in models:
-                if model.get("framework") != framework:
-                    continue
+            for model in group:
 
                 caps = _merge_capabilities(model)
                 entry = {}
@@ -269,8 +303,8 @@ def edit_opencode(
                 if m_id := model.get("id"):
                     entries[m_id] = entry
 
-            providers[f"alcf-inference-service-{cluster_name}-{framework}"] = {
-                "name": f"ALCF Inference Service ({cluster_name.title()}, {'vLLM' if framework == 'vllm' else 'Direct API'})",
+            providers[_provider_key(cluster_name, framework)] = {
+                "name": _provider_name(cluster_name, framework),
                 "npm": "@ai-sdk/openai-compatible",
                 "options": {
                     "baseURL": f"{base_url}{cluster_name}/{framework}/v1",
@@ -281,9 +315,7 @@ def edit_opencode(
 
     config["provider"] = providers
 
-    path.parent.mkdir(exist_ok=True, parents=True)
-    with path.open("w") as f:
-        json.dump(config, f, indent=2)
+    _write_json_config(path, config)
 
     logging.info(f"Updated configuration at {path}")
 
@@ -294,19 +326,13 @@ def edit_pi(
     model_infos: dict[str, list[dict[str, Any]]],
 ) -> None:
     path = Path.home() / ".pi" / "agent" / "models.json"
-    try:
-        with path.open() as f:
-            config = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        config = {}
+    config = _load_json_config(path)
 
     providers = config.get("providers", {})
     for cluster_name, models in model_infos.items():
-        for framework in [f for m in models if (f := m.get("framework"))]:
+        for framework, group in _group_by_framework(models).items():
             entries = []
-            for model in models:
-                if model.get("framework") != framework:
-                    continue
+            for model in group:
 
                 caps = _merge_capabilities(model)
                 entry = {}
@@ -326,7 +352,7 @@ def edit_pi(
                         else "openai-completions"
                     )
 
-                if ctx := model.get("context_window_tokens"):
+                if ctx := caps.get("context_window_tokens"):
                     entry["contextWindow"] = ctx
 
                 if inputs := caps.get("input_modalities"):
@@ -352,7 +378,7 @@ def edit_pi(
 
                 entries.append(entry)
 
-            providers[f"alcf-inference-service-{cluster_name}-{framework}"] = {
+            providers[_provider_key(cluster_name, framework)] = {
                 "baseUrl": f"{base_url}{cluster_name}/{framework}/v1",
                 "api": "openai-completions",
                 "apiKey": f"{api_key}",
@@ -364,9 +390,7 @@ def edit_pi(
 
     config["providers"] = providers
 
-    path.parent.mkdir(exist_ok=True, parents=True)
-    with path.open("w") as f:
-        json.dump(config, f, indent=2)
+    _write_json_config(path, config)
 
     logging.info(f"Updated configuration at {path}")
 
@@ -377,35 +401,25 @@ def edit_codex(
     model_infos: dict[str, list[dict[str, Any]]],
 ) -> None:
     path = Path.home() / ".codex" / "config.toml"
-    try:
-        with path.open() as f:
-            config = tomlkit.load(f)
-    except (FileNotFoundError, tomlkit.exceptions.ParseError):
-        config = tomlkit.TOMLDocument()
+    config = _load_toml_config(path)
 
     try:
         version = _codex_version()
-    except (
-        OSError,
-        RuntimeError,
-        subprocess.SubprocessError,
-        httpx.HTTPError,
-        ValueError,
-    ) as err:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as err:
         logging.warning(f"Skipping codex model catalog generation: {err}")
         return
 
     providers = config.get("model_providers", {})
     for cluster_name, models in model_infos.items():
-        for framework in [f for m in models if (f := m.get("framework"))]:
+        for framework, group in _group_by_framework(models).items():
             wire_api = "chat"
             if tuple(map(int, version.split("."))) > (0, 94, 0) or "responses" in [
-                p for m in models if (pl := m.get("api_protocols")) for p in pl
+                p for m in group if (pl := m.get("api_protocols")) for p in pl
             ]:
                 wire_api = "responses"
 
-            providers[f"alcf-inference-service-{cluster_name}-{framework}"] = {
-                "name": f"ALCF Inference Service ({cluster_name.title()}, {'vLLM' if framework == 'vllm' else 'Direct API'})",
+            providers[_provider_key(cluster_name, framework)] = {
+                "name": _provider_name(cluster_name, framework),
                 "base_url": f"{base_url}{cluster_name}/{framework}/v1",
                 "experimental_bearer_token": f"{api_key}",
                 "wire_api": wire_api,
@@ -418,9 +432,7 @@ def edit_codex(
     config.setdefault("model", "inkling-bf16")
     config.setdefault("model_provider", "alcf-inference-service-minerva-api")
 
-    path.parent.mkdir(exist_ok=True, parents=True)
-    with path.open("w") as f:
-        tomlkit.dump(config, f)
+    _write_toml_config(path, config)
 
     generate_codex_model_configs(model_infos, version)
 
