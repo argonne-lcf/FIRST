@@ -3,7 +3,7 @@ name = "inference-gateway-backend"
 version = "0.2.0"
 description = ""
 authors = [{ name = "Benoit Cote", email = "bcote@anl.gov" }]
-requires-python = "==3.12.6"
+requires-python = "==3.12.*"
 readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3",
