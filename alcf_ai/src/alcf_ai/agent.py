@@ -214,6 +214,11 @@ def generate_codex_model_configs(
 
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
+            protocols = [
+                p for m in group if (pl := m.get("api_protocols")) for p in pl
+            ]
+            if tuple(map(int, version.split("."))) > (0, 94, 0) and "responses" not in protocols:
+                continue
             provider_key = _provider_key(cluster_name, framework)
             for model in group:
 
@@ -412,11 +417,15 @@ def edit_codex(
     providers = config.get("model_providers", {})
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
-            wire_api = "chat"
-            if tuple(map(int, version.split("."))) > (0, 94, 0) or "responses" in [
+            protocols = [
                 p for m in group if (pl := m.get("api_protocols")) for p in pl
-            ]:
+            ]
+            if tuple(map(int, version.split("."))) > (0, 94, 0):
+                if "responses" not in protocols:
+                    continue
                 wire_api = "responses"
+            else:
+                wire_api = "responses" if "responses" in protocols else "chat"
 
             providers[_provider_key(cluster_name, framework)] = {
                 "name": _provider_name(cluster_name, framework),
