@@ -30,10 +30,11 @@ DEFAULT_CAPABILITIES: dict[str, Any] = {
 }
 
 
-def _load_json_config(path: Path) -> dict:
+def _load_json_config(path: Path) -> dict[str, Any]:
     try:
         with path.open() as f:
-            return json.load(f)
+            result: dict[str, Any] = json.load(f)
+            return result
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
@@ -46,7 +47,7 @@ def _load_toml_config(path: Path) -> tomlkit.TOMLDocument:
         return tomlkit.TOMLDocument()
 
 
-def _write_json_config(path: Path, config: dict) -> None:
+def _write_json_config(path: Path, config: dict[str, Any]) -> None:
     path.parent.mkdir(exist_ok=True, parents=True)
     with path.open("w") as f:
         json.dump(config, f, indent=2)
@@ -58,8 +59,9 @@ def _write_toml_config(path: Path, config: tomlkit.TOMLDocument) -> None:
         tomlkit.dump(config, f)
 
 
-
-def _group_by_framework(models: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _group_by_framework(
+    models: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for m in models:
         if framework := m.get("framework"):
@@ -214,14 +216,14 @@ def generate_codex_model_configs(
 
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
-            protocols = [
-                p for m in group if (pl := m.get("api_protocols")) for p in pl
-            ]
-            if tuple(map(int, version.split("."))) > (0, 94, 0) and "responses" not in protocols:
+            protocols = [p for m in group if (pl := m.get("api_protocols")) for p in pl]
+            if (
+                tuple(map(int, version.split("."))) > (0, 94, 0)
+                and "responses" not in protocols
+            ):
                 continue
             provider_key = _provider_key(cluster_name, framework)
             for model in group:
-
                 caps = _merge_capabilities(model)
                 if (
                     (slug := model.get("id"))
@@ -267,7 +269,6 @@ def edit_opencode(
         for framework, group in _group_by_framework(models).items():
             entries = {}
             for model in group:
-
                 caps = _merge_capabilities(model)
                 entry = {}
 
@@ -338,7 +339,6 @@ def edit_pi(
         for framework, group in _group_by_framework(models).items():
             entries = []
             for model in group:
-
                 caps = _merge_capabilities(model)
                 entry = {}
 
@@ -417,9 +417,7 @@ def edit_codex(
     providers = config.get("model_providers", {})
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
-            protocols = [
-                p for m in group if (pl := m.get("api_protocols")) for p in pl
-            ]
+            protocols = [p for m in group if (pl := m.get("api_protocols")) for p in pl]
             if tuple(map(int, version.split("."))) > (0, 94, 0):
                 if "responses" not in protocols:
                     continue

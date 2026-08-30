@@ -86,7 +86,8 @@ class InferenceClient(Client):
     def list_models(self, cluster: str) -> list[dict[str, Any]]:
         resp = self.get(f"{cluster}/models")
         resp.raise_for_status()
-        return resp.json()
+        result: list[dict[str, Any]] = resp.json()
+        return result
 
     def ensure_staging_area(self) -> StagingAreaResponse:
         resp = self.put("data/staging")
