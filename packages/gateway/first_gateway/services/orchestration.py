@@ -1,3 +1,5 @@
+from typing import NoReturn
+
 import numpy as np
 
 from first_common.errors import (
@@ -20,11 +22,16 @@ from ..database.redis.admission import (
 from ..database.redis.router_config import DeploymentConfig, ModelConfig
 
 
-def get_backend_candidates(
+def get_shuffled_backends(
     model: ModelConfig,
     deployment_name: str | None = None,
 ) -> list[CandidateBackend]:
-    """Generate list of backend candidates for a given model and deployment (if provided)."""
+    """
+    Generate list of backend candidates for a given model and deployment (if provided).
+
+    The shuffle order is obtained by weighted random selection (without
+    replacement) of backends according to the deployment weight.
+    """
 
     if deployment_name:
         d = next((d for d in model.deployments if d.name == deployment_name))
@@ -32,12 +39,6 @@ def get_backend_candidates(
     else:
         deployments = model.deployments
 
-    return get_candidates_from_deployments(deployments)
-
-
-def get_candidates_from_deployments(
-    deployments: list[DeploymentConfig],
-) -> list[CandidateBackend]:
     if not deployments:
         return []
 
@@ -47,6 +48,10 @@ def get_candidates_from_deployments(
         if d.router_params.weight > 0
         for backend in d.backends
     ]
+
+    if not items:
+        return []
+
     backends, weights, router_params = zip(*items)
     nb_backends = len(backends)
 
@@ -116,7 +121,7 @@ def raise_admit_error(
     admit_result: AdmitResult,
     usage_limits: UsageLimits,
     model: ModelConfig,
-) -> None:
+) -> NoReturn:
     retry_after_sec: int | None
     if admit_result.retry_after_sec:
         retry_after_sec = int(admit_result.retry_after_sec)

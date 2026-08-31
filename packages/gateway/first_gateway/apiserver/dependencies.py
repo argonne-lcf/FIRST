@@ -1,9 +1,7 @@
-import uuid
 from typing import Annotated, AsyncGenerator, cast
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from redis.asyncio import Redis as _AsyncRedis
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
 )
@@ -11,13 +9,11 @@ from sqlalchemy.ext.asyncio import (
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.resources.spec import AccessGroupSpec
 
-from ..database.redis.admission import AdmissionController as _AdmissionController
 from ..database.redis.pubsub import RedisPubSub as _RedisPubSub
 from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
-from .backend_client_manager import BackendClientManager as _BackendClientManager
 from .router_config_manager import RouterConfigManager
 
 
@@ -53,13 +49,6 @@ async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 
-async def get_redis(state: AppState) -> _AsyncRedis:
-    return state.redis
-
-
-RedisDep = Annotated[_AsyncRedis, Depends(get_redis)]
-
-
 async def get_redis_repo(state: AppState) -> _RedisRepo:
     return state.redis_repo
 
@@ -86,7 +75,6 @@ async def get_auth_user(
     return user
 
 
-BearerCredentials = Annotated[HTTPAuthorizationCredentials, Depends(HTTPBearer())]
 AuthUser = Annotated[UserAuthEvent, Depends(get_auth_user)]
 
 
@@ -116,28 +104,3 @@ async def is_user_admin(
 
 
 IsUserAdmin = Annotated[bool, Depends(is_user_admin)]
-
-
-async def get_backend_client_manager(request: Request) -> _BackendClientManager:
-    return cast(_BackendClientManager, request.app.state.backend_client_manager)
-
-
-BackendClientManagerDep = Annotated[
-    _BackendClientManager, Depends(get_backend_client_manager)
-]
-
-
-async def get_admission_controller(request: Request) -> _AdmissionController:
-    return cast(_AdmissionController, request.app.state.admission_controller)
-
-
-AdmissionControllerDep = Annotated[
-    _AdmissionController, Depends(get_admission_controller)
-]
-
-
-def get_request_id() -> str:
-    return str(uuid.uuid4())
-
-
-RequestId = Annotated[str, Depends(get_request_id)]

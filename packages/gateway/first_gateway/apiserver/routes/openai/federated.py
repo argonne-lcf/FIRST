@@ -1,7 +1,5 @@
-from typing import Any
-
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from first_common.schema.endpoints.llm import (
     OpenAIChatCompletionsPayload,
@@ -9,70 +7,30 @@ from first_common.schema.endpoints.llm import (
     OpenAIResponsesPayload,
 )
 
-from ....services.submit_inference import submit_inference_with_retry
-from ...dependencies import (
-    AdmissionControllerDep,
-    AuthUser,
-    BackendClientManagerDep,
-    RequestId,
-)
-from .dependencies import AuthorizedModel
+from ...inference import InferenceServiceDep
 
 router = APIRouter(prefix="/federated/v1")
 
 
 @router.post("/chat/completions", response_model=None)
 async def chat_completions(
-    user: AuthUser,
-    model: AuthorizedModel,
-    admission_controller: AdmissionControllerDep,
-    backend_client_manager: BackendClientManagerDep,
+    inference: InferenceServiceDep,
     payload: OpenAIChatCompletionsPayload,
-    request_id: RequestId,
-) -> StreamingResponse | dict[str, Any]:
-    return await submit_inference_with_retry(
-        user,
-        model,
-        admission_controller,
-        backend_client_manager,
-        payload,
-        request_id,
-    )
+) -> StreamingResponse | JSONResponse:
+    return await inference.submit_inference(payload)
 
 
 @router.post("/responses", response_model=None)
 async def responses(
-    user: AuthUser,
-    model: AuthorizedModel,
-    admission_controller: AdmissionControllerDep,
-    backend_client_manager: BackendClientManagerDep,
+    inference: InferenceServiceDep,
     payload: OpenAIResponsesPayload,
-    request_id: RequestId,
-) -> StreamingResponse | dict[str, Any]:
-    return await submit_inference_with_retry(
-        user,
-        model,
-        admission_controller,
-        backend_client_manager,
-        payload,
-        request_id,
-    )
+) -> StreamingResponse | JSONResponse:
+    return await inference.submit_inference(payload)
 
 
 @router.post("/embeddings", response_model=None)
 async def embeddings(
-    user: AuthUser,
-    model: AuthorizedModel,
-    admission_controller: AdmissionControllerDep,
-    backend_client_manager: BackendClientManagerDep,
+    inference: InferenceServiceDep,
     payload: OpenAIEmbeddingsPayload,
-    request_id: RequestId,
-) -> StreamingResponse | dict[str, Any]:
-    return await submit_inference_with_retry(
-        user,
-        model,
-        admission_controller,
-        backend_client_manager,
-        payload,
-        request_id,
-    )
+) -> StreamingResponse | JSONResponse:
+    return await inference.submit_inference(payload)

@@ -1,10 +1,14 @@
 from functools import cached_property
 from typing import AsyncIterator, Literal, Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from redis.asyncio import Redis
 
-from first_common.schema.types import OverloadPolicy, RouterParams, UsagePolicy
+from first_common.schema.types import (
+    OverloadPolicy,
+    RouterParams,
+    UsagePolicy,
+)
 
 from .keys import Keys
 from .pubsub import Channel, RedisPubSub
@@ -36,6 +40,11 @@ class ModelConfig(BaseModel):
     usage_limits: UsagePolicy
     overload: OverloadPolicy
     deployments: list[DeploymentConfig]
+
+    @field_validator("supported_endpoints")
+    @classmethod
+    def normalize_endpoints(cls, v: list[str]) -> list[str]:
+        return [e.strip().strip("/") for e in v]
 
 
 class RouterConfig(BaseModel):
