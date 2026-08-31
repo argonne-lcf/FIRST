@@ -22,6 +22,7 @@ from .helpers import (
 )
 
 TIME_COL = "timestamp_compute_request"
+ACCESS_TIME_COL = "timestamp_request"
 
 
 @recipe("inference")
@@ -154,13 +155,14 @@ def hist_users(
     _granularity: str = "auto",
     cluster: str | None = None,
 ) -> None:
-    """Histogram of user accesses over the period."""
+    """Histogram of unique users per bin over the period."""
     if cluster:
         print(
             "hist_users: access_log has no cluster column, --cluster ignored",
             file=sys.stderr,
         )
-    df = (
+    setup = _hist_setup(start, end)
+    accesses = (
         filter_period(
             # an access counts as user activity only once it names a user
             load_data("access_log").join(
@@ -170,21 +172,25 @@ def hist_users(
                 how="inner",
                 suffix="_u",
             ),
-            "timestamp_request",
+            ACCESS_TIME_COL,
             start,
             end,
         )
-        .select("timestamp_request")
+        .select("user.id", ACCESS_TIME_COL)
         .collect(engine="streaming")
     )
+    # Binning twice, once to count and once to draw, only agrees if both get
+    # the very same edges.
+    unique, edges = _unique_per_bin(accesses, "user.id", ACCESS_TIME_COL, setup["bins"])
+    setup["bins"] = edges
     plot_hist(
-        df,
-        y_col="timestamp_request",
+        unique,
+        y_col=ACCESS_TIME_COL,
         title=f"User Access Distribution ({window_label(start, end)})",
         xlabel="Timestamp",
-        ylabel="Number of Accesses",
+        ylabel="# of Unique Users",
         save_path=f"hist_users_{window_slug(start, end)}.svg",
-        **_hist_setup(start, end),
+        **setup,
     )
 
 
@@ -240,6 +246,45 @@ def _hist_setup(
         "xformatter": _date_formatter("%m/%y"),
         "yformatter": StrMethodFormatter("{x:,.0f}"),
     }
+
+
+def _unique_per_bin(
+    df: pl.DataFrame, user_col: str, time_col: str, bins: int
+) -> tuple[pl.DataFrame, Any]:
+    """Reduce accesses to one row per user per bin, and name the bins used.
+
+    A user active several times in one bin is a single unique access there, and
+    still counts in every bin they were active in. Each row keeps the timestamp
+    of the access it stands for, so a histogram over these rows counts a user
+    once per bin as long as it is binned by the edges returned here.
+
+    With no rows, or with every access at the same instant, there is no span to
+    divide, and the caller's bin count is passed straight through.
+    """
+    first, last = df.select(
+        pl.col(time_col).min().alias("first"), pl.col(time_col).max().alias("last")
+    ).row(0)
+    if first is None or last is None:
+        return df, bins
+    span_us = (last - first) // datetime.timedelta(microseconds=1)
+    if span_us == 0:
+        return df.unique(subset=user_col), bins
+
+    edges = [
+        first + datetime.timedelta(microseconds=round(i * span_us / bins))
+        for i in range(bins + 1)
+    ]
+    bin_of_row = (
+        (pl.col(time_col) - first).dt.total_microseconds() * bins // span_us
+    ).clip(0, bins - 1)
+    binned = (
+        df.with_columns(bin_of_row.alias("_bin"))
+        .unique(subset=[user_col, "_bin"])
+        .drop("_bin")
+    )
+    # Edges land on whole microseconds, the resolution the timestamps have, so
+    # the rows this binned and the rows the histogram bins are the same rows.
+    return binned, pl.Series("bin_edges", edges).to_numpy()
 
 
 def _date_formatter(fmt: str) -> Any:

@@ -237,10 +237,10 @@ def test_requests_without_a_user_row_stay_counted(
     assert "unknown" in frame["user.name"].to_list()
 
 
-def test_user_histogram_counts_accesses(
+def test_user_histogram_counts_users_once_per_bin(
     monkeypatch: pytest.MonkeyPatch, dataset: Path
 ) -> None:
-    """The user histogram bins accesses, so its axis counts accesses."""
+    """A bin rises once per user active in it, not once per access they made."""
     calls: list[tuple[pl.DataFrame, dict[str, Any]]] = []
 
     def record(df: pl.DataFrame, **kwargs: Any) -> None:
@@ -252,11 +252,11 @@ def test_user_histogram_counts_accesses(
     )
     frame, kwargs = calls[0]
     accesses = pl.scan_parquet(dataset / "*.access_log.parquet").collect()
-    assert (
-        frame.height
-        == accesses.filter(pl.col("user.id").is_in(["user1", "user2"])).height
-    )
-    assert kwargs["ylabel"] == "Number of Accesses"
+    named = accesses.filter(pl.col("user.id").is_in(["user1", "user2"]))
+    assert frame.height < named.height  # repeat hits in one bin collapse together
+    # Both users are active every day, so both are active in every bin.
+    assert frame.height == 2 * (len(kwargs["bins"]) - 1)
+    assert kwargs["ylabel"] == "# of Unique Users"
 
 
 def test_status_percentages_without_a_time_group(
