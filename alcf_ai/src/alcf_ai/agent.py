@@ -449,6 +449,11 @@ def edit_codex(
 @cli.command()
 def configure(
     agent: Annotated[Literal["opencode", "codex", "pi"], typer.Argument()],
+    include_experimental: bool = typer.Option(
+        False,
+        "--include-experimental",
+        help="Include non-whitelisted (experimental) models in the agent configuration",
+    ),
 ) -> None:
     """
     Generates a configuration template for the given agent.
@@ -465,7 +470,9 @@ def configure(
         for cluster_name, whitelist in ALLOWLIST.items()
         if (
             models := [
-                m for m in client.list_models(cluster_name) if m["id"] in whitelist
+                m
+                for m in client.list_models(cluster_name)
+                if include_experimental or m["id"] in whitelist
             ]
         )
     }
