@@ -379,7 +379,12 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
 pub fn parse_logs(large_requests: &Path, dataset_dir: &Path, logs: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(dataset_dir)?;
 
-    for log in files(logs)? {
+    for log in files(logs)?.into_iter().filter(|log| {
+        log.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("out.log")
+    }) {
         println!("Parsing {}...", log.display());
 
         let partitions = match mmap_if_stale(&log, dataset_dir)? {
