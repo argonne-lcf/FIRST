@@ -1,5 +1,4 @@
 use std::{
-    cell::LazyCell,
     collections::{HashMap, hash_map::Entry},
     fs::{self, File},
     io::{self, BufWriter, Cursor, Read, Write},
@@ -34,137 +33,157 @@ const STREAMS: &[&str] = &[
 
 #[derive(Parser)]
 struct Args {
-    logs: Vec<PathBuf>,
+    /// Directory of large request payloads to bundle into a squashfs
+    #[arg(long)]
     large_requests: Option<PathBuf>,
+
+    logs: Vec<PathBuf>,
 }
 
-struct LazyMmap<P>
-where
-    P: AsRef<Path>,
-{
-    path: P,
-    cur: CursorStatus,
+/// Split `buf` on b"\n", each line including its trailing newline. Trailing
+/// data without a newline is yielded as a final line as well.
+fn lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut pos = 0;
+    std::iter::from_fn(move || match memchr::memchr(b'\n', &buf[pos..]) {
+        Some(end) => {
+            let line = &buf[pos..=pos + end];
+            pos += end + 1;
+            Some(line)
+        }
+        None if pos < buf.len() => {
+            let line = &buf[pos..];
+            pos = buf.len();
+            Some(line)
+        }
+        None => None,
+    })
 }
 
-enum CursorStatus {
-    Uninit,
+/// Reader that mmaps its file on first read and drops the mapping once EOF
+/// is reached (subsequent reads return `Ok(0)`).
+struct LazyMmap {
+    path: PathBuf,
+    state: MmapState,
+}
+
+enum MmapState {
+    Unmapped,
     Mapped(Cursor<Mmap>),
-    Dropped,
+    Eof,
 }
 
-impl<P> LazyMmap<P>
-where
-    P: AsRef<Path>,
-{
-    fn new(path: P) -> Self {
+impl LazyMmap {
+    fn new(path: PathBuf) -> Self {
         Self {
             path,
-            cur: CursorStatus::Uninit,
+            state: MmapState::Unmapped,
         }
     }
 }
 
-impl<P> Read for LazyMmap<P>
-where
-    P: AsRef<Path>,
-{
+impl Read for LazyMmap {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.cur {
-            CursorStatus::Uninit => {
-                let file = File::open(&self.path)?;
-                let mmap = unsafe { Mmap::map(&file) }?;
-
-                self.cur = CursorStatus::Mapped(Cursor::new(mmap));
-                self.read(buf)
-            }
-            CursorStatus::Mapped(ref mut c) => {
-                let bytes = c.read(buf)?;
-                if bytes == 0 && !buf.is_empty() {
-                    self.cur = CursorStatus::Dropped;
-                }
-
-                Ok(bytes)
-            }
-            CursorStatus::Dropped => Ok(0),
+        if matches!(self.state, MmapState::Unmapped) {
+            let file = File::open(&self.path)?;
+            // SAFETY: log files are not modified while first-slogs runs
+            let mmap = unsafe { Mmap::map(&file) }?;
+            self.state = MmapState::Mapped(Cursor::new(mmap));
         }
+
+        let MmapState::Mapped(cursor) = &mut self.state else {
+            return Ok(0);
+        };
+
+        let bytes = cursor.read(buf)?;
+        if bytes == 0 && !buf.is_empty() {
+            self.state = MmapState::Eof;
+        }
+
+        Ok(bytes)
     }
 }
 
-fn mmap_outdated(path: &Path) -> io::Result<Option<Mmap>> {
+/// Map `path` iff it has no `.ndjson` sidecars yet or any of them is older
+/// than the log itself (strict comparison).
+fn mmap_if_stale(path: &Path) -> io::Result<Option<Mmap>> {
     let file = File::open(path)?;
+    let log_mtime = file.metadata()?.mtime();
 
-    let mtime = file.metadata()?.mtime();
-    let mut stream_mtimes = STREAMS
+    let sidecar_mtimes: Vec<_> = STREAMS
         .iter()
-        .filter_map(|s| {
-            let p = path.with_added_extension(s);
-            p.with_extension("ndjson");
+        .filter_map(|stream| {
+            let mut p = path.with_added_extension(stream);
+            p.add_extension("ndjson");
             fs::metadata(p).ok().map(|m| m.mtime())
         })
-        .peekable();
+        .collect();
 
-    Ok(
-        if stream_mtimes.peek().is_none() || stream_mtimes.any(|m| mtime > m) {
-            unsafe {
-                // SAFETY we assume the file is never modified at runtime
-                Some(Mmap::map(&file)?)
-            }
-        } else {
-            None
-        },
-    )
+    if !sidecar_mtimes.is_empty() && sidecar_mtimes.iter().all(|&m| log_mtime <= m) {
+        return Ok(None);
+    }
+
+    // SAFETY: log files are not modified while first-slogs runs
+    Ok(Some(unsafe { Mmap::map(&file)? }))
 }
 
 fn split_log(path: &Path, buf: &[u8]) -> io::Result<HashMap<String, PathBuf>> {
     let mut streams: HashMap<String, BufWriter<File>> = HashMap::new();
     let mut partitions: HashMap<String, PathBuf> = HashMap::new();
 
-    let mut write_to_partition = |line| -> io::Result<()> {
-        // get stream and append to partition if wanted
+    for line in lines(buf) {
         match sonic_rs::get(line, &["stream"]).as_str() {
-            Some(stream) => {
-                if STREAMS.contains(&stream) {
-                    let mut e = match streams.entry(stream.to_string()) {
-                        Entry::Occupied(e) => e,
-                        Entry::Vacant(e) => {
-                            let mut p = path.with_added_extension(stream);
-                            p.add_extension("ndjson");
+            Some(stream) if STREAMS.contains(&stream) => {
+                let mut entry = match streams.entry(stream.to_string()) {
+                    Entry::Occupied(e) => e,
+                    Entry::Vacant(e) => {
+                        let mut p = path.with_added_extension(stream);
+                        p.add_extension("ndjson");
 
-                            let e = e.insert_entry(BufWriter::new(File::create(&p)?));
+                        let e = e.insert_entry(BufWriter::new(File::create(&p)?));
 
-                            partitions.insert(stream.to_string(), p);
-                            e
-                        }
-                    };
+                        partitions.insert(stream.to_string(), p);
+                        e
+                    }
+                };
 
-                    e.get_mut().write_all(line)?;
-                }
+                entry.get_mut().write_all(line)?;
             }
+            // unknown streams are silently dropped
+            Some(_) => {}
             None => {
-                if let Some(l) = str::from_utf8(&line).ok() {
-                    println!("Malformed msg: {}", l);
+                if let Ok(msg) = str::from_utf8(line) {
+                    println!("Malformed msg: {}", msg);
                 }
             }
-        };
-
-        Ok(())
-    };
-
-    let mut start = 0;
-    for end in memchr::memchr_iter(b'\n', buf) {
-        let line = &buf[start..=end];
-        write_to_partition(line)?;
-        start = end + 1;
-    }
-    if start < buf.len() {
-        let line = &buf[start..]; // trailing non-\n data
-        write_to_partition(line)?;
+        }
     }
 
-    // flush streams
-    streams.values_mut().try_for_each(BufWriter::flush)?;
+    for writer in streams.values_mut() {
+        writer.flush()?;
+    }
 
     Ok(partitions)
+}
+
+/// Sink an `.ndjson` partition next to `path` into a `.parquet` file of the
+/// same stem, returning the parquet path.
+fn ndjson_to_parquet(path: &Path) -> anyhow::Result<PathBuf> {
+    let parquet = path.with_extension("parquet");
+
+    LazyJsonLineReader::new(PlRefPath::try_from_path(path)?)
+        .with_infer_schema_length(None)
+        .finish()?
+        .sink(
+            SinkDestination::File {
+                target: SinkTarget::Path(PlRefPath::try_from_path(&parquet)?),
+            },
+            FileWriteFormat::Parquet(ParquetWriteOptions::default().into()),
+            UnifiedSinkArgs::default(),
+        )?
+        .with_streaming(true)
+        .collect()?;
+
+    Ok(parquet)
 }
 
 fn partitions_to_parquet(
@@ -172,24 +191,10 @@ fn partitions_to_parquet(
 ) -> anyhow::Result<HashMap<String, PathBuf>> {
     for (stream, path) in &mut partitions {
         if matches!(stream.as_str(), "app" | "request_metrics") {
-            continue; // skip request_metrics and app are written after
+            continue; // request_metrics is merged with app/request_log below
         }
 
-        let lf = LazyJsonLineReader::new(PlRefPath::try_from_path(&path)?)
-            .with_infer_schema_length(None)
-            .finish()?;
-        path.set_extension("parquet");
-
-        let _ = lf
-            .sink(
-                SinkDestination::File {
-                    target: SinkTarget::Path(PlRefPath::try_from_path(&path)?),
-                },
-                FileWriteFormat::Parquet(ParquetWriteOptions::default().into()),
-                UnifiedSinkArgs::default(),
-            )?
-            .with_streaming(true)
-            .collect()?;
+        *path = ndjson_to_parquet(path)?;
     }
 
     if let Some(request_metrics) = partitions.get("request_metrics") {
@@ -199,20 +204,7 @@ fn partitions_to_parquet(
             let streaming_metrics = pull_streaming_metrics(app)?;
             write_merged_request_metrics(streaming_metrics, request_metrics, request_log)?
         } else {
-            let parquet = request_metrics.with_extension("parquet");
-            let _ = LazyJsonLineReader::new(PlRefPath::try_from_path(&request_metrics)?)
-                .with_infer_schema_length(None)
-                .finish()?
-                .sink(
-                    SinkDestination::File {
-                        target: SinkTarget::Path(PlRefPath::try_from_path(&parquet)?),
-                    },
-                    FileWriteFormat::Parquet(ParquetWriteOptions::default().into()),
-                    UnifiedSinkArgs::default(),
-                )?
-                .with_streaming(true)
-                .collect()?;
-            parquet
+            ndjson_to_parquet(request_metrics)?
         };
 
         partitions.insert("request_metrics".to_string(), request_metrics);
@@ -222,20 +214,20 @@ fn partitions_to_parquet(
 }
 
 fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
-    let file = File::open(app)?;
     let mmap = unsafe {
-        // SAFETY we assume the file is never modified at runtime
-        Mmap::map(&file)?
+        // SAFETY: log files are not modified while first-slogs runs
+        Mmap::map(&File::open(app)?)?
     };
 
     let re = regex!(
-        r"Token estimation for [0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}: ([0-9]+) total \(([0-9]+) completion, ([0-9]+) prompt\)"
+        r"Token estimation for ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}): ([0-9]+) total \(([0-9]+) completion, ([0-9]+) prompt\)"
     );
     let mut access_ids = Vec::new();
     let mut total_tokens: Vec<Option<u64>> = Vec::new();
     let mut completion_tokens: Vec<Option<u64>> = Vec::new();
     let mut prompt_tokens: Vec<Option<u64>> = Vec::new();
-    let mut read_estimation = |line| {
+
+    for line in lines(&mmap) {
         if let Some(msg) = sonic_rs::get(line, &["msg"]).as_str()
             && let Some(caps) = re.captures(msg)
         {
@@ -245,17 +237,6 @@ fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
             completion_tokens.push(completion.parse().ok());
             prompt_tokens.push(prompt.parse().ok());
         }
-    };
-
-    let mut start = 0;
-    for end in memchr::memchr_iter(b'\n', &mmap) {
-        let line = &mmap[start..=end];
-        read_estimation(line);
-        start = end + 1;
-    }
-    if start < mmap.len() {
-        let line = &mmap[start..]; // trailing non-\n data
-        read_estimation(line);
     }
 
     Ok(df!(
@@ -271,13 +252,13 @@ fn write_merged_request_metrics(
     request_metrics: &Path,
     request_log: &Path,
 ) -> PolarsResult<PathBuf> {
-    let lf = LazyJsonLineReader::new(PlRefPath::try_from_path(&request_metrics)?)
+    let lf = LazyJsonLineReader::new(PlRefPath::try_from_path(request_metrics)?)
         .with_infer_schema_length(None)
         .finish()?;
 
     // access_log->request_log mapping
     let mapping = LazyFrame::scan_parquet(
-        PlRefPath::try_from_path(&request_log)?,
+        PlRefPath::try_from_path(request_log)?,
         ScanArgsParquet::default(),
     )?
     .select([col("access_log_id"), col("id").alias("request_id")]);
@@ -295,8 +276,7 @@ fn write_merged_request_metrics(
 
     // merge with request_metrics
     let request_metrics = request_metrics.with_extension("parquet");
-    let _ = lf
-        .join_builder()
+    lf.join_builder()
         .with(streaming_metrics)
         .how(JoinType::Left)
         .on([col("request_id")])
@@ -321,8 +301,8 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
     let gid = unsafe { libc::getgid() };
     let mtime = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
 
-    let mut squashfs = LazyFrame::scan_parquet(
-        PlRefPath::try_from_path(&request_log)?,
+    let request_log_ids = LazyFrame::scan_parquet(
+        PlRefPath::try_from_path(request_log)?,
         ScanArgsParquet::default(),
     )?
     .select([col("id")])
@@ -331,8 +311,20 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
     .column("id")?
     .str()?
     .no_null_iter()
-    .try_fold(
-        LazyCell::new(|| {
+    .map(|id| id.to_string())
+    .collect::<Vec<_>>();
+
+    // the writer is only created once a matching file is found
+    let mut squashfs: Option<FilesystemWriter> = None;
+    for request_id in &request_log_ids {
+        let mut json = large_requests.join(request_id);
+        json.set_extension("json");
+
+        if !json.is_file() {
+            continue;
+        }
+
+        let writer = squashfs.get_or_insert_with(|| {
             let mut fs = FilesystemWriter::default();
             fs.set_compressor(FilesystemCompressor::new(Compressor::Zstd, None).unwrap());
             fs.set_root_uid(uid);
@@ -340,43 +332,35 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
             fs.set_root_mode(0o755);
             fs.set_time(mtime);
             fs
-        }),
-        |mut fs, request_id| -> anyhow::Result<_> {
-            let mut json = large_requests.join(request_id);
-            json.set_extension("json");
+        });
 
-            if json.is_file() {
-                let mut path = Path::new(&request_id[0..2]).join(&request_id[2..4]);
+        let mut path = Path::new(&request_id[0..2]).join(&request_id[2..4]);
 
-                fs.push_dir_all(
-                    &path,
-                    NodeHeader {
-                        permissions: 0o755,
-                        uid,
-                        gid,
-                        mtime,
-                    },
-                )?;
-                path.push(json.file_name().unwrap());
+        writer.push_dir_all(
+            &path,
+            NodeHeader {
+                permissions: 0o755,
+                uid,
+                gid,
+                mtime,
+            },
+        )?;
+        path.push(json.file_name().unwrap());
 
-                fs.push_file(
-                    LazyMmap::new(json),
-                    path,
-                    NodeHeader {
-                        permissions: 0o644,
-                        uid,
-                        gid,
-                        mtime,
-                    },
-                )?;
-            }
+        writer.push_file(
+            LazyMmap::new(json),
+            path,
+            NodeHeader {
+                permissions: 0o644,
+                uid,
+                gid,
+                mtime,
+            },
+        )?;
+    }
 
-            Ok(fs)
-        },
-    )?;
-
-    match LazyCell::get_mut(&mut squashfs) {
-        Some(fs) => {
+    match squashfs {
+        Some(mut fs) => {
             let path = request_log.with_extension("large_requests.squashfs");
             let mut file = File::create(&path)?;
             fs.write(&mut file)?;
@@ -390,20 +374,21 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    for p in args.logs {
-        println!("Parsing {}...", p.display());
-        let partitions = match mmap_outdated(&p)? {
-            Some(b) => split_log(&p, &b)?,
+    for log in args.logs {
+        println!("Parsing {}...", log.display());
+
+        let partitions = match mmap_if_stale(&log)? {
+            Some(mmap) => split_log(&log, &mmap)?,
             None => {
-                println!("Skipped already parsed log {}", p.display());
+                println!("Skipped already parsed log {}", log.display());
                 continue;
             }
         };
 
         let partitions = partitions_to_parquet(partitions)?;
-        partitions
-            .values()
-            .for_each(|p| println!("Outputted frame {}", p.display()));
+        for partition in partitions.values() {
+            println!("Outputted frame {}", partition.display());
+        }
 
         if let Some(request_log) = partitions.get("request_log")
             && let Some(large_requests) = &args.large_requests
