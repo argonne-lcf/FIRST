@@ -97,11 +97,10 @@ spec:
       burst_requests: 10
       max_user_concurrency: 5
     overrides:
-      "msalim@anl.gov":
+      - kind: user_id
+        id: msalim@anl.gov
         tpm: 0
-        burst_tokens: 0
         rpm: 0
-        burst_requests: 0
         max_user_concurrency: 100
   overload:
     short_retry_sec: 10

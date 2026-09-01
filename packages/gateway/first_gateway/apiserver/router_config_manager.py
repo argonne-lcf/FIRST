@@ -45,7 +45,7 @@ class RouterConfigManager:
     async def _swap(self, cfg: RouterConfig) -> None:
         # Both drivers read Redis independently; guard against a slow in-flight
         # load overwriting a newer config that already landed.
-        if cfg.version >= self._current.version:
+        if cfg.version > self._current.version:
             self._current = cfg
             for cb in self._swap_callbacks:
                 try:

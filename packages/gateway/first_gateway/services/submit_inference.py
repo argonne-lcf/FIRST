@@ -115,10 +115,15 @@ async def submit_inference(
 ) -> dict[str, Any]:
     """POST to an inference backend."""
 
-    response = await client.post(
-        f"/v1/{payload.endpoint}",
-        json=payload.model_dump(exclude_unset=True, mode="json"),
+    parser = USAGE_PARSERS.get(payload.endpoint)
+
+    upstream_payload = payload.model_dump(
+        exclude_unset=True, mode="json", exclude={"endpoint"}
     )
+    if parser:
+        upstream_payload = parser.prepare_request(upstream_payload)
+
+    response = await client.post(f"/v1/{payload.endpoint}", json=upstream_payload)
 
     if response.status_code != 200:
         body = await response.aread()
@@ -130,7 +135,6 @@ async def submit_inference(
         response.raise_for_status()
 
     json_body = cast(dict[str, Any], response.json())
-    parser = USAGE_PARSERS.get(payload.endpoint)
     usage = parser.parse_unary(json_body) if parser else TokenUsage()
     # TODO: emit structured log events (this is a placeholder for visibility):
     logger.info(f"{payload.endpoint} - {model.name} - {user.username} - {usage}")
@@ -148,11 +152,19 @@ async def submit_inference_streaming(
 ) -> StreamingResponse:
     """POST to an inference backend and relay the SSE stream to the caller."""
 
-    setattr(payload, "stream", True)
+    parser = USAGE_PARSERS.get(payload.endpoint)
+
+    upstream_payload = payload.model_dump(
+        exclude_unset=True, mode="json", exclude={"endpoint"}
+    )
+    upstream_payload["stream"] = True
+    if parser:
+        upstream_payload = parser.prepare_request(upstream_payload)
+
     request = client.build_request(
         "POST",
         f"/v1/{payload.endpoint}",
-        json=payload.model_dump(exclude_unset=True, mode="json"),
+        json=upstream_payload,
     )
 
     response = await client.send(request, stream=True)
@@ -162,8 +174,6 @@ async def submit_inference_streaming(
         # TODO: streaming error handling
         logger.warning(f"Received error from backend: {body[-512:]}")
         response.raise_for_status()
-
-    parser = USAGE_PARSERS.get(payload.endpoint)
 
     async def _relay() -> AsyncIterator[bytes]:
         tap = UsageTap()
