@@ -114,6 +114,7 @@ class Settings(BaseSettings):
     redis_url: str
 
     globus: GlobusAuthSettings
+    data_staging_globus_collection_id: str = ""
     pilot_ca_crt: str
     pilot_ca_key: SecretStr
     health_slack_webhook_url: str | None = None
