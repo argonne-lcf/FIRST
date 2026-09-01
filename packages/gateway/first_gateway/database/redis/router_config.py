@@ -1,5 +1,6 @@
+from datetime import datetime
 from functools import cached_property
-from typing import AsyncIterator, Literal, Self
+from typing import Any, AsyncIterator, Literal, Self
 
 from pydantic import BaseModel, field_validator
 from redis.asyncio import Redis
@@ -37,6 +38,9 @@ class ModelConfig(BaseModel):
     allowed_domains: list[str]
     supported_endpoints: list[str]
     max_model_len: int | None = None
+    created_at: datetime | None = None
+    display_name: str | None = None
+    capabilities: dict[str, Any] = {}
     usage_limits: UsagePolicy
     overload: OverloadPolicy
     deployments: list[DeploymentConfig]
