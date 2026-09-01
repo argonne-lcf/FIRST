@@ -834,6 +834,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backhand",
+ "blake3",
  "clap",
  "libc",
  "memchr",
