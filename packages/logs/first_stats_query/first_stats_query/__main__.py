@@ -14,6 +14,7 @@ import first_stats_query.visualizations.institution_stats  # noqa: F401
 import first_stats_query.visualizations.status_code_stats  # noqa: F401
 import first_stats_query.visualizations.token_breakdown  # noqa: F401
 
+from .large_requests import pull_request
 from .tables import CLUSTER_COL, STREAMS, TIMESTAMP_COL, generate_table
 from .visualizations import get_recipes
 from .visualizations.helpers import Recipe, filter_period
@@ -22,7 +23,9 @@ from .visualizations.helpers import Recipe, filter_period
 METRICS_TIME_COL = "timestamp_compute_request"
 
 
-def load_data(dataset_dir: str, name: str) -> pl.LazyFrame:
+def load_data(
+    dataset_dir: str, name: str, *, include_file_paths: str | None = None
+) -> pl.LazyFrame:
     """Load a dataset by name from the given directory."""
     match name:
         case "metrics":
@@ -30,24 +33,28 @@ def load_data(dataset_dir: str, name: str) -> pl.LazyFrame:
                 f"{dataset_dir}/*.request_metrics.parquet",
                 missing_columns="insert",
                 extra_columns="ignore",
+                include_file_paths=include_file_paths,
             )
         case "request_log":
             return pl.scan_parquet(
                 f"{dataset_dir}/*.request_log.parquet",
                 missing_columns="insert",
                 extra_columns="ignore",
+                include_file_paths=include_file_paths,
             )
         case "access_log":
             return pl.scan_parquet(
                 f"{dataset_dir}/*.access_log.parquet",
                 missing_columns="insert",
                 extra_columns="ignore",
+                include_file_paths=include_file_paths,
             )
         case "user":
             return pl.scan_parquet(
                 f"{dataset_dir}/*.user.parquet",
                 missing_columns="insert",
                 extra_columns="ignore",
+                include_file_paths=include_file_paths,
             )
         case _:
             raise ValueError(f"unknown data source: {name}")
@@ -307,6 +314,14 @@ def main() -> None:
         help="Group aggregation rows by this column (requires --aggregate)",
     )
 
+    request = subparsers.add_parser(
+        "request", help="Print a bundled large request payload from the dataset"
+    )
+    request.add_argument(
+        "request_id",
+        help="Request id (uuid) whose large payload to print",
+    )
+
     args = parser.parse_args()
 
     if args.command == "visualize":
@@ -315,6 +330,8 @@ def main() -> None:
         if args.group and not args.aggregate:
             parser.error("--group requires --aggregate")
         _run_table(args)
+    elif args.command == "request":
+        pull_request(load_data, args.dataset_dir, args.request_id)
 
 
 def _infer_granularity(
