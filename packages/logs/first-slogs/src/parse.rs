@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     fs::{self, File},
     io::{self, BufWriter, Cursor, Read, Write},
+    num::NonZeroUsize,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -30,6 +31,11 @@ const STREAMS: &[&str] = &[
     "request_metrics",
     "user",
 ];
+
+/// Rows of each ndjson partition polars infers the parquet schema from.
+/// Inferring from every row parses the whole file twice, but fields that only
+/// appear after these rows are dropped from the schema.
+const INFER_SCHEMA_ROWS: usize = 100_000;
 
 /// Hive dirs placing partitions at null `year`/`month`/`day` values, which
 /// polars scans as nulls.
@@ -227,7 +233,7 @@ fn ndjson_to_parquet(dataset_dir: &Path, path: &Path) -> anyhow::Result<PathBuf>
     let parquet = parquet_of(dataset_dir, path)?;
 
     LazyJsonLineReader::new(PlRefPath::try_from_path(path)?)
-        .with_infer_schema_length(None)
+        .with_infer_schema_length(NonZeroUsize::new(INFER_SCHEMA_ROWS))
         .finish()?
         .sink(
             SinkDestination::File {
@@ -316,7 +322,7 @@ fn write_merged_request_metrics(
     request_log: &Path,
 ) -> anyhow::Result<PathBuf> {
     let lf = LazyJsonLineReader::new(PlRefPath::try_from_path(request_metrics)?)
-        .with_infer_schema_length(None)
+        .with_infer_schema_length(NonZeroUsize::new(INFER_SCHEMA_ROWS))
         .finish()?;
 
     // access_log->request_log mapping
