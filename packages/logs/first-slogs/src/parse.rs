@@ -163,17 +163,17 @@ fn mmap_if_stale(path: &Path, dataset_dir: &Path) -> io::Result<Option<Mmap>> {
     let log_mtime = file.metadata()?.mtime();
 
     let dated = date_dirs(path);
-    let partition_mtimes: Vec<_> = STREAMS
-        .iter()
-        .chain(std::iter::once(&MALFORMED))
-        .filter_map(|stream| {
-            fs::metadata(partition(path, dataset_dir, stream, &dated))
-                .ok()
-                .map(|m| m.mtime())
-        })
-        .collect();
+    let mut written = false;
+    let mut stale = false;
+    for stream in STREAMS.iter().chain(std::iter::once(&MALFORMED)) {
+        // partitions of streams the log has no lines for are absent
+        if let Ok(metadata) = fs::metadata(partition(path, dataset_dir, stream, &dated)) {
+            written = true;
+            stale |= log_mtime > metadata.mtime();
+        }
+    }
 
-    if !partition_mtimes.is_empty() && partition_mtimes.iter().all(|&m| log_mtime <= m) {
+    if written && !stale {
         return Ok(None);
     }
 
