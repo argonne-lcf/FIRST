@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs, io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -80,23 +81,54 @@ fn walk(dir: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Write the large request checksums of `squashfs` into a json map under
-/// `<dataset_dir>/index/`, unless an index newer than the image already holds
-/// them, returning the index path when written.
-fn index_squashfs(dataset_dir: &Path, squashfs: &Path) -> anyhow::Result<Option<PathBuf>> {
-    // the index mirrors the squashfs tree under <dataset_dir>/index/
+/// The path of the index of `squashfs`: the same dated subpath rooted at
+/// `<dataset_dir>/index/`.
+fn index_of(dataset_dir: &Path, squashfs: &Path) -> anyhow::Result<PathBuf> {
     let relative = squashfs
         .strip_prefix(dataset_dir)?
         .strip_prefix("squashfs")?;
     let mut index = dataset_dir.join("index");
     index.push(relative);
     index.add_extension("index.json");
+    Ok(index)
+}
+
+/// Whether the index at `index` is newer than `squashfs` and so already holds
+/// its checksums.
+fn fresh(index: &Path, squashfs: &Path) -> bool {
+    matches!(
+        (fs::metadata(index), fs::metadata(squashfs)),
+        (Ok(index), Ok(image)) if image.mtime() <= index.mtime()
+    )
+}
+
+/// The bundled checksums of `squashfs`, loaded from its index when the index
+/// is newer than the image and computed from the image itself otherwise.
+fn bundled_checksums(
+    dataset_dir: &Path,
+    squashfs: &Path,
+) -> anyhow::Result<HashMap<String, blake3::Hash>> {
+    let index = index_of(dataset_dir, squashfs)?;
+
+    if fresh(&index, squashfs) {
+        let table: HashMap<String, String> = sonic_rs::from_slice(&fs::read(&index)?)?;
+        return table
+            .into_iter()
+            .map(|(uuid, checksum)| Ok((uuid, blake3::Hash::from_hex(&checksum)?)))
+            .collect();
+    }
+
+    validation::large_request_checksums(squashfs)
+}
+
+/// Write the large request checksums of `squashfs` into a json map under
+/// `<dataset_dir>/index/`, unless an index newer than the image already holds
+/// them, returning the index path when written.
+fn index_squashfs(dataset_dir: &Path, squashfs: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let index = index_of(dataset_dir, squashfs)?;
 
     // an index newer than the image already holds its checksums
-    if matches!(
-        (fs::metadata(&index), fs::metadata(squashfs)),
-        (Ok(index), Ok(image)) if image.mtime() <= index.mtime()
-    ) {
+    if fresh(&index, squashfs) {
         return Ok(None);
     }
 
@@ -141,10 +173,11 @@ fn main() -> anyhow::Result<()> {
                     continue; // nothing was bundled for this log
                 }
 
+                let bundled = bundled_checksums(&args.dataset_dir, &squashfs)?;
                 let verified = validation::validate_bundled_requests(
+                    &bundled,
                     &request_log,
                     &args.large_requests,
-                    &squashfs,
                 )?;
                 println!(
                     "Verified {verified} large requests in {}",
