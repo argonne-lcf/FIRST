@@ -7,7 +7,7 @@ use std::{
 
 use backhand::{FilesystemReader, InnerNode};
 
-use crate::parse::{request_log_ids, source_request_ids};
+use crate::parse::request_log_ids;
 
 /// Map of every large request uuid inside `squashfs` to the checksum of its
 /// payload.
@@ -64,13 +64,13 @@ pub fn large_request_checksums(squashfs: &Path) -> anyhow::Result<HashMap<String
 /// source file no longer matches the bundled copy.
 pub fn validate_bundled_requests(
     bundled: &HashMap<String, blake3::Hash>,
+    sources: &[String],
     request_log: &Path,
     large_requests: &Path,
 ) -> anyhow::Result<usize> {
     let mut problems = Vec::new();
     let mut verified = 0;
     let mut buf = vec![0u8; 64 * 1024];
-    let sources = source_request_ids(large_requests)?;
     for id in request_log_ids(request_log)? {
         if sources.binary_search(&id).is_err() {
             continue; // never bundled by `bundle_requests` either

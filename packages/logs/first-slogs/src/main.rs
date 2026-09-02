@@ -162,9 +162,16 @@ fn main() -> anyhow::Result<()> {
             })
         }
         Command::Vet => {
+            // the source listing is shared by every image
+            let sources = parse::source_request_ids(&args.large_requests)?;
             let parquets = artifacts(&args.dataset_dir, "request_log")?;
             parquets.par_iter().try_for_each(|request_log| {
-                vet_log(&args.dataset_dir, &args.large_requests, request_log)
+                vet_log(
+                    &args.large_requests,
+                    &sources,
+                    &args.dataset_dir,
+                    request_log,
+                )
             })
         }
     }
@@ -172,7 +179,12 @@ fn main() -> anyhow::Result<()> {
 
 /// Vet the large requests bundled for one request_log parquet against their
 /// source files.
-fn vet_log(dataset_dir: &Path, large_requests: &Path, request_log: &Path) -> anyhow::Result<()> {
+fn vet_log(
+    large_requests: &Path,
+    sources: &[String],
+    dataset_dir: &Path,
+    request_log: &Path,
+) -> anyhow::Result<()> {
     // the squashfs mirrors the request_log tree under <dataset_dir>/squashfs/
     let relative = request_log
         .strip_prefix(dataset_dir)?
@@ -185,7 +197,8 @@ fn vet_log(dataset_dir: &Path, large_requests: &Path, request_log: &Path) -> any
     }
 
     let bundled = bundled_checksums(dataset_dir, &squashfs)?;
-    let verified = validation::validate_bundled_requests(&bundled, request_log, large_requests)?;
+    let verified =
+        validation::validate_bundled_requests(&bundled, sources, request_log, large_requests)?;
     println!(
         "Verified {verified} large requests in {}",
         squashfs.display()
