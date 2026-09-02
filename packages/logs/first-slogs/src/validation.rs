@@ -7,7 +7,7 @@ use std::{
 
 use backhand::{FilesystemReader, InnerNode};
 
-use crate::parse::request_log_ids;
+use crate::parse::{request_log_ids, source_request_ids};
 
 /// Map of every large request uuid inside `squashfs` to the checksum of its
 /// payload.
@@ -70,11 +70,13 @@ pub fn validate_bundled_requests(
     let mut problems = Vec::new();
     let mut verified = 0;
     let mut buf = vec![0u8; 64 * 1024];
+    let sources = source_request_ids(large_requests)?;
     for id in request_log_ids(request_log)? {
-        let json = large_requests.join(&id).with_extension("json");
-        if !json.is_file() {
+        if sources.binary_search(&id).is_err() {
             continue; // never bundled by `bundle_requests` either
         }
+
+        let json = large_requests.join(&id).with_extension("json");
 
         let Some(&checksum) = bundled.get(&id) else {
             problems.push(format!("{id} is missing from the squashfs"));

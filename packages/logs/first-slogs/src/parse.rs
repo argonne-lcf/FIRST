@@ -383,6 +383,23 @@ pub fn request_log_ids(request_log: &Path) -> anyhow::Result<Vec<String>> {
     .collect())
 }
 
+/// The sorted ids of the requests that have a source json in `large_requests`.
+pub fn source_request_ids(large_requests: &Path) -> anyhow::Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for entry in fs::read_dir(large_requests)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_file()
+            && path.extension().is_some_and(|ext| ext == "json")
+            && let Some(id) = path.file_stem().and_then(|id| id.to_str())
+        {
+            ids.push(id.to_string());
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
 fn bundle_requests(
     dataset_dir: &Path,
     request_log: &Path,
@@ -393,16 +410,17 @@ fn bundle_requests(
     let mtime = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
 
     let ids = request_log_ids(request_log)?;
+    let sources = source_request_ids(large_requests)?;
 
     // the writer is only created once a matching file is found
     let mut squashfs: Option<FilesystemWriter> = None;
     for request_id in &ids {
+        if sources.binary_search(request_id).is_err() {
+            continue; // the request has no source json
+        }
+
         let mut json = large_requests.join(request_id);
         json.set_extension("json");
-
-        if !json.is_file() {
-            continue;
-        }
 
         let writer = squashfs.get_or_insert_with(|| {
             let mut fs = FilesystemWriter::default();
