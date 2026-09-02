@@ -30,7 +30,7 @@ def cluster_tokens(
     """Total tokens by cluster, adapted to granularity."""
     df, buckets = group_time(
         filter_period(
-            load_data("metrics").select("cluster", "total_tokens", TIME_COL),
+            load_data("request_metrics").select("cluster", "total_tokens", TIME_COL),
             TIME_COL,
             start,
             end,
@@ -70,7 +70,10 @@ def cluster_requests(
     """Request count by cluster, adapted to granularity."""
     df, buckets = group_time(
         filter_period(
-            load_data("metrics").select("cluster", TIME_COL), TIME_COL, start, end
+            load_data("request_metrics").select("cluster", TIME_COL),
+            TIME_COL,
+            start,
+            end,
         ),
         TIME_COL,
         granularity,
@@ -107,7 +110,7 @@ def cluster_users(
     """Unique users by cluster, adapted to granularity."""
     df, buckets = group_time(
         filter_period(
-            load_data("metrics")
+            load_data("request_metrics")
             .pipe(join_request_log, load_data)
             .pipe(join_user, load_data)
             .select("cluster", "user.name", TIME_COL),

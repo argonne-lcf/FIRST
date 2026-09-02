@@ -19,45 +19,21 @@ from .tables import CLUSTER_COL, STREAMS, TIMESTAMP_COL, generate_table
 from .visualizations import get_recipes
 from .visualizations.helpers import Recipe, filter_period
 
-# Timestamp column of the metrics stream, the source of every time axis.
+# Timestamp column of the request_metrics stream, the source of every time axis.
 METRICS_TIME_COL = "timestamp_compute_request"
 
 
 def load_data(
     dataset_dir: str, name: str, *, include_file_paths: str | None = None
 ) -> pl.LazyFrame:
-    """Load a dataset by name from the given directory."""
-    match name:
-        case "metrics":
-            return pl.scan_parquet(
-                f"{dataset_dir}/*.request_metrics.parquet",
-                missing_columns="insert",
-                extra_columns="ignore",
-                include_file_paths=include_file_paths,
-            )
-        case "request_log":
-            return pl.scan_parquet(
-                f"{dataset_dir}/*.request_log.parquet",
-                missing_columns="insert",
-                extra_columns="ignore",
-                include_file_paths=include_file_paths,
-            )
-        case "access_log":
-            return pl.scan_parquet(
-                f"{dataset_dir}/*.access_log.parquet",
-                missing_columns="insert",
-                extra_columns="ignore",
-                include_file_paths=include_file_paths,
-            )
-        case "user":
-            return pl.scan_parquet(
-                f"{dataset_dir}/*.user.parquet",
-                missing_columns="insert",
-                extra_columns="ignore",
-                include_file_paths=include_file_paths,
-            )
-        case _:
-            raise ValueError(f"unknown data source: {name}")
+    """Load a stream from ``<dataset_dir>/<stream>/``, which first-slogs
+    fills with hive-partitioned parquet."""
+    return pl.scan_parquet(
+        f"{dataset_dir}/{name}",
+        missing_columns="insert",
+        extra_columns="ignore",
+        include_file_paths=include_file_paths,
+    )
 
 
 def _parse_datetime(s: str) -> datetime.datetime:
@@ -274,7 +250,8 @@ def main() -> None:
     table.add_argument(
         "stream",
         choices=list(STREAMS),
-        help="Stream to tabulate (metrics, request_log, access_log, user)",
+        help="Stream to tabulate (request_metrics, request_log, access_log, "
+        "batch_log, batch_metrics)",
     )
     table.add_argument(
         "--columns",
@@ -354,11 +331,11 @@ def _make_load_data(
     end: datetime.datetime | None,
     cluster: str | None,
 ) -> Callable[[str], pl.LazyFrame]:
-    """Return a load_data function that filters metrics by time/cluster."""
+    """Return a load_data function that filters request_metrics by time/cluster."""
 
     def load_data_func(name: str) -> pl.LazyFrame:
         lf = load_data(dataset_dir, name)
-        if name != "metrics":
+        if name != "request_metrics":
             return lf
         lf = filter_period(lf, METRICS_TIME_COL, start, end)
         if cluster is not None:

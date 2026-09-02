@@ -31,7 +31,7 @@ def institution(
     """Requests by institution, adapted to granularity."""
     df, buckets = group_time(
         filter_period(
-            load_data("metrics")
+            load_data("request_metrics")
             .pipe(join_request_log, load_data)
             .pipe(join_user, load_data)
             .select(TIME_COL, "username"),

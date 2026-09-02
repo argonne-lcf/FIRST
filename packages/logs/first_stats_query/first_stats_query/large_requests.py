@@ -1,8 +1,8 @@
 """Pull large request payloads out of the squashfs images in a dataset.
 
 first-slogs bundles the requests whose payload outgrew the request_log
-parquet into a squashfs image next to it, named
-``<stem>.request_log.large_requests.squashfs``, with each payload stored at
+parquet into squashfs images under ``<dataset_dir>/squashfs/``, mirroring
+the request_log tree at the same dated subpath, with each payload stored at
 ``<id[0..2]>/<id[2..4]>/<id>.json``.
 """
 
@@ -42,7 +42,12 @@ def pull_request(
         raise SystemExit(f"error: request {request_id} is not in the dataset")
     parquet, request_id = found
 
-    squashfs = parquet.with_suffix(".large_requests.squashfs")
+    # the squashfs tree mirrors the request_log tree at the same dated subpath
+    relative = parquet.resolve().relative_to(Path(dataset_dir).resolve())
+    subpath = relative.relative_to("request_log")
+    squashfs = (
+        Path(dataset_dir) / "squashfs" / subpath.with_suffix(".large_requests.squashfs")
+    )
     if not squashfs.is_file():
         raise SystemExit(
             f"error: request {request_id} has no large request payload; "

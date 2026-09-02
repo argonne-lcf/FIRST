@@ -30,7 +30,7 @@ def token_breakdown(
     """Prompt vs completion tokens by cluster, adapted to granularity."""
     df, buckets = group_time(
         filter_period(
-            load_data("metrics").select("cluster", *TOKEN_COLS, TIME_COL),
+            load_data("request_metrics").select("cluster", *TOKEN_COLS, TIME_COL),
             TIME_COL,
             start,
             end,
