@@ -9,7 +9,6 @@ from .auth import get_inference_authorizer
 from .resources import (
     ClientResource,
     ClusterResource,
-    D3TritonResource,
     DINOv3Resource,
     Sam3Resource,
 )
@@ -63,12 +62,6 @@ class InferenceClient(Client):
     def sam3(self) -> "Sam3Resource":
         return self._resources.setdefault(  # type: ignore[return-value]
             "sam3", Sam3Resource("sophia/sam3service", self)
-        )
-
-    @property
-    def d3_triton(self) -> "D3TritonResource":
-        return self._resources.setdefault(  # type: ignore[return-value]
-            "d3_triton", D3TritonResource("sophia/triton/amsc-d3", self)
         )
 
     @property
