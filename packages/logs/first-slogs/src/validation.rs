@@ -18,6 +18,7 @@ pub fn large_request_checksums(squashfs: &Path) -> anyhow::Result<HashMap<String
     let image = FilesystemReader::from_reader(BufReader::new(File::open(squashfs)?))?;
 
     let mut checksums = HashMap::new();
+    let mut buf = vec![0u8; 64 * 1024];
     for node in image.files() {
         let InnerNode::File(file) = &node.inner else {
             continue; // the root and the two levels of uuid prefix dirs
@@ -26,8 +27,19 @@ pub fn large_request_checksums(squashfs: &Path) -> anyhow::Result<HashMap<String
             continue;
         };
 
-        let mut buf = Vec::with_capacity(file.file_len());
-        let read = image.file(file).reader().read_to_end(&mut buf)?;
+        // payloads are hashed as they stream out of the image
+        let mut reader = image.file(file).reader();
+        let mut hasher = blake3::Hasher::new();
+        let mut read = 0;
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            read += n;
+        }
+
         // a truncated payload would otherwise silently checksum as empty
         anyhow::ensure!(
             read == file.file_len(),
@@ -37,7 +49,7 @@ pub fn large_request_checksums(squashfs: &Path) -> anyhow::Result<HashMap<String
             file.file_len(),
         );
 
-        checksums.insert(uuid.to_string(), blake3::hash(&buf));
+        checksums.insert(uuid.to_string(), hasher.finalize());
     }
 
     Ok(checksums)
