@@ -70,6 +70,9 @@ ENABLE_BATCHES = os.getenv("ENABLE_BATCHES", False) == "True"
 MAX_BATCHES_PER_USER = int(os.getenv("MAX_BATCHES_PER_USER", 1))
 GLOBUS_BATCH_TIMEOUT_IN_DAYS = int(os.getenv("GLOBUS_BATCH_TIMEOUT_IN_DAYS", 7))
 
+# Raise Limit to 12 MB (slightly higher than Globus Compute restriction):
+DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024
+
 # Rate limit (req/s) per user accross the board
 RATE_LIMIT_PER_SEC_PER_USER = int(os.getenv("RATE_LIMIT_PER_SEC_PER_USER", 10))
 

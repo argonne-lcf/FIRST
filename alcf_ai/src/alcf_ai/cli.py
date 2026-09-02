@@ -15,7 +15,6 @@ from typer import Typer
 from .agent import cli as agent_cli
 from .auth import cli as auth_cli
 from .client import InferenceClient
-from .d3_triton import cli as d3_triton_cli
 from .dinov3 import cli as dinov3_cli
 from .sam3 import cli as sam3_cli
 
@@ -31,9 +30,6 @@ cli = Typer(no_args_is_help=True)
 _cli_state: CliState = {}
 
 cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
-cli.add_typer(
-    d3_triton_cli, name="d3-triton", help="Use the Triton HEP inference service"
-)
 cli.add_typer(
     dinov3_cli, name="dinov3", help="Use the DINOv3 image segmentation service"
 )
