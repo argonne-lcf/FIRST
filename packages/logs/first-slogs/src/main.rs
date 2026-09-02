@@ -1,5 +1,6 @@
 use std::{
     fs, io,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -79,14 +80,10 @@ fn walk(dir: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Write the large request checksums of `squashfs` into a json map next to it,
-/// mapping each request uuid to its checksum, returning the index path.
-fn index_squashfs(dataset_dir: &Path, squashfs: &Path) -> anyhow::Result<PathBuf> {
-    let mut table = Object::new();
-    for (uuid, checksum) in validation::large_request_checksums(squashfs)? {
-        table.insert(&uuid, checksum.to_string().as_str());
-    }
-
+/// Write the large request checksums of `squashfs` into a json map under
+/// `<dataset_dir>/index/`, unless an index newer than the image already holds
+/// them, returning the index path when written.
+fn index_squashfs(dataset_dir: &Path, squashfs: &Path) -> anyhow::Result<Option<PathBuf>> {
     // the index mirrors the squashfs tree under <dataset_dir>/index/
     let relative = squashfs
         .strip_prefix(dataset_dir)?
@@ -94,10 +91,24 @@ fn index_squashfs(dataset_dir: &Path, squashfs: &Path) -> anyhow::Result<PathBuf
     let mut index = dataset_dir.join("index");
     index.push(relative);
     index.add_extension("index.json");
+
+    // an index newer than the image already holds its checksums
+    if matches!(
+        (fs::metadata(&index), fs::metadata(squashfs)),
+        (Ok(index), Ok(image)) if image.mtime() <= index.mtime()
+    ) {
+        return Ok(None);
+    }
+
+    let mut table = Object::new();
+    for (uuid, checksum) in validation::large_request_checksums(squashfs)? {
+        table.insert(&uuid, checksum.to_string().as_str());
+    }
+
     fs::create_dir_all(index.parent().unwrap())?;
     fs::write(&index, sonic_rs::to_vec_pretty(&table)?)?;
 
-    Ok(index)
+    Ok(Some(index))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -109,10 +120,10 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Index => {
             for squashfs in artifacts(&args.dataset_dir, "squashfs")? {
-                println!(
-                    "Dumped index to {}",
-                    index_squashfs(&args.dataset_dir, &squashfs)?.display()
-                );
+                match index_squashfs(&args.dataset_dir, &squashfs)? {
+                    Some(index) => println!("Dumped index to {}", index.display()),
+                    None => println!("Skipped already indexed image {}", squashfs.display()),
+                }
             }
             Ok(())
         }
