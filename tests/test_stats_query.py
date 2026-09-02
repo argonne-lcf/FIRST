@@ -29,6 +29,10 @@ def _iso(moment: datetime.datetime) -> str:
 @pytest.fixture
 def dataset(tmp_path: Path) -> Path:
     """Write one parquet file per stream, like first-slogs does."""
+    for stream in ("user", "request_metrics", "request_log", "access_log"):
+        (tmp_path / stream).joinpath("year=2024", "month=06", "day=01").mkdir(
+            parents=True
+        )
     stamps = [_iso(START + datetime.timedelta(days=day)) for day in range(REQUESTS)]
     request_ids = [f"request{index}" for index in range(REQUESTS)]
     cycle = ["a-model", "b-model", "c-model"] * (REQUESTS // 3)
@@ -40,7 +44,9 @@ def dataset(tmp_path: Path) -> Path:
             "user.name": ["One Anl", "Two Example"],
             "stream": ["user", "user"],
         }
-    ).write_parquet(tmp_path / "run.user.parquet")
+    ).write_parquet(
+        tmp_path / "user" / "year=2024" / "month=06" / "day=01" / "run.user.parquet"
+    )
 
     pl.DataFrame(
         {
@@ -54,7 +60,14 @@ def dataset(tmp_path: Path) -> Path:
             "total_tokens": [110 + 2 * index for index in range(REQUESTS)],
             "stream": ["request_metrics"] * REQUESTS,
         }
-    ).write_parquet(tmp_path / "run.request_metrics.parquet")
+    ).write_parquet(
+        tmp_path
+        / "request_metrics"
+        / "year=2024"
+        / "month=06"
+        / "day=01"
+        / "run.request_metrics.parquet"
+    )
 
     pl.DataFrame(
         {
@@ -67,7 +80,12 @@ def dataset(tmp_path: Path) -> Path:
             "stream": ["request_log"] * REQUESTS,
         }
     ).filter(pl.col("id") != "request13").write_parquet(
-        tmp_path / "run.request_log.parquet"
+        tmp_path
+        / "request_log"
+        / "year=2024"
+        / "month=06"
+        / "day=01"
+        / "run.request_log.parquet"
     )
 
     pl.DataFrame(
@@ -78,7 +96,14 @@ def dataset(tmp_path: Path) -> Path:
             "user.id": [_user(index * 3) for index in range(REQUESTS)],
             "stream": ["access_log"] * REQUESTS,
         }
-    ).write_parquet(tmp_path / "run.access_log.parquet")
+    ).write_parquet(
+        tmp_path
+        / "access_log"
+        / "year=2024"
+        / "month=06"
+        / "day=01"
+        / "run.access_log.parquet"
+    )
 
     return tmp_path
 
@@ -232,7 +257,7 @@ def test_requests_without_a_user_row_stay_counted(
         monkeypatch, dataset, "inference", "top_users", "--period", "all"
     )
     frame = _plot(captured, "top_users_")
-    metrics = pl.scan_parquet(dataset / "*.request_metrics.parquet").collect()
+    metrics = pl.scan_parquet(dataset / "request_metrics").collect()
     assert frame["total_tokens"].sum() == metrics["total_tokens"].sum()
     assert "unknown" in frame["user.name"].to_list()
 
@@ -251,7 +276,7 @@ def test_user_histogram_counts_users_once_per_bin(
         monkeypatch, dataset, "visualize", "inference", "hist_users", "--period", "all"
     )
     frame, kwargs = calls[0]
-    accesses = pl.scan_parquet(dataset / "*.access_log.parquet").collect()
+    accesses = pl.scan_parquet(dataset / "access_log").collect()
     named = accesses.filter(pl.col("user.id").is_in(["user1", "user2"]))
     assert frame.height < named.height  # repeat hits in one bin collapse together
     # Both users are active every day, so both are active in every bin.
@@ -428,7 +453,7 @@ def test_start_and_end_must_pair(
 ) -> None:
     """A half-given window is refused instead of silently ignored."""
     with pytest.raises(SystemExit) as exit_info:
-        _run(monkeypatch, dataset, "table", "metrics", "--start", "2025-01-01")
+        _run(monkeypatch, dataset, "table", "request_metrics", "--start", "2025-01-01")
     assert "--start and --end must be given together" in str(exit_info.value)
 
 
@@ -441,7 +466,7 @@ def test_all_period_cannot_take_a_window(
             monkeypatch,
             dataset,
             "table",
-            "metrics",
+            "request_metrics",
             "--period",
             "all",
             "--start",
@@ -457,7 +482,7 @@ def test_group_requires_aggregate(
 ) -> None:
     """Grouping without aggregating is refused instead of dumping raw rows."""
     with pytest.raises(SystemExit):
-        _run(monkeypatch, dataset, "table", "metrics", "--group", "cluster")
+        _run(monkeypatch, dataset, "table", "request_metrics", "--group", "cluster")
 
 
 def test_unfilterable_stream_is_refused(
@@ -479,7 +504,7 @@ def test_windowed_table_sums_only_matching_rows(
         monkeypatch,
         dataset,
         "table",
-        "metrics",
+        "request_metrics",
         "--aggregate",
         "total_tokens",
         "--start",
@@ -497,7 +522,7 @@ def test_windowed_table_sums_only_matching_rows(
 def test_filter_needs_a_value(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A --filter without = is refused instead of matching an empty string."""
     with pytest.raises(SystemExit) as exit_info:
-        _run(monkeypatch, dataset, "table", "metrics", "--filter", "cluster")
+        _run(monkeypatch, dataset, "table", "request_metrics", "--filter", "cluster")
     assert "--filter expects COLUMN=value" in str(exit_info.value)
 
 
@@ -505,5 +530,12 @@ def test_filter_value_with_a_slash_still_exports(
     dataset: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A filter value is data (e.g. a model name), so it cannot be a filename."""
-    _run(monkeypatch, dataset, "table", "metrics", "--filter", "model=gpt-4o/mini")
-    assert list(dataset.glob("metrics_all_model=gpt-4o_mini.csv"))
+    _run(
+        monkeypatch,
+        dataset,
+        "table",
+        "request_metrics",
+        "--filter",
+        "model=gpt-4o/mini",
+    )
+    assert list(dataset.glob("request_metrics_all_model=gpt-4o_mini.csv"))

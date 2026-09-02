@@ -35,7 +35,7 @@ def top_users(
 ) -> None:
     """Top 20 users by total tokens for the period."""
     result = (
-        load_data("metrics")
+        load_data("request_metrics")
         .pipe(join_request_log, load_data)
         .pipe(join_user, load_data)
         # requests with no user row here keep their tokens in the totals
@@ -68,7 +68,7 @@ def top_models(
 ) -> None:
     """Top 20 models by total tokens for the period."""
     result = (
-        load_data("metrics")
+        load_data("request_metrics")
         .select("model", "total_tokens")
         .group_by("model")
         .agg(pl.col("total_tokens").sum())
@@ -97,7 +97,7 @@ def top_models_requests(
 ) -> None:
     """Top 20 models by request count for the period."""
     result = (
-        load_data("metrics")
+        load_data("request_metrics")
         .group_by("model")
         .agg(pl.col("model").count().alias("model_count"))
         .pipe(rank, "model_count", "model")
@@ -125,7 +125,7 @@ def top_models_users(
 ) -> None:
     """Top 20 models by unique users for the period."""
     result = (
-        load_data("metrics")
+        load_data("request_metrics")
         .pipe(join_request_log, load_data)
         .pipe(join_user, load_data)
         .select("user.name", "model")
@@ -204,7 +204,7 @@ def hist_requests(
 ) -> None:
     """Request distribution histogram for the period."""
     df = filter_period(
-        load_data("metrics").select(TIME_COL), TIME_COL, start, end
+        load_data("request_metrics").select(TIME_COL), TIME_COL, start, end
     ).collect(engine="streaming")
     plot_hist(
         df,

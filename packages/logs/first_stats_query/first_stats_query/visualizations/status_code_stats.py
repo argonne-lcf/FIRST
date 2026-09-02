@@ -29,7 +29,10 @@ def status(
     """Requests by status code, adapted to granularity."""
     df, buckets = group_time(
         filter_period(
-            load_data("metrics").select("status_code", TIME_COL), TIME_COL, start, end
+            load_data("request_metrics").select("status_code", TIME_COL),
+            TIME_COL,
+            start,
+            end,
         ),
         TIME_COL,
         granularity,
