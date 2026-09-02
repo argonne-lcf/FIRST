@@ -69,6 +69,7 @@ pub fn validate_bundled_requests(
 ) -> anyhow::Result<usize> {
     let mut problems = Vec::new();
     let mut verified = 0;
+    let mut buf = vec![0u8; 64 * 1024];
     for id in request_log_ids(request_log)? {
         let json = large_requests.join(&id).with_extension("json");
         if !json.is_file() {
@@ -80,7 +81,18 @@ pub fn validate_bundled_requests(
             continue;
         };
 
-        if blake3::hash(&fs::read(&json)?) != checksum {
+        // the source file is hashed as it streams in
+        let mut file = File::open(&json)?;
+        let mut hasher = blake3::Hasher::new();
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+
+        if hasher.finalize() != checksum {
             problems.push(format!("{id} differs from the bundled copy"));
         } else {
             verified += 1;
