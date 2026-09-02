@@ -401,16 +401,16 @@ pub fn source_request_ids(large_requests: &Path) -> anyhow::Result<Vec<String>> 
 }
 
 fn bundle_requests(
+    large_requests: &Path,
+    sources: &[String],
     dataset_dir: &Path,
     request_log: &Path,
-    large_requests: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
     let mtime = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
 
     let ids = request_log_ids(request_log)?;
-    let sources = source_request_ids(large_requests)?;
 
     // the writer is only created once a matching file is found
     let mut squashfs: Option<FilesystemWriter> = None;
@@ -489,13 +489,21 @@ pub fn parse_logs(large_requests: &Path, dataset_dir: &Path, logs: &Path) -> any
         })
         .collect();
 
+    // the source listing is shared by every log
+    let sources = source_request_ids(large_requests)?;
+
     // each log is parsed into its own dated partitions, so logs are
     // independent and parsed in parallel
     logs.par_iter()
-        .try_for_each(|log| parse_log(large_requests, dataset_dir, log))
+        .try_for_each(|log| parse_log(large_requests, &sources, dataset_dir, log))
 }
 
-fn parse_log(large_requests: &Path, dataset_dir: &Path, log: &Path) -> anyhow::Result<()> {
+fn parse_log(
+    large_requests: &Path,
+    sources: &[String],
+    dataset_dir: &Path,
+    log: &Path,
+) -> anyhow::Result<()> {
     println!("Parsing {}...", log.display());
 
     let partitions = match mmap_if_stale(log, dataset_dir)? {
@@ -512,7 +520,7 @@ fn parse_log(large_requests: &Path, dataset_dir: &Path, log: &Path) -> anyhow::R
     }
 
     if let Some(request_log) = partitions.get("request_log") {
-        match bundle_requests(dataset_dir, request_log, large_requests)? {
+        match bundle_requests(large_requests, sources, dataset_dir, request_log)? {
             Some(tarball) => println!("Dumped large requests to {}", tarball.display()),
             None => println!("No large requests to dump"),
         }
