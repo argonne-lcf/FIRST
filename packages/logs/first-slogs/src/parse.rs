@@ -29,6 +29,8 @@ use crate::files;
 const STREAMS: &[&str] = &[
     "access_log",
     "app",
+    "batch_log",
+    "batch_metrics",
     "request_log",
     "request_metrics",
     "user",
