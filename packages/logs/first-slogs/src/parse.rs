@@ -212,7 +212,7 @@ fn split_log(
                 let p = partition(path, dataset_dir, stream, &dated);
                 fs::create_dir_all(p.parent().unwrap())?;
 
-                let e = e.insert_entry(BufWriter::new(File::create(&p)?));
+                let e = e.insert_entry(BufWriter::with_capacity(64 * 1024, File::create(&p)?));
 
                 partitions.insert(stream, p);
                 e
