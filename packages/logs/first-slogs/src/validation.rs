@@ -56,18 +56,17 @@ pub fn large_request_checksums(squashfs: &Path) -> anyhow::Result<HashMap<String
 }
 
 /// Verify that the large requests `bundle_requests` bundles from
-/// `large_requests` for `request_log` made it into `squashfs` unmodified,
-/// returning how many requests were verified.
+/// `large_requests` for `request_log` made it into the squashfs unmodified,
+/// returning how many requests were verified. `bundled` holds the checksums of
+/// the image's contents.
 ///
-/// Fails with one line per request that is missing from `squashfs` or whose
+/// Fails with one line per request that is missing from the squashfs or whose
 /// source file no longer matches the bundled copy.
 pub fn validate_bundled_requests(
+    bundled: &HashMap<String, blake3::Hash>,
     request_log: &Path,
     large_requests: &Path,
-    squashfs: &Path,
 ) -> anyhow::Result<usize> {
-    let bundled = large_request_checksums(squashfs)?;
-
     let mut problems = Vec::new();
     let mut verified = 0;
     for id in request_log_ids(request_log)? {
