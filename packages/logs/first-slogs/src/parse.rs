@@ -48,6 +48,13 @@ const NULL_DIRS: &str = "year=__HIVE_DEFAULT_PARTITION__/month=__HIVE_DEFAULT_PA
 /// The partition raw, non-conforming entries are captured in verbatim.
 const MALFORMED: &str = "malformed";
 
+/// The partition lines of streams outside `STREAMS` are captured in verbatim.
+const UNKNOWN: &str = "unknown_stream";
+
+/// The partitions lines are split into besides `STREAMS` themselves: lines of
+/// unknown streams and non-conforming lines.
+const NON_STREAMS: &[&str] = &[MALFORMED, UNKNOWN];
+
 /// Split `buf` on b"\n", each line including its trailing newline. Trailing
 /// data without a newline is yielded as a final line as well.
 fn lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -175,7 +182,7 @@ fn mmap_if_stale(path: &Path, dataset_dir: &Path) -> io::Result<Option<Mmap>> {
     let dated = date_dirs(path);
     let mut written = false;
     let mut stale = false;
-    for stream in STREAMS.iter().chain(std::iter::once(&MALFORMED)) {
+    for stream in STREAMS.iter().chain(NON_STREAMS) {
         // partitions of streams the log has no lines for are absent
         if let Ok(metadata) = fs::metadata(partition(path, dataset_dir, stream, &dated)) {
             written = true;
@@ -202,11 +209,17 @@ fn split_log(
     let dated = date_dirs(path);
 
     for line in lines(buf) {
-        // non-conforming entries are captured in the malformed partition
-        let stream = sonic_rs::get(line, &["stream"])
-            .as_str()
-            .and_then(|stream| STREAMS.iter().copied().find(|known| *known == stream))
-            .unwrap_or(MALFORMED);
+        // lines of streams outside `STREAMS` land in the unknown_stream
+        // partition; non-conforming lines are captured in the malformed
+        // partition verbatim
+        let stream = match sonic_rs::get(line, &["stream"]).as_str() {
+            Some(stream) => STREAMS
+                .iter()
+                .copied()
+                .find(|known| *known == stream)
+                .unwrap_or(UNKNOWN),
+            None => MALFORMED,
+        };
 
         let mut entry = match streams.entry(stream) {
             Entry::Occupied(e) => e,
@@ -257,8 +270,8 @@ fn partitions_to_parquet(
     mut partitions: HashMap<&'static str, PathBuf>,
 ) -> anyhow::Result<HashMap<&'static str, PathBuf>> {
     for (stream, path) in &mut partitions {
-        if matches!(*stream, "app" | "malformed" | "request_metrics") {
-            continue; // app and malformed stay ndjson, request_metrics is merged below
+        if matches!(*stream, "app" | "malformed" | "unknown_stream" | "request_metrics") {
+            continue; // app, unknown_stream, and malformed stay ndjson, request_metrics is merged below
         }
 
         *path = ndjson_to_parquet(dataset_dir, path)?;
