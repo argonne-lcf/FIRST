@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{self, File},
+    fs::File,
     io::{BufReader, Read},
     path::Path,
 };
@@ -71,14 +71,19 @@ pub fn validate_bundled_requests(
     let mut problems = Vec::new();
     let mut verified = 0;
     let mut buf = vec![0u8; 64 * 1024];
-    for id in request_log_ids(request_log)? {
-        if sources.binary_search(&id).is_err() {
+    let ids = request_log_ids(request_log)?;
+    let ids = ids.column("id")?.str()?;
+    for id in ids.no_null_iter() {
+        if sources
+            .binary_search_by(|source| source.as_str().cmp(id))
+            .is_err()
+        {
             continue; // never bundled by `bundle_requests` either
         }
 
-        let json = large_requests.join(&id).with_extension("json");
+        let json = large_requests.join(id).with_extension("json");
 
-        let Some(&checksum) = bundled.get(&id) else {
+        let Some(&checksum) = bundled.get(id) else {
             problems.push(format!("{id} is missing from the squashfs"));
             continue;
         };
