@@ -6,6 +6,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
+use rayon::prelude::*;
 use sonic_rs::Object;
 
 mod parse;
@@ -151,40 +152,44 @@ fn main() -> anyhow::Result<()> {
             parse::parse_logs(&args.large_requests, &args.dataset_dir, &logs)
         }
         Command::Index => {
-            for squashfs in artifacts(&args.dataset_dir, "squashfs")? {
-                match index_squashfs(&args.dataset_dir, &squashfs)? {
+            let images = artifacts(&args.dataset_dir, "squashfs")?;
+            images.par_iter().try_for_each(|squashfs| {
+                match index_squashfs(&args.dataset_dir, squashfs)? {
                     Some(index) => println!("Dumped index to {}", index.display()),
                     None => println!("Skipped already indexed image {}", squashfs.display()),
                 }
-            }
-            Ok(())
+                Ok(())
+            })
         }
         Command::Vet => {
-            for request_log in artifacts(&args.dataset_dir, "request_log")? {
-                // the squashfs mirrors the request_log tree under
-                // <dataset_dir>/squashfs/
-                let relative = request_log
-                    .strip_prefix(&args.dataset_dir)?
-                    .strip_prefix("request_log")?;
-                let mut squashfs = args.dataset_dir.join("squashfs");
-                squashfs.push(relative);
-                squashfs.set_extension("large_requests.squashfs");
-                if !squashfs.is_file() {
-                    continue; // nothing was bundled for this log
-                }
-
-                let bundled = bundled_checksums(&args.dataset_dir, &squashfs)?;
-                let verified = validation::validate_bundled_requests(
-                    &bundled,
-                    &request_log,
-                    &args.large_requests,
-                )?;
-                println!(
-                    "Verified {verified} large requests in {}",
-                    squashfs.display()
-                );
-            }
-            Ok(())
+            let parquets = artifacts(&args.dataset_dir, "request_log")?;
+            parquets.par_iter().try_for_each(|request_log| {
+                vet_log(&args.dataset_dir, &args.large_requests, request_log)
+            })
         }
     }
+}
+
+/// Vet the large requests bundled for one request_log parquet against their
+/// source files.
+fn vet_log(dataset_dir: &Path, large_requests: &Path, request_log: &Path) -> anyhow::Result<()> {
+    // the squashfs mirrors the request_log tree under <dataset_dir>/squashfs/
+    let relative = request_log
+        .strip_prefix(dataset_dir)?
+        .strip_prefix("request_log")?;
+    let mut squashfs = dataset_dir.join("squashfs");
+    squashfs.push(relative);
+    squashfs.set_extension("large_requests.squashfs");
+    if !squashfs.is_file() {
+        return Ok(()); // nothing was bundled for this log
+    }
+
+    let bundled = bundled_checksums(dataset_dir, &squashfs)?;
+    let verified = validation::validate_bundled_requests(&bundled, request_log, large_requests)?;
+    println!(
+        "Verified {verified} large requests in {}",
+        squashfs.display()
+    );
+
+    Ok(())
 }
