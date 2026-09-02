@@ -103,7 +103,9 @@ async def d3_triton_rpc(request: AuthedRequest, rpc: str) -> SubmitTaskAsyncResp
 
 
 @router.get("/sophia/triton/amsc-d3/rpc/result/{task_id}")
-async def d3_triton_rpc_result(request: AuthedRequest, task_id: str):
+async def d3_triton_rpc_result(
+    request: AuthedRequest, task_id: str
+) -> HttpResponse | JsonResponse:
     """Fetch a relayed RPC result as raw protobuf bytes."""
     endpoint = await _load_endpoint(request)
 
