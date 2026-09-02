@@ -410,7 +410,9 @@ fn bundle_requests(
     let gid = unsafe { libc::getgid() };
     let mtime = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
 
-    let ids = request_log_ids(request_log)?;
+    let mut ids = request_log_ids(request_log)?;
+    // sorted fullpaths insert at the tail of backhand's node vec
+    ids.sort();
 
     // the writer is only created once a matching file is found
     let mut squashfs: Option<FilesystemWriter> = None;
