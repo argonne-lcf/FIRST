@@ -10,6 +10,8 @@ use std::{
 
 use backhand::{FilesystemCompressor, FilesystemWriter, NodeHeader, compression::Compressor};
 use memmap2::Mmap;
+use rayon::prelude::*;
+
 use polars::{
     df,
     frame::{DataFrame, UniqueKeepStrategy},
@@ -459,32 +461,42 @@ fn bundle_requests(
 pub fn parse_logs(large_requests: &Path, dataset_dir: &Path, logs: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(dataset_dir)?;
 
-    for log in files(logs)?.into_iter().filter(|log| {
-        log.file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("out.log")
-    }) {
-        println!("Parsing {}...", log.display());
+    let logs: Vec<PathBuf> = files(logs)?
+        .into_iter()
+        .filter(|log| {
+            log.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("out.log")
+        })
+        .collect();
 
-        let partitions = match mmap_if_stale(&log, dataset_dir)? {
-            Some(mmap) => split_log(&log, dataset_dir, &mmap)?,
-            None => {
-                println!("Skipped already parsed log {}", log.display());
-                continue;
-            }
-        };
+    // each log is parsed into its own dated partitions, so logs are
+    // independent and parsed in parallel
+    logs.par_iter()
+        .try_for_each(|log| parse_log(large_requests, dataset_dir, log))
+}
 
-        let partitions = partitions_to_parquet(dataset_dir, partitions)?;
-        for partition in partitions.values() {
-            println!("Outputted frame {}", partition.display());
+fn parse_log(large_requests: &Path, dataset_dir: &Path, log: &Path) -> anyhow::Result<()> {
+    println!("Parsing {}...", log.display());
+
+    let partitions = match mmap_if_stale(log, dataset_dir)? {
+        Some(mmap) => split_log(log, dataset_dir, &mmap)?,
+        None => {
+            println!("Skipped already parsed log {}", log.display());
+            return Ok(());
         }
+    };
 
-        if let Some(request_log) = partitions.get("request_log") {
-            match bundle_requests(dataset_dir, request_log, large_requests)? {
-                Some(tarball) => println!("Dumped large requests to {}", tarball.display()),
-                None => println!("No large requests to dump"),
-            }
+    let partitions = partitions_to_parquet(dataset_dir, partitions)?;
+    for partition in partitions.values() {
+        println!("Outputted frame {}", partition.display());
+    }
+
+    if let Some(request_log) = partitions.get("request_log") {
+        match bundle_requests(dataset_dir, request_log, large_requests)? {
+            Some(tarball) => println!("Dumped large requests to {}", tarball.display()),
+            None => println!("No large requests to dump"),
         }
     }
 

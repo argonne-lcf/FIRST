@@ -840,6 +840,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "polars",
+ "rayon",
  "regex",
  "sonic-rs",
 ]
