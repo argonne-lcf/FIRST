@@ -478,16 +478,19 @@ fn bundle_requests(
     }
 }
 
-pub fn parse_logs(large_requests: &Path, dataset_dir: &Path, logs: &Path) -> anyhow::Result<()> {
+pub fn parse_logs(
+    large_requests: &Path,
+    dataset_dir: &Path,
+    logs: &Path,
+    skip: &[String],
+) -> anyhow::Result<()> {
     fs::create_dir_all(dataset_dir)?;
 
     let logs: Vec<PathBuf> = files(logs)?
         .into_iter()
         .filter(|log| {
-            log.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("out.log")
+            let name = log.file_name().unwrap().to_string_lossy();
+            name.starts_with("out.log") && !skip.iter().any(|skip| *skip == name)
         })
         .collect();
 

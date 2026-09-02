@@ -32,6 +32,10 @@ enum Command {
     Parse {
         /// Logs directory to parse
         logs: PathBuf,
+
+        /// Names of log files to skip
+        #[arg(long)]
+        skip: Vec<String>,
     },
     /// Write an index of the large request checksums of each squashfs image in the dataset dir
     Index,
@@ -148,8 +152,8 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Parse { logs } => {
-            parse::parse_logs(&args.large_requests, &args.dataset_dir, &logs)
+        Command::Parse { logs, skip } => {
+            parse::parse_logs(&args.large_requests, &args.dataset_dir, &logs, &skip)
         }
         Command::Index => {
             let images = artifacts(&args.dataset_dir, "squashfs")?;
