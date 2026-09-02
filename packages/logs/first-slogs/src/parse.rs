@@ -18,7 +18,7 @@ use polars::{
     prelude::{
         FileWriteFormat, IntoLazy, JoinCoalesce, JoinType, LazyFileListReader, LazyFrame,
         LazyJsonLineReader, ParquetWriteOptions, PlRefPath, ScanArgsParquet, SinkDestination,
-        SinkTarget, UnifiedSinkArgs, all, col, cols,
+        SinkTarget, SortMultipleOptions, UnifiedSinkArgs, all, col, cols,
     },
 };
 use regex::regex;
@@ -367,20 +367,16 @@ fn write_merged_request_metrics(
     Ok(request_metrics)
 }
 
-/// Distinct request ids referenced by a `request_log` parquet.
-pub fn request_log_ids(request_log: &Path) -> anyhow::Result<Vec<String>> {
+/// Distinct request ids referenced by a `request_log` parquet, as its `id`
+/// column.
+pub fn request_log_ids(request_log: &Path) -> anyhow::Result<DataFrame> {
     Ok(LazyFrame::scan_parquet(
         PlRefPath::try_from_path(request_log)?,
         ScanArgsParquet::default(),
     )?
     .select([col("id")])
     .unique(None, UniqueKeepStrategy::Any)
-    .collect()?
-    .column("id")?
-    .str()?
-    .no_null_iter()
-    .map(|id| id.to_string())
-    .collect())
+    .collect()?)
 }
 
 /// The sorted ids of the requests that have a source json in `large_requests`.
@@ -410,14 +406,18 @@ fn bundle_requests(
     let gid = unsafe { libc::getgid() };
     let mtime = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
 
-    let mut ids = request_log_ids(request_log)?;
+    let ids = request_log_ids(request_log)?;
     // sorted fullpaths insert at the tail of backhand's node vec
-    ids.sort();
+    let ids = ids.sort(["id"], SortMultipleOptions::default())?;
+    let ids = ids.column("id")?.str()?;
 
     // the writer is only created once a matching file is found
     let mut squashfs: Option<FilesystemWriter> = None;
-    for request_id in &ids {
-        if sources.binary_search(request_id).is_err() {
+    for request_id in ids.no_null_iter() {
+        if sources
+            .binary_search_by(|source| source.as_str().cmp(request_id))
+            .is_err()
+        {
             continue; // the request has no source json
         }
 
