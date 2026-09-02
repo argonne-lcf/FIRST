@@ -11,7 +11,6 @@ use backhand::{FilesystemCompressor, FilesystemWriter, NodeHeader, compression::
 use memmap2::Mmap;
 use polars::{
     df,
-    error::PolarsResult,
     frame::{DataFrame, UniqueKeepStrategy},
     prelude::{
         FileWriteFormat, IntoLazy, JoinCoalesce, JoinType, LazyFileListReader, LazyFrame,
@@ -31,6 +30,13 @@ const STREAMS: &[&str] = &[
     "request_metrics",
     "user",
 ];
+
+/// Hive dirs placing partitions at null `year`/`month`/`day` values, which
+/// polars scans as nulls.
+const NULL_DIRS: &str = "year=__HIVE_DEFAULT_PARTITION__/month=__HIVE_DEFAULT_PARTITION__/day=__HIVE_DEFAULT_PARTITION__";
+
+/// The partition raw, non-conforming entries are captured in verbatim.
+const MALFORMED: &str = "malformed";
 
 /// Split `buf` on b"\n", each line including its trailing newline. Trailing
 /// data without a newline is yielded as a final line as well.
@@ -95,13 +101,59 @@ impl Read for LazyMmap {
     }
 }
 
-/// Path of `log`'s `stream` ndjson partition inside `dataset_dir`.
-fn partition(log: &Path, dataset_dir: &Path, stream: &str) -> PathBuf {
-    let mut p = dataset_dir
-        .join(log.file_name().unwrap())
-        .with_added_extension(stream);
+/// The hive dirs of `log`'s partitions: the `YYYY-MM-DD` date in its name,
+/// or the default partition for names without one, which polars scans as
+/// nulls.
+fn date_dirs(log: &Path) -> PathBuf {
+    let name = log.file_name().and_then(|name| name.to_str());
+    let date = name.and_then(|name| regex!(r"[0-9]{4}-[0-9]{2}-[0-9]{2}$").find(name));
+
+    let Some(date) = date else {
+        return PathBuf::from(NULL_DIRS);
+    };
+
+    let (year, rest) = date.as_str().split_once('-').unwrap();
+    let (month, day) = rest.split_once('-').unwrap();
+
+    PathBuf::from(format!("year={year}/month={month}/day={day}"))
+}
+
+/// Path of `log`'s `stream` ndjson partition inside `dataset_dir`, under
+/// `ndjson/<stream>/<dated>/`; the malformed partition is placed at null hive
+/// values instead.
+fn partition(log: &Path, dataset_dir: &Path, stream: &str, dated: &Path) -> PathBuf {
+    let dirs = if stream == MALFORMED {
+        Path::new(NULL_DIRS)
+    } else {
+        dated
+    };
+    let name = log.file_name().unwrap();
+    let mut p = PathBuf::with_capacity(
+        dataset_dir.as_os_str().len() + dirs.as_os_str().len() + name.len() + 64,
+    );
+    p.push(dataset_dir);
+    p.push("ndjson");
+    p.push(stream);
+    p.push(dirs);
+    p.push(name);
+    p.add_extension(stream);
     p.add_extension("ndjson");
     p
+}
+
+/// Path of the parquet partition of the ndjson `partition`: the same dated
+/// subpath rooted at `<dataset_dir>/<stream>/` instead of
+/// `<dataset_dir>/ndjson/<stream>/`, with its directory created.
+fn parquet_of(dataset_dir: &Path, partition: &Path) -> anyhow::Result<PathBuf> {
+    let relative = partition
+        .strip_prefix(dataset_dir)?
+        .strip_prefix("ndjson")?;
+
+    let mut parquet = dataset_dir.join(relative);
+    parquet.set_extension("parquet");
+    fs::create_dir_all(parquet.parent().unwrap())?;
+
+    Ok(parquet)
 }
 
 /// Map `path` iff it has no `.ndjson` partitions in `dataset_dir` yet or any of
@@ -110,10 +162,12 @@ fn mmap_if_stale(path: &Path, dataset_dir: &Path) -> io::Result<Option<Mmap>> {
     let file = File::open(path)?;
     let log_mtime = file.metadata()?.mtime();
 
+    let dated = date_dirs(path);
     let partition_mtimes: Vec<_> = STREAMS
         .iter()
+        .chain(std::iter::once(&MALFORMED))
         .filter_map(|stream| {
-            fs::metadata(partition(path, dataset_dir, stream))
+            fs::metadata(partition(path, dataset_dir, stream, &dated))
                 .ok()
                 .map(|m| m.mtime())
         })
@@ -127,35 +181,37 @@ fn mmap_if_stale(path: &Path, dataset_dir: &Path) -> io::Result<Option<Mmap>> {
     Ok(Some(unsafe { Mmap::map(&file)? }))
 }
 
-fn split_log(path: &Path, dataset_dir: &Path, buf: &[u8]) -> io::Result<HashMap<String, PathBuf>> {
-    let mut streams: HashMap<String, BufWriter<File>> = HashMap::new();
-    let mut partitions: HashMap<String, PathBuf> = HashMap::new();
+fn split_log(
+    path: &Path,
+    dataset_dir: &Path,
+    buf: &[u8],
+) -> io::Result<HashMap<&'static str, PathBuf>> {
+    let mut streams: HashMap<&'static str, BufWriter<File>> = HashMap::new();
+    let mut partitions: HashMap<&'static str, PathBuf> = HashMap::new();
+
+    let dated = date_dirs(path);
 
     for line in lines(buf) {
-        match sonic_rs::get(line, &["stream"]).as_str() {
-            Some(stream) if STREAMS.contains(&stream) => {
-                let mut entry = match streams.entry(stream.to_string()) {
-                    Entry::Occupied(e) => e,
-                    Entry::Vacant(e) => {
-                        let p = partition(path, dataset_dir, stream);
+        // non-conforming entries are captured in the malformed partition
+        let stream = sonic_rs::get(line, &["stream"])
+            .as_str()
+            .and_then(|stream| STREAMS.iter().copied().find(|known| *known == stream))
+            .unwrap_or(MALFORMED);
 
-                        let e = e.insert_entry(BufWriter::new(File::create(&p)?));
+        let mut entry = match streams.entry(stream) {
+            Entry::Occupied(e) => e,
+            Entry::Vacant(e) => {
+                let p = partition(path, dataset_dir, stream, &dated);
+                fs::create_dir_all(p.parent().unwrap())?;
 
-                        partitions.insert(stream.to_string(), p);
-                        e
-                    }
-                };
+                let e = e.insert_entry(BufWriter::new(File::create(&p)?));
 
-                entry.get_mut().write_all(line)?;
+                partitions.insert(stream, p);
+                e
             }
-            // unknown streams are silently dropped
-            Some(_) => {}
-            None => {
-                if let Ok(msg) = str::from_utf8(line) {
-                    println!("Malformed msg: {}", msg);
-                }
-            }
-        }
+        };
+
+        entry.get_mut().write_all(line)?;
     }
 
     for writer in streams.values_mut() {
@@ -167,8 +223,8 @@ fn split_log(path: &Path, dataset_dir: &Path, buf: &[u8]) -> io::Result<HashMap<
 
 /// Sink an `.ndjson` partition next to `path` into a `.parquet` file of the
 /// same stem, returning the parquet path.
-fn ndjson_to_parquet(path: &Path) -> anyhow::Result<PathBuf> {
-    let parquet = path.with_extension("parquet");
+fn ndjson_to_parquet(dataset_dir: &Path, path: &Path) -> anyhow::Result<PathBuf> {
+    let parquet = parquet_of(dataset_dir, path)?;
 
     LazyJsonLineReader::new(PlRefPath::try_from_path(path)?)
         .with_infer_schema_length(None)
@@ -187,14 +243,15 @@ fn ndjson_to_parquet(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn partitions_to_parquet(
-    mut partitions: HashMap<String, PathBuf>,
-) -> anyhow::Result<HashMap<String, PathBuf>> {
+    dataset_dir: &Path,
+    mut partitions: HashMap<&'static str, PathBuf>,
+) -> anyhow::Result<HashMap<&'static str, PathBuf>> {
     for (stream, path) in &mut partitions {
-        if matches!(stream.as_str(), "app" | "request_metrics") {
-            continue; // request_metrics is merged with app/request_log below
+        if matches!(*stream, "app" | "malformed" | "request_metrics") {
+            continue; // app and malformed stay ndjson, request_metrics is merged below
         }
 
-        *path = ndjson_to_parquet(path)?;
+        *path = ndjson_to_parquet(dataset_dir, path)?;
     }
 
     if let Some(request_metrics) = partitions.get("request_metrics") {
@@ -202,12 +259,17 @@ fn partitions_to_parquet(
             && let Some(app) = partitions.get("app")
         {
             let streaming_metrics = pull_streaming_metrics(app)?;
-            write_merged_request_metrics(streaming_metrics, request_metrics, request_log)?
+            write_merged_request_metrics(
+                dataset_dir,
+                streaming_metrics,
+                request_metrics,
+                request_log,
+            )?
         } else {
-            ndjson_to_parquet(request_metrics)?
+            ndjson_to_parquet(dataset_dir, request_metrics)?
         };
 
-        partitions.insert("request_metrics".to_string(), request_metrics);
+        partitions.insert("request_metrics", request_metrics);
     }
 
     Ok(partitions)
@@ -248,10 +310,11 @@ fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
 }
 
 fn write_merged_request_metrics(
+    dataset_dir: &Path,
     streaming_metrics: DataFrame,
     request_metrics: &Path,
     request_log: &Path,
-) -> PolarsResult<PathBuf> {
+) -> anyhow::Result<PathBuf> {
     let lf = LazyJsonLineReader::new(PlRefPath::try_from_path(request_metrics)?)
         .with_infer_schema_length(None)
         .finish()?;
@@ -275,7 +338,7 @@ fn write_merged_request_metrics(
         .drop_nulls(Some(cols(["request_id"])));
 
     // merge with request_metrics
-    let request_metrics = request_metrics.with_extension("parquet");
+    let request_metrics = parquet_of(dataset_dir, request_metrics)?;
     lf.join_builder()
         .with(streaming_metrics)
         .how(JoinType::Left)
@@ -312,7 +375,11 @@ pub fn request_log_ids(request_log: &Path) -> anyhow::Result<Vec<String>> {
     .collect())
 }
 
-fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<Option<PathBuf>> {
+fn bundle_requests(
+    dataset_dir: &Path,
+    request_log: &Path,
+    large_requests: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
     let mtime = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
@@ -366,7 +433,14 @@ fn bundle_requests(request_log: &Path, large_requests: &Path) -> anyhow::Result<
 
     match squashfs {
         Some(mut fs) => {
-            let path = request_log.with_extension("large_requests.squashfs");
+            let relative = request_log
+                .strip_prefix(dataset_dir)?
+                .strip_prefix("request_log")?;
+
+            let mut path = dataset_dir.join("squashfs");
+            path.push(relative);
+            path.set_extension("large_requests.squashfs");
+            fs::create_dir_all(path.parent().unwrap())?;
             let mut file = File::create(&path)?;
             fs.write(&mut file)?;
 
@@ -395,13 +469,13 @@ pub fn parse_logs(large_requests: &Path, dataset_dir: &Path, logs: &Path) -> any
             }
         };
 
-        let partitions = partitions_to_parquet(partitions)?;
+        let partitions = partitions_to_parquet(dataset_dir, partitions)?;
         for partition in partitions.values() {
             println!("Outputted frame {}", partition.display());
         }
 
         if let Some(request_log) = partitions.get("request_log") {
-            match bundle_requests(request_log, large_requests)? {
+            match bundle_requests(dataset_dir, request_log, large_requests)? {
                 Some(tarball) => println!("Dumped large requests to {}", tarball.display()),
                 None => println!("No large requests to dump"),
             }

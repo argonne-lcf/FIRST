@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -48,27 +48,53 @@ fn files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Sorted paths of the files in `dataset_dir` whose name ends with `suffix`.
-fn artifacts(dataset_dir: &Path, suffix: &str) -> anyhow::Result<Vec<PathBuf>> {
-    Ok(files(dataset_dir)?
-        .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(suffix))
-        })
-        .collect())
+/// Sorted paths of the files under `<dataset_dir>/<sub>` and its
+/// subdirectories. Only that tree of the dataset is walked; its artifacts are
+/// all of one kind, so everything in it is returned.
+fn artifacts(dataset_dir: &Path, sub: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    walk(&dataset_dir.join(sub), &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
+
+/// Append the files under `dir` to `paths`. A missing `dir` is an empty tree.
+fn walk(dir: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            walk(&entry.path(), paths)?;
+        } else if file_type.is_file() {
+            paths.push(entry.path());
+        }
+    }
+    Ok(())
 }
 
 /// Write the large request checksums of `squashfs` into a json map next to it,
 /// mapping each request uuid to its checksum, returning the index path.
-fn index_squashfs(squashfs: &Path) -> anyhow::Result<PathBuf> {
+fn index_squashfs(dataset_dir: &Path, squashfs: &Path) -> anyhow::Result<PathBuf> {
     let mut table = Object::new();
     for (uuid, checksum) in validation::large_request_checksums(squashfs)? {
         table.insert(&uuid, checksum.to_string().as_str());
     }
 
-    let index = squashfs.with_added_extension("index.json");
+    // the index mirrors the squashfs tree under <dataset_dir>/index/
+    let relative = squashfs
+        .strip_prefix(dataset_dir)?
+        .strip_prefix("squashfs")?;
+    let mut index = dataset_dir.join("index");
+    index.push(relative);
+    index.add_extension("index.json");
+    fs::create_dir_all(index.parent().unwrap())?;
     fs::write(&index, sonic_rs::to_vec_pretty(&table)?)?;
 
     Ok(index)
@@ -82,14 +108,24 @@ fn main() -> anyhow::Result<()> {
             parse::parse_logs(&args.large_requests, &args.dataset_dir, &logs)
         }
         Command::Index => {
-            for squashfs in artifacts(&args.dataset_dir, ".large_requests.squashfs")? {
-                println!("Dumped index to {}", index_squashfs(&squashfs)?.display());
+            for squashfs in artifacts(&args.dataset_dir, "squashfs")? {
+                println!(
+                    "Dumped index to {}",
+                    index_squashfs(&args.dataset_dir, &squashfs)?.display()
+                );
             }
             Ok(())
         }
         Command::Vet => {
-            for request_log in artifacts(&args.dataset_dir, ".request_log.parquet")? {
-                let squashfs = request_log.with_extension("large_requests.squashfs");
+            for request_log in artifacts(&args.dataset_dir, "request_log")? {
+                // the squashfs mirrors the request_log tree under
+                // <dataset_dir>/squashfs/
+                let relative = request_log
+                    .strip_prefix(&args.dataset_dir)?
+                    .strip_prefix("request_log")?;
+                let mut squashfs = args.dataset_dir.join("squashfs");
+                squashfs.push(relative);
+                squashfs.set_extension("large_requests.squashfs");
                 if !squashfs.is_file() {
                     continue; // nothing was bundled for this log
                 }
