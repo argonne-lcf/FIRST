@@ -4,6 +4,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_validator,
 )
 
 from ..types import (
@@ -71,6 +72,11 @@ class ModelSpec(ResourceSpec):
     overload: OverloadPolicy = OverloadPolicy()
     demand_signal: DemandSignalConfig = DemandSignalConfig()
     max_model_len: int | None = Field(None, ge=1)
+
+    @field_validator("supported_endpoints")
+    @classmethod
+    def normalize_endpoints(cls, v: list[str]) -> list[str]:
+        return [e.strip().strip("/") for e in v]
 
 
 class ClusterSpec(ResourceSpec):
