@@ -315,6 +315,9 @@ def edit_opencode(
                 "options": {
                     "baseURL": f"{base_url}{cluster_name}/{framework}/v1",
                     "apiKey": f"{api_key}",
+                    "headers": {
+                        "X-ALCF-Session-ID": "{env:ALCF_SESSION_ID}",
+                    },
                 },
                 "models": entries,
             }
@@ -387,6 +390,11 @@ def edit_pi(
                 "baseUrl": f"{base_url}{cluster_name}/{framework}/v1",
                 "api": "openai-completions",
                 "apiKey": f"{api_key}",
+                # pi resolves "$VAR" headers strictly (errors when unset), so
+                # expand the session id in a shell that supplies a default.
+                "headers": {
+                    "X-ALCF-Session-ID": "!echo ${ALCF_SESSION_ID:-default}",
+                },
                 "compat": {
                     "supportsDeveloperRole": False,
                 },
@@ -428,11 +436,14 @@ def edit_codex(
             else:
                 wire_api = "responses" if "responses" in protocols else "chat"
 
+            env_http_headers = tomlkit.inline_table()
+            env_http_headers["X-ALCF-Session-ID"] = "ALCF_SESSION_ID"
             providers[_provider_key(cluster_name, framework)] = {
                 "name": _provider_name(cluster_name, framework),
                 "base_url": f"{base_url}{cluster_name}/{framework}/v1",
                 "experimental_bearer_token": f"{api_key}",
                 "wire_api": wire_api,
+                "env_http_headers": env_http_headers,
             }
 
     config["model_providers"] = providers
