@@ -119,6 +119,13 @@ class OpenAIRequestBoundaryTests(SimpleTestCase):
                 "model": "model",
                 "input": [{"role": "user", "content": "hello"}],
             },
+            "messages": {
+                "model": "model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 1024,
+                "system": [{"type": "text", "text": "be brief"}],
+                "temperature": 1.0,
+            },
         }
         for route, control_fields in cases.items():
             with self.subTest(route=route):
