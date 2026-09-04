@@ -112,6 +112,7 @@ def _make_observer(
     client = PilotControlClient.__new__(PilotControlClient)
     client._client = httpx.AsyncClient(transport=transport)
     observer.client = client
+    observer._status_cooldown = {}
     return observer
 
 
@@ -586,6 +587,133 @@ async def test_http_failure_per_job_does_not_block_others(
             await sess.scalars(select(PilotJob).where(PilotJob.name == "job-bad"))
         ).one()
     assert bad_job.manager_health == HealthCheckResult.unhealthy.value
+
+
+# ── /status failure backoff tests ───────────────────────────────────
+
+
+async def test_failed_status_puts_job_on_cooldown(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """After a /status failure, the same job is skipped on the next poll."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        job = await _add_job(sess)
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(500)
+
+    observer = _make_observer(db, httpx.MockTransport(handler))
+    await observer.poll()
+    assert call_count == 1
+    assert observer._status_cooldown[job.uid][1] == 1
+
+    # Second poll happens immediately: job is still within its 10s cooldown, so
+    # no new /status request is made and the failure count is unchanged.
+    await observer.poll()
+    assert call_count == 1
+    assert observer._status_cooldown[job.uid][1] == 1
+
+
+async def test_cooldown_grows_on_repeated_failures(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Each elapsed-cooldown failure increments the count and lengthens the delay."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        job = await _add_job(sess)
+
+    observer = _make_observer(db, _make_transport({"GET /status": httpx.Response(500)}))
+
+    await observer.poll()
+    first_deadline, first_failures = observer._status_cooldown[job.uid]
+    assert first_failures == 1
+
+    # Force the cooldown to appear elapsed so the next poll retries and fails again.
+    observer._status_cooldown[job.uid] = (0.0, first_failures)
+    await observer.poll()
+    second_deadline, second_failures = observer._status_cooldown[job.uid]
+    assert second_failures == 2
+
+
+async def test_cooldown_cleared_on_recovery(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A successful /status clears the cooldown so polling resumes every tick."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        job = await _add_job(sess)
+        await _add_replica(sess)
+
+    healthy = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not healthy:
+            return httpx.Response(500)
+        return httpx.Response(200, json=_status_json([_replica_info()]))
+
+    observer = _make_observer(db, httpx.MockTransport(handler))
+
+    await observer.poll()
+    assert job.uid in observer._status_cooldown
+
+    # Manager recovers; pretend the cooldown has elapsed so the job is retried.
+    healthy = True
+    observer._status_cooldown[job.uid] = (0.0, observer._status_cooldown[job.uid][1])
+    await observer.poll()
+
+    assert job.uid not in observer._status_cooldown
+    async with db() as sess:
+        rep = (
+            await sess.scalars(select(PilotReplica).where(PilotReplica.name == "rep-1"))
+        ).one()
+    assert rep.state == ReplicaState.ready.value
+
+
+async def test_failure_still_records_unhealthy(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Backoff does not suppress the manager_health=unhealthy escalation signal."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+
+    observer = _make_observer(db, _make_transport({"GET /status": httpx.Response(500)}))
+    await observer.poll()
+
+    async with db() as sess:
+        job = (
+            await sess.scalars(select(PilotJob).where(PilotJob.name == "job-1"))
+        ).one()
+    assert job.manager_health == HealthCheckResult.unhealthy.value
+    assert job.manager_unhealthy_since is not None
+
+
+async def test_cooldown_forgotten_when_job_leaves_running(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A job that stops running is dropped from the in-memory cooldown map."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        job = await _add_job(sess)
+
+    observer = _make_observer(db, _make_transport({"GET /status": httpx.Response(500)}))
+    await observer.poll()
+    assert job.uid in observer._status_cooldown
+
+    # Job leaves the running set; the next poll finds no running jobs and prunes it.
+    async with db.begin() as sess:
+        await sess.execute(
+            sa.update(PilotJob)
+            .where(PilotJob.uid == job.uid)
+            .values(scheduler_state=SchedulerJobState.exiting.value)
+        )
+    await observer.poll()
+    assert job.uid not in observer._status_cooldown
 
 
 # ── Deployment aggregate state tests ────────────────────────────────

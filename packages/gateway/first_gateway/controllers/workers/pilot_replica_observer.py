@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, Iterable
 
 import sqlalchemy as sa
@@ -122,6 +123,10 @@ class PilotReplicaObserver(Worker):
 
     poll_interval = 10.0
 
+    # Per-job cooldown for managers that fail /status check
+    status_backoff_base = poll_interval
+    status_backoff_max = 120.0
+
     def __init__(
         self,
         name: str,
@@ -141,6 +146,7 @@ class PilotReplicaObserver(Worker):
             heartbeat_timeout=heartbeat_timeout,
         )
         self.client = PilotControlClient(client_state, cn="pilot-replica-observer")
+        self._status_cooldown: dict[int, tuple[float, int]] = {}
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -163,27 +169,57 @@ class PilotReplicaObserver(Worker):
                 )
             )
 
+        live_uids = {job.uid for job in jobs}
+        self._status_cooldown = {
+            uid: v for uid, v in self._status_cooldown.items() if uid in live_uids
+        }
+
         deploy_counter = DeploymentCounter()
 
+        now = monotonic()
         for job in jobs:
+            cooldown = self._status_cooldown.get(job.uid)
+            if cooldown is not None and now < cooldown[0]:
+                continue
+
             try:
                 assert job.manager_url is not None
                 status = await self.client.get_status(job.manager_url)
             except Exception:
-                logger.exception(
-                    "%s: failed to fetch /status from job %s at %s",
-                    self.name,
-                    job.name,
-                    job.manager_url,
-                )
-                await self.record_unhealthy(job)
+                await self._record_status_failure(job, cooldown)
                 continue
 
+            self._status_cooldown.pop(job.uid, None)
             await self.update_job_status(job, status)
             await self.sync_replicas(job, status.replicas, deploy_counter)
             await self.reap_orphans(job, status.replicas)
 
         await self.update_deployments(deploy_counter)
+
+    async def _record_status_failure(
+        self, job: PilotJob, cooldown: tuple[float, int] | None
+    ) -> None:
+        """Mark the job's manager unhealthy and backoff on status polling."""
+        failures = (cooldown[1] if cooldown else 0) + 1
+        delay = min(
+            self.status_backoff_base * 2.0 ** (failures - 1),
+            self.status_backoff_max,
+        )
+
+        self._status_cooldown[job.uid] = (monotonic() + delay, failures)
+
+        logger.warning(
+            "%s: failed to fetch /status from job %s at %s "
+            "(failure #%d, backing off %.0fs)",
+            self.name,
+            job.name,
+            job.manager_url,
+            failures,
+            delay,
+            # Full traceback on the first failure only; later ones are expected.
+            exc_info=(failures == 1),
+        )
+        await self.record_unhealthy(job)
 
     async def record_unhealthy(self, job: PilotJob) -> None:
         now = datetime.now(timezone.utc)
