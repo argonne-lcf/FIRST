@@ -9,7 +9,6 @@ from django.utils import timezone
 from pydantic import ValidationError
 
 from resource_server_async.globus_utils import get_transfer_client
-from resource_server_async.schemas.anthropic_messages import AnthropicMessagesPydantic
 from resource_server_async.schemas.openai_control import (
     FIRST_RESERVED_OPENAI_FIELDS,
     OPENAI_CONTROL_MODELS,
@@ -50,8 +49,6 @@ from .schemas.endpoints import (
     SubmitTaskResult,
 )
 from .schemas.structured_logs import UserPydantic
-
-OpenAIRequestPayload = dict[str, Any] | AnthropicMessagesPydantic
 
 logger = logging.getLogger(__name__)
 
@@ -280,32 +277,13 @@ async def submit_openai_inference_request(
     context: RequestContext,
     cluster_name: str,
     framework: str,
-    payload: OpenAIRequestPayload,
+    payload: dict[str, Any],
     *,
-    openai_endpoint: OpenAIEndpoint | None = None,
+    openai_endpoint: OpenAIEndpoint,
 ) -> StreamingHttpResponse | Any:
-    route: str
-    if isinstance(payload, AnthropicMessagesPydantic):
-        is_anthropic_messages = True
-        route = payload.openai_endpoint
-        stream = payload.stream is True
-        prompt = payload.model_dump(include={"messages"}, mode="json")["messages"]
-        requested_model = payload.model
-        outbound = payload.model_dump(
-            exclude_none=True, exclude_unset=True, mode="json"
-        )
-        outbound["stream"] = stream
-        outbound["openai_endpoint"] = route
-    else:
-        is_anthropic_messages = False
-        if openai_endpoint is None:
-            raise ValueError("openai_endpoint is required for OpenAI requests")
-        route = openai_endpoint
-        control, outbound, prompt = _prepare_openai_request(payload, openai_endpoint)
-        stream = control.stream is True
-        requested_model = control.model
-
-    is_openai_responses = route == "responses"
+    control, outbound, prompt = _prepare_openai_request(payload, openai_endpoint)
+    stream = control.stream is True
+    requested_model = control.model
 
     assert context.user is not None
 
@@ -322,9 +300,9 @@ async def submit_openai_inference_request(
         )
 
     # Verify that the openAI endpoint is available by the cluster
-    if route not in cluster.openai_endpoints:
+    if openai_endpoint not in cluster.openai_endpoints:
         raise UnsupportedEndpoint(
-            f"{route!r} not available on cluster {cluster.cluster_name!r}"
+            f"{openai_endpoint!r} not available on cluster {cluster.cluster_name!r}"
         )
 
     endpoint = await BaseEndpoint.load_adapter(
@@ -334,16 +312,15 @@ async def submit_openai_inference_request(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
     )
 
+    # We don't support streaming on non-DirectAPI backed endpoints currently
     if (
         stream
-        and (is_openai_responses or is_anthropic_messages)
+        and openai_endpoint in {"responses", "messages"}
         and not isinstance(endpoint, DirectAPIEndpoint)
     ):
-        # We don't support streaming on non-DirectAPI backed endpoints currently
         raise UnsupportedEndpoint(
-            "Streaming is not supported for the "
-            f"{'OpenAI Responses' if is_openai_responses else 'Anthropic Messages'}"
-            " API on this endpoint. Re-issue this request with 'stream': false."
+            f"Streaming is not supported for the {openai_endpoint!r} API on this "
+            "endpoint. Re-issue this request with 'stream': false."
         )
 
     # Keep endpoint aliases useful for routing, but make the backend and logs use
@@ -373,7 +350,7 @@ async def submit_openai_inference_request(
         cluster=cluster.cluster_name,
         framework=framework,
         model=endpoint.model,
-        openai_endpoint=route,
+        openai_endpoint=openai_endpoint,
         prompt=json.dumps(prompt),
         timestamp_compute_request=timezone.now(),
     )

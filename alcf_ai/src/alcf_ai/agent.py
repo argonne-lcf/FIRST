@@ -315,6 +315,9 @@ def edit_opencode(
                 "options": {
                     "baseURL": f"{base_url}{cluster_name}/{framework}/v1",
                     "apiKey": f"{api_key}",
+                    "headers": {
+                        "X-ALCF-Session-ID": "{env:ALCF_SESSION_ID}",
+                    },
                 },
                 "models": entries,
             }
@@ -387,6 +390,11 @@ def edit_pi(
                 "baseUrl": f"{base_url}{cluster_name}/{framework}/v1",
                 "api": "openai-completions",
                 "apiKey": f"{api_key}",
+                # pi resolves "$VAR" headers strictly (errors when unset), so
+                # expand the session id in a shell that supplies a default.
+                "headers": {
+                    "X-ALCF-Session-ID": "!echo ${ALCF_SESSION_ID:-default}",
+                },
                 "compat": {
                     "supportsDeveloperRole": False,
                 },
@@ -404,6 +412,9 @@ def edit_codex(
     base_url: URL,
     api_key: str,
     model_infos: dict[str, list[dict[str, Any]]],
+    default_model: str,
+    default_cluster: str,
+    default_framework: str,
 ) -> None:
     path = Path.home() / ".codex" / "config.toml"
     config = _load_toml_config(path)
@@ -425,19 +436,24 @@ def edit_codex(
             else:
                 wire_api = "responses" if "responses" in protocols else "chat"
 
+            env_http_headers = tomlkit.inline_table()
+            env_http_headers["X-ALCF-Session-ID"] = "ALCF_SESSION_ID"
             providers[_provider_key(cluster_name, framework)] = {
                 "name": _provider_name(cluster_name, framework),
                 "base_url": f"{base_url}{cluster_name}/{framework}/v1",
                 "experimental_bearer_token": f"{api_key}",
                 "wire_api": wire_api,
+                "env_http_headers": env_http_headers,
             }
 
     config["model_providers"] = providers
 
     # Pick a default model only when the user hasn't already configured one;
     # never override an existing model/model_provider selection.
-    config.setdefault("model", "inkling-bf16")
-    config.setdefault("model_provider", "alcf-inference-service-minerva-api")
+    config.setdefault("model", default_model)
+    config.setdefault(
+        "model_provider", _provider_key(default_cluster, default_framework)
+    )
 
     _write_toml_config(path, config)
 
@@ -446,14 +462,68 @@ def edit_codex(
     logging.info(f"Updated configuration at {path}")
 
 
+def edit_claude(
+    base_url: URL,
+    api_key: str,
+    default_model: str,
+    default_cluster: str,
+    default_framework: str,
+) -> None:
+    path = Path.home() / ".claude" / "settings.json"
+    config = _load_json_config(path)
+
+    env = config.get("env", {})
+    env.update(
+        {
+            "ANTHROPIC_BASE_URL": f"{base_url}{default_cluster}/{default_framework}",
+            "ANTHROPIC_AUTH_TOKEN": api_key,
+            "ANTHROPIC_MODEL": default_model,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": default_model,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": default_model,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": default_model,
+        }
+    )
+    config["env"] = env
+
+    _write_json_config(path, config)
+
+    logging.info(f"Updated configuration at {path}")
+
+
 @cli.command()
 def configure(
-    agent: Annotated[Literal["opencode", "codex", "pi"], typer.Argument()],
-    include_experimental: bool = typer.Option(
-        False,
-        "--include-experimental",
-        help="Include non-whitelisted (experimental) models in the agent configuration",
-    ),
+    agent: Annotated[Literal["opencode", "codex", "pi", "claude"], typer.Argument()],
+    include_experimental: Annotated[
+        bool,
+        typer.Option(
+            "--include-experimental",
+            help="Include non-whitelisted (experimental) models in the agent configuration",
+        ),
+    ] = False,
+    model: Annotated[
+        str,
+        typer.Option(
+            "--default-model",
+            "-m",
+            help="Default model for the agent configuration (codex and claude)",
+        ),
+    ] = "inkling-bf16",
+    cluster: Annotated[
+        str,
+        typer.Option(
+            "--default-cluster",
+            "-c",
+            help="Cluster serving the default model (codex and claude)",
+        ),
+    ] = "minerva",
+    framework: Annotated[
+        str,
+        typer.Option(
+            "--default-framework",
+            "-f",
+            help="Framework serving the default model (codex and claude)",
+        ),
+    ] = "api",
 ) -> None:
     """
     Generates a configuration template for the given agent.
@@ -481,6 +551,13 @@ def configure(
         case "opencode":
             edit_opencode(client.base_url, api_key, model_infos)
         case "codex":
-            edit_codex(client.base_url, api_key, model_infos)
+            edit_codex(client.base_url, api_key, model_infos, model, cluster, framework)
         case "pi":
             edit_pi(client.base_url, api_key, model_infos)
+        case "claude":
+            edit_claude(client.base_url, api_key, model, cluster, framework)
+
+    logging.info(
+        "The access token expires; re-run this command to refresh it when "
+        "the agent reports an authentication error."
+    )

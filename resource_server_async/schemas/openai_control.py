@@ -3,7 +3,7 @@ from typing import Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field
 
 OpenAIEndpoint: TypeAlias = Literal[
-    "chat/completions", "completions", "embeddings", "responses"
+    "chat/completions", "completions", "embeddings", "responses", "messages"
 ]
 CompletionInput: TypeAlias = str | list[str] | list[int] | list[list[int]]
 
@@ -34,11 +34,18 @@ class ResponsesControl(OpenAIControlFields):
     input: str | list[dict[str, Any]]
 
 
+class AnthropicMessagesControl(OpenAIControlFields):
+    """FIRST control fields for the Anthropic Messages route."""
+
+    messages: list[dict[str, Any]]
+
+
 OPENAI_CONTROL_MODELS: dict[OpenAIEndpoint, type[OpenAIControlFields]] = {
     "chat/completions": ChatCompletionsControl,
     "completions": CompletionsControl,
     "embeddings": EmbeddingsControl,
     "responses": ResponsesControl,
+    "messages": AnthropicMessagesControl,
 }
 
 OPENAI_PROMPT_FIELDS: dict[OpenAIEndpoint, str] = {
@@ -46,6 +53,7 @@ OPENAI_PROMPT_FIELDS: dict[OpenAIEndpoint, str] = {
     "completions": "prompt",
     "embeddings": "input",
     "responses": "input",
+    "messages": "messages",
 }
 
 # These fields exist only inside FIRST's adapter protocol. A client may use the
