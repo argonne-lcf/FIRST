@@ -72,6 +72,8 @@ class ModelSpec(ResourceSpec):
     overload: OverloadPolicy = OverloadPolicy()
     demand_signal: DemandSignalConfig = DemandSignalConfig()
     max_model_len: int | None = Field(None, ge=1)
+    display_name: str | None = None
+    capabilities: dict[str, Any] = {}
 
     @field_validator("supported_endpoints")
     @classmethod

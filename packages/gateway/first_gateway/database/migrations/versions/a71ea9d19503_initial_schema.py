@@ -110,6 +110,10 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("max_model_len", sa.Integer(), nullable=True, default=None),
+        sa.Column("display_name", sa.Text(), nullable=True),
+        sa.Column(
+            "capabilities", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+        ),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
