@@ -117,7 +117,8 @@ class Settings(BaseSettings):
     data_staging_globus_collection_id: str = ""
     pilot_ca_crt: str
     pilot_ca_key: SecretStr
-    health_slack_webhook_url: str | None = None
+    health_slack_bot_token: SecretStr | None = None
+    health_slack_channel: str | None = None
     gateway_health_url: str = "http://127.0.0.1/health"
 
     keycloak_clients: dict[str, KeycloakSettings] = {}

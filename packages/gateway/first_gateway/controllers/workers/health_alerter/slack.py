@@ -10,6 +10,7 @@ from first_common.schema.resources.runtime import (
 _SEVERITY_ICON: dict[Severity, str] = {"crit": "🔴", "warn": "🟡", "info": "ℹ️"}
 _SEVERITY_RANK: list[Severity] = ["crit", "warn", "info"]
 _GROUP_ORDER: list[AlertGroup] = list(get_args(AlertGroup))
+_THREAD_BODY_LIMIT = 2800
 
 
 def _recovery_line(staged: StagedTransition) -> str:
@@ -100,3 +101,23 @@ def build_digest_blocks(
     text = "\n".join(lines) or "All systems healthy."
     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
     return blocks
+
+
+def _fenced(label: str, body: str) -> str:
+    body = body.strip()
+    if len(body) > _THREAD_BODY_LIMIT:
+        body = body[:_THREAD_BODY_LIMIT] + "\n…(truncated)"
+    return f"*{label}*\n```\n{body}\n```"
+
+
+def build_thread_blocks(details: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Render `(label, full-text)` pairs as code-fenced sections for a thread.
+
+    Posted as a reply under a parent alert so the channel stays terse while the
+    full context (tracebacks, multi-line errors) lives one click away.
+    """
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": _fenced(label, body)}}
+        for label, body in details
+        if body.strip()
+    ]

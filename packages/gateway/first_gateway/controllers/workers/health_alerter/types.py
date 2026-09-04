@@ -19,6 +19,8 @@ class Observation:
     - `summary` is the human-readable degradation line shown in Slack.
     - `display_name` is the human-readable resource name alone, used to render the
       recovery line
+    - `detail` is the full, untruncated context (e.g. a multi-line scheduler
+      error) posted in a Slack thread under the alert. Empty means no thread.
     """
 
     key: str
@@ -27,6 +29,7 @@ class Observation:
     severity: Severity
     display_name: str = ""
     recovery_hint: str = ""
+    detail: str = ""
     debounce_s: float | None = None
     owner: str = ""
     group: AlertGroup = "Other"
@@ -36,12 +39,16 @@ class Observation:
 class CheckResult:
     """
     The result of a check function, which returns many observations or fails.
+
+    - `error_msg` is the terse one-line failure shown in the channel.
+    - `detail` is the full traceback, posted in a thread under the alert.
     """
 
     check_function: str
     success: bool
     error_msg: str | None
     observations: list[Observation]
+    detail: str = ""
 
 
 @dataclass

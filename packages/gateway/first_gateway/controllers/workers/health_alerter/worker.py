@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import traceback
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar
@@ -21,6 +22,7 @@ from first_gateway.controllers.workers.health_alerter.checks import (
 from first_gateway.controllers.workers.health_alerter.slack import (
     build_alert_blocks,
     build_digest_blocks,
+    build_thread_blocks,
 )
 from first_gateway.controllers.workers.health_alerter.types import (
     CheckResult,
@@ -36,6 +38,7 @@ from first_gateway.database.models import (
 )
 from first_gateway.settings import ClientState
 
+SLACK_POST_URL = "https://slack.com/api/chat.postMessage"
 logger = logging.getLogger(__name__)
 
 
@@ -174,7 +177,7 @@ class HealthAlerter(Worker):
             heartbeat_timeout=heartbeat_timeout,
         )
         self.http = httpx.AsyncClient(timeout=10.0)
-        self._webhook_warned = False
+        self._slack_warned = False
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -196,28 +199,80 @@ class HealthAlerter(Worker):
             )
         except Exception as e:
             logger.exception("health check %s failed", name)
-            return CheckResult(name, success=False, error_msg=str(e), observations=[])
-
-    async def _post_slack(self, blocks: list[dict[str, Any]]) -> bool:
-        url = self.client_state.settings.health_slack_webhook_url
-        if not url:
-            if not self._webhook_warned:
-                logger.info(
-                    "health_slack_webhook_url not configured; skipping Slack post"
-                )
-                self._webhook_warned = True
-            return True
-        try:
-            resp = await self.http.post(url, json={"blocks": blocks})
-            if 200 <= resp.status_code < 300:
-                return True
-            logger.warning(
-                "Slack webhook returned %d: %s", resp.status_code, resp.text[:500]
+            return CheckResult(
+                name,
+                success=False,
+                error_msg=str(e) or type(e).__name__,
+                observations=[],
+                detail=traceback.format_exc(),
             )
-            return False
+
+    async def _post_message(
+        self,
+        blocks: list[dict[str, Any]],
+        *,
+        thread_ts: str | None = None,
+        text: str | None = None,
+    ) -> str | None:
+        """Post one message via chat.postMessage.
+
+        Returns the message ``ts`` on success (used as a thread anchor), ``""``
+        when Slack is not configured (treated as success so the state machine
+        still advances), or ``None`` on a real send failure (the caller must not
+        commit, so it is retried next tick with no double-send).
+        """
+        settings = self.client_state.settings
+        token = settings.health_slack_bot_token
+        channel = settings.health_slack_channel
+        if not token or not channel:
+            if not self._slack_warned:
+                logger.info(
+                    "health_slack_bot_token/channel not configured; skipping Slack post"
+                )
+                self._slack_warned = True
+            return ""
+
+        payload: dict[str, Any] = {"channel": channel, "blocks": blocks}
+        if text is not None:
+            payload["text"] = text
+        if thread_ts is not None:
+            payload["thread_ts"] = thread_ts
+        try:
+            resp = await self.http.post(
+                SLACK_POST_URL,
+                json=payload,
+                headers={"Authorization": f"Bearer {token.get_secret_value()}"},
+            )
+            # chat.postMessage returns HTTP 200 even on API errors; the real
+            # outcome is the JSON body's `ok` field.
+            body = resp.json()
+            if body.get("ok"):
+                return str(body["ts"])
+            logger.warning("Slack chat.postMessage failed: %s", body.get("error", body))
+            return None
         except Exception:
-            logger.warning("Slack webhook POST failed", exc_info=True)
-            return False
+            logger.warning("Slack chat.postMessage POST failed", exc_info=True)
+            return None
+
+    def _header_text(self, blocks: list[dict[str, Any]]) -> str | None:
+        """The header block's text, used as the notification/a11y fallback."""
+        for block in blocks:
+            if block.get("type") == "header":
+                text = block["text"]["text"]
+                return str(text)
+        return None
+
+    async def _post_thread(
+        self, thread_ts: str, details: list[tuple[str, str]]
+    ) -> None:
+        """Best-effort: post full context as a reply under a parent alert.
+
+        The parent already landed, so a thread failure is logged and swallowed
+        rather than blocking the commit.
+        """
+        blocks = build_thread_blocks(details)
+        if blocks:
+            await self._post_message(blocks, thread_ts=thread_ts, text="Details")
 
     async def poll(self, now: datetime | None = None) -> None:
         now = now or datetime.now(timezone.utc)
@@ -240,8 +295,17 @@ class HealthAlerter(Worker):
         visible_recoveries = [r for r in plan.recoveries if r.severity != "info"]
         if visible_degradations or visible_recoveries:
             blocks = build_alert_blocks(visible_degradations, visible_recoveries, [])
-            if await self._post_slack(blocks):
+            ts = await self._post_message(blocks, text=self._header_text(blocks))
+            if ts is not None:
                 self._commit(state, plan)
+                detail_by_key = {o.key: o.detail for o in observed if o.detail}
+                if ts:
+                    details = [
+                        (d.summary, detail_by_key[d.key])
+                        for d in visible_degradations
+                        if d.key in detail_by_key
+                    ]
+                    await self._post_thread(ts, details)
         elif plan.degradations or plan.recoveries:
             # Only silent info transitions matured — commit without posting.
             self._commit(state, plan)
@@ -253,7 +317,10 @@ class HealthAlerter(Worker):
         today = now.strftime("%Y-%m-%d")
         if now.hour >= self.DAILY_HOUR_UTC and state.last_daily_report != today:
             blocks = await self._build_daily_digest(observed, state.committed)
-            if await self._post_slack(blocks):
+            if (
+                await self._post_message(blocks, text=self._header_text(blocks))
+                is not None
+            ):
                 state.last_daily_report = today
 
         # 6. Persist.
@@ -284,18 +351,29 @@ class HealthAlerter(Worker):
         self, state: HealthAlertState, results: list[CheckResult]
     ) -> None:
         to_report: list[tuple[str, str]] = []
+        detail_by_fn: dict[str, str] = {}
         for r in results:
             if not r.success and r.error_msg:
                 if state.reported_failures.get(r.check_function) != r.error_msg:
                     to_report.append((r.check_function, r.error_msg))
+                    if r.detail:
+                        detail_by_fn[r.check_function] = r.detail
             elif r.success:
                 state.reported_failures.pop(r.check_function, None)
 
         if to_report:
             blocks = build_alert_blocks([], [], to_report)
-            if await self._post_slack(blocks):
+            ts = await self._post_message(blocks, text=self._header_text(blocks))
+            if ts is not None:
                 for fn, msg in to_report:
                     state.reported_failures[fn] = msg
+                if ts:
+                    details = [
+                        (fn, detail_by_fn[fn])
+                        for fn, _ in to_report
+                        if fn in detail_by_fn
+                    ]
+                    await self._post_thread(ts, details)
 
     async def _build_daily_digest(
         self, observed: list[Observation], committed: dict[str, CommittedAlert]
