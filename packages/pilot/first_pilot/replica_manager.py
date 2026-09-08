@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -19,6 +20,7 @@ from first_common.errors import (
     NotFound,
     ReplicaAlreadyPlaced,
     ReplicaStartError,
+    ReplicaTeardownError,
 )
 from first_common.schema.pilot import (
     GpuInfo,
@@ -51,6 +53,7 @@ _NVIDIA_SMI_ARGS = [
     "--format=csv,noheader,nounits",
 ]
 _PALS_LABEL = re.compile(r"^(?P<host>\S+)\s+(?P<rank>\d+):\s?(?P<row>.*)$")
+_REPLICA_UDS_NAME = re.compile(r"^replica-(?:0|[1-9][0-9]*)\.sock$")
 
 
 def _require_executable(path: Path, *, label: str) -> str:
@@ -447,14 +450,79 @@ class ReplicaManager:
         self,
         name: str,
         resources: list[GpuClaim],
+        expected: Replica | ReservedSentinel,
     ) -> bool:
-        """Release resources only when the named entry is still present."""
+        """Release only when the name still maps to the expected owner."""
         # Caller must hold self._lock. A duplicate release is a no-op, which is
-        # important if another replica has since claimed the same GPUs.
-        if self._replicas.pop(name, None) is None:
+        # important if a replacement replica has since claimed the same name or
+        # GPUs.
+        if self._replicas.get(name) is not expected:
             return False
+        del self._replicas[name]
         self._claimed.difference_update(self._flatten(resources))
         return True
+
+    def _unlink_replica_uds(self, replica: Replica) -> None:
+        """Remove one inert socket pathname after authoritative teardown.
+
+        Refuse anything except the exact socket shape minted in the manager's
+        private directory. Callers retain the replica and claims on failure so
+        an idempotent stop can retry cleanup.
+        """
+        socket_dir = Path(self._socket_dir.name)
+        uds = Path(replica.uds)
+        error_prefix = f"Replica {replica.name} teardown incomplete; UDS cleanup"
+        if (
+            not socket_dir.is_absolute()
+            or not uds.is_absolute()
+            or uds.parent != socket_dir
+            or _REPLICA_UDS_NAME.fullmatch(uds.name) is None
+        ):
+            raise ReplicaTeardownError(f"{error_prefix} refused unsafe path {uds}")
+
+        dir_fd: int | None = None
+        try:
+            dir_fd = os.open(
+                socket_dir,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            before = os.stat(uds.name, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_ISSOCK(before.st_mode):
+                raise ReplicaTeardownError(
+                    f"{error_prefix} refused non-socket {uds.name}"
+                )
+
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                    probe.settimeout(0.2)
+                    probe.connect(replica.uds)
+            except ConnectionRefusedError:
+                pass
+            else:
+                raise ReplicaTeardownError(
+                    f"{error_prefix} refused active listener {uds.name}"
+                )
+
+            # Do not unlink a replacement entry created during the probe.
+            after = os.stat(uds.name, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_ISSOCK(after.st_mode) or (after.st_dev, after.st_ino) != (
+                before.st_dev,
+                before.st_ino,
+            ):
+                raise ReplicaTeardownError(
+                    f"{error_prefix} refused changed entry {uds.name}"
+                )
+            os.unlink(uds.name, dir_fd=dir_fd)
+            logger.info("removed inert replica socket %s", uds)
+        except FileNotFoundError:
+            return
+        except ReplicaTeardownError:
+            raise
+        except OSError as exc:
+            raise ReplicaTeardownError(f"{error_prefix} failed: {exc}") from exc
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
         requested = self._validate_request(replica.name, replica.gpu_indices)
@@ -507,6 +575,7 @@ class ReplicaManager:
                 self._release_locked(
                     replica.name,
                     resources,
+                    _RESERVED,
                 )
             raise ReplicaStartError(f"Failed to start replica: {e}") from e
 
@@ -524,11 +593,13 @@ class ReplicaManager:
         # claims addressable until it reports authoritative process-group
         # absence; an exception is intentionally retryable.
         replica.stop()
+        self._unlink_replica_uds(replica)
 
         with self._lock:
             released = self._release_locked(
                 replica_name,
                 replica.resources,
+                replica,
             )
         if not released:
             logger.info("Replica %s was already released", replica_name)
@@ -556,6 +627,7 @@ class ReplicaManager:
         def stop_and_release(replica: Replica) -> None:
             try:
                 replica.stop()
+                self._unlink_replica_uds(replica)
                 # This also handles a completion after stop_all's deadline. If
                 # the manager remains live, resources are released promptly. A
                 # duplicate release after the entry is gone is a no-op.
@@ -563,6 +635,7 @@ class ReplicaManager:
                     self._release_locked(
                         replica.name,
                         replica.resources,
+                        replica,
                     )
             except BaseException as exc:
                 errors[id(replica)] = exc
