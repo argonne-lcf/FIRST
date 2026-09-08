@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 from redis.asyncio import Redis
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,6 +29,7 @@ from first_common.schema.types import (
 from first_gateway import Settings
 from first_gateway.controllers.workers.health_alerter.checks import (
     CHECK_REGISTRY,
+    Check,
     check_cluster_health,
     check_db_liveness,
     check_pilot_deployment,
@@ -57,6 +59,9 @@ from first_gateway.database.models import (
 from first_gateway.database.redis.repo import RedisRepo
 
 DEBOUNCE = timedelta(seconds=45)
+
+# A plausible chat.postMessage `ts`; truthy so threading wiring is exercised.
+FAKE_TS = "1700000000.000100"
 
 
 def _obs(
@@ -301,6 +306,25 @@ def test_error_tail_keeps_meaningful_end() -> None:
     assert _error_tail("   ") == ""
 
 
+def test_exc_summary_falls_back_to_type_name() -> None:
+    """A message-less exception yields its class name, never an empty string."""
+    from first_gateway.controllers.workers.health_alerter.checks import _exc_summary
+
+    assert _exc_summary(TimeoutError()) == "TimeoutError"
+    assert _exc_summary(RuntimeError("boom")) == "boom"
+
+
+def test_probe_hint() -> None:
+    """The probe hint appears only when a health-check URL is configured."""
+    from first_gateway.controllers.workers.health_alerter.checks import _probe_hint
+
+    assert _probe_hint({"url": "https://sophia/health"}) == (
+        " (probing https://sophia/health)"
+    )
+    assert _probe_hint({"url": ""}) == ""
+    assert _probe_hint(None) == ""
+
+
 # ---------------------------------------------------------------------------
 # Integration fixtures & helpers (DB + Redis required)
 # ---------------------------------------------------------------------------
@@ -326,7 +350,8 @@ def _make_alerter(
     cs.redis = redis
     cs.redis_repo = RedisRepo(redis)
     cs.settings = MagicMock()
-    cs.settings.health_slack_webhook_url = "https://hooks.slack.test/webhook"
+    cs.settings.health_slack_bot_token = SecretStr("xoxb-test-token")
+    cs.settings.health_slack_channel = "C0TEST"
     cs.settings.gateway_health_url = "http://127.0.0.1/health"
     return HealthAlerter("health-alerter", cs, MagicMock())
 
@@ -367,6 +392,10 @@ def _digest_posted(mock_post: AsyncMock) -> bool:
     )
 
 
+async def _boom_check(client_state: object) -> list[Observation]:
+    raise RuntimeError("kaboom in check")
+
+
 # ---------------------------------------------------------------------------
 # poll() wiring tests
 # ---------------------------------------------------------------------------
@@ -387,13 +416,24 @@ async def test_degradation_flush_and_commit(
 
     t0 = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    with patch.object(alerter, "_post_slack", new_callable=AsyncMock) as mock_post:
-        mock_post.return_value = True
+    # Scope to the static-deployment check so unrelated infra checks (gateway /
+    # controller unreachable in the test env) don't add their own alert/thread.
+    only_sd = [c for c in CHECK_REGISTRY if c.func is check_static_deployment]
+    with (
+        patch.object(alerter, "_post_message", new_callable=AsyncMock) as mock_post,
+        patch(
+            "first_gateway.controllers.workers.health_alerter.worker.CHECK_REGISTRY",
+            only_sd,
+        ),
+    ):
+        mock_post.return_value = FAKE_TS
 
         await alerter.poll(t0)
         mock_post.assert_not_called()
 
         await alerter.poll(t0 + timedelta(seconds=301))
+        # One parent post; the static-deployment degradation carries no detail,
+        # so no thread reply follows.
         mock_post.assert_called_once()
 
         state = await _redis_state(redis)
@@ -418,8 +458,8 @@ async def test_recovery_after_committed(
 
     t0 = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    with patch.object(alerter, "_post_slack", new_callable=AsyncMock) as mock_post:
-        mock_post.return_value = True
+    with patch.object(alerter, "_post_message", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = FAKE_TS
         # Cluster health uses the flappy debounce; degradation matures at >300s
         # and the recovery inherits the same window from the committed alert.
         await alerter.poll(t0)
@@ -455,8 +495,8 @@ async def test_slack_failure_preserves_state(
 
     t0 = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    with patch.object(alerter, "_post_slack", new_callable=AsyncMock) as mock_post:
-        mock_post.return_value = False
+    with patch.object(alerter, "_post_message", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = None
 
         await alerter.poll(t0)
         await alerter.poll(t0 + timedelta(seconds=46))
@@ -490,13 +530,13 @@ async def test_info_transition_is_digest_only(
     # controller unreachable in the test env) don't post.
     only_job = [c for c in CHECK_REGISTRY if c.func is check_pilot_job]
     with (
-        patch.object(alerter, "_post_slack", new_callable=AsyncMock) as mock_post,
+        patch.object(alerter, "_post_message", new_callable=AsyncMock) as mock_post,
         patch(
             "first_gateway.controllers.workers.health_alerter.worker.CHECK_REGISTRY",
             only_job,
         ),
     ):
-        mock_post.return_value = True
+        mock_post.return_value = FAKE_TS
 
         await alerter.poll(t0)
         await alerter.poll(t0 + timedelta(seconds=111))
@@ -516,8 +556,8 @@ async def test_daily_digest(db: async_sessionmaker[AsyncSession], redis: Redis) 
     t_noon = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
     t_1pm = datetime(2025, 1, 1, 13, 0, 0, tzinfo=timezone.utc)
 
-    with patch.object(alerter, "_post_slack", new_callable=AsyncMock) as mock_post:
-        mock_post.return_value = True
+    with patch.object(alerter, "_post_message", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = FAKE_TS
 
         await alerter.poll(t_noon)
         assert not _digest_posted(mock_post)
@@ -529,6 +569,144 @@ async def test_daily_digest(db: async_sessionmaker[AsyncSession], redis: Redis) 
         mock_post.reset_mock()
         await alerter.poll(t_1pm + timedelta(minutes=1))
         assert not _digest_posted(mock_post)
+
+
+# ---------------------------------------------------------------------------
+# Slack Web API + threading tests
+# ---------------------------------------------------------------------------
+
+
+def _slack_response(body: dict[str, object]) -> MagicMock:
+    resp = MagicMock()
+    resp.json.return_value = body
+    return resp
+
+
+async def test_post_message_success_returns_ts(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """A 200 with ok:true yields the message ts and authenticates with the bot token."""
+    alerter = _make_alerter(db, redis)
+    with patch.object(alerter.http, "post", new_callable=AsyncMock) as post:
+        post.return_value = _slack_response({"ok": True, "ts": FAKE_TS})
+        ts = await alerter._post_message([{"type": "section"}], text="hi")
+
+    assert ts == FAKE_TS
+    _, kwargs = post.call_args
+    assert kwargs["headers"]["Authorization"] == "Bearer xoxb-test-token"
+    assert kwargs["json"]["channel"] == "C0TEST"
+    assert "thread_ts" not in kwargs["json"]
+
+
+async def test_post_message_ok_false_returns_none(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """chat.postMessage returns HTTP 200 even on errors; ok:false is a failure."""
+    alerter = _make_alerter(db, redis)
+    with patch.object(alerter.http, "post", new_callable=AsyncMock) as post:
+        post.return_value = _slack_response({"ok": False, "error": "not_in_channel"})
+        ts = await alerter._post_message([{"type": "section"}])
+
+    assert ts is None
+
+
+async def test_post_message_unconfigured_returns_empty_and_warns_once(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """No token/channel → treated as success ("") so state advances; no API call."""
+    alerter = _make_alerter(db, redis)
+    alerter.client_state.settings.health_slack_bot_token = None
+    alerter.client_state.settings.health_slack_channel = None
+
+    with patch.object(alerter.http, "post", new_callable=AsyncMock) as post:
+        assert await alerter._post_message([{"type": "section"}]) == ""
+        assert await alerter._post_message([{"type": "section"}]) == ""
+        post.assert_not_called()
+
+    assert alerter._slack_warned is True
+
+
+async def test_ok_false_blocks_commit(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """An ok:false parent post leaves staging intact for retry (no commit)."""
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(_sd())
+
+    t0 = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    with patch.object(alerter.http, "post", new_callable=AsyncMock) as post:
+        post.return_value = _slack_response({"ok": False, "error": "invalid_auth"})
+        await alerter.poll(t0)
+        await alerter.poll(t0 + timedelta(seconds=301))
+
+    state = await _redis_state(redis)
+    assert len(state.committed) == 0
+    assert len(state.staging) > 0
+
+
+async def test_degradation_with_detail_posts_thread(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """A matured degradation with detail posts the full context as a thread reply."""
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(
+            PilotJob(
+                name="cl/pilot-job/rec",
+                cluster_name="cl",
+                walltime_min=60,
+                num_nodes=1,
+                gpus_per_node=4,
+                reconcile_failures=3,
+                reconcile_last_error="short tail\nfull multiline\ndetail body here",
+            )
+        )
+
+    t0 = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    only_job = [c for c in CHECK_REGISTRY if c.func is check_pilot_job]
+    with (
+        patch.object(alerter, "_post_message", new_callable=AsyncMock) as mock_post,
+        patch(
+            "first_gateway.controllers.workers.health_alerter.worker.CHECK_REGISTRY",
+            only_job,
+        ),
+    ):
+        mock_post.return_value = FAKE_TS
+        await alerter.poll(t0)
+        await alerter.poll(t0 + timedelta(seconds=120))
+
+    thread_calls = [c for c in mock_post.call_args_list if "thread_ts" in c.kwargs]
+    assert len(thread_calls) == 1
+    assert thread_calls[0].kwargs["thread_ts"] == FAKE_TS
+    thread_text = thread_calls[0].args[0][0]["text"]["text"]
+    assert "detail body here" in thread_text
+
+
+async def test_check_crash_traceback_threads_under_failure(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """A crashing check posts its terse error, then its traceback in a thread."""
+    alerter = _make_alerter(db, redis)
+
+    with (
+        patch.object(alerter, "_post_message", new_callable=AsyncMock) as mock_post,
+        patch(
+            "first_gateway.controllers.workers.health_alerter.worker.CHECK_REGISTRY",
+            [Check(func=_boom_check, group="Other")],
+        ),
+    ):
+        mock_post.return_value = FAKE_TS
+        await alerter.poll(datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
+
+    thread_calls = [c for c in mock_post.call_args_list if "thread_ts" in c.kwargs]
+    assert len(thread_calls) == 1
+    thread_text = thread_calls[0].args[0][0]["text"]["text"]
+    assert "kaboom in check" in thread_text
+    assert "Traceback" in thread_text
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +852,94 @@ async def test_check_pilot_replica_bad_state(
     assert len(obs) == 1
     assert obs[0].severity == "crit"
     assert "CUDA OOM" in obs[0].summary
+
+
+async def test_check_pilot_job_manager_unhealthy(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """An unhealthy manager names the /status probe rather than repeating itself."""
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(
+            PilotJob(
+                name="cl/pilot-job/mgr",
+                cluster_name="cl",
+                walltime_min=60,
+                num_nodes=1,
+                gpus_per_node=4,
+                manager_health=HealthCheckResult.unhealthy.value,
+                manager_unhealthy_since=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+
+    obs = await check_pilot_job(alerter.client_state)
+    health_obs = [o for o in obs if o.key.endswith("/health")]
+    assert len(health_obs) == 1
+    assert "manager unreachable" in health_obs[0].summary
+    assert "/status" in health_obs[0].summary
+
+
+async def test_check_cluster_health_surfaces_probe_target(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """An unhealthy cluster with a configured probe URL surfaces it as a hint."""
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(
+            Cluster(
+                name="cl-probe",
+                health_check={"url": "https://cl-probe/health", "debounce": 2},
+                health=HealthCheckResult.unhealthy.value,
+            )
+        )
+
+    obs = await check_cluster_health(alerter.client_state)
+    hit = [o for o in obs if o.display_name == "Cluster cl-probe"]
+    assert len(hit) == 1
+    assert "probing https://cl-probe/health" in hit[0].summary
+
+
+async def test_check_scheduler_timeout_not_doubled() -> None:
+    """A scheduler probe timeout reads as a timeout, not 'failed: failed'."""
+    from unittest.mock import patch
+
+    from first_gateway.controllers.workers.health_alerter.checks import _check_scheduler
+
+    adapter = MagicMock()
+    adapter.get_job_statuses = AsyncMock(side_effect=TimeoutError())
+    with patch(
+        "first_gateway.controllers.workers.health_alerter.checks.build_scheduler",
+        new=AsyncMock(return_value=adapter),
+    ):
+        obs = await _check_scheduler(
+            MagicMock(), MagicMock(), "cluster/1/scheduler", "sophia"
+        )
+
+    assert obs is not None
+    assert "timed out" in obs.summary
+    assert "scheduler check failed: scheduler check failed" not in obs.summary
+
+
+async def test_check_scheduler_error_uses_type_name() -> None:
+    """A message-less non-timeout error still surfaces its exception type."""
+    from unittest.mock import patch
+
+    from first_gateway.controllers.workers.health_alerter.checks import _check_scheduler
+
+    adapter = MagicMock()
+    adapter.get_job_statuses = AsyncMock(side_effect=ConnectionResetError())
+    with patch(
+        "first_gateway.controllers.workers.health_alerter.checks.build_scheduler",
+        new=AsyncMock(return_value=adapter),
+    ):
+        obs = await _check_scheduler(
+            MagicMock(), MagicMock(), "cluster/1/scheduler", "tara"
+        )
+
+    assert obs is not None
+    assert obs.summary.endswith("scheduler check failed: ConnectionResetError")
 
 
 async def test_check_db_liveness_healthy(

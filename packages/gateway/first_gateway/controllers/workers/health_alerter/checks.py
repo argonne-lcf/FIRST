@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import traceback
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 import sqlalchemy as sa
 from httpx import AsyncClient
@@ -42,6 +43,11 @@ def _error_tail(err: str | None, limit: int = 300) -> str:
     return tail[:limit]
 
 
+def _exc_summary(exc: Exception, limit: int = 300) -> str:
+    """Last line of an exception, falling back to its type when message-less."""
+    return _error_tail(str(exc), limit) or type(exc).__name__
+
+
 _BAD_REPLICA_STATES = {
     ReplicaState.unhealthy.value,
     ReplicaState.error.value,
@@ -75,9 +81,15 @@ def _disk_severity(use: int) -> Severity | None:
     return None
 
 
+def _probe_hint(health_check: dict[str, Any] | None) -> str:
+    """Format URL for failing health check"""
+    url = (health_check or {}).get("url")
+    return f" (probing {url})" if url else ""
+
+
 async def check_cluster_health(client_state: ClientState) -> list[Observation]:
     async with client_state.db_sessionmaker() as sess:
-        q = sa.select(Cluster.uid, Cluster.name).where(
+        q = sa.select(Cluster.uid, Cluster.name, Cluster.health_check).where(
             Cluster.health == HealthCheckResult.unhealthy.value
         )
         clusters = (await sess.execute(q)).all()
@@ -86,7 +98,7 @@ async def check_cluster_health(client_state: ClientState) -> list[Observation]:
         Observation(
             key=f"cluster/{c.uid}/health",
             status="unhealthy",
-            summary=f"Cluster {c.name}: health check failing",
+            summary=f"Cluster {c.name}: health check failing{_probe_hint(c.health_check)}",
             display_name=f"Cluster {c.name}",
             severity="crit",
             debounce_s=_DEBOUNCE_S,
@@ -105,6 +117,7 @@ async def _check_scheduler(
             key=key,
             status="error",
             summary=f"Cluster {name}: failed to build scheduler adapter",
+            detail=traceback.format_exc(),
             display_name=f"Cluster {name} scheduler",
             severity="crit",
             debounce_s=_DEBOUNCE_S,
@@ -113,14 +126,27 @@ async def _check_scheduler(
     try:
         async with asyncio.timeout(_SCHEDULER_CHECK_TIMEOUT_S):
             await adapter.get_job_statuses()
-    except Exception as e:
-        detail = _error_tail(str(e)) or "scheduler check failed"
+    except TimeoutError:
         return Observation(
             key=key,
             status="error",
-            summary=f"Cluster {name}: scheduler check failed: {detail}",
+            summary=(
+                f"Cluster {name}: scheduler probe timed out after "
+                f"{_SCHEDULER_CHECK_TIMEOUT_S:.0f}s"
+            ),
+            display_name=f"Cluster {name} scheduler",
+            detail=traceback.format_exc(),
+            severity="crit",
+            debounce_s=_DEBOUNCE_S,
+        )
+    except Exception as e:
+        return Observation(
+            key=key,
+            status="error",
+            summary=f"Cluster {name}: scheduler check failed: {_exc_summary(e)}",
             display_name=f"Cluster {name} scheduler",
             severity="crit",
+            detail=traceback.format_exc(),
             debounce_s=_DEBOUNCE_S,
         )
     else:
@@ -148,16 +174,18 @@ async def check_schedulers(client_state: ClientState) -> list[Observation]:
 
 async def check_static_deployment(client_state: ClientState) -> list[Observation]:
     async with client_state.db_sessionmaker() as sess:
-        q = sa.select(StaticDeployment.uid, StaticDeployment.name).where(
-            StaticDeployment.health == HealthCheckResult.unhealthy.value
-        )
+        q = sa.select(
+            StaticDeployment.uid,
+            StaticDeployment.name,
+            StaticDeployment.health_check,
+        ).where(StaticDeployment.health == HealthCheckResult.unhealthy.value)
         deps = (await sess.execute(q)).all()
 
     return [
         Observation(
             key=f"staticdeployment/{d.uid}/health",
             status="unhealthy",
-            summary=f"StaticDeployment {d.name}: health unhealthy",
+            summary=f"StaticDeployment {d.name}: health check failing{_probe_hint(d.health_check)}",
             display_name=f"StaticDeployment {d.name}",
             severity="crit",
             debounce_s=_DEBOUNCE_S,
@@ -237,20 +265,26 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
                     summary=summary,
                     display_name=f"PilotJob {j.name}",
                     recovery_hint=f"{n} reconcile failures",
+                    detail=j.reconcile_last_error or "",
                     severity="crit",
                 )
             )
         if j.manager_health == HealthCheckResult.unhealthy.value:
             since = (
-                f" (since {j.manager_unhealthy_since})"
+                f", since {j.manager_unhealthy_since}"
                 if j.manager_unhealthy_since
                 else ""
             )
+            # The manager is flipped unhealthy in exactly one place: repeated
+            # failures to fetch its /status endpoint (pilot_replica_observer).
             obs.append(
                 Observation(
                     key=f"pilotjob/{j.uid}/health",
                     status="manager_unhealthy",
-                    summary=f"PilotJob {j.name}: manager unhealthy{since}",
+                    summary=(
+                        f"PilotJob {j.name}: manager unreachable "
+                        f"(no response from /status{since})"
+                    ),
                     display_name=f"PilotJob {j.name}",
                     recovery_hint="manager unhealthy",
                     severity="crit",
@@ -308,6 +342,7 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
                     summary=summary,
                     display_name=f"PilotReplica {r.name}",
                     recovery_hint=f"{n} reconcile failures",
+                    detail=r.reconcile_last_error or "",
                     severity="crit",
                 )
             )
@@ -325,8 +360,9 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="postgres",
                 status="down",
-                summary=f"Postgres unreachable: {_error_tail(str(e))}",
+                summary=f"Postgres unreachable: {_exc_summary(e)}",
                 display_name="Postgres",
+                detail=traceback.format_exc(),
                 severity="crit",
             )
         )
@@ -337,8 +373,9 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="redis",
                 status="down",
-                summary=f"Redis unreachable: {_error_tail(str(e))}",
+                summary=f"Redis unreachable: {_exc_summary(e)}",
                 display_name="Redis",
+                detail=traceback.format_exc(),
                 severity="crit",
             )
         )
@@ -367,8 +404,9 @@ async def check_host(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="gateway_health",
                 status="unreachable",
-                summary=f"Gateway /health unreachable: {_error_tail(str(e))}",
+                summary=f"Gateway /health unreachable: {_exc_summary(e)}",
                 display_name="Gateway /health",
+                detail=traceback.format_exc(),
                 severity="crit",
             )
         )
@@ -390,8 +428,9 @@ async def check_host(client_state: ClientState) -> list[Observation]:
             Observation(
                 key="controller_healthz",
                 status="stale",
-                summary=f"Controller /healthz unreachable: {_error_tail(str(e))}",
+                summary=f"Controller /healthz unreachable: {_exc_summary(e)}",
                 display_name="Controller /healthz",
+                detail=traceback.format_exc(),
                 severity="crit",
             )
         )

@@ -136,7 +136,7 @@ class ResourceRow(Base):
             .where(cls.uid == uid)
             .values(
                 reconcile_failures=cls.reconcile_failures + 1,
-                reconcile_last_error=str(exc),
+                reconcile_last_error=str(exc) or type(exc).__name__,
                 reconcile_retry_at=sa.func.now()
                 + sa.func.least(
                     cls._BACKOFF_BASE * sa.func.power(2, cls.reconcile_failures),
