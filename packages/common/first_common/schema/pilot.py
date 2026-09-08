@@ -135,8 +135,7 @@ class PilotRuntimeConfig(BaseSettings):
     job_name: str
 
     # Name of the IPv4 network interface (e.g. "hsn0") whose address the pilot
-    # should bind and advertise as its externally-reachable endpoint. When None,
-    # nginx listens on all IPv4 interfaces and the advertised IP
+    # should advertise as its externally-reachable endpoint. When None, the IP
     # is discovered by the default UDP-route trick, which on some clusters
     # picks a slow management interface instead of the high-speed network.
     network_interface: str | None = None

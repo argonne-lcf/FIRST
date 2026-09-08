@@ -61,7 +61,7 @@ _conf_template_str = """
         {% endfor %}
 
         server {
-            listen {{listen_address}} ssl;
+            listen {{config.external_port}} ssl;
             ssl_protocols TLSv1.3;
             server_name _;
             ssl_certificate {{server_crt_path}};
@@ -127,15 +127,8 @@ class ReplicaUpstream(NamedTuple):
 class NginxManager:
     control_path = "/control/"
 
-    def __init__(
-        self,
-        config: PilotRuntimeConfig,
-        tmpdir: str | Path,
-        *,
-        bind_ip: str | None = None,
-    ) -> None:
+    def __init__(self, config: PilotRuntimeConfig, tmpdir: str | Path) -> None:
         self.pilot_config = config
-        self.bind_ip = bind_ip
         self.tmpdir = Path(tmpdir).resolve()
         self.tmpdir.mkdir(parents=True, exist_ok=True)
 
@@ -157,15 +150,9 @@ class NginxManager:
         return path
 
     def render_config(self, replicas: list[ReplicaUpstream]) -> str:
-        host = self.bind_ip
-        if host is not None and ":" in host:
-            host = f"[{host}]"
-        port = self.pilot_config.external_port
-        listen_address = f"{host}:{port}" if host is not None else str(port)
 
         return conf_template.render(
             config=self.pilot_config,
-            listen_address=listen_address,
             nginx_tmpdir=self.tmpdir.as_posix().rstrip("/"),
             replicas=replicas,
             control_path=self.control_path,
@@ -250,9 +237,7 @@ class NginxManager:
                 )
                 raise RuntimeError(f"nginx exited with code {self._nginx.returncode}")
             try:
-                with socket.create_connection(
-                    (self.bind_ip or "127.0.0.1", port), timeout=1
-                ):
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
                     return
             except OSError:
                 time.sleep(interval)
