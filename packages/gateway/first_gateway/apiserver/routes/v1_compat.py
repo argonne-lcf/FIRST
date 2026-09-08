@@ -231,7 +231,8 @@ async def cluster_models(
     ]
     runtimes = await repo.get_many_model_runtimes([m.name for m in models])
     return [
-        ModelSummary.merge(model, runtime=rt) for model, rt in zip(models, runtimes)
+        ModelSummary.merge(model, runtime=rt, capabilities=model.get_capabilities())
+        for model, rt in zip(models, runtimes)
     ]
 
 

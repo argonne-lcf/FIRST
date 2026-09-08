@@ -5,8 +5,10 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
+from ..launch_profile import LaunchProfile, ProfileLaunchSpec
 from ..types import (
     DemandSignalConfig,
     DemandThresholdStrategy,
@@ -119,6 +121,10 @@ class StaticDeploymentSpec(ResourceSpec):
     prometheus_scrape_interval_sec: int = 15
 
 
+class LaunchProfileSpec(ResourceSpec, LaunchProfile):
+    """Named, reusable templates and validated launch parameters."""
+
+
 class PilotDeploymentSpec(ResourceSpec):
     """
     Pilot Deployments of a Model should be used when the model is launched
@@ -143,5 +149,18 @@ class PilotDeploymentSpec(ResourceSpec):
     min_replicas: int = 0
     max_replicas: int = 1
 
-    launch_spec: PilotLaunchSpec
+    launch_profile_name: ResourceName | None = None
+    launch_spec: PilotLaunchSpec | ProfileLaunchSpec
     max_consecutive_launch_failures: int = 3
+
+    @model_validator(mode="after")
+    def check_launch_profile(self) -> "PilotDeploymentSpec":
+        if self.launch_profile_name is None:
+            if not isinstance(self.launch_spec, PilotLaunchSpec):
+                raise ValueError("inline launch_spec requires serve_script_template")
+            for path in ("venv_path", "weights_path", "weights_cache_path"):
+                if getattr(self.launch_spec, path) is None:
+                    raise ValueError(f"inline launch_spec requires {path}")
+        elif not isinstance(self.launch_spec, ProfileLaunchSpec):
+            raise ValueError("profile deployments cannot override script templates")
+        return self

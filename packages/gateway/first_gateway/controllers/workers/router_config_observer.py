@@ -60,7 +60,7 @@ class RouterConfigObserver(Worker):
                 max_model_len=model.max_model_len,
                 created_at=model.created_at,
                 display_name=model.display_name,
-                capabilities=model.capabilities,
+                capabilities=model.get_capabilities(),
                 usage_limits=UsagePolicy.model_validate(model.usage_limits),
                 overload=OverloadPolicy.model_validate(model.overload),
                 deployments=self._build_deployments(
