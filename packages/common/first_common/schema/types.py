@@ -1,4 +1,5 @@
 import os
+import shlex
 from enum import Enum
 from http import HTTPMethod
 from pathlib import Path
@@ -326,6 +327,16 @@ class DemandThresholdStrategy(BaseModel):
         return v
 
 
+class RuntimeScriptContext(TypedDict):
+    replica_name: str
+    served_model_name: str
+    uds: str
+    gpus_per_node: int
+    num_nodes: int
+    gpus_by_host: dict[str, list[str]]
+    env: dict[str, str]
+
+
 class ScriptTemplateContext(TypedDict):
     """
     Variables made available to the `PilotLaunchSpec` serve and pre-stop script
@@ -373,6 +384,9 @@ class ScriptTemplateContext(TypedDict):
     quote: Callable[[str], str]
     """`shlex.quote`, for safely interpolating any of the above into a shell command."""
 
+    runtime: RuntimeScriptContext
+    parameters: dict[str, str | int | float | None]
+
 
 SCRIPT_TEMPLATE_VARIABLES: frozenset[str] = frozenset(
     ScriptTemplateContext.__annotations__
@@ -395,9 +409,11 @@ class PilotLaunchSpec(BaseModel):
     gpus_per_node: int
     num_nodes: int
 
-    venv_path: Path
-    weights_path: Path
-    weights_cache_path: Path
+    venv_path: Path | None = None
+    weights_path: Path | None = None
+    weights_cache_path: Path | None = None
+
+    parameters: dict[str, str | int | float | None] = {}
 
     env: dict[str, str]
 
@@ -436,7 +452,9 @@ class PilotLaunchSpec(BaseModel):
         if v is None:
             return None
         try:
-            ast = Environment().parse(v)
+            env = Environment()
+            env.filters["quote"] = shlex.quote
+            ast = env.parse(v)
         except TemplateSyntaxError as e:
             raise ValueError(f"script template is not valid Jinja2: {e}") from e
         used = meta.find_undeclared_variables(ast)

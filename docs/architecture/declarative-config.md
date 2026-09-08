@@ -40,6 +40,85 @@ alcf-ai admin audit
 alcf-ai clusters get sophia
 ```
 
+## Reusable launch profiles
+
+`LaunchProfile` is a named, spec-only resource for a family of pilot deployments.
+It owns the serve and optional pre/post-stop templates, typed parameters,
+environment, health check and lifecycle timeout defaults. For example:
+
+```yaml
+kind: LaunchProfile
+name: vllm-multinode
+spec:
+  parameters:
+    weights_path:
+      type: path
+      required: true
+    context_window:
+      type: integer
+      default: 65536
+      minimum: 1
+      capability: max_context_length
+  max_startup_sec: 21600
+  health_check:
+    url: http://localhost/health
+  serve_script_template: |
+    exec vllm serve {{ parameters.weights_path | quote }} \
+      --served-model-name {{ runtime.served_model_name | quote }} \
+      --uds {{ runtime.uds | quote }} \
+      --max-model-len {{ parameters.context_window }}
+---
+kind: PilotDeployment
+name: tara/inkling-bf16
+spec:
+  cluster_name: tara
+  model_name: inkling-bf16
+  launch_profile_name: vllm-multinode
+  launch_spec:
+    served_model_name: thinkingmachines/Inkling
+    num_nodes: 8
+    gpus_per_node: 4
+    parameters:
+      weights_path: /immutable/weights/inkling-bf16
+      context_window: 262144
+```
+
+This is a schema example, not a complete multinode vLLM launch command. Keep
+the profile and its referenced Cluster/Model/AccessGroup resources in the same
+authoritative manifest set. The `path` type validates a nonempty string, not
+filesystem existence on the controller; deployments may target remote machines.
+Other parameter types are `str`/`string`, `int`/`integer`, and `float`/`number`.
+Numeric bounds and string length bounds are supported. Types are strict (no
+string-to-number or boolean-to-number conversion), unknown parameters are errors,
+and defaults are validated too. Optional parameters without defaults resolve to
+null; templates must handle that explicitly.
+
+The deployment must supply served-model name, node count and GPUs per node. Its
+`env` overlays profile `env`; non-null health/timeout overrides replace profile
+defaults. Script overrides are forbidden for profile-backed deployments. Template
+context contains `parameters`, `runtime` (replica name, served name, UDS path,
+node/GPU counts, GPU allocation and merged environment), and `quote`. Use
+`{{ value | quote }}` or `{{ quote(value) }}` for shell strings. Templates are
+admin-authored code, not a sandbox. All three hooks use the same strict context.
+
+Plan/apply validates every profile reference and resolved deployment, including
+unchanged deployments affected by a profile edit. Resolution happens again at
+launch; existing replicas retain their original templates and cleanup hooks.
+An edit does **not** automatically restart replicas. Scale down and back up when
+you need a rollout. Referenced profiles cannot be deleted on their own.
+
+Declared capabilities appear on deployment summaries and in the model catalog.
+Model-level inferred capabilities are only included when all deployments agree
+and there are no static deployments; explicit Model capabilities take precedence.
+Profile definitions (including templates and defaults) are listed by the admin
+endpoint `GET /catalog/v1/launch-profiles`. Deployment detail responses continue
+to expose their launch settings, including parameter values, under the existing
+model access policy; do not put credentials in parameters.
+
+Existing inline `launch_spec` manifests remain supported. Apply the additive
+database migration and upgrade both the controller and pilot before adopting
+profiles. Convert deployments back to inline specs before downgrading the schema.
+
 ## Apply mechanics
 
 A resource is matched across applies by its `kind` and `name`. Given the

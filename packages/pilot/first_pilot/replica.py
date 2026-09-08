@@ -321,9 +321,20 @@ class Replica:
             "weights_cache_path": str(spec.weights_cache_path),
             "env": spec.env,
             "quote": shlex.quote,
+            "runtime": {
+                "replica_name": self.name,
+                "served_model_name": spec.served_model_name,
+                "uds": self.uds,
+                "gpus_per_node": spec.gpus_per_node,
+                "num_nodes": spec.num_nodes,
+                "gpus_by_host": gpus_by_host,
+                "env": spec.env,
+            },
+            "parameters": spec.parameters,
         }
 
         env = Environment(undefined=StrictUndefined)
+        env.filters["quote"] = shlex.quote
         return env.from_string(template).render(**context)
 
     def _check_health(self) -> HealthCheckResult:

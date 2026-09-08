@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.errors import InvalidSpecError, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
+from first_common.schema.launch_profile import ProfileLaunchSpec
 from first_common.schema.resources.plan_apply import (
     FieldChange,
     ResourceChangePlan,
@@ -14,6 +15,7 @@ from first_common.schema.resources.plan_apply import (
 from first_common.schema.resources.spec import (
     AccessGroupSpec,
     ClusterSpec,
+    LaunchProfileSpec,
     ModelSpec,
     PilotDeploymentSpec,
     StaticDeploymentSpec,
@@ -46,6 +48,7 @@ def validate_resources(
         ("StaticDeployment", "Model", "model_name"),
         ("PilotDeployment", "Cluster", "cluster_name"),
         ("PilotDeployment", "Model", "model_name"),
+        ("PilotDeployment", "LaunchProfile", "launch_profile_name"),
     ]
 
     for r in resources:
@@ -54,11 +57,28 @@ def validate_resources(
     for child_kind, parent_kind, ref in references:
         existing_parent_names = [r.name for r in by_kind[parent_kind]]
         for child in by_kind[child_kind]:
-            parent_name: str = getattr(child.spec, ref)
+            parent_name: str | None = getattr(child.spec, ref)
+            if parent_name is None:
+                continue
             if parent_name not in existing_parent_names:
                 raise InvalidSpecError(
                     f"{child_kind}.{child.name} references nonexistant {parent_kind}.{parent_name}"
                 )
+
+    profiles = {r.name: r.spec for r in by_kind["LaunchProfile"]}
+    for deployment in by_kind["PilotDeployment"]:
+        spec = deployment.spec
+        assert isinstance(spec, PilotDeploymentSpec)
+        if spec.launch_profile_name is not None:
+            profile = profiles[spec.launch_profile_name]
+            assert isinstance(profile, LaunchProfileSpec)
+            assert isinstance(spec.launch_spec, ProfileLaunchSpec)
+            try:
+                profile.resolve(spec.launch_spec)
+            except ValueError as exc:
+                raise InvalidSpecError(
+                    f"PilotDeployment.{deployment.name}: {exc}"
+                ) from exc
 
     # Return Grouped by Kind
     return by_kind
@@ -71,6 +91,7 @@ async def create_plan(
         (models.AccessGroup, AccessGroupSpec),
         (models.Model, ModelSpec),
         (models.Cluster, ClusterSpec),
+        (models.LaunchProfile, LaunchProfileSpec),
         (models.StaticDeployment, StaticDeploymentSpec),
         (models.PilotDeployment, PilotDeploymentSpec),
     )

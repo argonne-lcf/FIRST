@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.pilot import ReplicaStartRequest
-from first_common.schema.types import PilotLaunchSpec, ReplicaState
+from first_common.schema.types import ReplicaState
 
 from ...database.models import PilotDeployment, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
@@ -75,7 +75,9 @@ class ReplicaLauncher(Controller):
                 uid,
                 options=[
                     selectinload(PilotReplica.pilot_job),
-                    selectinload(PilotReplica.pilot_deployment),
+                    selectinload(PilotReplica.pilot_deployment).selectinload(
+                        PilotDeployment.launch_profile
+                    ),
                 ],
             )
 
@@ -101,7 +103,7 @@ class ReplicaLauncher(Controller):
             request = ReplicaStartRequest(
                 name=replica.name,
                 deployment_name=deploy.name,
-                launch_spec=PilotLaunchSpec.model_validate(deploy.launch_spec),
+                launch_spec=deploy.resolve_launch_spec(),
                 gpu_indices=list(replica.claimed_gpu_ids),
             )
 
