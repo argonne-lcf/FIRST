@@ -29,9 +29,13 @@ logger = logging.getLogger(__name__)
 class _PilotManager:
     def __init__(self, config: PilotRuntimeConfig, nginx_tmpdir: Path) -> None:
         self.config = config
-        self.nginx = NginxManager(self.config, nginx_tmpdir)
-        self.replica_manager = ReplicaManager(self.config)
         self._endpoint = self.discover_service_endpoint()
+        self.nginx = NginxManager(
+            self.config,
+            nginx_tmpdir,
+            bind_ip=self._endpoint.ip if config.network_interface else None,
+        )
+        self.replica_manager = ReplicaManager(self.config)
 
     def start(self, readyfile: Path) -> None:
         self.nginx.start()
@@ -65,7 +69,7 @@ class _PilotManager:
             hostname=socket.gethostname(),
             ip=ip,
             external_port=self.config.external_port,
-            control_path=self.nginx.control_path,
+            control_path=NginxManager.control_path,
         )
 
     @staticmethod
