@@ -414,7 +414,6 @@ def edit_codex(
     model_infos: dict[str, list[dict[str, Any]]],
     default_model: str,
     default_cluster: str,
-    default_framework: str,
 ) -> None:
     path = Path.home() / ".codex" / "config.toml"
     config = _load_toml_config(path)
@@ -451,9 +450,7 @@ def edit_codex(
     # Pick a default model only when the user hasn't already configured one;
     # never override an existing model/model_provider selection.
     config.setdefault("model", default_model)
-    config.setdefault(
-        "model_provider", _provider_key(default_cluster, default_framework)
-    )
+    config.setdefault("model_provider", _provider_key(default_cluster, "api"))
 
     _write_toml_config(path, config)
 
@@ -467,7 +464,6 @@ def edit_claude(
     api_key: str,
     default_model: str,
     default_cluster: str,
-    default_framework: str,
 ) -> None:
     path = Path.home() / ".claude" / "settings.json"
     config = _load_json_config(path)
@@ -475,7 +471,7 @@ def edit_claude(
     env = config.get("env", {})
     env.update(
         {
-            "ANTHROPIC_BASE_URL": f"{base_url}{default_cluster}/{default_framework}",
+            "ANTHROPIC_BASE_URL": f"{base_url}{default_cluster}/api",
             "ANTHROPIC_AUTH_TOKEN": api_key,
             "ANTHROPIC_MODEL": default_model,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": default_model,
@@ -516,14 +512,6 @@ def configure(
             help="Cluster serving the default model (codex and claude)",
         ),
     ] = "minerva",
-    framework: Annotated[
-        str,
-        typer.Option(
-            "--default-framework",
-            "-f",
-            help="Framework serving the default model (codex and claude)",
-        ),
-    ] = "api",
 ) -> None:
     """
     Generates a configuration template for the given agent.
@@ -551,11 +539,11 @@ def configure(
         case "opencode":
             edit_opencode(client.base_url, api_key, model_infos)
         case "codex":
-            edit_codex(client.base_url, api_key, model_infos, model, cluster, framework)
+            edit_codex(client.base_url, api_key, model_infos, model, cluster)
         case "pi":
             edit_pi(client.base_url, api_key, model_infos)
         case "claude":
-            edit_claude(client.base_url, api_key, model, cluster, framework)
+            edit_claude(client.base_url, api_key, model, cluster)
 
     logging.info(
         "The access token expires; re-run this command to refresh it when "
