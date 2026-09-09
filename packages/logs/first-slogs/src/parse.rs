@@ -26,7 +26,7 @@ use polars::{
 use regex::regex;
 use sonic_rs::{JsonValueTrait, to_object_iter};
 
-use crate::{files, schema::schema_of};
+use crate::{artifacts, files, schema::schema_of};
 
 const STREAMS: &[&str] = &[
     "access_log",
@@ -552,12 +552,7 @@ fn bundle_requests(
     }
 }
 
-pub fn parse_logs(
-    large_requests: &Path,
-    dataset_dir: &Path,
-    logs: &Path,
-    skip: &[String],
-) -> anyhow::Result<()> {
+pub fn parse_logs(dataset_dir: &Path, logs: &Path, skip: &[String]) -> anyhow::Result<()> {
     fs::create_dir_all(dataset_dir)?;
 
     let logs: Vec<PathBuf> = files(logs)?
@@ -568,21 +563,13 @@ pub fn parse_logs(
         })
         .collect();
 
-    // the source listing is shared by every log
-    let sources = source_request_ids(large_requests)?;
-
     // each log is parsed into its own dated partitions, so logs are
     // independent and parsed in parallel
     logs.par_iter()
-        .try_for_each(|log| parse_log(large_requests, &sources, dataset_dir, log))
+        .try_for_each(|log| parse_log(dataset_dir, log))
 }
 
-fn parse_log(
-    large_requests: &Path,
-    sources: &[String],
-    dataset_dir: &Path,
-    log: &Path,
-) -> anyhow::Result<()> {
+fn parse_log(dataset_dir: &Path, log: &Path) -> anyhow::Result<()> {
     println!("Parsing {}...", log.display());
 
     let partitions = match mmap_if_stale(log, dataset_dir)? {
@@ -598,12 +585,22 @@ fn parse_log(
         println!("Outputted frame {}", partition.display());
     }
 
-    if let Some(request_log) = partitions.get("request_log") {
-        match bundle_requests(large_requests, sources, dataset_dir, request_log)? {
-            Some(tarball) => println!("Dumped large requests to {}", tarball.display()),
+    Ok(())
+}
+
+/// Bundle the large requests of every request_log partition in
+/// `dataset_dir` into a squashfs image mirroring its dated subpath under
+/// `<dataset_dir>/squashfs/`.
+pub fn dump_large(large_requests: &Path, dataset_dir: &Path) -> anyhow::Result<()> {
+    // the source listing is shared by every partition
+    let sources = source_request_ids(large_requests)?;
+
+    let parquets = artifacts(dataset_dir, "request_log")?;
+    parquets.par_iter().try_for_each(|request_log| {
+        match bundle_requests(large_requests, &sources, dataset_dir, request_log)? {
+            Some(image) => println!("Dumped large requests to {}", image.display()),
             None => println!("No large requests to dump"),
         }
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
