@@ -10,6 +10,7 @@ use rayon::prelude::*;
 use sonic_rs::Object;
 
 mod parse;
+mod schema;
 mod validation;
 
 #[derive(Parser)]
