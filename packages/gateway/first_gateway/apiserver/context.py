@@ -1,25 +1,12 @@
 from contextvars import ContextVar
-from dataclasses import dataclass
 
-from first_common.schema.auth import UserAuthEvent
-from first_common.schema.structured_logs import AccessLog, RequestLog
+_request_id_ctx: ContextVar[str] = ContextVar("_request_id")
 
 
-@dataclass
-class RequestContext:
-    access_log: AccessLog
-    user: UserAuthEvent | None = None
-    request_log: RequestLog | None = None
+def get_request_id() -> str | None:
+    """Return the correlation id for the current request, or None if unset.
 
-
-_request_context: ContextVar[RequestContext] = ContextVar("_request_context")
-
-
-def get_request_context() -> RequestContext:
+    Set by ``ResponseLogMiddleware`` at the very start of each request and read
+    by ``InferenceService`` and the logging ``RequestIdFilter``.
     """
-    Return the RequestContext value set for the current http request.
-
-    Raises LookupError if called outside of a request span wrapped by the
-    AccessLogMiddleware.
-    """
-    return _request_context.get()
+    return _request_id_ctx.get(None)

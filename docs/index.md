@@ -107,6 +107,7 @@ under `packages/`:
     - [Declarative Configuration](architecture/declarative-config.md) — Spec/Status pattern and apply mechanics.
     - [Data Model](architecture/data-model.md) — Postgres schema and the ER diagram.
     - [Controller Framework](architecture/controllers.md) — reconcile loops, leases, OCC.
+    - [Structured Logging & ClickHouse](architecture/structured-logging-clickhouse.md) — the JSONL event pipeline, dedup/correlation keys, and the OLAP schema.
 - **[Docker Deployment](deployment/docker.md)** — deploying the gateway stack.
 - **[Client SDK](packages/client.md)** — using the `alcf-ai` CLI and `InferenceClient`.
 - **[Roadmap](roadmap.md)** — what's done, what's left for MVP, and the path to production.

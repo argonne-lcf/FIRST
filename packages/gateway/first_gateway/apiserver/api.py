@@ -7,10 +7,10 @@ from fastapi import FastAPI
 from first_gateway.settings import Settings
 
 from ..database.redis.admission import AdmissionController
-from ..log_config import config_logging
+from ..log_config import config_logging, drain_logs
 from .backend_client_manager import BackendClientManager
 from .error_handlers import register_error_handlers
-from .log_middleware import log_request
+from .log_middleware import ResponseLogMiddleware
 from .router_config_manager import RouterConfigManager
 from .routes import routers
 
@@ -42,11 +42,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await admission_controller.stop()
             await router_config_manager.stop()
             await backend_client_manager.close_all()
+            drain_logs()
 
 
 app = FastAPI(title="ALCF Inference Service", lifespan=lifespan)
 
-app.middleware("http")(log_request)
+app.add_middleware(ResponseLogMiddleware)
 app.include_router(routers.anon)
 app.include_router(routers.auth)
 app.include_router(routers.admin)

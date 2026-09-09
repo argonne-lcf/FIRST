@@ -438,8 +438,6 @@ class GlobusAuthService:
 
         # Return valid token response
         log.debug(f"{user.name} requesting {introspection.token_data['scope']}")
-        if await self.repo.mark_authed_user(user.id):
-            user.emit()
         return user
 
 

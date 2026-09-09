@@ -8,7 +8,10 @@ from first_gateway.database.models import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False so running migrations in-process (e.g. the
+    # test suite) doesn't silence already-imported loggers like the structured
+    # log emitters in first_common.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 SCHEMA = target_metadata.schema

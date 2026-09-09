@@ -81,6 +81,7 @@ class RouterConfigObserver(Worker):
                     DeploymentConfig(
                         kind="static",
                         name=dep.name,
+                        cluster_name=dep.cluster_name,
                         router_params=RouterParams.model_validate(dep.router_params),
                         prometheus_metrics_path=dep.prometheus_metrics_path,
                         prometheus_scrape_interval_sec=dep.prometheus_scrape_interval_sec,
@@ -109,6 +110,7 @@ class RouterConfigObserver(Worker):
                     DeploymentConfig(
                         kind="pilot",
                         name=dep.name,
+                        cluster_name=dep.cluster_name,
                         router_params=RouterParams.model_validate(dep.router_params),
                         prometheus_metrics_path=dep.prometheus_metrics_path,
                         prometheus_scrape_interval_sec=dep.prometheus_scrape_interval_sec,

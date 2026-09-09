@@ -51,6 +51,7 @@ def _sample_models() -> list[ModelConfig]:
                 DeploymentConfig(
                     kind="static",
                     name="dep-1",
+                    cluster_name="test-cluster",
                     router_params=RouterParams(),
                     prometheus_metrics_path=None,
                     prometheus_scrape_interval_sec=30,

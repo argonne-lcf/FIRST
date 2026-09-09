@@ -241,6 +241,7 @@ def _config_with(dep_name: str, backends: list[BackendConfig]) -> RouterConfig:
                     DeploymentConfig(
                         kind="static",
                         name=dep_name,
+                        cluster_name="test-cluster",
                         router_params={},  # type: ignore[arg-type]
                         prometheus_metrics_path=None,
                         prometheus_scrape_interval_sec=30,

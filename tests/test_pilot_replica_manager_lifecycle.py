@@ -114,6 +114,11 @@ def test_non_socket_entries_are_never_unlinked(
     assert manager._claimed == {("node", "0")}
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="AF_UNIX socket paths are capped at ~104 bytes off Linux; the "
+    "pytest tmp_path overruns it. Pilot runs on Linux.",
+)
 def test_socket_outside_private_directory_is_never_unlinked(tmp_path: Path) -> None:
     replica, _ = _mock_replica("replica", "0")
     manager = _manager(replica)

@@ -25,6 +25,7 @@ class BackendConfig(BaseModel):
 class DeploymentConfig(BaseModel):
     kind: Literal["pilot", "static"]
     name: str
+    cluster_name: str
     router_params: RouterParams
     prometheus_metrics_path: str | None
     prometheus_scrape_interval_sec: int
