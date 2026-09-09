@@ -17,7 +17,7 @@ use polars::{
     prelude::{
         FileWriteFormat, IntoLazy, JoinCoalesce, JoinType, LazyFileListReader, LazyFrame,
         LazyJsonLineReader, ParquetWriteOptions, PlRefPath, ScanArgsParquet, SinkDestination,
-        SinkTarget, SortMultipleOptions, UnifiedSinkArgs, all, col, cols,
+        SinkTarget, SortMultipleOptions, UnifiedSinkArgs, all, by_name, col, cols,
     },
 };
 use regex::regex;
@@ -243,9 +243,16 @@ fn split_log(
 fn ndjson_to_parquet(dataset_dir: &Path, path: &Path) -> anyhow::Result<PathBuf> {
     let parquet = parquet_of(dataset_dir, path)?;
 
+    // the log is append-ordered, so each key's last line is its latest
+    // upsert: the partition's rows coalesce into one per primary key as it
+    // reads, every stream keying its rows by exactly one of its id columns
     LazyJsonLineReader::new(PlRefPath::try_from_path(path)?)
         .with_infer_schema_length(None)
         .finish()?
+        .unique(
+            Some(by_name(["request_id", "batch_id", "id"], false, false)),
+            UniqueKeepStrategy::Last,
+        )
         .sink(
             SinkDestination::File {
                 target: SinkTarget::Path(PlRefPath::try_from_path(&parquet)?),
@@ -302,9 +309,11 @@ fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
         r"Token estimation for ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}): ([0-9]+) total \(([0-9]+) completion, ([0-9]+) prompt\)"
     );
     let mut access_ids = Vec::new();
-    let mut total_tokens: Vec<Option<u64>> = Vec::new();
-    let mut completion_tokens: Vec<Option<u64>> = Vec::new();
-    let mut prompt_tokens: Vec<Option<u64>> = Vec::new();
+    // the token counts parse as i64, matching the dtype the partitions'
+    // own token columns infer, so merged and plain partitions scan as one
+    let mut total_tokens: Vec<Option<i64>> = Vec::new();
+    let mut completion_tokens: Vec<Option<i64>> = Vec::new();
+    let mut prompt_tokens: Vec<Option<i64>> = Vec::new();
 
     for line in lines(&mmap) {
         if let Some(msg) = sonic_rs::get(line, &["msg"]).as_str()
@@ -323,6 +332,13 @@ fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
         "total_tokens" => total_tokens,
         "completion_tokens" => completion_tokens,
         "prompt_tokens" => prompt_tokens,
+    )?
+    // re-shipped estimation lines fan the merge out; the log is
+    // append-ordered, so each access id keeps its last line
+    .unique_stable(
+        Some(&["access_log_id".to_string()]),
+        UniqueKeepStrategy::Last,
+        None,
     )?)
 }
 
@@ -332,9 +348,16 @@ fn write_merged_request_metrics(
     request_metrics: &Path,
     request_log: &Path,
 ) -> anyhow::Result<PathBuf> {
+    // the log is append-ordered, so each key's last line is its latest
+    // upsert: the partition's rows coalesce into one per primary key as it
+    // reads, every stream keying its rows by exactly one of its id columns
     let lf = LazyJsonLineReader::new(PlRefPath::try_from_path(request_metrics)?)
         .with_infer_schema_length(None)
-        .finish()?;
+        .finish()?
+        .unique(
+            Some(by_name(["request_id", "batch_id", "id"], false, false)),
+            UniqueKeepStrategy::Last,
+        );
 
     // access_log->request_log mapping
     let mapping = LazyFrame::scan_parquet(
