@@ -62,3 +62,6 @@ vllm/
 
 # mkdocs
 site/
+
+# Rust
+packages/logs/first-slogs/target/

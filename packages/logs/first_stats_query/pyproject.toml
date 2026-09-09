@@ -1,0 +1,17 @@
+[project]
+name = "first-stats-query"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = ""
+authors = [{ name = "Ethan Wong", email = "ewong@anl.gov" }]
+dependencies = ["holoviews", "hvplot", "polars", "matplotlib", "pyarrow"]
+
+[project.scripts]
+first-stats-query = "first_stats_query.__main__:main"
+
+[build-system]
+requires = ["uv_build<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
