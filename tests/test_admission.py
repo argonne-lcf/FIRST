@@ -11,12 +11,14 @@ from redis.exceptions import ResponseError
 from first_common.schema.types import RouterParams, UsageLimits
 from first_gateway import Settings
 from first_gateway.database.redis.admission import (
+    USAGE_EWMA_ALPHA,
     AdmissionController,
     AdmitResult,
     AdmitStatus,
     CandidateBackend,
     CapacityReason,
     QuotaReason,
+    TokenStats,
 )
 from first_gateway.database.redis.keys import Keys
 
@@ -643,3 +645,81 @@ class TestScriptGuards:
         ]
         with pytest.raises(ResponseError, match="odd number of candidate keys"):
             await ac._admit(keys=keys, args=args)
+
+
+# ---------------------------------------------------------------------------
+# Token-estimation EWMA calibration
+# ---------------------------------------------------------------------------
+
+
+class TestTokenStats:
+    async def test_cold_read_returns_empty_stats(self, ac: AdmissionController) -> None:
+        stats = await ac.get_token_stats(MODEL, USER)
+        assert stats == TokenStats(chars_per_token=None, output_tokens=None)
+
+    async def test_first_sample_seeds_ewma(self, ac: AdmissionController) -> None:
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=3.5, output_tokens_sample=500.0
+        )
+        stats = await ac.get_token_stats(MODEL, USER)
+        assert stats.chars_per_token == 3.5
+        assert stats.output_tokens == 500.0
+
+    async def test_second_sample_blends_with_alpha(
+        self, ac: AdmissionController
+    ) -> None:
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=4.0, output_tokens_sample=100.0
+        )
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=2.0, output_tokens_sample=300.0
+        )
+        stats = await ac.get_token_stats(MODEL, USER)
+        a = USAGE_EWMA_ALPHA
+        assert stats.chars_per_token == pytest.approx(a * 2.0 + (1 - a) * 4.0)
+        assert stats.output_tokens == pytest.approx(a * 300.0 + (1 - a) * 100.0)
+
+    async def test_none_sample_leaves_that_metric_untouched(
+        self, ac: AdmissionController
+    ) -> None:
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=4.0, output_tokens_sample=100.0
+        )
+        # Update only output; chars-per-token must keep its prior value.
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=None, output_tokens_sample=200.0
+        )
+        stats = await ac.get_token_stats(MODEL, USER)
+        assert stats.chars_per_token == 4.0
+        a = USAGE_EWMA_ALPHA
+        assert stats.output_tokens == pytest.approx(a * 200.0 + (1 - a) * 100.0)
+
+    async def test_all_none_samples_write_nothing(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=None, output_tokens_sample=None
+        )
+        assert (
+            await redis.exists(
+                Keys.usage_ewma(MODEL, USER, "input_token_chars"),
+                Keys.usage_ewma(MODEL, USER, "output_token"),
+            )
+            == 0
+        )
+
+    async def test_stats_scoped_per_user_and_model(
+        self, ac: AdmissionController
+    ) -> None:
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=2.0, output_tokens_sample=10.0
+        )
+        assert await ac.get_token_stats(MODEL, "bob") == TokenStats()
+        assert await ac.get_token_stats("other-model", USER) == TokenStats()
+
+    async def test_record_sets_ttl(self, ac: AdmissionController, redis: Redis) -> None:
+        await ac.record_token_stats(
+            MODEL, USER, chars_per_token_sample=4.0, output_tokens_sample=100.0
+        )
+        ttl = await redis.ttl(Keys.usage_ewma(MODEL, USER, "input_token_chars"))
+        assert ttl > 0

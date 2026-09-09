@@ -57,6 +57,19 @@ class Keys:
         return f"quota:{model}:{user}:{resource}"
 
     @staticmethod
+    def usage_ewma(
+        model: str,
+        user: str,
+        metric: Literal["input_token_chars", "output_token"],
+    ) -> str:
+        """Per-user, per-model EWMA used to sharpen preflight token estimates.
+
+        ``input_token_chars`` is the learned chars-per-input-token ratio;
+        ``output_token`` is the learned mean output token count.
+        """
+        return f"usage:{model}:{user}:{metric}_ewma"
+
+    @staticmethod
     def backend_inflight_scan_pattern() -> str:
         """SCAN match pattern for all per-backend inflight ZSETs.
         Keep in sync with backend_inflight()."""

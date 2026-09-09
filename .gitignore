@@ -62,3 +62,5 @@ vllm/
 
 # mkdocs
 site/
+.claude/
+*.code-workspace

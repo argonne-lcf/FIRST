@@ -21,9 +21,25 @@ _SETTLE_LUA = (LUA_DIR / "settle.lua").read_text()
 _RENEW_LUA = (LUA_DIR / "renew.lua").read_text()
 _RECORD_ERROR_LUA = (LUA_DIR / "record_error.lua").read_text()
 
+# EWMA smoothing for the per-user+model token-estimation stats
+USAGE_EWMA_ALPHA = 0.3
+USAGE_EWMA_TTL_SEC = 30 * 24 * 60 * 60
+
 
 def to_str(v: Any) -> str:
     return v.decode() if isinstance(v, (bytes, bytearray)) else str(v)
+
+
+def _ewma(prev: float | None, sample: float, alpha: float = USAGE_EWMA_ALPHA) -> float:
+    """Fold ``sample`` into the running EWMA; seed with it when unset."""
+    return sample if prev is None else alpha * sample + (1 - alpha) * prev
+
+
+class TokenStats(BaseModel):
+    """Learned per-user+model calibration for preflight token estimation."""
+
+    chars_per_token: float | None = None
+    output_tokens: float | None = None
 
 
 class AdmitStatus(int, Enum):
@@ -260,6 +276,67 @@ class AdmissionController:
         )
         code = int(raw[0])
         return bool(code)
+
+    async def get_token_stats(self, model_name: str, user_id: str) -> TokenStats:
+        """Read this user+model's learned estimation calibration.
+
+        Best-effort: a Redis hiccup returns empty stats so admission falls back
+        to the static defaults rather than failing the request.
+        """
+        try:
+            chars_raw, output_raw = await self.client.mget(
+                Keys.usage_ewma(model_name, user_id, "input_token_chars"),
+                Keys.usage_ewma(model_name, user_id, "output_token"),
+            )
+        except Exception:
+            logger.warning("get_token_stats failed", exc_info=True)
+            return TokenStats()
+        return TokenStats(
+            chars_per_token=float(chars_raw) if chars_raw else None,
+            output_tokens=float(output_raw) if output_raw else None,
+        )
+
+    async def record_token_stats(
+        self,
+        model_name: str,
+        user_id: str,
+        *,
+        chars_per_token_sample: float | None,
+        output_tokens_sample: float | None,
+    ) -> None:
+        """Fold one settled request's observations into the EWMA calibration.
+
+        Each sample is optional so the caller can skip a metric that cannot be
+        learned from this request (e.g. chars-per-token when the request carried
+        images or cache hits, which distort the ratio).  Non-atomic and fully
+        best-effort: this only sharpens future estimates.
+        """
+        if chars_per_token_sample is None and output_tokens_sample is None:
+            return
+        try:
+            chars_key = Keys.usage_ewma(model_name, user_id, "input_token_chars")
+            output_key = Keys.usage_ewma(model_name, user_id, "output_token")
+            prev_chars_raw, prev_output_raw = await self.client.mget(
+                chars_key, output_key
+            )
+            async with self.client.pipeline(transaction=False) as pipe:
+                if chars_per_token_sample is not None:
+                    prev = float(prev_chars_raw) if prev_chars_raw else None
+                    pipe.set(
+                        chars_key,
+                        _ewma(prev, chars_per_token_sample),
+                        ex=USAGE_EWMA_TTL_SEC,
+                    )
+                if output_tokens_sample is not None:
+                    prev = float(prev_output_raw) if prev_output_raw else None
+                    pipe.set(
+                        output_key,
+                        _ewma(prev, output_tokens_sample),
+                        ex=USAGE_EWMA_TTL_SEC,
+                    )
+                await pipe.execute()
+        except Exception:
+            logger.warning("record_token_stats failed", exc_info=True)
 
     async def renew(self, request_ids: Sequence[str]) -> int:
         """

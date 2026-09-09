@@ -26,9 +26,24 @@ class BasePayload(BaseModelAllowExtra):
                 f"{cls.__name__} must set a non-empty `endpoint` class variable."
             )
 
-    def estimate_tokens(self, _max_context: int | None) -> int:
+    def estimate_tokens(
+        self,
+        _max_context: int | None,
+        *,
+        chars_per_token: float | None = None,  # noqa: ARG002
+        output_estimate: int | None = None,  # noqa: ARG002
+    ) -> int:
         """
         Estimate the total tokens from the payload and the models's maximum
         context.  Defaults to always 0.  Override for LLM request payloads.
+
+        ``chars_per_token`` and ``output_estimate`` are optional per-user+model
+        values learned from recent traffic; ``None`` uses the static defaults.
         """
         return 0
+
+    def input_basis(self) -> tuple[int, int]:
+        """
+        Return ``(text_chars, image_count)`` for this request's input
+        """
+        return 0, 0

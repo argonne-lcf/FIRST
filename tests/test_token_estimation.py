@@ -16,6 +16,9 @@ from first_common.schema.endpoints.token_estimation import (
     CHARS_PER_TOKEN,
     DEFAULT_OUTPUT_ESTIMATE,
     IMAGE_TOKEN_ESTIMATE,
+    MAX_OUTPUT_ESTIMATE,
+    count_input,
+    count_tool_chars,
     estimate_input_tokens,
     estimate_tool_tokens,
     estimate_total_tokens,
@@ -282,3 +285,180 @@ def test_embeddings_never_adds_output_estimate() -> None:
     # Embeddings produce no completion tokens; estimate must equal the input.
     payload = OpenAIEmbeddingsPayload(model="m", input="z" * (CHARS_PER_TOKEN * 7))
     assert payload.estimate_tokens(None) == 7
+
+
+def test_embeddings_ignore_learned_params() -> None:
+    # The learned params are accepted for interface uniformity but do nothing.
+    payload = OpenAIEmbeddingsPayload(model="m", input="z" * (CHARS_PER_TOKEN * 7))
+    assert payload.estimate_tokens(None, chars_per_token=2.0, output_estimate=999) == 7
+
+
+# --------------------------------------------------------------------------
+# Learned chars-per-token ratio (input side)
+# --------------------------------------------------------------------------
+
+
+def test_learned_chars_per_token_scales_input_estimate() -> None:
+    # 40 chars at the default ratio (4) = 10 tokens; at a learned 2.0 = 20.
+    msgs = [{"role": "user", "content": "x" * 40}]
+    assert estimate_input_tokens(msgs) == 10
+    assert estimate_input_tokens(msgs, chars_per_token=2.0) == 20
+
+
+def test_learned_chars_per_token_zero_falls_back_to_default() -> None:
+    # A falsy ratio must not divide-by-zero; it falls back to CHARS_PER_TOKEN.
+    msgs = [{"role": "user", "content": "x" * 40}]
+    assert estimate_input_tokens(msgs, chars_per_token=0.0) == 10
+
+
+def test_learned_chars_per_token_applies_to_tools() -> None:
+    tools = [{"type": "function", "function": {"name": "search"}}]
+    chars = count_tool_chars(tools)
+    assert estimate_tool_tokens(tools, chars_per_token=2.0) == int(chars / 2.0)
+
+
+def test_learned_chars_per_token_leaves_image_estimate_flat() -> None:
+    # A steeper ratio scales text but the flat per-image cost is untouched.
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "x" * 40},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAA"},
+                },
+            ],
+        }
+    ]
+    # 40 chars / 2.0 = 20 text tokens + one flat image estimate.
+    assert estimate_input_tokens(msgs, chars_per_token=2.0) == 20 + IMAGE_TOKEN_ESTIMATE
+
+
+def test_chat_completions_uses_learned_chars_per_token() -> None:
+    payload = OpenAIChatCompletionsPayload(
+        model="m",
+        messages=[{"role": "user", "content": "x" * 40}],
+        max_tokens=5,
+    )
+    # 40 chars / 2.0 = 20 input tokens + 5 output.
+    assert payload.estimate_tokens(None, chars_per_token=2.0) == 25
+
+
+# --------------------------------------------------------------------------
+# Learned output estimate (output side)
+# --------------------------------------------------------------------------
+
+
+def test_output_estimate_replaces_default_when_uncapped() -> None:
+    assert (
+        estimate_total_tokens(
+            100, max_context=None, max_output=None, output_estimate=300
+        )
+        == 400
+    )
+
+
+def test_output_estimate_never_exceeds_client_cap() -> None:
+    # Learned 5000 but client capped at 500 -> reserve only up to the cap.
+    assert (
+        estimate_total_tokens(
+            100, max_context=None, max_output=500, output_estimate=5000
+        )
+        == 600
+    )
+
+
+def test_output_estimate_below_cap_shrinks_reservation() -> None:
+    # Learned 200 under a client cap of 5000 -> reserve the smaller learned value.
+    assert (
+        estimate_total_tokens(
+            100, max_context=None, max_output=5000, output_estimate=200
+        )
+        == 300
+    )
+
+
+def test_output_estimate_clamped_by_context() -> None:
+    assert (
+        estimate_total_tokens(70, max_context=100, max_output=None, output_estimate=500)
+        == 100
+    )
+
+
+def test_output_estimate_clamped_by_global_max() -> None:
+    assert (
+        estimate_total_tokens(
+            100, max_context=None, max_output=None, output_estimate=10**9
+        )
+        == 100 + MAX_OUTPUT_ESTIMATE
+    )
+
+
+def test_chat_completions_uses_learned_output_estimate() -> None:
+    payload = OpenAIChatCompletionsPayload(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=5000,
+    )
+    # input "hi" -> 1 token; learned output 42 < cap 5000.
+    assert payload.estimate_tokens(None, output_estimate=42) == 1 + 42
+
+
+def test_anthropic_learned_output_below_required_max_tokens() -> None:
+    payload = AnthropicMessagesPayload(
+        model="m",
+        messages=[{"role": "user", "content": "c" * (CHARS_PER_TOKEN * 6)}],
+        max_tokens=1000,
+    )
+    # Learned 30 output shrinks the reservation below the required max_tokens.
+    assert payload.estimate_tokens(None, output_estimate=30) == 6 + 30
+
+
+# --------------------------------------------------------------------------
+# input_basis: char/image basis carried to settlement
+# --------------------------------------------------------------------------
+
+
+def test_base_payload_input_basis_is_zero() -> None:
+    class Dummy(BasePayload):
+        endpoint = "dummy"
+
+    assert Dummy(model="m").input_basis() == (0, 0)
+
+
+def test_count_input_matches_input_basis_for_chat() -> None:
+    msgs = [{"role": "user", "content": "x" * 40}]
+    tools = [{"type": "function", "function": {"name": "s"}}]
+    payload = OpenAIChatCompletionsPayload(model="m", messages=msgs, tools=tools)
+    expected_chars = count_input(msgs)[0] + count_tool_chars(tools)
+    assert payload.input_basis() == (expected_chars, 0)
+
+
+def test_input_basis_counts_images() -> None:
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}},
+            ],
+        }
+    ]
+    payload = OpenAIChatCompletionsPayload(model="m", messages=msgs)
+    chars, images = payload.input_basis()
+    assert chars == len("hello")
+    assert images == 1
+
+
+def test_anthropic_input_basis_includes_system_and_tools() -> None:
+    payload = AnthropicMessagesPayload(
+        model="m",
+        messages=[{"role": "user", "content": "c" * 12}],
+        system="s" * 8,
+        max_tokens=10,
+        tools=[{"type": "function", "function": {"name": "f"}}],
+    )
+    chars, images = payload.input_basis()
+    assert chars == 12 + 8 + count_tool_chars(payload.tools)
+    assert images == 0

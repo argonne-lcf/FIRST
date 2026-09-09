@@ -55,17 +55,38 @@ def _scan(node: Any) -> tuple[int, int]:
     return chars, images
 
 
-def estimate_input_tokens(*nodes: Any) -> int:
-    """Estimate input tokens across one or more message structures."""
+def count_input(*nodes: Any) -> tuple[int, int]:
+    """Return raw ``(text_chars, image_count)`` across message structures.
+
+    The unweighted measurements behind ``estimate_input_tokens``, exposed so
+    settlement can recover the character basis a request was estimated from and
+    calibrate the chars-per-token ratio against the real input token count.
+    """
     chars = images = 0
     for node in nodes:
         c, i = _scan(node)
         chars += c
         images += i
-    return max(1, chars // CHARS_PER_TOKEN + images * IMAGE_TOKEN_ESTIMATE)
+    return chars, images
 
 
-def estimate_tool_tokens(tools: Any) -> int:
+def count_tool_chars(tools: Any) -> int:
+    """Serialized character count of tool/function definitions (see below)."""
+    return len(str(tools)) if tools else 0
+
+
+def estimate_input_tokens(*nodes: Any, chars_per_token: float | None = None) -> int:
+    """Estimate input tokens across one or more message structures.
+
+    ``chars_per_token`` overrides the default ratio with a value learned from
+    this user+model's recent traffic; ``None`` falls back to CHARS_PER_TOKEN.
+    """
+    cpt = chars_per_token or CHARS_PER_TOKEN
+    chars, images = count_input(*nodes)
+    return max(1, int(chars / cpt) + images * IMAGE_TOKEN_ESTIMATE)
+
+
+def estimate_tool_tokens(tools: Any, chars_per_token: float | None = None) -> int:
     """Estimate tokens consumed by tool/function definitions.
 
     Tool schemas are arbitrarily nested JSON that the whitelist walker cannot
@@ -74,25 +95,37 @@ def estimate_tool_tokens(tools: Any) -> int:
     safe, cheap, and tracks the serialized size the chat template actually
     renders into the prompt.
     """
-    if not tools:
-        return 0
-    return len(str(tools)) // CHARS_PER_TOKEN
+    cpt = chars_per_token or CHARS_PER_TOKEN
+    return int(count_tool_chars(tools) / cpt)
 
 
 def estimate_total_tokens(
-    input_tokens: int, max_context: int | None, max_output: int | None
+    input_tokens: int,
+    max_context: int | None,
+    max_output: int | None,
+    output_estimate: int | None = None,
 ) -> int:
     """Combine input estimate with an output estimate.
 
-    Output is the client's cap if given, else DEFAULT_OUTPUT_ESTIMATE, and in
-    either case no more than the context window leaves room for.
+    The output estimate is, in order of preference: ``output_estimate`` (learned
+    from this user+model's recent completions), else the client's cap, else
+    DEFAULT_OUTPUT_ESTIMATE.  Whatever the source, it is never taken above the
+    client's own cap, the global MAX_OUTPUT_ESTIMATE, or the room the context
+    window leaves -- so a learned estimate only ever shrinks the modest
+    over-reservation the client's cap would otherwise cause.
     """
-    if max_output is not None:
-        output_tokens = min(max_output, MAX_OUTPUT_ESTIMATE)
+    if output_estimate is not None:
+        output_tokens = output_estimate
+    elif max_output is not None:
+        output_tokens = max_output
     else:
         output_tokens = DEFAULT_OUTPUT_ESTIMATE
+
+    if max_output is not None:
+        output_tokens = min(output_tokens, max_output)
+    output_tokens = min(output_tokens, MAX_OUTPUT_ESTIMATE)
 
     if max_context is not None:
         output_tokens = min(output_tokens, max(0, max_context - input_tokens))
 
-    return input_tokens + output_tokens
+    return input_tokens + max(0, output_tokens)

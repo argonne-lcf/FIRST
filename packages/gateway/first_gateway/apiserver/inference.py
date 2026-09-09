@@ -111,7 +111,16 @@ class InferenceService:
             if b.uid in self.backend_client_manager.clients
         ]
 
-        estimated_tokens = payload.estimate_tokens(model.max_model_len)
+        stats = await self.admission_controller.get_token_stats(
+            model.name, self.user.id
+        )
+        estimated_tokens = payload.estimate_tokens(
+            model.max_model_len,
+            chars_per_token=stats.chars_per_token,
+            output_estimate=(
+                round(stats.output_tokens) if stats.output_tokens is not None else None
+            ),
+        )
         handler = self._get_upstream_handler(payload)
 
         attempted = 0
@@ -180,6 +189,34 @@ class InferenceService:
         )
         await self.admission_controller.settle(self.request_id, actual_tokens=0)
 
+    async def _record_token_stats(
+        self, payload: BasePayload, model: ModelConfig, usage: TokenUsage
+    ) -> None:
+        """Feed one successful request's real usage into the estimation EWMAs.
+
+        chars-per-token is only learnable from requests with no images and no
+        cache activity: images cost tokens with no characters, and caching
+        decouples the reported input tokens from the prompt's character count
+        (Anthropic omits cache reads from ``input_tokens``; OpenAI folds them
+        in).  Output tokens are learned from any completion that reports them.
+        """
+        input_chars, images = payload.input_basis()
+        cached = bool(usage.cache_read_tokens or usage.cache_write_tokens)
+        chars_per_token_sample = (
+            input_chars / usage.input_tokens
+            if input_chars > 0 and images == 0 and not cached and usage.input_tokens
+            else None
+        )
+        output_tokens_sample = (
+            float(usage.output_tokens) if usage.output_tokens else None
+        )
+        await self.admission_controller.record_token_stats(
+            model.name,
+            self.user.id,
+            chars_per_token_sample=chars_per_token_sample,
+            output_tokens_sample=output_tokens_sample,
+        )
+
     def _get_upstream_handler(self, payload: BasePayload) -> UpstreamHandler:
         streaming = getattr(payload, "stream", False) or False
         return self._handle_streaming if streaming else self._handle_unary
@@ -239,6 +276,7 @@ class InferenceService:
         await self.admission_controller.settle(
             self.request_id, actual_tokens=usage.total_tokens or 0
         )
+        await self._record_token_stats(payload, model, usage)
         return JSONResponse(json_body, status_code=response.status_code)
 
     async def _handle_streaming(
@@ -295,6 +333,7 @@ class InferenceService:
                 await self.admission_controller.settle(
                     self.request_id, actual_tokens=total_tokens
                 )
+                await self._record_token_stats(payload, model, usage)
 
         return StreamingResponse(
             _relay(),
