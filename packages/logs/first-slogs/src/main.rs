@@ -19,17 +19,13 @@ struct Args {
     #[arg(long)]
     dataset_dir: PathBuf,
 
-    /// Directory of large request payloads
-    #[arg(long)]
-    large_requests: PathBuf,
-
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Split logs into parquet partitions, bundling large requests into a squashfs
+    /// Split logs into parquet partitions
     Parse {
         /// Logs directory to parse
         logs: PathBuf,
@@ -38,10 +34,20 @@ enum Command {
         #[arg(long)]
         skip: Vec<String>,
     },
+    /// Bundle the large requests of every request_log partition in the dataset dir into squashfs images
+    DumpLarge {
+        /// Directory of large request payloads
+        #[arg(long)]
+        large_requests: PathBuf,
+    },
     /// Write an index of the large request checksums of each squashfs image in the dataset dir
     Index,
     /// Verify the large requests bundled into each squashfs image in the dataset dir against their source files
-    Vet,
+    Vet {
+        /// Directory of large request payloads
+        #[arg(long)]
+        large_requests: PathBuf,
+    },
 }
 
 /// Sorted paths of the regular files in `dir`.
@@ -153,8 +159,9 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Parse { logs, skip } => {
-            parse::parse_logs(&args.large_requests, &args.dataset_dir, &logs, &skip)
+        Command::Parse { logs, skip } => parse::parse_logs(&args.dataset_dir, &logs, &skip),
+        Command::DumpLarge { large_requests } => {
+            parse::dump_large(&large_requests, &args.dataset_dir)
         }
         Command::Index => {
             let images = artifacts(&args.dataset_dir, "squashfs")?;
@@ -166,17 +173,12 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             })
         }
-        Command::Vet => {
+        Command::Vet { large_requests } => {
             // the source listing is shared by every image
-            let sources = parse::source_request_ids(&args.large_requests)?;
+            let sources = parse::source_request_ids(&large_requests)?;
             let parquets = artifacts(&args.dataset_dir, "request_log")?;
             parquets.par_iter().try_for_each(|request_log| {
-                vet_log(
-                    &args.large_requests,
-                    &sources,
-                    &args.dataset_dir,
-                    request_log,
-                )
+                vet_log(&large_requests, &sources, &args.dataset_dir, request_log)
             })
         }
     }
