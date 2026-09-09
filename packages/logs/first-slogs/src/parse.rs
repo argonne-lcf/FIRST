@@ -4,6 +4,7 @@ use std::{
     io::{self, BufWriter, Cursor, Read, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,15 +16,17 @@ use polars::{
     df,
     frame::{DataFrame, UniqueKeepStrategy},
     prelude::{
-        FileWriteFormat, IntoLazy, JoinCoalesce, JoinType, LazyFileListReader, LazyFrame,
-        LazyJsonLineReader, ParquetWriteOptions, PlRefPath, ScanArgsParquet, SinkDestination,
-        SinkTarget, SortMultipleOptions, UnifiedSinkArgs, all, by_name, col, cols,
+        ExtraColumnsPolicy, FileWriteFormat, IntoLazy, JoinCoalesce, JoinType, LazyFileListReader,
+        LazyFrame, LazyJsonLineReader, MatchToSchemaPerColumn, MissingColumnsPolicy,
+        MissingColumnsPolicyOrExpr, ParquetWriteOptions, PlRefPath, ScanArgsParquet, Schema,
+        SinkDestination, SinkTarget, SortMultipleOptions, UnifiedSinkArgs, UpcastOrForbid, by_name,
+        col,
     },
 };
 use regex::regex;
-use sonic_rs::JsonValueTrait;
+use sonic_rs::{JsonValueTrait, to_object_iter};
 
-use crate::files;
+use crate::{files, schema::schema_of};
 
 const STREAMS: &[&str] = &[
     "access_log",
@@ -200,6 +203,13 @@ fn split_log(
     let mut streams: HashMap<&'static str, BufWriter<File>> = HashMap::new();
     let mut partitions: HashMap<&'static str, PathBuf> = HashMap::new();
 
+    // the streams' schemas name the fields a line of the stream may
+    // carry; the free-form app holds none
+    let schemas: HashMap<&str, Schema> = STREAMS
+        .iter()
+        .filter_map(|stream| schema_of(stream).map(|schema| (*stream, schema)))
+        .collect();
+
     let dated = date_dirs(path);
 
     for line in lines(buf) {
@@ -207,11 +217,20 @@ fn split_log(
         // partition; non-conforming lines are captured in the malformed
         // partition verbatim
         let stream = match sonic_rs::get(line, &["stream"]).as_str() {
-            Some(stream) => STREAMS
-                .iter()
-                .copied()
-                .find(|known| *known == stream)
-                .unwrap_or(UNKNOWN),
+            Some(stream) => match STREAMS.iter().copied().find(|known| *known == stream) {
+                // a line of a known stream names only the fields its
+                // schema holds
+                Some(stream)
+                    if schemas.get(stream).is_none_or(|schema| {
+                        to_object_iter(line)
+                            .all(|field| field.is_ok_and(|(name, _)| schema.contains(&name)))
+                    }) =>
+                {
+                    stream
+                }
+                Some(_) => MALFORMED,
+                None => UNKNOWN,
+            },
             None => MALFORMED,
         };
 
@@ -238,21 +257,42 @@ fn split_log(
     Ok(partitions)
 }
 
-/// Sink an `.ndjson` partition next to `path` into a `.parquet` file of the
-/// same stem, returning the parquet path.
-fn ndjson_to_parquet(dataset_dir: &Path, path: &Path) -> anyhow::Result<PathBuf> {
+/// Sink `lines`, conformed to their stream's schema, into the `.parquet`
+/// twin of the ndjson partition at `path`, returning the parquet path:
+/// the columns a partition's lines never carried insert as nulls, the
+/// all-null ones take the dtype the valued partitions infer, and the ones
+/// outside the schema drop.
+fn to_parquet(dataset_dir: &Path, path: &Path, lines: LazyFrame) -> anyhow::Result<PathBuf> {
     let parquet = parquet_of(dataset_dir, path)?;
 
-    // the log is append-ordered, so each key's last line is its latest
-    // upsert: the partition's rows coalesce into one per primary key as it
-    // reads, every stream keying its rows by exactly one of its id columns
-    LazyJsonLineReader::new(PlRefPath::try_from_path(path)?)
-        .with_infer_schema_length(None)
-        .finish()?
-        .unique(
-            Some(by_name(["request_id", "batch_id", "id"], false, false)),
-            UniqueKeepStrategy::Last,
-        )
+    // the partition's stream, which `partition` names as the extension
+    // before the `ndjson` one
+    let lines = match path
+        .file_stem()
+        .map(Path::new)
+        .and_then(Path::extension)
+        .and_then(|stream| stream.to_str())
+        .and_then(schema_of)
+    {
+        Some(schema) => {
+            // one policy per schema column: insert the missing, upcast
+            // the numeric
+            let per_column = std::iter::repeat_with(|| MatchToSchemaPerColumn {
+                missing_columns: MissingColumnsPolicyOrExpr::Insert,
+                missing_struct_fields: MissingColumnsPolicy::Insert,
+                extra_struct_fields: ExtraColumnsPolicy::Ignore,
+                integer_cast: UpcastOrForbid::Upcast,
+                float_cast: UpcastOrForbid::Upcast,
+            })
+            .take(schema.len())
+            .collect();
+
+            lines.match_to_schema(Arc::new(schema), per_column, ExtraColumnsPolicy::Ignore)
+        }
+        None => lines,
+    };
+
+    lines
         .sink(
             SinkDestination::File {
                 target: SinkTarget::Path(PlRefPath::try_from_path(&parquet)?),
@@ -264,6 +304,22 @@ fn ndjson_to_parquet(dataset_dir: &Path, path: &Path) -> anyhow::Result<PathBuf>
         .collect()?;
 
     Ok(parquet)
+}
+
+/// Convert an `.ndjson` partition next to `path` into a `.parquet` file of
+/// the same stem, returning the parquet path.
+fn ndjson_to_parquet(dataset_dir: &Path, path: &Path) -> anyhow::Result<PathBuf> {
+    // the log is append-ordered, so a key's last line is its latest
+    // upsert; every stream keys its rows by exactly one of its id columns
+    let lines = LazyJsonLineReader::new(PlRefPath::try_from_path(path)?)
+        .with_infer_schema_length(None)
+        .finish()?
+        .unique(
+            Some(by_name(["request_id", "batch_id", "id"], false, false)),
+            UniqueKeepStrategy::Last,
+        );
+
+    to_parquet(dataset_dir, path, lines)
 }
 
 fn partitions_to_parquet(
@@ -309,8 +365,7 @@ fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
         r"Token estimation for ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}): ([0-9]+) total \(([0-9]+) completion, ([0-9]+) prompt\)"
     );
     let mut access_ids = Vec::new();
-    // the token counts parse as i64, matching the dtype the partitions'
-    // own token columns infer, so merged and plain partitions scan as one
+    // the token counts parse as i64, the dtype their schema column holds
     let mut total_tokens: Vec<Option<i64>> = Vec::new();
     let mut completion_tokens: Vec<Option<i64>> = Vec::new();
     let mut prompt_tokens: Vec<Option<i64>> = Vec::new();
@@ -348,10 +403,9 @@ fn write_merged_request_metrics(
     request_metrics: &Path,
     request_log: &Path,
 ) -> anyhow::Result<PathBuf> {
-    // the log is append-ordered, so each key's last line is its latest
-    // upsert: the partition's rows coalesce into one per primary key as it
-    // reads, every stream keying its rows by exactly one of its id columns
-    let lf = LazyJsonLineReader::new(PlRefPath::try_from_path(request_metrics)?)
+    // the log is append-ordered, so a key's last line is its latest
+    // upsert; every stream keys its rows by exactly one of its id columns
+    let lines = LazyJsonLineReader::new(PlRefPath::try_from_path(request_metrics)?)
         .with_infer_schema_length(None)
         .finish()?
         .unique(
@@ -366,37 +420,25 @@ fn write_merged_request_metrics(
     )?
     .select([col("access_log_id"), col("id").alias("request_id")]);
 
-    // apply mapping on streaming_metrics
+    // the estimations map onto the requests of this log
     let streaming_metrics = streaming_metrics
         .lazy()
         .join_builder()
         .with(mapping)
         .on([col("access_log_id")])
-        .how(JoinType::Left)
-        .finish()
-        .select([all().exclude_cols(["access_log_id"]).as_expr()])
-        .drop_nulls(Some(cols(["request_id"])));
+        .how(JoinType::Inner)
+        .finish();
 
-    // merge with request_metrics
-    let request_metrics = parquet_of(dataset_dir, request_metrics)?;
-    lf.join_builder()
+    // merge the estimations with the rows
+    let merged = lines
+        .join_builder()
         .with(streaming_metrics)
         .how(JoinType::Left)
         .on([col("request_id")])
         .coalesce(JoinCoalesce::CoalesceColumns)
-        .finish()
-        .select([all().exclude_cols(["^*_right$"]).as_expr()])
-        .sink(
-            SinkDestination::File {
-                target: SinkTarget::Path(PlRefPath::try_from_path(&request_metrics)?),
-            },
-            FileWriteFormat::Parquet(ParquetWriteOptions::default().into()),
-            UnifiedSinkArgs::default(),
-        )?
-        .with_streaming(true)
-        .collect()?;
+        .finish();
 
-    Ok(request_metrics)
+    to_parquet(dataset_dir, request_metrics, merged)
 }
 
 /// Distinct request ids referenced by a `request_log` parquet, as its `id`
