@@ -237,6 +237,7 @@ class ReplicaPlacer(Controller):
                 .values(
                     state=ReplicaState.placed.value,
                     state_message=f"Placed on {job_name}.",
+                    placed_at=sa.func.now(),
                 )
             )
             if result.rowcount == 0:  # type: ignore[attr-defined]
@@ -290,6 +291,7 @@ class ReplicaPlacer(Controller):
                 .values(
                     state=ReplicaState.placed.value,
                     state_message=f"Placed on {job.name}.",
+                    placed_at=sa.func.now(),
                 )
             )
             if result.rowcount == 0:  # type: ignore[attr-defined]

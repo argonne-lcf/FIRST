@@ -144,6 +144,7 @@ class InferenceService:
                 backend_candidates,
                 self.request_id,
                 estimated_tokens=estimated_tokens,
+                deployment_name=deployment_name,
             )
 
             client = self.backend_client_manager.get(backend_id)

@@ -33,6 +33,8 @@ class ReplicaStateCounts:
     )
     launch_successes: int = 0
     launch_failures: int = 0
+    # Most recent `placed -> ready` duration (seconds) observed this tick.
+    last_startup_sec: float | None = None
 
 
 class DeploymentCounter:
@@ -49,6 +51,15 @@ class DeploymentCounter:
         if new_info.state != db_row.state:
             if new_info.state == ReplicaState.ready:
                 self.deployments[name].launch_successes += 1
+                # Only a clean `launching -> ready` cold start is a startup
+                # measurement; `unhealthy -> ready` recovery flaps are not.
+                if (
+                    db_row.state == ReplicaState.launching
+                    and db_row.placed_at is not None
+                ):
+                    self.deployments[name].last_startup_sec = (
+                        datetime.now(timezone.utc) - db_row.placed_at
+                    ).total_seconds()
             elif new_info.state in (ReplicaState.error, ReplicaState.start_timeout):
                 self.deployments[name].launch_failures += 1
 
@@ -115,7 +126,7 @@ class PilotReplicaObserver(Worker):
     Writes:
     - PilotJob.{resources, manager_health, manager_unhealthy_since, idle_since}
     - PilotReplica.{state, state_message, resources, model_url, observed_served_name, started_at}
-    - PilotDeployment.{consecutive_launch_failures, state}
+    - PilotDeployment.{consecutive_launch_failures, last_startup_sec, state}
 
     Reaps orphan replicas reported by a pilot manager that have no matching
     PilotReplica row (or a row pointing at a different PilotJob).
@@ -447,6 +458,15 @@ class PilotReplicaObserver(Worker):
                         )
                     )
                 )
+
+        for name, counts in counter.items():
+            if counts.last_startup_sec is not None:
+                async with self.client_state.db_sessionmaker.begin() as sess:
+                    await sess.execute(
+                        sa.update(PilotDeployment)
+                        .where(PilotDeployment.name == name)
+                        .values(last_startup_sec=counts.last_startup_sec)
+                    )
 
         async with self.client_state.db_sessionmaker.begin() as sess:
             deploys = await sess.scalars(

@@ -31,6 +31,19 @@ class DeploymentConfig(BaseModel):
     prometheus_scrape_interval_sec: int
     backends: list[BackendConfig]
 
+    # Cold-start hints (pilot deployments only) so the 503 path can tell the
+    # caller when a replica is expected to be ready.
+    incoming: bool = False  # a non-draining replica is pending/placed/launching
+    earliest_placed_at: datetime | None = None  # oldest placed_at among incoming
+    last_startup_sec: float | None = None  # most recent placed -> ready duration
+
+    def startup_eta_sec(self, now: datetime) -> float | None:
+        """Seconds until the earliest incoming replica is expected to be ready."""
+        if self.earliest_placed_at is None or self.last_startup_sec is None:
+            return None
+        elapsed = (now - self.earliest_placed_at).total_seconds()
+        return max(0.0, self.last_startup_sec - elapsed)
+
 
 class ModelConfig(BaseModel):
     name: str
@@ -58,6 +71,9 @@ class RouterConfig(BaseModel):
 
     The Control Plane is the sole writer of the RouterConfig: it coalesces
     information about all model instances that are running and routeable.
+    Pilot deployments are listed even when they have no routable backend
+    (an empty `backends` list) so that their cold-start hints are available
+    to the data plane; only static deployments are omitted when unhealthy.
 
     The apiserver is the sole reader of the RouterConfig: it uses this
     live-updating configuration snapshot to route incoming traffic to model backends.

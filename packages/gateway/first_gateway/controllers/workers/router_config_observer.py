@@ -20,6 +20,8 @@ from ..worker import Worker
 
 logger = logging.getLogger(__name__)
 
+_INCOMING = {ReplicaState.pending, ReplicaState.placed, ReplicaState.launching}
+
 
 class RouterConfigObserver(Worker):
     """
@@ -96,33 +98,38 @@ class RouterConfigObserver(Worker):
                     )
                 )
 
+        # Pilot deployments are always listed (possibly with no backends) so the
+        # data plane can report a startup ETA when nothing is routable yet.
         for dep in sorted(pilots, key=lambda d: d.uid):
+            retained = [r for r in dep.replicas if not r.is_draining]
             healthy_replicas = sorted(
-                (
-                    r
-                    for r in dep.replicas
-                    if r.state == ReplicaState.ready and not r.is_draining
-                ),
+                (r for r in retained if r.state == ReplicaState.ready),
                 key=lambda r: r.uid,
             )
-            if healthy_replicas:
-                result.append(
-                    DeploymentConfig(
-                        kind="pilot",
-                        name=dep.name,
-                        cluster_name=dep.cluster_name,
-                        router_params=RouterParams.model_validate(dep.router_params),
-                        prometheus_metrics_path=dep.prometheus_metrics_path,
-                        prometheus_scrape_interval_sec=dep.prometheus_scrape_interval_sec,
-                        backends=[
-                            BackendConfig(
-                                id=rep.backend_id,
-                                model_url=str(rep.model_url),
-                                backend_model_name=str(rep.observed_served_name),
-                                api_key=None,
-                            )
-                            for rep in healthy_replicas
-                        ],
-                    )
+            incoming = [r for r in retained if r.state in _INCOMING]
+            result.append(
+                DeploymentConfig(
+                    kind="pilot",
+                    name=dep.name,
+                    cluster_name=dep.cluster_name,
+                    router_params=RouterParams.model_validate(dep.router_params),
+                    prometheus_metrics_path=dep.prometheus_metrics_path,
+                    prometheus_scrape_interval_sec=dep.prometheus_scrape_interval_sec,
+                    backends=[
+                        BackendConfig(
+                            id=rep.backend_id,
+                            model_url=str(rep.model_url),
+                            backend_model_name=str(rep.observed_served_name),
+                            api_key=None,
+                        )
+                        for rep in healthy_replicas
+                    ],
+                    incoming=bool(incoming),
+                    earliest_placed_at=min(
+                        (r.placed_at for r in incoming if r.placed_at is not None),
+                        default=None,
+                    ),
+                    last_startup_sec=dep.last_startup_sec,
                 )
+            )
         return result

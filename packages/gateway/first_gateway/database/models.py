@@ -371,6 +371,10 @@ class PilotDeployment(ResourceRow):
     state: Mapped[str] = mapped_column(default=PilotDeploymentState.offline.value)
     consecutive_launch_failures: Mapped[int] = mapped_column(default=0)
 
+    # Most recent observed `placed -> ready` startup duration (seconds); None
+    # until a replica has ever reached `ready`. Used as the startup ETA.
+    last_startup_sec: Mapped[float | None]
+
     replicas: Mapped[list["PilotReplica"]] = relationship(
         back_populates="pilot_deployment",
         cascade="all, delete-orphan",
@@ -597,6 +601,7 @@ class PilotReplica(ResourceRow, SoftDeletable):
 
     state: Mapped[str] = mapped_column(default=ReplicaState.pending.value)
     state_message: Mapped[str] = mapped_column(default="Replica created.")
+    placed_at: Mapped[DateTimeOrNone]
     started_at: Mapped[DateTimeOrNone]
     stopped_at: Mapped[DateTimeOrNone]
     log_path: Mapped[str | None]

@@ -21,6 +21,7 @@ def ls(ctx: typer.Context) -> None:
     table.add_column("State")
     table.add_column("Desired", justify="right")
     table.add_column("Launch fails", justify="right")
+    table.add_column("Last startup", justify="right")
 
     for d in client.pilot_deployments.list():
         table.add_row(
@@ -30,6 +31,7 @@ def ls(ctx: typer.Context) -> None:
             d.state.value,
             str(d.desired_replicas),
             str(d.consecutive_launch_failures),
+            f"{d.last_startup_sec:.0f}s" if d.last_startup_sec is not None else "—",
         )
 
     console.print(table)

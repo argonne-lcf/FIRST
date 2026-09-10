@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import NoReturn
 
 import numpy as np
@@ -78,6 +79,7 @@ async def admit_request(
     backend_candidates: list[CandidateBackend],
     request_id: str,
     estimated_tokens: int = 0,
+    deployment_name: str | None = None,
 ) -> str:
     """
     Find and return the backend ID that will serve the request.
@@ -96,7 +98,7 @@ async def admit_request(
         quota=usage_limits,
     )
     if not admit_result.admitted:
-        raise_admit_error(admit_result, usage_limits, model)
+        raise_admit_error(admit_result, usage_limits, model, deployment_name)
 
     if admit_result.backend_id:
         return admit_result.backend_id
@@ -121,6 +123,7 @@ def raise_admit_error(
     admit_result: AdmitResult,
     usage_limits: UsageLimits,
     model: ModelConfig,
+    deployment_name: str | None = None,
 ) -> NoReturn:
     retry_after_sec: int | None
     if admit_result.retry_after_sec:
@@ -167,10 +170,7 @@ def raise_admit_error(
                 retry_after_sec=retry_after_sec,
             )
         elif admit_result.capacity_reason == CapacityReason.NO_CANDIDATES:
-            raise ServiceUnavailable(
-                "Backend not available yet." + retry_str,
-                retry_after_sec=retry_after_sec,
-            )
+            raise cold_start_error(model, retry_after_sec, retry_str, deployment_name)
         else:
             raise FirstError(
                 f"Uncaught reject reason for status {AdmitStatus.REJECT_CAPACITY}: {admit_result.capacity_reason}."
@@ -178,6 +178,52 @@ def raise_admit_error(
 
     else:
         raise FirstError(f"Uncaught admit_result status: {admit_result.status}.")
+
+
+def cold_start_error(
+    model: ModelConfig,
+    retry_after_sec: int | None,
+    retry_str: str,
+    deployment_name: str | None = None,
+) -> ServiceUnavailable:
+    """
+    503 for a model with no routable backend, with a startup ETA when known.
+
+    Each pilot deployment carries its own `earliest_placed_at` and
+    `last_startup_sec`, so the ETA is never computed by mixing one
+    deployment's placement time with another's startup duration. A request
+    pinned to one deployment only reports that deployment's outlook.
+    """
+    now = datetime.now(timezone.utc)
+    deployments = [d for d in model.deployments if deployment_name in (None, d.name)]
+    etas = [eta for d in deployments if (eta := d.startup_eta_sec(now)) is not None]
+    typical = [
+        d.last_startup_sec for d in deployments if d.last_startup_sec is not None
+    ]
+
+    if etas and min(etas) > 0:
+        message = f"Model {model.name} is starting; ~{min(etas):.0f}s until ready."
+    elif etas:
+        # Already past the last observed startup duration: don't claim "0s".
+        message = f"Model {model.name} is starting and should be ready shortly."
+    elif any(d.incoming for d in deployments):
+        message = f"Model {model.name} is starting."
+    elif typical:
+        message = f"Model {model.name} is not running; a replica will be started."
+    else:
+        message = "Backend not available yet."
+
+    if not etas and typical:
+        message += f" Startup typically takes ~{min(typical):.0f}s."
+
+    return ServiceUnavailable(
+        message + retry_str,
+        retry_after_sec=retry_after_sec,
+        info={
+            "startup_eta_sec": round(min(etas)) if etas else None,
+            "typical_startup_sec": round(min(typical)) if typical else None,
+        },
+    )
 
 
 def get_name_from_slug(slug: str) -> str:

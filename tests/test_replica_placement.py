@@ -238,6 +238,8 @@ async def test_place_on_existing_job(
     replica = await _get_replica(db, uid)
     assert replica.state == ReplicaState.placed.value
     assert replica.pilot_job_name == "job-1"
+    # placed_at is stamped so the observer can measure startup time.
+    assert replica.placed_at is not None
     # Fills from lowest free GPU indexes.
     assert set(replica.claimed_gpu_ids) == {(0, 0), (0, 1)}
 
@@ -483,6 +485,7 @@ async def test_creates_new_job_when_none_fit(
     assert await _count_jobs(db) == 1
     replica = await _get_replica(db, uid)
     assert replica.state == ReplicaState.placed.value
+    assert replica.placed_at is not None
     new_job = await _get_job(db, replica.pilot_job_name or "")
     # gpus_per_node from cluster PilotConfig, not the launch spec.
     assert new_job.gpus_per_node == 4

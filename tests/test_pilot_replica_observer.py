@@ -1,7 +1,7 @@
 """Tests for PilotReplicaObserver: replica state sync, orphan reaping,
 and consecutive_launch_failures tracking."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -168,12 +168,14 @@ async def _add_replica(
     deployment: str = "pd",
     job: str = "job-1",
     state: str = ReplicaState.placed.value,
+    placed_at: datetime | None = None,
 ) -> PilotReplica:
     replica = PilotReplica(
         name=name,
         pilot_deployment_name=deployment,
         pilot_job_name=job,
         state=state,
+        placed_at=placed_at,
     )
     sess.add(replica)
     await sess.flush()
@@ -959,3 +961,69 @@ async def test_deployment_state_offline(
             )
         ).one()
     assert dep.state == PilotDeploymentState.offline.value
+
+
+# ── Startup duration (last placed -> ready) ───────────────────────────
+
+
+async def _get_deployment(
+    db: async_sessionmaker[AsyncSession], name: str = "pd"
+) -> PilotDeployment:
+    async with db() as sess:
+        return (
+            await sess.scalars(
+                select(PilotDeployment).where(PilotDeployment.name == name)
+            )
+        ).one()
+
+
+async def _poll_ready(
+    db: async_sessionmaker[AsyncSession],
+    prior_state: ReplicaState,
+    prior_last: float | None,
+) -> PilotDeployment:
+    """Seed one replica placed 100s ago in `prior_state`, report it ready, poll."""
+    placed_at = datetime.now(timezone.utc) - timedelta(seconds=100)
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, state=prior_state.value, placed_at=placed_at)
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(last_startup_sec=prior_last)
+        )
+
+    ri = _replica_info(state=ReplicaState.ready)
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([ri]))}
+    )
+    await _make_observer(db, transport).poll()
+    return await _get_deployment(db)
+
+
+async def test_launching_to_ready_records_last_startup(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A clean launching -> ready stores the elapsed placed -> ready time."""
+    dep = await _poll_ready(db, ReplicaState.launching, prior_last=None)
+    assert dep.last_startup_sec is not None
+    # Elapsed is computed against a real now(); allow slack for test runtime.
+    assert 100 <= dep.last_startup_sec < 110
+
+
+async def test_last_startup_overwrites_previous(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Only the most recent startup is kept: no averaging with the old value."""
+    dep = await _poll_ready(db, ReplicaState.launching, prior_last=10.0)
+    assert dep.last_startup_sec is not None
+    assert 100 <= dep.last_startup_sec < 110
+
+
+async def test_unhealthy_to_ready_does_not_record_startup(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Recovery from unhealthy -> ready is not a startup measurement."""
+    dep = await _poll_ready(db, ReplicaState.unhealthy, prior_last=None)
+    assert dep.last_startup_sec is None

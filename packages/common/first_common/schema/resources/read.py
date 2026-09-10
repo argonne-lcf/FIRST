@@ -102,6 +102,7 @@ class PilotDeploymentSummary(ResourceMeta):
     desired_replicas: int
     state: PilotDeploymentState
     consecutive_launch_failures: int
+    last_startup_sec: float | None = None
 
 
 class StaticDeploymentSummary(ResourceMeta, spec.StaticDeploymentSpec):
