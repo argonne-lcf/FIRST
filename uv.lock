@@ -602,6 +602,7 @@ name = "first-common"
 version = "0.1.0"
 source = { editable = "packages/common" }
 dependencies = [
+    { name = "anyio" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "pydantic" },
@@ -611,6 +612,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "pydantic" },

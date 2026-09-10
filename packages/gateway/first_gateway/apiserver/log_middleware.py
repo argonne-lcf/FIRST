@@ -1,120 +1,89 @@
-import asyncio
+"""Pure-ASGI middleware that emits the Response event and owns the correlation id.
+
+It generates one UUID per request into ``_request_id_ctx`` (propagating down to
+deps, the route, ``InferenceService``, and the logging ``RequestIdFilter``),
+observes the real ``http.response.start``/``http.response.body`` messages, and
+emits a :class:`ResponseLog` after the response is sent.
+
+It buffers a response body ONLY for error responses (``status_code >= 400``,
+which are small); success bodies — unary and streaming alike — are never
+buffered here (their content is persisted by ``InferenceService``).
+"""
+
+import time
 import uuid
-from datetime import datetime, timezone
-from logging import getLogger
-from pathlib import Path
-from typing import Any
 
-from fastapi.requests import Request
-from fastapi.responses import Response, StreamingResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from first_common.schema.structured_logs import (
-    AccessLog,
-)
+from first_common.schema.structured_logs import ResponseLog
 
-from ..database.redis.repo import RedisRepo
-from ..settings import ClientState
-from .context import RequestContext, _request_context
+from .context import _request_id_ctx
 
-logger = getLogger(__name__)
+# Constant probe traffic; the only anonymous route worth suppressing.
+_SKIP_PATHS = {"/health"}
 
 
-def initialize_access_log(request: Request) -> AccessLog:
-    """Return initial state of an AccessLog entry"""
-    origin_ip = request.headers.get("X-Forwarded-For")
-    if not origin_ip and request.client is not None:
-        origin_ip = request.client.host
+class ResponseLogMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-    # Remove duplicate if any
-    if origin_ip:
-        ip_list = [ip.strip() for ip in origin_ip.split(",")]
-        origin_ip = ", ".join(set(ip_list))
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-    return AccessLog(
-        id=str(uuid.uuid4()),
-        timestamp_request=datetime.now(timezone.utc),
-        api_route=request.url.path,
-        origin_ip=origin_ip,
-    )
+        cid = str(uuid.uuid4())
+        token = _request_id_ctx.set(cid)
+        t0 = time.perf_counter()
 
+        status_code = 500
+        streaming = False
+        error_body = bytearray()
 
-async def write_logs(
-    context: RequestContext, response: Response, prompt_storage_dir: Path
-) -> None:
-    context.access_log.emit(context.user, response)
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code, streaming
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                headers = message.get("headers") or []
+                for name, value in headers:
+                    if name.lower() == b"content-type":
+                        streaming = value.lower().startswith(b"text/event-stream")
+                        break
+            elif message["type"] == "http.response.body":
+                # Only small error bodies are captured here; success/streaming
+                # content is persisted by InferenceService.
+                if status_code >= 400 and not streaming:
+                    error_body.extend(message.get("body", b""))
+            await send(message)
 
-    if context.request_log:
-        if isinstance(response, StreamingResponse):
-            body = "streaming_response_in_progress"
-        elif isinstance(response.body, bytes):
-            body = response.body.decode(errors="ignore")
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception:
+            # An uncaught exception propagates un-statused (ServerErrorMiddleware,
+            # which emits the 500, is above us). Log our own ResponseLog(500) so
+            # the request_id is preserved, then re-raise.
+            self._emit(scope, cid, 500, t0, streaming=False, raw_body=None)
+            raise
         else:
-            body = "unavailable"
-        context.request_log.emit(
-            body, response.status_code, prompt_dir=prompt_storage_dir
-        )
+            if scope["path"] not in _SKIP_PATHS:
+                raw = bytes(error_body) if status_code >= 400 else None
+                self._emit(scope, cid, status_code, t0, streaming, raw)
+        finally:
+            _request_id_ctx.reset(token)
 
-        if not isinstance(response, StreamingResponse):
-            await context.request_log.emit_metrics()
-
-
-_background_tasks: set[asyncio.Task[None]] = set()
-
-
-def _on_done(task: asyncio.Task[None]) -> None:
-    _background_tasks.discard(task)
-    if task.cancelled():
-        return
-    if exc := task.exception():
-        logger.error("Background log write failed", exc_info=exc)
-
-
-async def log_request(request: Request, call_next: Any) -> Response:
-
-    token = _request_context.set(RequestContext(initialize_access_log(request)))
-
-    try:
-        response: Response = await call_next(request)
-        ctx_data = _request_context.get()
-    finally:
-        _request_context.reset(token)
-
-    client_state: ClientState = request.app.state.client_state
-    if await should_skip_logging(ctx_data, request, response, client_state.redis_repo):
-        return response
-
-    # Fire-and-forget logging pattern:
-    task = asyncio.create_task(
-        write_logs(ctx_data, response, client_state.settings.prompt_storage_dir)
-    )
-    _background_tasks.add(task)
-    task.add_done_callback(_on_done)
-    return response
-
-
-async def should_skip_logging(
-    ctx: RequestContext,
-    request: Request,
-    response: Response,
-    repo: RedisRepo,
-) -> bool:
-    if "api/streaming" in request.url.path:
-        return True
-
-    status_code = response.status_code
-    user = ctx.user.username if ctx.user else (ctx.access_log.origin_ip or "unknown")
-
-    if status_code < 400:
-        return False
-    elif status_code >= 500:
-        is_new = await repo.is_new_error_log(user, status_code)
-    else:
-        body = getattr(response, "body", b"")
-        fingerprint = (
-            "<streaming>"
-            if isinstance(response, StreamingResponse)
-            else (str(body[:128]))
-        )
-        is_new = await repo.is_new_error_log(user, status_code, fingerprint=fingerprint)
-
-    return not is_new
+    @staticmethod
+    def _emit(
+        scope: Scope,
+        cid: str,
+        status_code: int,
+        t0: float,
+        streaming: bool,
+        raw_body: bytes | None,
+    ) -> None:
+        storage_dir = scope["app"].state.client_state.settings.prompt_storage_dir
+        ResponseLog(
+            request_id=cid,
+            status_code=status_code,
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            streaming=streaming,
+        ).emit(raw_body=raw_body, storage_dir=storage_dir)

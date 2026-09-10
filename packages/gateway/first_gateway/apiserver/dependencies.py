@@ -1,3 +1,4 @@
+import uuid
 from typing import Annotated, AsyncGenerator, cast
 
 from fastapi import Depends, Request
@@ -8,12 +9,14 @@ from sqlalchemy.ext.asyncio import (
 
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.resources.spec import AccessGroupSpec
+from first_common.schema.structured_logs import RequestLog
 
 from ..database.redis.pubsub import RedisPubSub as _RedisPubSub
 from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
+from .context import get_request_id
 from .router_config_manager import RouterConfigManager
 
 
@@ -64,14 +67,49 @@ RedisPubSub = Annotated[_RedisPubSub, Depends(get_redis_pubsub)]
 
 
 async def get_auth_user(
+    request: Request,
     state: AppState,
     token: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
 ) -> UserAuthEvent:
     """
     Returns UserAuthEvent if and only if the user is authenticated. Raises Unauthorized otherwise.
     """
+    raw_body = await request.body()  #  Cached on request._body
+    origin_ip = request.headers.get("X-Forwarded-For")
+    if not origin_ip and request.client is not None:
+        origin_ip = request.client.host
+    content_length = request.headers.get("Content-Length")
+
     auth_svc = GlobusAuthService(state)
-    user = await auth_svc.validate_access_token(token)
+
+    try:
+        user = await auth_svc.validate_access_token(token)
+    except:
+        RequestLog(
+            request_id=get_request_id() or str(uuid.uuid4()),
+            method=request.method,
+            path=request.url.path,
+            origin_ip=origin_ip,
+            content_length=int(content_length) if content_length else None,
+        ).emit(raw_body=raw_body, storage_dir=state.settings.prompt_storage_dir)
+        raise
+
+    RequestLog(
+        request_id=get_request_id() or str(uuid.uuid4()),
+        user_id=user.id,
+        user_name=user.name,
+        username=user.username,
+        user_group_uuids=user.user_group_uuids,
+        authorized_group_uuids=user.authorized_group_uuids,
+        idp_id=user.idp_id,
+        idp_name=user.idp_name,
+        auth_service=user.auth_service,
+        method=request.method,
+        path=request.url.path,
+        origin_ip=origin_ip,
+        content_length=int(content_length) if content_length else None,
+    ).emit(raw_body=raw_body, storage_dir=state.settings.prompt_storage_dir)
+
     return user
 
 

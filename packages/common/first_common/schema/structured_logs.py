@@ -1,322 +1,202 @@
-import ast
-import json
-from dataclasses import dataclass
+"""Structured JSONL log events emitted at their source during a request.
+
+Three events, correlated by one ``request_id`` (a UUID generated in the ASGI
+middleware and stored in a contextvar):
+
+* :class:`RequestLog`   — emitted in ``get_auth_user`` once auth succeeds.
+* :class:`ResponseLog`  — emitted in the ASGI middleware after the response is sent.
+* :class:`InferenceLog` — emitted in ``InferenceService`` per completed inference.
+
+Each event's ``emit()`` writes one lean JSONL line (non-blocking, via the
+QueueHandler). When a body is large (>= ``INLINE_BODY_LIMIT`` bytes) it is not
+inlined: the full raw bytes are written to a date-partitioned file under
+``storage_dir`` on a worker thread (fire-and-forget), and the JSONL line carries
+``body=None`` + ``body_stored=True``.
+"""
+
+import asyncio
+import uuid
 from datetime import datetime, timezone
 from logging import getLogger
 from pathlib import Path
-from typing import Annotated, Any, Literal
-from uuid import UUID
+from typing import ClassVar, Literal
 
-from fastapi.responses import Response, StreamingResponse
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    PlainSerializer,
-    computed_field,
-    field_validator,
-)
-
-from first_common.schema.auth import UserAuthEvent
-
-MAX_LEN = 1800
+import anyio
+from pydantic import BaseModel, Field
 
 logger = getLogger(__name__)
 
-
-def _truncate_str(value: str) -> str:
-    if len(value) <= MAX_LEN:
-        return value
-    return value[:MAX_LEN] + f"...<truncated {len(value) - MAX_LEN} chars>"
+# Bodies smaller than this are inlined in the JSONL line; larger ones are
+# written to a separate on-disk file correlated by request_id.
+INLINE_BODY_LIMIT = 2000
 
 
-TruncatedStr = Annotated[str, PlainSerializer(_truncate_str)]
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-@dataclass(slots=True)
-class UsageTokens:
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
+# Keep a strong reference to in-flight file-write tasks so they aren't GC'd
+# before completion
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
-class AccessLog(BaseModel):
+def _on_write_done(task: asyncio.Task[None]) -> None:
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    if exc := task.exception():
+        logger.error("Structured-log body write failed", exc_info=exc)
+
+
+async def _write_body_file(path: Path, raw: bytes) -> None:
+    """Write ``raw`` to ``path`` on a worker thread.  Creates the date-partition
+    directory on first write."""
+
+    def _write() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+    await anyio.to_thread.run_sync(_write)
+
+
+def _store_body(
+    raw: bytes, subdir: str, request_id: str, timestamp: datetime, storage_dir: Path
+) -> tuple[str | None, bool]:
+    """Apply the inline-vs-file decision.
+
+    Small bodies are decoded and returned inline. Large bodies are scheduled for
+    a fire-and-forget threaded write to
+    ``{storage_dir}/{subdir}/YYYY/MM/DD/{request_id}.json`` (UTC date from
+    ``timestamp``) and returned as ``(None, True)``.
     """
-    Logged event: the apiserver has been accessed.
-    """
+    if len(raw) < INLINE_BODY_LIMIT:
+        return raw.decode(errors="replace"), False
 
-    id: str
-    timestamp_request: datetime
-    api_route: str
-    origin_ip: str | None
-    timestamp_response: datetime | None = None
-    status_code: int | None = None
-    error: TruncatedStr | None = None
-    authorized_groups: str | None = None
-    stream: Literal["access_log"] = "access_log"
-
-    def emit(self, user: UserAuthEvent | None, response: Response) -> None:
-        """
-        Emit access log after view returns response.
-        """
-        self.timestamp_response = datetime.now(timezone.utc)
-        self.status_code = response.status_code
-
-        if response.status_code >= 400:
-            body = getattr(response, "body", None)
-            if isinstance(response, StreamingResponse):
-                self.error = "<streaming response error>"
-            elif isinstance(body, bytes):
-                self.error = body.decode(errors="ignore")
-
-        logger.info(
-            "created",
-            extra={
-                **self.model_dump(mode="json"),
-                "user.id": user.id if user else None,
-            },
-        )
+    path = storage_dir / subdir / timestamp.strftime("%Y/%m/%d") / f"{request_id}.json"
+    task = asyncio.create_task(_write_body_file(path, raw))
+    _background_tasks.add(task)
+    task.add_done_callback(_on_write_done)
+    return None, True
 
 
-class RequestLog(BaseModel):
-    """
-    Logged event: an LLM request has completed processing.
-    """
+class _StructuredLog(BaseModel):
+    """Base for the three structured events: carries the shared correlation id,
+    timestamp, and lean-JSONL emit + large-body persistence logic."""
 
-    id: str
-    access_log_id: str
-    user_id: str
-    cluster: str
-    framework: str
-    model: str
-    openai_endpoint: str
-    prompt: TruncatedStr
-    timestamp_compute_request: datetime
-    status_code: int | None = None
-    timestamp_compute_response: datetime | None = None
-    result: TruncatedStr | None = None
-    task_uuid: str | None = None
-    stream: Literal["request_log"] = "request_log"
+    # Subdirectory under storage_dir for large-body files ("large-requests" or
+    # "large-responses"). Empty for events that never carry a body.
+    _body_subdir: ClassVar[str] = ""
+
+    # Unique per *emitted event* (never reused across retries or event types).
+    # This is the delivery-dedup key: at-least-once redelivery of the same line
+    # carries the same event_id and collapses downstream, while two genuinely
+    # distinct events (e.g. two retry attempts) keep two ids and both survive.
+    # Contrast request_id, the correlation key, which is deliberately shared.
+    event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    stream: str
+    request_id: str
+    timestamp: datetime = Field(default_factory=_utc_now)
+    body: str | None = None
+    body_stored: bool = False
 
     def emit(
-        self, response_body: str, status_code: int | None, prompt_dir: Path
+        self, raw_body: bytes | None = None, storage_dir: Path | None = None
     ) -> None:
+        """Emit the lean JSONL line; persist a large body to disk if needed.
+
+        ``raw_body`` is the captured body bytes for this event (or ``None`` when
+        the event carries no body). ``storage_dir`` is required whenever a body
+        may need off-lining (i.e. whenever ``raw_body`` is not None).
         """
-        Log an LLM prompt request and results.
-
-        Large prompt/result payloads exceeding MAX_LEN will be written to the
-        filesystem.
-        """
-        self.status_code = status_code
-        self.result = response_body
-
-        if self.timestamp_compute_response is None:
-            self.timestamp_compute_response = datetime.now(timezone.utc)
-
-        logger.info(
-            "created",
-            extra=self.model_dump(mode="json"),
-        )
-
-        if len(self.prompt) > MAX_LEN or len(self.result) > MAX_LEN:
-            full = {"prompt": self.prompt, "result": self.result}
-            prompt_file = Path(prompt_dir) / f"{self.id}.json"
-            try:
-                prompt_file.write_text(json.dumps(full, indent=2))
-            except FileNotFoundError:
-                prompt_file.parent.mkdir(parents=True, exist_ok=True)
-                prompt_file.write_text(json.dumps(full, indent=2))
-
-    async def emit_metrics(self, usage: UsageTokens | None = None) -> None:
-        """
-        Log LLM prompt request metrics.  If usage is None, attempts to
-        extract token metrics from self.result.
-
-        Call emit(response) to set the result before calling emit_metrics().
-        Otherwise, uses the provided token usage data.
-        """
-        if usage is None:
-            usage = extract_usage(self.result) if self.result else UsageTokens()
-
-        metrics = RequestMetrics(
-            request_id=self.id,
-            cluster=self.cluster,
-            framework=self.framework,
-            model=self.model,
-            timestamp_compute_request=self.timestamp_compute_request,
-            timestamp_compute_response=self.timestamp_compute_response,
-            status_code=self.status_code,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
-        )
-
-        logger.info("upserted", extra=metrics.model_dump(mode="json"))
+        if raw_body is not None:
+            assert storage_dir is not None, "storage_dir required to store a body"
+            self.body, self.body_stored = _store_body(
+                raw_body,
+                self._body_subdir,
+                self.request_id,
+                self.timestamp,
+                storage_dir,
+            )
+        logger.info(self.stream, extra=self.model_dump(mode="json"))
 
 
-class RequestMetrics(BaseModel):
-    """
-    Logged event: stats of a completed LLM request are available.
-    """
+class RequestLog(_StructuredLog):
+    """An authenticated HTTP request reached the service (emitted post-auth)."""
 
-    request_id: str
-    cluster: str
-    framework: str
-    model: str
-    timestamp_compute_request: datetime
-    timestamp_compute_response: datetime | None = None
-    status_code: int | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | float | None = None
-    stream: Literal["request_metrics"] = "request_metrics"
+    _body_subdir: ClassVar[str] = "large-requests"
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def response_time_sec(self) -> float | None:
-        if self.timestamp_compute_request and self.timestamp_compute_response:
-            start = self.timestamp_compute_request
-            end = self.timestamp_compute_response
-            return (end - start).total_seconds()
-        return None
+    stream: Literal["request"] = "request"
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def throughput_tokens_per_sec(self) -> float | None:
-        if (
-            isinstance(self.total_tokens, (int, float))
-            and isinstance(self.response_time_sec, (int, float))
-            and self.response_time_sec > 1e-9
-        ):
-            return self.total_tokens / self.response_time_sec
-        return None
+    user_id: str | None = None
+    user_name: str | None = None
+    username: str | None = None
+    user_group_uuids: list[str] | None = None
+    authorized_group_uuids: str | None = None
+    idp_id: str | None = None
+    idp_name: str | None = None
+    auth_service: str | None = None
+
+    method: str
+    path: str
+    origin_ip: str | None
+    content_length: int | None
 
 
-class BatchLog(BaseModel):
-    """
-    Logged event: a BatchJob has been submitted.
-    """
+class ResponseLog(_StructuredLog):
+    """An HTTP response was sent (emitted in the ASGI middleware)."""
 
-    model_config = ConfigDict(from_attributes=True)
+    _body_subdir: ClassVar[str] = "large-responses"
 
-    id: str
-    access_log_id: str
+    stream: Literal["response"] = "response"
+
+    status_code: int
+    duration_ms: float
+    streaming: bool
+
+
+InferenceOutcome = Literal[
+    "success",  # backend returned a usable response
+    "upstream_error",  # backend returned a retryable 5xx / connection failure
+    "upstream_rejected",  # backend returned a non-retryable 4xx
+    "admission_rejected",  # request never dispatched (admission control refused)
+]
+
+
+class InferenceLog(_StructuredLog):
+    """One *attempt* to serve an inference against a backend (emitted in
+    InferenceService). Emitted for every attempt — success, retry, or terminal
+    failure — so a single request_id may carry several InferenceLogs. Carries
+    the response *content* for success cases.
+
+    A request's logical result is the roll-up of its attempts by request_id:
+    ``success`` if any attempt succeeded, else the last attempt's outcome. Token
+    usage is taken from the successful attempt (failed attempts report what they
+    can, usually nothing)."""
+
+    _body_subdir: ClassVar[str] = "large-responses"
+
+    stream: Literal["inference"] = "inference"
+
+    # Denormalized from the request's auth context
     user_id: str
 
-    input_file: str
-    output_folder_path: str | None = None
-    cluster: str | None = None
-    framework: str | None = None
+    endpoint: str
     model: str
+    deployment: str
+    cluster: str
+    backend_id: str
+    backend_model_url: str
 
-    globus_batch_uuid: str | None = None
-    task_ids: str | None = None
-    result: TruncatedStr | None = Field(default="")
+    # Per-attempt result. ``attempt`` is 1-based within this request_id;
+    # ``error`` carries the failure summary for non-success outcomes.
+    outcome: InferenceOutcome = "success"
+    attempt: int = 1
+    error: str | None = None
+    latency_sec: float
 
-    status: str | None = None
-    in_progress_at: datetime | None = None
-    completed_at: datetime | None = None
-    failed_at: datetime | None = None
-    stream: Literal["batch_log"] = "batch_log"
-
-    @field_validator("id", "access_log_id", "user_id", mode="before")
-    @classmethod
-    def coerce_uuid(cls, v: Any) -> Any:
-        if isinstance(v, UUID):
-            return str(v)
-        return v
-
-    def emit(self, action: str) -> None:
-        logger.info(action, extra=self.model_dump(mode="json"))
-
-    def emit_metrics(
-        self,
-        total_tokens: int | None,
-        num_responses: int | None,
-        response_time_sec: float | None,
-        throughput_tokens_per_sec: float | None,
-    ) -> None:
-        defaults = {
-            "cluster": self.cluster,
-            "framework": self.framework,
-            "model": self.model,
-            "status": self.status,
-            "total_tokens": total_tokens,
-            "num_responses": num_responses,
-            "response_time_sec": response_time_sec,
-            "throughput_tokens_per_sec": throughput_tokens_per_sec,
-            "completed_at": self.completed_at,
-            "stream": "batch_metrics",
-        }
-        logger.info("upserted", extra={"batch_id": self.id, **defaults})
-
-
-def _parse_dict(raw: str) -> Any:
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return ast.literal_eval(raw)
-
-
-def _get_dict(data: dict[str, Any], key: str) -> dict[str, Any]:
-    value: dict[str, Any] | None = data.get(key)
-    return value if isinstance(value, dict) else {}
-
-
-def _get_int(data: dict[str, Any], key: str) -> int | None:
-    value = data.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def extract_usage(result: str) -> UsageTokens:
-    """
-    Attempt to parse token usage counts from a JSON response body.
-
-    Handles three shapes:
-
-    - OpenAI chat/completions, completions, embeddings::
-        {"usage": {"prompt_tokens": int,
-                   "completion_tokens": int,
-                   "total_tokens": int}}
-    - OpenAI Responses API::
-        {"usage": {"input_tokens": int,
-                   "output_tokens": int,
-                   "total_tokens": int}}
-    - Anthropic Messages API::
-        {"usage": {"input_tokens": int,
-                   "output_tokens": int}}  # no total_tokens
-
-    Also honours a top-level ``metrics.total_tokens`` if present (the compute
-    function attaches that to non-streaming responses).  When the upstream
-    only reports input/output tokens, total_tokens is computed as their sum
-    so token-rate-limit accounting still works.
-    """
-    try:
-        data = json.loads(result)
-        if isinstance(data, str):
-            data = _parse_dict(data)
-        assert isinstance(data, dict)
-    except Exception:
-        return UsageTokens()
-
-    usage = _get_dict(data, "usage")
-    metrics = _get_dict(data, "metrics")
-
-    prompt_tokens = _get_int(usage, "prompt_tokens") or _get_int(usage, "input_tokens")
-    completion_tokens = _get_int(usage, "completion_tokens") or _get_int(
-        usage, "output_tokens"
-    )
-    total_tokens = _get_int(usage, "total_tokens") or _get_int(metrics, "total_tokens")
-
-    # Anthropic does not report total_tokens; derive it from input/output so
-    # TPM accounting still charges the right amount.
-    if total_tokens is None and (
-        prompt_tokens is not None or completion_tokens is not None
-    ):
-        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
-
-    return UsageTokens(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=total_tokens,
-    )
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    reasoning_tokens: int | None

@@ -80,6 +80,7 @@ nav:
       - Declarative Configuration: architecture/declarative-config.md
       - Data Model: architecture/data-model.md
       - Controller Framework: architecture/controllers.md
+      - Structured Logging & ClickHouse: architecture/structured-logging-clickhouse.md
   - Packages:
       - Gateway: packages/gateway.md
       - Pilot: packages/pilot.md

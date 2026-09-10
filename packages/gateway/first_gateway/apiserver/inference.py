@@ -1,4 +1,5 @@
 import logging
+import time
 import uuid
 from typing import Annotated, Any, AsyncIterator, Awaitable, Callable, NoReturn, cast
 
@@ -15,9 +16,14 @@ from first_common.errors import (
     ServiceUnavailable,
 )
 from first_common.schema.endpoints.base import BasePayload
+from first_common.schema.structured_logs import InferenceLog, InferenceOutcome
 
 from ..database.redis.admission import AdmissionController
-from ..database.redis.router_config import DeploymentConfig, ModelConfig
+from ..database.redis.router_config import (
+    BackendConfig,
+    DeploymentConfig,
+    ModelConfig,
+)
 from ..services.orchestration import (
     admit_request,
     get_deployment_from_backend_id,
@@ -26,6 +32,7 @@ from ..services.orchestration import (
 from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
 from .auth import enforce_permission
 from .backend_client_manager import BackendClientManager
+from .context import get_request_id
 from .dependencies import AuthUser
 from .router_config_manager import RouterConfigManager
 
@@ -35,7 +42,7 @@ MAX_ATTEMPTS = 3
 _RETRYABLE_STATUS = (502, 503, 504)
 
 UpstreamHandler = Callable[
-    [AsyncClient, BasePayload, ModelConfig],
+    [AsyncClient, BasePayload, ModelConfig, DeploymentConfig, BackendConfig],
     Awaitable[StreamingResponse | JSONResponse],
 ]
 
@@ -62,9 +69,11 @@ class InferenceService:
 
     def __init__(self, request: Request, user: AuthUser) -> None:
         self.user = user
-        self.request_id = str(uuid.uuid4())
+        self.request_id = get_request_id() or str(uuid.uuid4())
+        self.attempt = 1
 
         state = request.app.state
+        self.storage_dir = state.client_state.settings.prompt_storage_dir
         self.admission_controller = cast(
             AdmissionController, state.admission_controller
         )
@@ -141,15 +150,25 @@ class InferenceService:
             assert client is not None, "Should be filtered by existing clients"
 
             deployment = get_deployment_from_backend_id(model.deployments, backend_id)
-            payload.model = next(
-                b.backend_model_name for b in deployment.backends if b.id == backend_id
-            )
+            backend = next(b for b in deployment.backends if b.id == backend_id)
+            payload.model = backend.backend_model_name
 
             attempted += 1
+            self.attempt = attempted
+            t0 = time.perf_counter()
             try:
-                return await handler(client, payload, model)
+                return await handler(client, payload, model, deployment, backend)
             except _UpstreamFailure as exc:
                 await self._release_failed_backend(backend_id, deployment)
+                self._emit_inference_log(
+                    payload,
+                    model,
+                    deployment,
+                    backend,
+                    outcome="upstream_error",
+                    latency_sec=time.perf_counter() - t0,
+                    error=exc.summary,
+                )
                 if not exc.retryable:
                     raise ServiceUnavailable(
                         "Upstream model server returned an unexpected error."
@@ -161,12 +180,30 @@ class InferenceService:
                 logger.warning(
                     f"Backend {backend_id} failed ({exc.summary}); trying next."
                 )
-            except FirstError:
+            except FirstError as exc:
                 # Upstream 4xx: settle & propagate response without penalising the backend
                 await self.admission_controller.settle(self.request_id, actual_tokens=0)
+                self._emit_inference_log(
+                    payload,
+                    model,
+                    deployment,
+                    backend,
+                    outcome="upstream_rejected",
+                    latency_sec=time.perf_counter() - t0,
+                    error=str(exc),
+                )
                 raise
-            except Exception:
+            except Exception as exc:
                 await self._release_failed_backend(backend_id, deployment)
+                self._emit_inference_log(
+                    payload,
+                    model,
+                    deployment,
+                    backend,
+                    outcome="upstream_error",
+                    latency_sec=time.perf_counter() - t0,
+                    error=type(exc).__name__,
+                )
                 logger.error(
                     f"Unexpected error from backend {backend_id}.", exc_info=True
                 )
@@ -221,6 +258,44 @@ class InferenceService:
         streaming = getattr(payload, "stream", False) or False
         return self._handle_streaming if streaming else self._handle_unary
 
+    def _emit_inference_log(
+        self,
+        payload: BasePayload,
+        model: ModelConfig,
+        deployment: DeploymentConfig,
+        backend: BackendConfig,
+        *,
+        latency_sec: float,
+        outcome: InferenceOutcome = "success",
+        usage: TokenUsage | None = None,
+        raw_body: bytes | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Emit one per-attempt InferenceLog. Success attempts pass ``usage`` and
+        ``raw_body``; failed attempts pass ``outcome`` + ``error`` and leave
+        usage null (a failed attempt rarely reports tokens)."""
+        usage = usage or TokenUsage()
+        InferenceLog(
+            request_id=self.request_id,
+            user_id=self.user.id,
+            endpoint=payload.endpoint,
+            model=model.name,
+            deployment=deployment.name,
+            cluster=deployment.cluster_name,
+            backend_id=backend.id,
+            backend_model_url=backend.model_url,
+            outcome=outcome,
+            attempt=self.attempt,
+            error=error,
+            latency_sec=latency_sec,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+        ).emit(raw_body=raw_body, storage_dir=self.storage_dir)
+
     def _raise_for_upstream_status(
         self, status_code: int, body: str, model_name: str
     ) -> NoReturn:
@@ -237,7 +312,12 @@ class InferenceService:
         )
 
     async def _handle_unary(
-        self, client: AsyncClient, payload: BasePayload, model: ModelConfig
+        self,
+        client: AsyncClient,
+        payload: BasePayload,
+        model: ModelConfig,
+        deployment: DeploymentConfig,
+        backend: BackendConfig,
     ) -> JSONResponse:
         """POST to an inference backend."""
 
@@ -249,6 +329,7 @@ class InferenceService:
         if parser:
             upstream_payload = parser.prepare_request(upstream_payload)
 
+        t0 = time.perf_counter()
         try:
             response = await client.post(
                 f"/v1/{payload.endpoint}", json=upstream_payload
@@ -265,22 +346,34 @@ class InferenceService:
             await response.aclose()
             self._raise_for_upstream_status(response.status_code, body, model.name)
 
+        latency_sec = time.perf_counter() - t0
         json_body: dict[str, Any] = response.json()
         assert isinstance(json_body, dict)
         usage = parser.parse_unary(json_body) if parser else TokenUsage()
 
-        # TODO: emit structured log events (this is a placeholder for visibility):
-        logger.info(
-            f"{payload.endpoint} - {model.name} - {self.user.username} - {usage}"
-        )
         await self.admission_controller.settle(
             self.request_id, actual_tokens=usage.total_tokens or 0
         )
         await self._record_token_stats(payload, model, usage)
+        self._emit_inference_log(
+            payload,
+            model,
+            deployment,
+            backend,
+            outcome="success",
+            usage=usage,
+            latency_sec=latency_sec,
+            raw_body=response.content,
+        )
         return JSONResponse(json_body, status_code=response.status_code)
 
     async def _handle_streaming(
-        self, client: AsyncClient, payload: BasePayload, model: ModelConfig
+        self,
+        client: AsyncClient,
+        payload: BasePayload,
+        model: ModelConfig,
+        deployment: DeploymentConfig,
+        backend: BackendConfig,
     ) -> StreamingResponse:
         """POST to an inference backend and relay the SSE stream to the caller."""
 
@@ -299,6 +392,7 @@ class InferenceService:
             json=upstream_payload,
         )
 
+        t0 = time.perf_counter()
         try:
             response = await client.send(request, stream=True)
         except httpx.RequestError as exc:
@@ -315,9 +409,11 @@ class InferenceService:
 
         async def _relay() -> AsyncIterator[bytes]:
             tap = UsageTap()
+            content = bytearray()
             try:
                 async for chunk in response.aiter_raw():
                     tap.feed(chunk)
+                    content += chunk
                     yield chunk
             finally:
                 tap.close()
@@ -326,12 +422,18 @@ class InferenceService:
                 usage = (
                     parser.parse_stream(tap.first, tap.last) if parser else TokenUsage()
                 )
-                total_tokens = usage.total_tokens or 0
-                logger.info(
-                    f"{payload.endpoint} - {model.name} - {self.user.username} - {usage}"
-                )
                 await self.admission_controller.settle(
-                    self.request_id, actual_tokens=total_tokens
+                    self.request_id, actual_tokens=usage.total_tokens or 0
+                )
+                self._emit_inference_log(
+                    payload,
+                    model,
+                    deployment,
+                    backend,
+                    outcome="success",
+                    usage=usage,
+                    latency_sec=time.perf_counter() - t0,
+                    raw_body=bytes(content),
                 )
                 await self._record_token_stats(payload, model, usage)
 
