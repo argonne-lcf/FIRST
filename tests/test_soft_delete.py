@@ -13,6 +13,8 @@ from first_gateway.database.models import (
     PilotReplica,
 )
 
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -29,12 +31,14 @@ async def _seed_cluster(sess: AsyncSession) -> str:
     )
     await sess.flush()
     sess.add(Model(name="mdl", access_group_name="ag", supported_endpoints=["chat"]))
+    sess.add(launch_template())
     await sess.flush()
     sess.add(
         PilotDeployment(
             name="pd",
             cluster_name="cl",
             model_name="mdl",
+            launch_template_name=LAUNCH_TEMPLATE_NAME,
             router_params={},
             prometheus_scrape_interval_sec=30,
             min_replicas=0,

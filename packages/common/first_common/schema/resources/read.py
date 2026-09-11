@@ -4,7 +4,6 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from ..base_scheduler import SchedulerJobState
-from ..launch_profile import ParameterValue
 from ..pilot import PilotResources
 from ..types import (
     GpuClaim,
@@ -88,8 +87,12 @@ class AccessGroup(ResourceMeta, spec.AccessGroupSpec):
     pass
 
 
-class LaunchProfile(ResourceMeta, spec.LaunchProfileSpec):
-    kind: Literal["LaunchProfile"] = "LaunchProfile"
+class LaunchTemplate(ResourceMeta, spec.LaunchTemplateSpec):
+    """
+    Reusable, typed launch scripts shared by a family of PilotDeployments.
+    """
+
+    kind: Literal["LaunchTemplate"] = "LaunchTemplate"
 
 
 class PilotDeploymentSummary(ResourceMeta):
@@ -108,7 +111,6 @@ class PilotDeploymentSummary(ResourceMeta):
     state: PilotDeploymentState
     consecutive_launch_failures: int
     last_startup_sec: float | None = None
-    capabilities: dict[str, ParameterValue] = {}
 
 
 class StaticDeploymentSummary(ResourceMeta, spec.StaticDeploymentSpec):

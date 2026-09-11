@@ -44,3 +44,18 @@ spec:
   supported_endpoints:
     - chat/completions
     - completions
+
+---
+
+kind: LaunchTemplate
+name: vllm
+spec:
+  parameters:
+    weights_path:
+      type: str
+      required: true
+  max_startup_sec: 900
+  health_check:
+    url: "http://localhost/health"
+  serve_script_template: |
+    vllm serve {{ parameters.weights_path | quote }} --uds {{ runtime.uds | quote }}

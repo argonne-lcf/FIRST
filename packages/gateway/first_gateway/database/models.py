@@ -21,18 +21,12 @@ from sqlalchemy.orm import (
 from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.base_scheduler import SchedulerJobState
-from first_common.schema.launch_profile import (
-    LaunchProfile as LaunchProfileConfig,
-)
-from first_common.schema.launch_profile import (
-    ParameterValue,
-    ProfileLaunchSpec,
-)
+from first_common.schema.resources.spec import LaunchSpec, LaunchTemplateSpec
 from first_common.schema.types import (
     HealthCheckResult,
     PilotDeploymentState,
-    PilotLaunchSpec,
     ReplicaState,
+    ResolvedLaunchSpec,
     ResourceName,
 )
 
@@ -275,25 +269,13 @@ class Model(ResourceRow):
         back_populates="model", lazy="raise"
     )
 
-    def get_capabilities(self) -> dict[str, Any]:
-        """Only advertise inferred values shared by every deployment."""
-        common: dict[str, Any] = {}
-        if self.pilot_deployments and not self.static_deployments:
-            common = dict(self.pilot_deployments[0].capabilities)
-            for deployment in self.pilot_deployments[1:]:
-                values = deployment.capabilities
-                common = {k: v for k, v in common.items() if values.get(k) == v}
-        return common | self.capabilities
-
     @classmethod
     async def list(
         cls, sess: AsyncSession, *, load_pilot_replicas: bool = False
     ) -> list[Self]:
         q = sa.select(cls).options(
             joinedload(cls.access_group),
-            selectinload(cls.pilot_deployments).selectinload(
-                PilotDeployment.launch_profile
-            ),
+            selectinload(cls.pilot_deployments),
             selectinload(cls.static_deployments),
         )
         if load_pilot_replicas:
@@ -370,8 +352,8 @@ class StaticDeployment(ResourceRow):
         return f"static_deployment/{self.uid}"
 
 
-class LaunchProfile(ResourceRow):
-    __tablename__ = "launch_profile"
+class LaunchTemplate(ResourceRow):
+    __tablename__ = "launch_template"
 
     parameters: Mapped[DictJsonb]
     env: Mapped[DictJsonb]
@@ -379,32 +361,10 @@ class LaunchProfile(ResourceRow):
     pre_stop_script_template: Mapped[str | None]
     post_stop_script_template: Mapped[str | None]
     max_startup_sec: Mapped[int]
+    max_unhealthy_sec: Mapped[int | None]
     pre_stop_timeout_sec: Mapped[float]
     post_stop_timeout_sec: Mapped[float]
-    max_unhealthy_sec: Mapped[int | None]
     health_check: Mapped[DictJsonb]
-
-    deployments: Mapped[list["PilotDeployment"]] = relationship(
-        back_populates="launch_profile", lazy="raise", passive_deletes="all"
-    )
-
-    @classmethod
-    async def reset_reconcile_state(
-        cls, sess: AsyncSession, uid: int, cascade: bool = False
-    ) -> None:
-        await super().reset_reconcile_state(sess, uid)
-        if cascade:
-            name = sa.select(cls.name).where(cls.uid == uid).scalar_subquery()
-            deployments = await sess.scalars(
-                sa.select(PilotDeployment).where(
-                    PilotDeployment.launch_profile_name == name
-                )
-            )
-            for deployment in deployments:
-                deployment.consecutive_launch_failures = 0
-                await PilotDeployment.reset_reconcile_state(
-                    sess, deployment.uid, cascade=True
-                )
 
 
 class PilotDeployment(ResourceRow):
@@ -421,13 +381,11 @@ class PilotDeployment(ResourceRow):
     min_replicas: Mapped[int]
     max_replicas: Mapped[int]
 
+    launch_template_name: Mapped[str] = mapped_column(
+        sa.ForeignKey("launch_template.name"), index=True
+    )
     launch_spec: Mapped[DictJsonb]
-    launch_profile_name: Mapped[str | None] = mapped_column(
-        sa.ForeignKey("launch_profile.name"), index=True
-    )
-    launch_profile: Mapped[LaunchProfile | None] = relationship(
-        back_populates="deployments", lazy="raise"
-    )
+    launch_template: Mapped[LaunchTemplate] = relationship(lazy="raise")
     max_consecutive_launch_failures: Mapped[int] = mapped_column(default=3)
 
     desired_replicas: Mapped[int] = mapped_column(default=0)
@@ -453,37 +411,12 @@ class PilotDeployment(ResourceRow):
     def set_desired_replicas(self, n: int) -> None:
         self.desired_replicas = n
 
-    def resolve_launch_spec(self) -> PilotLaunchSpec:
-        if self.launch_profile_name is None:
-            return PilotLaunchSpec.model_validate(self.launch_spec)
-        profile = LaunchProfileConfig.model_validate(self.launch_profile)
-        return profile.resolve(ProfileLaunchSpec.model_validate(self.launch_spec))
-
-    @property
-    def capabilities(self) -> dict[str, ParameterValue]:
-        if self.launch_profile_name is None:
-            return {}
-        profile = LaunchProfileConfig.model_validate(self.launch_profile)
-        return profile.get_capabilities(
-            ProfileLaunchSpec.model_validate(self.launch_spec)
+    def resolve_launch_spec(self) -> ResolvedLaunchSpec:
+        """Requires `launch_template` and `model` to be loaded."""
+        template = LaunchTemplateSpec.model_validate(self.launch_template)
+        return template.resolve(
+            LaunchSpec.model_validate(self.launch_spec), self.model.max_model_len
         )
-
-    @classmethod
-    async def list(cls, sess: AsyncSession) -> list[Self]:
-        return list(
-            await sess.scalars(sa.select(cls).options(selectinload(cls.launch_profile)))
-        )
-
-    @classmethod
-    async def get_by_name(cls, sess: AsyncSession, name: str) -> Self:
-        result = await sess.scalar(
-            sa.select(cls)
-            .where(cls.name == name)
-            .options(selectinload(cls.launch_profile))
-        )
-        if result is None:
-            raise NotFound(f"No PilotDeployment with {name=!r} was found.")
-        return result
 
     @classmethod
     async def get_detail(cls, sess: AsyncSession, name: str) -> Self:
@@ -492,7 +425,6 @@ class PilotDeployment(ResourceRow):
             .where(cls.name == name)
             .options(
                 selectinload(cls.replicas),
-                selectinload(cls.launch_profile),
                 joinedload(cls.model).joinedload(Model.access_group),
             )
         )

@@ -50,13 +50,13 @@ class FrameworkSummary(BaseModel):
     endpoints: list[str]
 
 
-class ClusterSummary(BaseModel):
+class ClusterEndpointSummary(BaseModel):
     base_url: str
     frameworks: dict[str, FrameworkSummary]
 
 
 class ListEndpointsResponse(BaseModel):
-    clusters: dict[str, ClusterSummary]
+    clusters: dict[str, ClusterEndpointSummary]
 
 
 class JobInfo(BaseModel):
@@ -128,13 +128,15 @@ async def list_endpoints(sess: DbSession, user: AuthUser) -> ListEndpointsRespon
     List available frameworks and models, grouped by the cluster each model is
     deployed on.  Models with no deployment are invisible here.
     """
-    by_cluster: dict[str, ClusterSummary] = {}
+    by_cluster: dict[str, ClusterEndpointSummary] = {}
 
     for model in await _visible_models(sess, user):
         for cluster in _clusters_of(model):
             summary = by_cluster.setdefault(
                 cluster,
-                ClusterSummary(base_url=f"resource_server/{cluster}", frameworks={}),
+                ClusterEndpointSummary(
+                    base_url=f"resource_server/{cluster}", frameworks={}
+                ),
             )
             fw = summary.frameworks.setdefault(
                 _framework(cluster), FrameworkSummary(models=[], endpoints=[])
@@ -231,8 +233,7 @@ async def cluster_models(
     ]
     runtimes = await repo.get_many_model_runtimes([m.name for m in models])
     return [
-        ModelSummary.merge(model, runtime=rt, capabilities=model.get_capabilities())
-        for model, rt in zip(models, runtimes)
+        ModelSummary.merge(model, runtime=rt) for model, rt in zip(models, runtimes)
     ]
 
 

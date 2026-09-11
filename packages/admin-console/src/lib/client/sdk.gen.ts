@@ -12,9 +12,38 @@ import type {
   ChatCompletionsFederatedV1ChatCompletionsPostData,
   ChatCompletionsFederatedV1ChatCompletionsPostErrors,
   ChatCompletionsFederatedV1ChatCompletionsPostResponses,
+  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData,
+  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostErrors,
+  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostResponses,
+  ClusterJobsResourceServerClusterJobsGetData,
+  ClusterJobsResourceServerClusterJobsGetErrors,
+  ClusterJobsResourceServerClusterJobsGetResponses,
+  ClusterModelsResourceServerClusterModelsGetData,
+  ClusterModelsResourceServerClusterModelsGetErrors,
+  ClusterModelsResourceServerClusterModelsGetResponses,
+  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData,
+  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostErrors,
+  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostResponses,
+  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData,
+  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostErrors,
+  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostResponses,
+  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData,
+  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostErrors,
+  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostResponses,
+  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData,
+  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostErrors,
+  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostResponses,
+  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData,
+  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostErrors,
+  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostResponses,
   EmbeddingsFederatedV1EmbeddingsPostData,
   EmbeddingsFederatedV1EmbeddingsPostErrors,
   EmbeddingsFederatedV1EmbeddingsPostResponses,
+  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData,
+  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostErrors,
+  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostResponses,
+  EnsureStagingAreaResourceServerStagingPutData,
+  EnsureStagingAreaResourceServerStagingPutResponses,
   GetClusterCatalogV1ClustersNameGetData,
   GetClusterCatalogV1ClustersNameGetErrors,
   GetClusterCatalogV1ClustersNameGetResponses,
@@ -27,22 +56,47 @@ import type {
   GetSystemHealthCatalogV1SystemHealthGetResponses,
   HealthHealthGetData,
   HealthHealthGetResponses,
+  HealthResourceServerHealthGetData,
+  HealthResourceServerHealthGetResponses,
   ListAccessGroupsCatalogV1AccessGroupsGetData,
   ListAccessGroupsCatalogV1AccessGroupsGetResponses,
   ListClustersCatalogV1ClustersGetData,
   ListClustersCatalogV1ClustersGetResponses,
+  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetData,
+  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetErrors,
+  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses,
+  ListEndpointsResourceServerListEndpointsGetData,
+  ListEndpointsResourceServerListEndpointsGetResponses,
+  ListLaunchTemplatesCatalogV1LaunchTemplatesGetData,
+  ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponses,
   ListModelsCatalogV1ModelsGetData,
   ListModelsCatalogV1ModelsGetResponses,
+  ListModelsFederatedV1ModelsGetData,
+  ListModelsFederatedV1ModelsGetResponses,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetData,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponses,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetData,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponses,
+  MessagesFederatedV1MessagesPostData,
+  MessagesFederatedV1MessagesPostErrors,
+  MessagesFederatedV1MessagesPostResponses,
+  MessagesResourceServerClusterFrameworkV1MessagesPostData,
+  MessagesResourceServerClusterFrameworkV1MessagesPostErrors,
+  MessagesResourceServerClusterFrameworkV1MessagesPostResponses,
   ResponsesFederatedV1ResponsesPostData,
   ResponsesFederatedV1ResponsesPostErrors,
   ResponsesFederatedV1ResponsesPostResponses,
+  ResponsesResourceServerClusterFrameworkV1ResponsesPostData,
+  ResponsesResourceServerClusterFrameworkV1ResponsesPostErrors,
+  ResponsesResourceServerClusterFrameworkV1ResponsesPostResponses,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses,
+  TasksFederatedV1TasksPostData,
+  TasksFederatedV1TasksPostErrors,
+  TasksFederatedV1TasksPostResponses,
+  WhoamiResourceServerWhoamiGetData,
+  WhoamiResourceServerWhoamiGetResponses,
   WhoamiWhoamiGetData,
   WhoamiWhoamiGetResponses,
 } from "./types.gen";
@@ -78,6 +132,24 @@ export const healthHealthGet = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: "/health", ...options });
+
+/**
+ * Health
+ */
+export const healthResourceServerHealthGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<HealthResourceServerHealthGetData, ThrowOnError>,
+): RequestResult<
+  HealthResourceServerHealthGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    HealthResourceServerHealthGetResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/resource_server/health", ...options });
 
 /**
  * Whoami
@@ -310,6 +382,32 @@ export const responsesFederatedV1ResponsesPost = <
   });
 
 /**
+ * Messages
+ */
+export const messagesFederatedV1MessagesPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<MessagesFederatedV1MessagesPostData, ThrowOnError>,
+): RequestResult<
+  MessagesFederatedV1MessagesPostResponses,
+  MessagesFederatedV1MessagesPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    MessagesFederatedV1MessagesPostResponses,
+    MessagesFederatedV1MessagesPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/federated/v1/messages",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
  * Embeddings
  */
 export const embeddingsFederatedV1EmbeddingsPost = <
@@ -333,6 +431,491 @@ export const embeddingsFederatedV1EmbeddingsPost = <
       "Content-Type": "application/json",
       ...options.headers,
     },
+  });
+
+/**
+ * Tasks
+ */
+export const tasksFederatedV1TasksPost = <ThrowOnError extends boolean = false>(
+  options: Options<TasksFederatedV1TasksPostData, ThrowOnError>,
+): RequestResult<
+  TasksFederatedV1TasksPostResponses,
+  TasksFederatedV1TasksPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    TasksFederatedV1TasksPostResponses,
+    TasksFederatedV1TasksPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/federated/v1/tasks",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List Models
+ */
+export const listModelsFederatedV1ModelsGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<ListModelsFederatedV1ModelsGetData, ThrowOnError>,
+): RequestResult<
+  ListModelsFederatedV1ModelsGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    ListModelsFederatedV1ModelsGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/federated/v1/models",
+    ...options,
+  });
+
+/**
+ * Deployment Chat Completions
+ */
+export const deploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPost =
+  <ThrowOnError extends boolean = false>(
+    options: Options<
+      DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData,
+      ThrowOnError
+    >,
+  ): RequestResult<
+    DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostResponses,
+    DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostErrors,
+    ThrowOnError
+  > =>
+    (options.client ?? client).post<
+      DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostResponses,
+      DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostErrors,
+      ThrowOnError
+    >({
+      security: [{ scheme: "bearer", type: "http" }],
+      url: "/deployments/{deployment_slug}/v1/chat/completions",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+
+/**
+ * Deployment Responses
+ */
+export const deploymentResponsesDeploymentsDeploymentSlugV1ResponsesPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostResponses,
+  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostResponses,
+    DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/deployments/{deployment_slug}/v1/responses",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Deployment Messages
+ */
+export const deploymentMessagesDeploymentsDeploymentSlugV1MessagesPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostResponses,
+  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostResponses,
+    DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/deployments/{deployment_slug}/v1/messages",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Deployment Embeddings
+ */
+export const deploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostResponses,
+  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostResponses,
+    DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/deployments/{deployment_slug}/v1/embeddings",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Deployment Tasks
+ */
+export const deploymentTasksDeploymentsDeploymentSlugV1TasksPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostResponses,
+  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DeploymentTasksDeploymentsDeploymentSlugV1TasksPostResponses,
+    DeploymentTasksDeploymentsDeploymentSlugV1TasksPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/deployments/{deployment_slug}/v1/tasks",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List Deployment Models
+ *
+ * List the model served by this deployment (visible to the caller).
+ */
+export const listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses,
+  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses,
+    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/deployments/{deployment_slug}/v1/models",
+    ...options,
+  });
+
+/**
+ * Whoami
+ */
+export const whoamiResourceServerWhoamiGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<WhoamiResourceServerWhoamiGetData, ThrowOnError>,
+): RequestResult<
+  WhoamiResourceServerWhoamiGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    WhoamiResourceServerWhoamiGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/whoami",
+    ...options,
+  });
+
+/**
+ * List Endpoints
+ *
+ * List available frameworks and models, grouped by the cluster each model is
+ * deployed on.  Models with no deployment are invisible here.
+ */
+export const listEndpointsResourceServerListEndpointsGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<
+    ListEndpointsResourceServerListEndpointsGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ListEndpointsResourceServerListEndpointsGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    ListEndpointsResourceServerListEndpointsGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/list-endpoints",
+    ...options,
+  });
+
+/**
+ * Cluster Jobs
+ *
+ * Status of all (visible) models on a cluster, mapped into V1's grouped-by-state
+ * shape.  Deployment states are mapped to running/queued/stopped/others as best
+ * they fit; this is a shim, not a faithful translation.
+ */
+export const clusterJobsResourceServerClusterJobsGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ClusterJobsResourceServerClusterJobsGetData, ThrowOnError>,
+): RequestResult<
+  ClusterJobsResourceServerClusterJobsGetResponses,
+  ClusterJobsResourceServerClusterJobsGetErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    ClusterJobsResourceServerClusterJobsGetResponses,
+    ClusterJobsResourceServerClusterJobsGetErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/{cluster}/jobs",
+    ...options,
+  });
+
+/**
+ * Cluster Models
+ */
+export const clusterModelsResourceServerClusterModelsGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    ClusterModelsResourceServerClusterModelsGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ClusterModelsResourceServerClusterModelsGetResponses,
+  ClusterModelsResourceServerClusterModelsGetErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    ClusterModelsResourceServerClusterModelsGetResponses,
+    ClusterModelsResourceServerClusterModelsGetErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/{cluster}/models",
+    ...options,
+  });
+
+/**
+ * Ensure Staging Area
+ *
+ * Idempotently create a Globus staging area for the caller.
+ */
+export const ensureStagingAreaResourceServerStagingPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<
+    EnsureStagingAreaResourceServerStagingPutData,
+    ThrowOnError
+  >,
+): RequestResult<
+  EnsureStagingAreaResourceServerStagingPutResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).put<
+    EnsureStagingAreaResourceServerStagingPutResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/staging",
+    ...options,
+  });
+
+/**
+ * Chat Completions
+ */
+export const chatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPost =
+  <ThrowOnError extends boolean = false>(
+    options: Options<
+      ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData,
+      ThrowOnError
+    >,
+  ): RequestResult<
+    ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostResponses,
+    ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostErrors,
+    ThrowOnError
+  > =>
+    (options.client ?? client).post<
+      ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostResponses,
+      ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostErrors,
+      ThrowOnError
+    >({
+      security: [{ scheme: "bearer", type: "http" }],
+      url: "/resource_server/{cluster}/{framework}/v1/chat/completions",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+
+/**
+ * Responses
+ */
+export const responsesResourceServerClusterFrameworkV1ResponsesPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    ResponsesResourceServerClusterFrameworkV1ResponsesPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ResponsesResourceServerClusterFrameworkV1ResponsesPostResponses,
+  ResponsesResourceServerClusterFrameworkV1ResponsesPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    ResponsesResourceServerClusterFrameworkV1ResponsesPostResponses,
+    ResponsesResourceServerClusterFrameworkV1ResponsesPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/{cluster}/{framework}/v1/responses",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Messages
+ */
+export const messagesResourceServerClusterFrameworkV1MessagesPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    MessagesResourceServerClusterFrameworkV1MessagesPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  MessagesResourceServerClusterFrameworkV1MessagesPostResponses,
+  MessagesResourceServerClusterFrameworkV1MessagesPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    MessagesResourceServerClusterFrameworkV1MessagesPostResponses,
+    MessagesResourceServerClusterFrameworkV1MessagesPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/{cluster}/{framework}/v1/messages",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Embeddings
+ */
+export const embeddingsResourceServerClusterFrameworkV1EmbeddingsPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData,
+    ThrowOnError
+  >,
+): RequestResult<
+  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostResponses,
+  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostResponses,
+    EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/resource_server/{cluster}/{framework}/v1/embeddings",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List Launch Templates
+ */
+export const listLaunchTemplatesCatalogV1LaunchTemplatesGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<
+    ListLaunchTemplatesCatalogV1LaunchTemplatesGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/catalog/v1/launch-templates",
+    ...options,
   });
 
 /**

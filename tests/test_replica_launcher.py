@@ -30,23 +30,18 @@ from first_gateway.database.models import (
 )
 from first_gateway.services.pilot_control import PilotControlClient
 
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 MANAGER_URL = "https://10.0.0.1:8443/control"
 
-# A complete, valid PilotLaunchSpec (validated by the launcher when building the
-# start request).
+# A complete, valid LaunchSpec; the launcher resolves it against the seeded
+# LaunchTemplate when building the start request.
 LAUNCH_SPEC: dict[str, Any] = {
     "served_model_name": "llama-3",
     "gpus_per_node": 4,
     "num_nodes": 1,
-    "venv_path": "/unused",
-    "weights_path": "/unused",
-    "weights_cache_path": "/unused",
-    "env": {},
-    "serve_script_template": "echo {{ uds }}",
-    "max_startup_sec": 60,
-    "health_check": {"url": "http://localhost/health"},
 }
 
 
@@ -96,6 +91,7 @@ async def _seed_parents(sess: AsyncSession) -> None:
             name="llama", access_group_name="default-ag", supported_endpoints=["chat"]
         )
     )
+    sess.add(launch_template())
     await sess.flush()
 
 
@@ -108,6 +104,7 @@ async def _insert_deployment(
             name=name,
             cluster_name="polaris",
             model_name="llama",
+            launch_template_name=LAUNCH_TEMPLATE_NAME,
             router_params={},
             prometheus_scrape_interval_sec=30,
             min_replicas=0,

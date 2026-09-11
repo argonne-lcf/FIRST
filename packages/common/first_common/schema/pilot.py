@@ -17,8 +17,8 @@ from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDic
 from .types import (
     GpuClaim,
     GpuDiscovery,
-    PilotLaunchSpec,
     ReplicaState,
+    ResolvedLaunchSpec,
     SSHDiscovery,
 )
 
@@ -44,7 +44,7 @@ class ReplicaStartRequest(BaseModel):
 
     name: str
     deployment_name: str
-    launch_spec: PilotLaunchSpec
+    launch_spec: ResolvedLaunchSpec
     gpu_indices: list[tuple[int, int]]
 
 

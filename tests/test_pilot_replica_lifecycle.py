@@ -6,14 +6,13 @@ from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from pydantic import ValidationError
 
 from first_common.errors import ReplicaTeardownError
 from first_common.schema.types import (
     GpuClaim,
     HealthCheckParams,
-    PilotLaunchSpec,
     ReplicaState,
+    ResolvedLaunchSpec,
 )
 from first_gateway.services.pilot_control import STOP_TIMEOUT
 from first_pilot.replica import (
@@ -31,24 +30,28 @@ done
 """
 
 
-def _launch_spec(**overrides: Any) -> PilotLaunchSpec:
+def _launch_spec(**overrides: Any) -> ResolvedLaunchSpec:
     values: dict[str, Any] = {
         "served_model_name": "test-model",
         "gpus_per_node": 2,
         "num_nodes": 1,
-        "venv_path": "/immutable/venv",
-        "weights_path": "/immutable/weights",
-        "weights_cache_path": "/private/cache",
+        "max_model_len": None,
         "env": {"OFFLINE_ONLY": "1"},
+        "parameters": {},
         "serve_script_template": _SERVE_UNTIL_TERM,
+        "pre_stop_script_template": None,
+        "post_stop_script_template": None,
         "max_startup_sec": 30,
+        "max_unhealthy_sec": None,
+        "pre_stop_timeout_sec": 20.0,
+        "post_stop_timeout_sec": 50.0,
         "health_check": HealthCheckParams(url=""),
     }
     values.update(overrides)
-    return PilotLaunchSpec.model_validate(values)
+    return ResolvedLaunchSpec.model_validate(values)
 
 
-def _replica(tmp_path: Path, spec: PilotLaunchSpec) -> Replica:
+def _replica(tmp_path: Path, spec: ResolvedLaunchSpec) -> Replica:
     workdir = tmp_path / "replica"
     workdir.mkdir()
     return Replica(
@@ -70,16 +73,7 @@ def _state(replica: Replica) -> ReplicaState:
     return replica.state
 
 
-def test_pre_stop_template_validation_and_unhealthy_deadline() -> None:
-    with pytest.raises(ValidationError, match="unknown variables"):
-        _launch_spec(pre_stop_script_template="echo {{ not_in_context }}")
-    with pytest.raises(ValidationError, match="less than or equal to 25"):
-        _launch_spec(pre_stop_script_template="true", pre_stop_timeout_sec=26)
-    with pytest.raises(ValidationError, match="unknown variables"):
-        _launch_spec(post_stop_script_template="echo {{ not_in_context }}")
-    with pytest.raises(ValidationError, match="less than or equal to 50"):
-        _launch_spec(post_stop_script_template="true", post_stop_timeout_sec=51)
-
+def test_unhealthy_deadline_defaults_to_startup_deadline() -> None:
     explicit = Replica.__new__(Replica)
     explicit.launch_spec = _launch_spec(max_unhealthy_sec=7)
     assert explicit._unhealthy_timeout_sec == 7
@@ -106,7 +100,7 @@ def test_cooperative_pre_stop_renders_exact_allocation_and_is_idempotent(
 ) -> None:
     spec = _launch_spec(
         pre_stop_script_template="""
-printf '%s\n' '{{ replica_name }}|{{ gpus_by_host["node-a"] | join(",") }}|{{ env["OFFLINE_ONLY"] }}' >> quiesced
+printf '%s\n' '{{ runtime.replica_name }}|{{ runtime.gpus_by_host["node-a"] | join(",") }}|{{ runtime.env["OFFLINE_ONLY"] }}' >> quiesced
 """,
         pre_stop_timeout_sec=2,
     )

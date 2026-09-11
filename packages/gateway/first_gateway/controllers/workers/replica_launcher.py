@@ -75,8 +75,9 @@ class ReplicaLauncher(Controller):
                 uid,
                 options=[
                     selectinload(PilotReplica.pilot_job),
-                    selectinload(PilotReplica.pilot_deployment).selectinload(
-                        PilotDeployment.launch_profile
+                    selectinload(PilotReplica.pilot_deployment).options(
+                        selectinload(PilotDeployment.launch_template),
+                        selectinload(PilotDeployment.model),
                     ),
                 ],
             )

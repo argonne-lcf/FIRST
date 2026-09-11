@@ -12,8 +12,29 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import first_gateway.database
 from first_gateway import Settings
+from first_gateway.database.models import LaunchTemplate
 
 SCHEMA = "first"
+LAUNCH_TEMPLATE_NAME = "test-template"
+
+
+def launch_template() -> LaunchTemplate:
+    """A minimal LaunchTemplate row for tests that insert PilotDeployments directly."""
+    return LaunchTemplate(
+        name=LAUNCH_TEMPLATE_NAME,
+        parameters={},
+        env={},
+        serve_script_template="echo {{ runtime.uds }}",
+        pre_stop_script_template=None,
+        post_stop_script_template=None,
+        max_startup_sec=60,
+        max_unhealthy_sec=None,
+        pre_stop_timeout_sec=20.0,
+        post_stop_timeout_sec=50.0,
+        health_check={"url": ""},
+    )
+
+
 ALEMBIC_INI = Path(first_gateway.database.__file__).parent / "alembic.ini"
 
 

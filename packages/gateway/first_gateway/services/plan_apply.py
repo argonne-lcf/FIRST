@@ -4,7 +4,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.errors import InvalidSpecError, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
-from first_common.schema.launch_profile import ProfileLaunchSpec
 from first_common.schema.resources.plan_apply import (
     FieldChange,
     ResourceChangePlan,
@@ -15,7 +14,7 @@ from first_common.schema.resources.plan_apply import (
 from first_common.schema.resources.spec import (
     AccessGroupSpec,
     ClusterSpec,
-    LaunchProfileSpec,
+    LaunchTemplateSpec,
     ModelSpec,
     PilotDeploymentSpec,
     StaticDeploymentSpec,
@@ -48,7 +47,7 @@ def validate_resources(
         ("StaticDeployment", "Model", "model_name"),
         ("PilotDeployment", "Cluster", "cluster_name"),
         ("PilotDeployment", "Model", "model_name"),
-        ("PilotDeployment", "LaunchProfile", "launch_profile_name"),
+        ("PilotDeployment", "LaunchTemplate", "launch_template_name"),
     ]
 
     for r in resources:
@@ -57,28 +56,27 @@ def validate_resources(
     for child_kind, parent_kind, ref in references:
         existing_parent_names = [r.name for r in by_kind[parent_kind]]
         for child in by_kind[child_kind]:
-            parent_name: str | None = getattr(child.spec, ref)
-            if parent_name is None:
-                continue
+            parent_name: str = getattr(child.spec, ref)
             if parent_name not in existing_parent_names:
                 raise InvalidSpecError(
                     f"{child_kind}.{child.name} references nonexistant {parent_kind}.{parent_name}"
                 )
 
-    profiles = {r.name: r.spec for r in by_kind["LaunchProfile"]}
+    # Resolve every deployment against its template so a template edit that
+    # breaks a dependent (or an invalid launch_spec) fails at plan time.
+    templates = {r.name: r.spec for r in by_kind["LaunchTemplate"]}
+    models_by_name = {r.name: r.spec for r in by_kind["Model"]}
     for deployment in by_kind["PilotDeployment"]:
         spec = deployment.spec
         assert isinstance(spec, PilotDeploymentSpec)
-        if spec.launch_profile_name is not None:
-            profile = profiles[spec.launch_profile_name]
-            assert isinstance(profile, LaunchProfileSpec)
-            assert isinstance(spec.launch_spec, ProfileLaunchSpec)
-            try:
-                profile.resolve(spec.launch_spec)
-            except ValueError as exc:
-                raise InvalidSpecError(
-                    f"PilotDeployment.{deployment.name}: {exc}"
-                ) from exc
+        template = templates[spec.launch_template_name]
+        model = models_by_name[spec.model_name]
+        assert isinstance(template, LaunchTemplateSpec)
+        assert isinstance(model, ModelSpec)
+        try:
+            template.resolve(spec.launch_spec, model.max_model_len)
+        except ValueError as exc:
+            raise InvalidSpecError(f"PilotDeployment.{deployment.name}: {exc}") from exc
 
     # Return Grouped by Kind
     return by_kind
@@ -91,7 +89,7 @@ async def create_plan(
         (models.AccessGroup, AccessGroupSpec),
         (models.Model, ModelSpec),
         (models.Cluster, ClusterSpec),
-        (models.LaunchProfile, LaunchProfileSpec),
+        (models.LaunchTemplate, LaunchTemplateSpec),
         (models.StaticDeployment, StaticDeploymentSpec),
         (models.PilotDeployment, PilotDeploymentSpec),
     )

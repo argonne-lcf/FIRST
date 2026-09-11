@@ -40,84 +40,76 @@ alcf-ai admin audit
 alcf-ai clusters get sophia
 ```
 
-## Reusable launch profiles
+## Launch templates
 
-`LaunchProfile` is a named, spec-only resource for a family of pilot deployments.
-It owns the serve and optional pre/post-stop templates, typed parameters,
-environment, health check and lifecycle timeout defaults. For example:
+`LaunchTemplate` is a named resource holding the serve and optional pre/post-stop
+scripts for a family of `PilotDeployment`s, along with the typed `parameters`
+each deployment must supply and lifecycle defaults (`env`, `health_check`,
+`max_startup_sec`, stop timeouts) that a deployment may override. Every
+`PilotDeployment` references exactly one template by `launch_template_name`.
 
 ```yaml
-kind: LaunchProfile
-name: vllm-multinode
+kind: LaunchTemplate
+name: vllm
 spec:
   parameters:
     weights_path:
-      type: path
+      type: str
       required: true
-    context_window:
-      type: integer
-      default: 65536
+    max_num_seqs:
+      type: int
+      default: 32
       minimum: 1
-      capability: max_context_length
-  max_startup_sec: 21600
+  max_startup_sec: 900
   health_check:
     url: http://localhost/health
   serve_script_template: |
     exec vllm serve {{ parameters.weights_path | quote }} \
       --served-model-name {{ runtime.served_model_name | quote }} \
       --uds {{ runtime.uds | quote }} \
-      --max-model-len {{ parameters.context_window }}
+      --tensor-parallel-size {{ runtime.gpus_per_node }} \
+      --max-model-len {{ runtime.max_model_len }} \
+      --max-num-seqs {{ parameters.max_num_seqs }}
 ---
 kind: PilotDeployment
 name: tara/inkling-bf16
 spec:
   cluster_name: tara
   model_name: inkling-bf16
-  launch_profile_name: vllm-multinode
+  launch_template_name: vllm
   launch_spec:
     served_model_name: thinkingmachines/Inkling
     num_nodes: 8
     gpus_per_node: 4
     parameters:
       weights_path: /immutable/weights/inkling-bf16
-      context_window: 262144
 ```
 
-This is a schema example, not a complete multinode vLLM launch command. Keep
-the profile and its referenced Cluster/Model/AccessGroup resources in the same
-authoritative manifest set. The `path` type validates a nonempty string, not
-filesystem existence on the controller; deployments may target remote machines.
-Other parameter types are `str`/`string`, `int`/`integer`, and `float`/`number`.
-Numeric bounds and string length bounds are supported. Types are strict (no
-string-to-number or boolean-to-number conversion), unknown parameters are errors,
-and defaults are validated too. Optional parameters without defaults resolve to
-null; templates must handle that explicitly.
+Parameter types are `str`, `int` and `float` with optional `minimum`/`maximum`
+bounds. Types are strict (no string-to-number coercion) and unknown parameters
+are errors. A null or omitted value inherits the template default; a `required`
+parameter with no default must be supplied.
 
-The deployment must supply served-model name, node count and GPUs per node. Its
-`env` overlays profile `env`; non-null health/timeout overrides replace profile
-defaults. Script overrides are forbidden for profile-backed deployments. Template
-context contains `parameters`, `runtime` (replica name, served name, UDS path,
-node/GPU counts, GPU allocation and merged environment), and `quote`. Use
-`{{ value | quote }}` or `{{ quote(value) }}` for shell strings. Templates are
-admin-authored code, not a sandbox. All three hooks use the same strict context.
+Templates are Jinja2 with a strict context of three names:
 
-Plan/apply validates every profile reference and resolved deployment, including
-unchanged deployments affected by a profile edit. Resolution happens again at
-launch; existing replicas retain their original templates and cleanup hooks.
-An edit does **not** automatically restart replicas. Scale down and back up when
-you need a rollout. Referenced profiles cannot be deleted on their own.
+- `parameters.*` — the resolved parameter values.
+- `runtime.*` — values the pilot assigns at launch: `replica_name`,
+  `served_model_name`, `uds`, `num_nodes`, `gpus_per_node`, `gpus_by_host`,
+  the merged `env`, and the parent Model's `max_model_len` (null when the
+  Model omits it, so guard with `{% if runtime.max_model_len %}` in that case).
+- `quote` — `shlex.quote`, usable as `{{ value | quote }}` or `{{ quote(value) }}`.
 
-Declared capabilities appear on deployment summaries and in the model catalog.
-Model-level inferred capabilities are only included when all deployments agree
-and there are no static deployments; explicit Model capabilities take precedence.
-Profile definitions (including templates and defaults) are listed by the admin
-endpoint `GET /catalog/v1/launch-profiles`. Deployment detail responses continue
-to expose their launch settings, including parameter values, under the existing
-model access policy; do not put credentials in parameters.
+At apply time every template is rendered once against a sample context, so a
+typo, an unknown filter or a syntax error is rejected before it can reach a
+pilot. Plan/apply also resolves every deployment against its template, so a
+template edit that breaks a dependent deployment fails the plan. A template
+edit does **not** restart running replicas: scale the deployment down and back
+up when you need a rollout. A template that is still referenced cannot be
+deleted.
 
-Existing inline `launch_spec` manifests remain supported. Apply the additive
-database migration and upgrade both the controller and pilot before adopting
-profiles. Convert deployments back to inline specs before downgrading the schema.
+The admin endpoint `GET /catalog/v1/launch-templates` lists templates.
+Deployment detail responses expose the deployment's `launch_spec`, including
+parameter values, so do not put credentials in parameters.
 
 ## Apply mechanics
 
@@ -174,7 +166,7 @@ audit; `GET /control/v1/config-versions/{uid}` returns one.
 To upgrade vLLM on Sophia with no downtime and no SSH:
 
 1. Add a second `PilotDeployment` on Sophia pinned to the new vLLM (a new
-   `PilotLaunchSpec`), with `weight: 1` as a canary alongside the
+   `LaunchTemplate`), with `weight: 1` as a canary alongside the
    existing `weight: 100`. **Apply.**
 2. Watch metrics. Shift weight toward the new deployment across a
    sequence of applies.
@@ -201,12 +193,54 @@ See the [Controller Framework](controllers.md) for the reconcile-loop
 mechanics that make this work, and the [Data Model](data-model.md) for
 the resource types that get Spec/Status pairs.
 
-## Sample Resource
+## Sample Resources
 
 ```yaml
+kind: LaunchTemplate
+name: vllm-sophia
+spec:
+  parameters:
+    venv_path:
+      type: str
+      required: true
+    weights_cache_path:
+      type: str
+      required: true
+  max_startup_sec: 500
+  health_check:
+    url: "http://localhost/health"
+  env:
+    HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+    HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+    TRANSFORMERS_OFFLINE: "1"
+    TORCHINDUCTOR_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/torch_inductor"
+    VLLM_CACHE_ROOT: "/raid/scratch/inference_service/model_weights/.cache/vllm"
+    TRITON_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/triton"
+  serve_script_template: |
+    #!/bin/bash
+    set -euo pipefail
+
+    ulimit -c unlimited
+    mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR"
+
+    source {{ parameters.venv_path | quote }}/bin/activate
+
+    exec vllm serve {{ parameters.weights_cache_path | quote }} \
+      --served-model-name {{ runtime.served_model_name | quote }} \
+      --uds {{ runtime.uds | quote }} \
+      --enable-auto-tool-choice \
+      --tool-call-parser gemma4 \
+      --reasoning-parser gemma4 \
+      --async-scheduling \
+      --tensor-parallel-size {{ runtime.gpus_per_node }} \
+      --max-model-len {{ runtime.max_model_len }} \
+      --trust-remote-code \
+      --gpu-memory-utilization 0.9
+
+---
+
 kind: PilotDeployment
 name: sophia/pilot/google/gemma-4-31B-it
-
 spec:
   model_name: google/gemma-4-31B-it
   cluster_name: sophia
@@ -230,54 +264,12 @@ spec:
   prometheus_metrics_path: "/metrics"
   prometheus_scrape_interval_sec: 30
 
+  launch_template_name: vllm-sophia
   launch_spec:
     served_model_name: google/gemma-4-31B-it
     num_nodes: 1
     gpus_per_node: 8
-
-    venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
-    weights_path: /eagle/inference_service/model_weights/google/gemma-4-31B-it
-    weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it
-
-    max_startup_sec: 500
-    health_check:
-      health_url: "http://localhost/health"
-
-    env:
-      HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
-      HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
-      http_proxy: "http://proxy.alcf.anl.gov:3128"
-      https_proxy: "http://proxy.alcf.anl.gov:3128"
-      ftp_proxy: "http://proxy.alcf.anl.gov:3128"
-      TRANSFORMERS_OFFLINE: "1"
-      OMP_NUM_THREADS: "4"
-      VLLM_LOG_LEVEL: "WARN"
-      USE_FASTSAFETENSOR: "true"
-      VLLM_IMAGE_FETCH_TIMEOUT: "60"
-      VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
-      TORCHINDUCTOR_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/torch_inductor"
-      VLLM_CACHE_ROOT: "/raid/scratch/inference_service/model_weights/.cache/vllm"
-      TRITON_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/triton"
-
-    serve_script_template: |
-      #!/bin/bash
-      set -euo pipefail
-
-      ulimit -c unlimited
-      mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR"
-
-      source {{ quote(venv_path) }}/bin/activate
-
-      exec vllm serve {{ quote(weights_cache_path) }} \
-        --served-model-name {{ quote(served_model_name) }} \
-        --host 127.0.0.1 \
-        --port {{ port }} \
-        --enable-auto-tool-choice \
-        --tool-call-parser gemma4 \
-        --reasoning-parser gemma4 \
-        --async-scheduling \
-        --tensor-parallel-size {{ gpus_per_node }} \
-        --max-model-len 262144 \
-        --trust-remote-code \
-        --gpu-memory-utilization 0.9
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it
 ```

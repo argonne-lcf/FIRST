@@ -28,6 +28,8 @@ from first_gateway.database.models import (
 )
 from first_gateway.services.certmanager import gen_ca_pem
 
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+
 _PATCH_BUILD = "first_gateway.controllers.workers.pilot_job_controller.build_scheduler"
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
@@ -148,12 +150,14 @@ async def _seed_replica_parents(sess: AsyncSession) -> None:
             supported_endpoints=["chat/completions"],
         )
     )
+    sess.add(launch_template())
     await sess.flush()
     sess.add(
         PilotDeployment(
             name="test-deployment",
             cluster_name="polaris",
             model_name="test-model",
+            launch_template_name=LAUNCH_TEMPLATE_NAME,
             router_params={},
             prometheus_scrape_interval_sec=30,
             min_replicas=0,

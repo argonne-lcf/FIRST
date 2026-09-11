@@ -83,6 +83,7 @@ kind: Model
 name: openai/gpt-oss-120b
 spec:
   access_group_name: public
+  max_model_len: 65536
   supported_endpoints:
     - /chat/completions
     - /messages
@@ -116,6 +117,7 @@ kind: Model
 name: openai/gpt-oss-20b
 spec:
   access_group_name: public
+  max_model_len: 65536
   supported_endpoints:
     - /chat/completions
     - /messages
@@ -166,6 +168,118 @@ spec:
 
 ---
 
+kind: LaunchTemplate
+name: vllm-sophia
+spec:
+  parameters:
+    venv_path:
+      type: str
+      required: true
+    weights_path:
+      type: str
+      required: true
+    weights_cache_path:
+      type: str
+      required: true
+    max_num_seqs:
+      type: int
+      default: 32
+      minimum: 1
+  max_startup_sec: 600
+  health_check:
+    url: /health
+  env:
+    TRANSFORMERS_OFFLINE: "1"
+    OMP_NUM_THREADS: "4"
+    VLLM_LOGGING_LEVEL: "INFO"
+    USE_FASTSAFETENSOR: "true"
+    VLLM_IMAGE_FETCH_TIMEOUT: "60"
+    VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
+    TORCHINDUCTOR_CACHE_DIR: /raid/scratch/inference_service/model_weights/.cache/torch_inductor
+    VLLM_CACHE_ROOT: /raid/scratch/inference_service/model_weights/.cache/vllm
+    TRITON_CACHE_DIR: /raid/scratch/inference_service/model_weights/.cache/triton
+    VLLM_ATTENTION_BACKEND: TRITON_ATTN
+    HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+    HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
+  serve_script_template: |
+    ulimit -c unlimited
+
+    mkdir -p $TORCHINDUCTOR_CACHE_DIR
+    mkdir -p $VLLM_CACHE_ROOT
+    mkdir -p $TRITON_CACHE_DIR
+
+    ~/sync_model_weights_on_scratch.sh {{ runtime.served_model_name | quote }} \
+      --source /eagle/inference_service/model_weights \
+      --dest /raid/scratch/inference_service/model_weights \
+      --ext "safetensors json txt py model jinja yaml"
+
+    source {{ parameters.venv_path | quote }}/bin/activate
+    which python
+    export CUDA_VISIBLE_DEVICES={{ runtime.gpus_by_host.values() | first | join(',') }}
+
+    vllm serve {{ parameters.weights_cache_path | quote }} \
+      --served-model-name {{ runtime.served_model_name | quote }} \
+      --uds {{ runtime.uds | quote }} \
+      --disable-access-log-for-endpoints /health,/metrics \
+      --enable-log-requests \
+      --tool-call-parser openai \
+      --enable-auto-tool-choice \
+      --tensor-parallel-size {{ runtime.gpus_per_node }} \
+      --max-model-len {{ runtime.max_model_len }} \
+      --max-num-seqs {{ parameters.max_num_seqs }}
+
+---
+
+kind: LaunchTemplate
+name: vllm-tara
+spec:
+  parameters:
+    venv_path:
+      type: str
+      required: true
+    weights_path:
+      type: str
+      required: true
+    max_num_seqs:
+      type: int
+      default: 32
+      minimum: 1
+  max_startup_sec: 600
+  health_check:
+    url: /health
+  env:
+    TRANSFORMERS_OFFLINE: "1"
+    HF_HUB_OFFLINE: "1"
+    OMP_NUM_THREADS: "4"
+    VLLM_USE_FLASHINFER_SAMPLER: "0"
+    HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+    HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+    TIKTOKEN_ENCODINGS_BASE: /vast/draco/tara/projects/Tara_Deployment/inference_service/weights/tiktoken_encodings
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
+  serve_script_template: |
+    source {{ parameters.venv_path | quote }}/bin/activate
+    which python
+
+    # Need to point at regular gcc 14:
+    module load gcc-native
+    export CC=$(command -v gcc)
+    export CXX=$(command -v g++)
+
+    export CUDA_VISIBLE_DEVICES={{ runtime.gpus_by_host.values() | first | join(',') }}
+    vllm serve {{ parameters.weights_path | quote }} \
+      --served-model-name {{ runtime.served_model_name | quote }} \
+      --uds {{ runtime.uds | quote }} \
+      --disable-access-log-for-endpoints /health,/metrics \
+      --enable-log-requests \
+      --tensor-parallel-size {{ runtime.gpus_per_node }} \
+      --max-model-len {{ runtime.max_model_len }} \
+      --max-num-seqs {{ parameters.max_num_seqs }} \
+      --tool-call-parser openai \
+      --enable-auto-tool-choice
+
+---
+
 kind: PilotDeployment
 name: sophia/openai/gpt-oss-120b
 spec:
@@ -186,58 +300,15 @@ spec:
       - [5.0, 2]
 
   max_consecutive_launch_failures: 2
+  launch_template_name: vllm-sophia
   launch_spec:
     served_model_name: openai/gpt-oss-120b
     gpus_per_node: 4
     num_nodes: 1
-    venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
-    weights_path: /eagle/inference_service/model_weights/openai/gpt-oss-120b/
-    weights_cache_path: /raid/scratch/inference_service/model_weights/openai/gpt-oss-120b/
-    max_startup_sec: 600
-    health_check:
-      url: /health
-
-    env:
-      TRANSFORMERS_OFFLINE: "1"
-      OMP_NUM_THREADS: "4"
-      VLLM_LOGGING_LEVEL: "INFO"
-      USE_FASTSAFETENSOR: "true"
-      VLLM_IMAGE_FETCH_TIMEOUT: "60"
-      VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
-      TORCHINDUCTOR_CACHE_DIR: /raid/scratch/inference_service/model_weights/.cache/torch_inductor
-      VLLM_CACHE_ROOT: /raid/scratch/inference_service/model_weights/.cache/vllm
-      TRITON_CACHE_DIR: /raid/scratch/inference_service/model_weights/.cache/triton
-      VLLM_ATTENTION_BACKEND: TRITON_ATTN
-      HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
-      HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
-      VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
-
-    serve_script_template: |
-      ulimit -c unlimited
-
-      mkdir -p $TORCHINDUCTOR_CACHE_DIR
-      mkdir -p $VLLM_CACHE_ROOT
-      mkdir -p $TRITON_CACHE_DIR
-
-      ~/sync_model_weights_on_scratch.sh {{served_model_name}} \
-        --source /eagle/inference_service/model_weights \
-        --dest /raid/scratch/inference_service/model_weights \
-        --ext "safetensors json txt py model jinja yaml"
-
-      source {{venv_path}}/bin/activate
-      which python
-      export CUDA_VISIBLE_DEVICES={{ gpus_by_host.values() | first | join(',') }}
-
-      vllm serve {{weights_cache_path}} \
-        --served-model-name {{served_model_name}} \
-        --uds {{uds}} \
-        --disable-access-log-for-endpoints /health,/metrics \
-        --enable-log-requests \
-        --tool-call-parser openai \
-        --enable-auto-tool-choice \
-        --tensor-parallel-size 4 \
-        --max-model-len 65536 \
-        --max-num-seqs 32
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      weights_path: /eagle/inference_service/model_weights/openai/gpt-oss-120b/
+      weights_cache_path: /raid/scratch/inference_service/model_weights/openai/gpt-oss-120b/
 
 ---
 
@@ -261,44 +332,11 @@ spec:
       - [5.0, 2]
 
   max_consecutive_launch_failures: 2
+  launch_template_name: vllm-tara
   launch_spec:
     served_model_name: openai/gpt-oss-20b
     gpus_per_node: 1
     num_nodes: 1
-    venv_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/envs/vllm0.26
-    weights_path: /vast/draco/tara/projects/Tara_Deployment/msalim/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee
-    weights_cache_path: ""
-    max_startup_sec: 600
-    health_check:
-      url: /health
-
-    env:
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_OFFLINE: "1"
-      OMP_NUM_THREADS: "4"
-      VLLM_USE_FLASHINFER_SAMPLER: "0"
-      HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
-      HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
-      TIKTOKEN_ENCODINGS_BASE: /vast/draco/tara/projects/Tara_Deployment/inference_service/weights/tiktoken_encodings
-      VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
-
-    serve_script_template: |
-      source {{venv_path}}/bin/activate
-      which python
-
-      # Need to point at regular gcc 14:
-      module load gcc-native
-      export CC=$(command -v gcc)
-      export CXX=$(command -v g++)
-
-      export CUDA_VISIBLE_DEVICES={{ gpus_by_host.values() | first | join(',') }}
-      vllm serve {{weights_path}} \
-        --served-model-name {{served_model_name}} \
-        --uds {{uds}} \
-        --disable-access-log-for-endpoints /health,/metrics \
-        --enable-log-requests \
-        --tensor-parallel-size 1 \
-        --max-model-len 65536 \
-        --max-num-seqs 32 \
-        --tool-call-parser openai \
-        --enable-auto-tool-choice
+    parameters:
+      venv_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/envs/vllm0.26
+      weights_path: /vast/draco/tara/projects/Tara_Deployment/msalim/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee

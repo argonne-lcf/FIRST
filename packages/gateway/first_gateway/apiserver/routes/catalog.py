@@ -11,7 +11,7 @@ from first_common.schema.resources.read import (
     AccessGroup,
     ClusterDetail,
     ClusterSummary,
-    LaunchProfile,
+    LaunchTemplate,
     ModelSummary,
     PilotDeploymentDetail,
     PilotDeploymentSummary,
@@ -69,15 +69,13 @@ async def list_models(
 
     runtimes = await repo.get_many_model_runtimes([m.name for m in models])
     return [
-        ModelSummary.merge(model, runtime=rt, capabilities=model.get_capabilities())
-        for (model, rt) in zip(models, runtimes)
+        ModelSummary.merge(model, runtime=rt) for (model, rt) in zip(models, runtimes)
     ]
 
 
-@admin_router.get("/launch-profiles", response_model=list[LaunchProfile])
-async def list_launch_profiles(sess: DbSession) -> list[db.LaunchProfile]:
-    """Templates and paths are admin-only; users see declared capabilities."""
-    return await db.LaunchProfile.list(sess)
+@admin_router.get("/launch-templates", response_model=list[LaunchTemplate])
+async def list_launch_templates(sess: DbSession) -> list[db.LaunchTemplate]:
+    return await db.LaunchTemplate.list(sess)
 
 
 @user_router.get("/deployments/pilot", response_model=list[PilotDeploymentSummary])
