@@ -1,3 +1,8 @@
+"""
+Globus Transfer helpers: move files or directories between a user's collection
+and the inference data-staging collection, or HTTPS-upload a single file.
+"""
+
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,11 +11,14 @@ from time import perf_counter
 
 import globus_sdk
 import httpx
+from alcf_tokens.auth import get_https_authorizer, get_transfer_authorizer
 
 from ._http import raise_for_status
-from .auth import STAGING_COLLECTION_ID, get_https_authorizer, get_transfer_authorizer
 
 logger = logging.getLogger(__name__)
+
+# inference_data_staging Globus Guest Collection:
+STAGING_COLLECTION_ID = "96c7390b-a3e8-4dd4-a327-1af7d143283e"
 
 
 class TransferError(Exception):
@@ -39,19 +47,23 @@ def run_globus_transfer(
     destination_collection_id: str,
     destination_path: str,
     *,
+    recursive: bool = False,
     timeout: int = 300,
     polling_interval: int = 5,
     verify_checksum: bool = False,
 ) -> TransferResult:
     """
     Submit a Globus Transfer task and block until it completes.
+
+    Set ``recursive=True`` when ``source_path`` is a directory, to transfer the
+    entire directory tree.
     """
     auth_collection_id = (
         source_collection_id
         if source_collection_id != STAGING_COLLECTION_ID
         else destination_collection_id
     )
-    auth = get_transfer_authorizer(auth_collection_id)
+    auth = get_transfer_authorizer([auth_collection_id])
     tc = globus_sdk.TransferClient(authorizer=auth)
 
     tdata = globus_sdk.TransferData(
@@ -60,7 +72,7 @@ def run_globus_transfer(
         label=f"transfer {source_path}",
         verify_checksum=verify_checksum,
     )
-    tdata.add_item(source_path, destination_path)
+    tdata.add_item(source_path, destination_path, recursive=recursive)
 
     submit_result = tc.submit_transfer(tdata)
     task_id = submit_result["task_id"]
@@ -111,10 +123,10 @@ def https_put_to_collection(local_path: Path, remote_path: Path) -> TransferResu
     """
     HTTPS PUT a local file into the inference staging area.
     """
-    transfer_auth = get_transfer_authorizer(f"{STAGING_COLLECTION_ID}:https")
+    transfer_auth = get_transfer_authorizer([f"{STAGING_COLLECTION_ID}:https"])
     tc = globus_sdk.TransferClient(authorizer=transfer_auth)
 
-    https_auth = get_https_authorizer(f"{STAGING_COLLECTION_ID}:https")
+    https_auth = get_https_authorizer(STAGING_COLLECTION_ID)
 
     endpoint = tc.get_endpoint(STAGING_COLLECTION_ID)
     https_server = endpoint["https_server"]

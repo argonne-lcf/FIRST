@@ -1,22 +1,29 @@
 [project]
 name = "alcf-ai"
-version = "0.5.0"
-description = "ALCF Inference Gateway SDK"
+dynamic = ["version"]
+description = "ALCF Inference Gateway SDK and CLI"
 authors = [{ name = "Misha Salim", email = "msalim@anl.gov" }]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
+readme = "README.md"
 dependencies = [
-    "first-common",
     "httpx",
-    "numpy",
+    "pydantic",
+    "python-dotenv",
     "rich",
     "typer",
-    "globus-sdk>=3.65.0,<4",
+    "globus-sdk>=3.65",
     "openai",
-    "matplotlib",
-    "Pillow",
-    "tifffile",
-    "smart-open",
+    "tomlkit",
+    "alcf-tokens>=0.2",
+    # Runtime deps of the first_common package bundled by hatch_build.py
+    "pydantic-settings",
+    "PyYAML",
+    "Jinja2",
 ]
+
+[dependency-groups]
+# The wheel bundles first_common; editable installs import it from the workspace
+dev = ["first-common"]
 
 [tool.uv.sources]
 first-common = { workspace = true }
@@ -25,8 +32,22 @@ first-common = { workspace = true }
 alcf-ai = "alcf_ai:main"
 
 [build-system]
-requires = ["uv_build<0.12"]
-build-backend = "uv_build"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
-[tool.uv.build-backend]
-module-root = ""
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "^alcf_ai/v(?P<version>[^\\+]+)$"
+
+[tool.hatch.version.raw-options]
+search_parent_directories = true
+git_describe_command = "git describe --dirty --tags --long --match alcf_ai/v*"
+# Docker builds have no .git
+fallback_version = "0.0.0"
+
+[tool.hatch.build.targets.wheel]
+packages = ["alcf_ai"]
+
+# Bundles first_common into the wheel. The sdist can't (it lives outside this
+# project root), so publish only the wheel: `uv build --wheel`.
+[tool.hatch.build.targets.wheel.hooks.custom]

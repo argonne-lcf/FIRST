@@ -4,10 +4,8 @@ Temporary V1 (`/resource_server`) compatibility shim.
 
 import logging
 
-import anyio
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
-from globus_sdk import ClientCredentialsAuthorizer, TransferClient
 from pydantic import BaseModel
 
 from first_common.errors import ServiceUnavailable
@@ -18,13 +16,14 @@ from first_common.schema.endpoints.llm import (
     OpenAIEmbeddingsPayload,
     OpenAIResponsesPayload,
 )
+from first_common.schema.endpoints.staging import StagingArea
 from first_common.schema.resources.read import ModelSummary
 from first_common.schema.types import HealthCheckResult, PilotDeploymentState
 
 from ...database import models as db
 from ...database.redis.router_config import ModelConfig, RouterConfig
+from ...services import staging
 from ...services.orchestration import maintenance_notices, maintenance_suffix
-from ...settings import ClientState
 from ..auth import user_can_access_group
 from ..dependencies import (
     AppState,
@@ -76,13 +75,6 @@ class JobsByStatus(BaseModel):
     private_batch_running: list[JobInfo] = []
     private_batch_queued: list[JobInfo] = []
     cluster_status: dict[str, object] = {}
-
-
-class StagingAreaPrepared(BaseModel):
-    collection_id: str
-    path: str
-    acl_rule_id: str
-    principal: str
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -232,89 +224,13 @@ async def cluster_models(
     return [model_summary(model, rt, notices) for model, rt in zip(models, runtimes)]
 
 
-# --- staging: hoisted from V1 (the one genuinely new V2 feature) -------------
-
-_transfer_client: TransferClient | None = None
+# --- staging: served by the V2 route; kept here for old clients -------------
 
 
-def _get_transfer_client(state: ClientState) -> TransferClient:
-    """Cache a TransferClient built from the existing confidential app creds."""
-    global _transfer_client
-    if _transfer_client is None:
-        _transfer_client = TransferClient(
-            authorizer=ClientCredentialsAuthorizer(
-                state.auth_client, TransferClient.scopes.all
-            )
-        )
-    return _transfer_client
-
-
-def _prep_globus_staging_area(
-    tc: TransferClient, principal_id: str, collection_id: str
-) -> StagingAreaPrepared:
-    """
-    Create or refresh ACLs on a per-user staging directory under `collection_id`.
-
-    A directory named with the user's principal ID is (idempotently) created and
-    granted read/write ACLs to that user so they can transfer data in and out.
-    """
-    logger.info(f"User {principal_id=} requesting staging area in {collection_id=}")
-
-    staging_path = f"/user-staging/{principal_id}/"
-
-    try:
-        tc.operation_mkdir(collection_id, staging_path)
-        logger.info(f"staging directory {staging_path=} created")
-    except tc.error_class as e:
-        if "exists" not in str(e).lower():
-            raise
-        logger.info(f"staging directory {staging_path=} already exists")
-
-    existing = tc.endpoint_acl_list(collection_id)
-    rule = next(
-        (
-            r
-            for r in existing
-            if r["principal"] == principal_id and r["path"] == staging_path
-        ),
-        None,
-    )
-
-    if rule is None:
-        result = tc.add_endpoint_acl_rule(
-            collection_id,
-            dict(
-                DATA_TYPE="access",
-                principal_type="identity",
-                principal=principal_id,
-                path=staging_path,
-                permissions="rw",
-            ),
-        )
-        acl_rule_id = str(result["access_id"])
-        logger.info(f"Granted rw access via {acl_rule_id=}")
-    else:
-        acl_rule_id = str(rule["id"])
-        logger.info(f"Staging area {acl_rule_id=} already exists for {principal_id=}")
-
-    return StagingAreaPrepared(
-        collection_id=collection_id,
-        path=staging_path,
-        acl_rule_id=acl_rule_id,
-        principal=principal_id,
-    )
-
-
-@router.put("/staging", response_model=StagingAreaPrepared)
-async def ensure_staging_area(user: AuthUser, state: AppState) -> StagingAreaPrepared:
-    """Idempotently create a Globus staging area for the caller."""
-    tc = _get_transfer_client(state)
-    return await anyio.to_thread.run_sync(
-        _prep_globus_staging_area,
-        tc,
-        user.id,
-        state.settings.data_staging_globus_collection_id,
-    )
+@router.put("/staging", response_model=StagingArea)
+async def ensure_staging_area(user: AuthUser, state: AppState) -> StagingArea:
+    """Idempotently create a Globus staging area for the caller (see /data/v1)."""
+    return await staging.ensure_staging_area(user, state)
 
 
 # --- inference: reuse the deployment-scoped route, cluster picks deployment ---

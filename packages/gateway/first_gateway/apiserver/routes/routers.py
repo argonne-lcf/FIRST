@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from first_common.schema.auth import UserAuthEvent
 
 from ..dependencies import AuthUser, get_admin_user, get_auth_user
-from . import catalog, inference, v1_compat
+from . import catalog, inference, staging, v1_compat
 
 # Allows public access:
 anon = APIRouter()
@@ -30,6 +30,7 @@ async def whoami(user: AuthUser) -> UserAuthEvent:
 admin.include_router(catalog.admin_router)
 auth.include_router(catalog.user_router)
 auth.include_router(inference.router)
+auth.include_router(staging.router)
 
 # Temporary V1 (/resource_server) compatibility shim.
 anon.include_router(v1_compat.anon_router)

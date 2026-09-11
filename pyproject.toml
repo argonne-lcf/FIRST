@@ -79,5 +79,5 @@ warn_required_dynamic_aliases = true
 warn_untyped_fields = true
 
 [[tool.mypy.overrides]]
-module = ["smart_open"]
+module = ["anthropic"]
 ignore_missing_imports = true

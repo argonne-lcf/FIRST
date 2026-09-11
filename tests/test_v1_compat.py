@@ -3,12 +3,10 @@ Tests for the temporary V1 (`/resource_server`) compatibility shim.
 
 The DB-derived routes (list-endpoints, jobs, models) are exercised end-to-end
 against a seeded database; the compat-specific helpers (deployment-name
-resolution and the Globus staging area) are unit-tested directly.
+resolution) are unit-tested directly.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 import httpx
 import pytest
@@ -288,76 +286,3 @@ def test_deployment_name_unknown_model_unavailable() -> None:
     config = _config_with("sophia/static/m", [_backend()])
     with pytest.raises(ServiceUnavailable):
         v1_compat._deployment_name("sophia", config, "does-not-exist")
-
-
-# --- staging area (mocked Globus TransferClient) -----------------------------
-
-
-class _FakeTransferError(Exception):
-    pass
-
-
-class _FakeTransferClient:
-    """Minimal stand-in for globus_sdk.TransferClient's staging surface."""
-
-    error_class = _FakeTransferError
-
-    def __init__(self, *, existing_dir: bool, existing_rule: bool) -> None:
-        self.existing_dir = existing_dir
-        self.existing_rule = existing_rule
-        self.mkdir_calls: list[tuple[str, str]] = []
-        self.added_rules: list[dict[str, Any]] = []
-
-    def operation_mkdir(self, collection_id: str, path: str) -> None:
-        self.mkdir_calls.append((collection_id, path))
-        if self.existing_dir:
-            raise _FakeTransferError("Path already exists")
-
-    def endpoint_acl_list(self, collection_id: str) -> list[dict[str, str]]:
-        if self.existing_rule:
-            return [
-                {
-                    "id": "rule-existing",
-                    "principal": "user-123",
-                    "path": "/user-staging/user-123/",
-                }
-            ]
-        return []
-
-    def add_endpoint_acl_rule(
-        self, collection_id: str, rule: dict[str, Any]
-    ) -> dict[str, str]:
-        self.added_rules.append(rule)
-        return {"access_id": "rule-new"}
-
-
-def test_prep_staging_creates_dir_and_rule() -> None:
-    tc = _FakeTransferClient(existing_dir=False, existing_rule=False)
-    result = v1_compat._prep_globus_staging_area(tc, "user-123", "coll-1")  # type: ignore[arg-type]
-
-    assert result.path == "/user-staging/user-123/"
-    assert result.acl_rule_id == "rule-new"
-    assert result.collection_id == "coll-1"
-    assert result.principal == "user-123"
-    assert tc.mkdir_calls == [("coll-1", "/user-staging/user-123/")]
-    assert tc.added_rules[0]["permissions"] == "rw"
-
-
-def test_prep_staging_idempotent() -> None:
-    tc = _FakeTransferClient(existing_dir=True, existing_rule=True)
-    result = v1_compat._prep_globus_staging_area(tc, "user-123", "coll-1")  # type: ignore[arg-type]
-
-    # Existing dir + rule: no new rule created, existing rule id returned.
-    assert result.acl_rule_id == "rule-existing"
-    assert tc.added_rules == []
-
-
-def test_prep_staging_reraises_unexpected_mkdir_error() -> None:
-    tc = _FakeTransferClient(existing_dir=False, existing_rule=False)
-
-    def boom(collection_id: str, path: str) -> None:
-        raise _FakeTransferError("permission denied")
-
-    tc.operation_mkdir = boom  # type: ignore[method-assign]
-    with pytest.raises(_FakeTransferError, match="permission denied"):
-        v1_compat._prep_globus_staging_area(tc, "user-123", "coll-1")  # type: ignore[arg-type]

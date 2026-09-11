@@ -1,0 +1,41 @@
+name: Publish alcf-ai to PyPI
+
+on:
+  push:
+    tags:
+      - 'alcf_ai/v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/alcf-ai
+    permissions:
+      id-token: write
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: "packages/client/pyproject.toml"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # Wheel only: it bundles first_common from packages/common, which an
+      # sdist of packages/client cannot contain.
+      - name: Build package
+        run: uv build --package alcf-ai --wheel
+      - name: Smoke test the wheel in a clean environment
+        run: |
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke" dist/alcf_ai-*.whl
+          "$RUNNER_TEMP/smoke/bin/alcf-ai" --help
+          "$RUNNER_TEMP/smoke/bin/alcf-ai" version
+      - name: Publish to PyPI
+        run: uv publish

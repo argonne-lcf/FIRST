@@ -9,6 +9,8 @@ against a live stack. Backup destinations are configurable via `BACKUP_DIR`
 | `pg-backup.sh` | `pg_dump` the database to a gzipped SQL file, keep last N | `make db-backup` |
 | `prom-snapshot.sh` | Snapshot the Prometheus TSDB to a tarball, keep last N | `make prom-snapshot` |
 | `dozzle.sh` | Throwaway browser log viewer for the dev stack (not in compose) | — |
+| `sam3_create_webdataset.py` | Bundle images + prompts into WebDataset shards for `alcf-ai sam3 submit-batch` | — |
+| `sam3_preview.py` | Render SAM3 results (masks + boxes) to PNG previews | — |
 
 Each script picks up the stack selected by `COMPOSE_FILE` (set in `.env`), so the
 same commands work for dev and prod.
@@ -46,3 +48,23 @@ from `.env` resolves and `BACKUP_DIR` lands on persistent storage. Example cront
 ```
 
 Rotation is built in: each run deletes everything older than the newest `KEEP`.
+
+## Image model helpers
+
+The `alcf-ai` SDK stays free of numpy/matplotlib/Pillow.  The data-prep and
+visualization helpers for the SAM3 task model live here as standalone scripts
+with inline dependency metadata, so `uv run` installs what they need:
+
+```bash
+# Bundle all .tiff files in a directory with 3 prompts into 100-image shards:
+uv run scripts/sam3_create_webdataset.py /path/to/tiff-stack .tiff \
+    "Phloem Fibers" "Hydrated Xylem vessels" "Air-based Pith cells" \
+    --output-dir test-wds --shard-size 100 --num-workers 4
+
+# Preview a single-image result:
+alcf-ai sam3 submit-image photo.jpg "Baguette" -o result.json --save-labelmap labels.npy
+uv run scripts/sam3_preview.py image photo.jpg result.json labels.npy preview.png
+
+# Preview every image in a batch shard:
+uv run scripts/sam3_preview.py batch shard-00004.tar shard-00004.results.tar
+```

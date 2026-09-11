@@ -80,7 +80,7 @@ make test
 Run a declarative apply against the local service:
 
 ```bash
-alcf-ai auth login
+alcf-tokens login
 first-admin apply tests/resource_specs/baseline/
 first-admin audit
 ```
