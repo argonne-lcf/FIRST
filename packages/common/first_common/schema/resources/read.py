@@ -87,6 +87,14 @@ class AccessGroup(ResourceMeta, spec.AccessGroupSpec):
     pass
 
 
+class LaunchTemplate(ResourceMeta, spec.LaunchTemplateSpec):
+    """
+    Reusable, typed launch scripts shared by a family of PilotDeployments.
+    """
+
+    kind: Literal["LaunchTemplate"] = "LaunchTemplate"
+
+
 class PilotDeploymentSummary(ResourceMeta):
     """
     Concise information about pilot job-based deployments, omitting any replicas

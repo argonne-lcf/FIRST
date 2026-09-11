@@ -47,6 +47,21 @@ spec:
 
 ---
 
+kind: LaunchTemplate
+name: vllm
+spec:
+  parameters:
+    weights_path:
+      type: str
+      required: true
+  max_startup_sec: 900
+  health_check:
+    url: "http://localhost/health"
+  serve_script_template: |
+    vllm serve {{ parameters.weights_path | quote }} --uds {{ runtime.uds | quote }}
+
+---
+
 kind: StaticDeployment
 name: sophia/static/llama-3-8b
 spec:
@@ -86,20 +101,15 @@ spec:
       - [20.0, 3]
   prometheus_metrics_path: "/metrics"
   prometheus_scrape_interval_sec: 30
+  launch_template_name: vllm
   launch_spec:
     served_model_name: meta-llama/llama-3-8b
     num_nodes: 1
     gpus_per_node: 8
-    venv_path: /eagle/inference-service/venvs/vllm/
-    weights_path: /eagle/inference-service/weights/llama-3-8b/
-    weights_cache_path: /raid/scratch/weights-cache/llama-3-8b/
     env:
       FOO: "bar"
-    serve_script_template: |
-      vllm serve {{weights_path}}
-    max_startup_sec: 900
-    health_check:
-      url: "http://localhost/health"
+    parameters:
+      weights_path: /eagle/inference-service/weights/llama-3-8b/
 
 ---
 
@@ -148,16 +158,11 @@ spec:
       - [15.0, 2]
   prometheus_metrics_path: "/metrics"
   prometheus_scrape_interval_sec: 30
+  launch_template_name: vllm
   launch_spec:
     served_model_name: mistralai/mistral-7b
     num_nodes: 1
     gpus_per_node: 4
-    venv_path: /eagle/inference-service/venvs/vllm/
-    weights_path: /eagle/inference-service/weights/mistral-7b/
-    weights_cache_path: /raid/scratch/weights-cache/mistral-7b/
-    env: {}
-    serve_script_template: |
-      vllm serve {{weights_path}}
     max_startup_sec: 600
-    health_check:
-      url: "http://localhost/health"
+    parameters:
+      weights_path: /eagle/inference-service/weights/mistral-7b/

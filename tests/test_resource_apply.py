@@ -77,7 +77,7 @@ async def test_no_changes(
     plan = await _plan(control_client, resources)
 
     assert plan.previous_version == baseline_plan.previous_version + 1
-    assert len(plan.no_change) == 5
+    assert len(plan.no_change) == 6
     assert plan.to_add == []
     assert plan.to_delete == []
     assert plan.to_update == []
@@ -93,8 +93,8 @@ async def test_additions(
     resources = _load("additions")
     plan = await _plan(control_client, resources)
 
-    # 5 baseline resources unchanged + 4 new
-    assert len(plan.no_change) == 5
+    # 6 baseline resources unchanged + 4 new
+    assert len(plan.no_change) == 6
     assert len(plan.to_add) == 4
     assert plan.to_delete == []
     assert plan.to_update == []
@@ -112,7 +112,7 @@ async def test_additions(
 
     # Re-plan after apply: everything should be no_change now
     plan2 = await _plan(control_client, resources)
-    assert len(plan2.no_change) == 9
+    assert len(plan2.no_change) == 10
     assert plan2.to_add == []
     assert plan2.to_delete == []
     assert plan2.to_update == []
@@ -125,8 +125,8 @@ async def test_deletions(
     resources = _load("deletions")
     plan = await _plan(control_client, resources)
 
-    # 3 resources remain unchanged (AccessGroup, Cluster, Model)
-    assert len(plan.no_change) == 3
+    # 4 resources remain unchanged (AccessGroup, Cluster, Model, LaunchTemplate)
+    assert len(plan.no_change) == 4
     assert plan.to_add == []
     assert len(plan.to_delete) == 2
     assert plan.to_update == []
@@ -140,9 +140,9 @@ async def test_deletions(
     assert result is not None
     assert result.uid == baseline_plan.previous_version + 2
 
-    # Re-plan: only 3 resources remain
+    # Re-plan: only 4 resources remain
     plan2 = await _plan(control_client, resources)
-    assert len(plan2.no_change) == 3
+    assert len(plan2.no_change) == 4
     assert plan2.to_add == []
     assert plan2.to_delete == []
     assert plan2.to_update == []
@@ -155,8 +155,8 @@ async def test_updates(
     resources = _load("updates")
     plan = await _plan(control_client, resources)
 
-    # 3 resources unchanged (AccessGroup, Model, PilotDeployment)
-    assert len(plan.no_change) == 3
+    # 4 resources unchanged (AccessGroup, Model, LaunchTemplate, PilotDeployment)
+    assert len(plan.no_change) == 4
     assert plan.to_add == []
     assert plan.to_delete == []
     assert len(plan.to_update) == 2

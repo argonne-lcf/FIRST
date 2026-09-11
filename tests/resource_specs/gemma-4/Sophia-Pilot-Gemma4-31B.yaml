@@ -46,6 +46,7 @@ name: google/gemma-4-31B-it
 
 spec:
   access_group_name: research-team
+  max_model_len: 262144
   supported_endpoints: ["/messages", "/chat/completions", "/responses"]
 
 ---
@@ -55,6 +56,60 @@ name: google/gemma-4-32B
 spec:
   access_group_name: research-team
   supported_endpoints: ["/messages", "/chat/completions", "/responses"]
+---
+
+kind: LaunchTemplate
+name: vllm-sophia
+spec:
+  parameters:
+    venv_path:
+      type: str
+      required: true
+    weights_path:
+      type: str
+      required: true
+    weights_cache_path:
+      type: str
+      required: true
+  max_startup_sec: 500
+  health_check:
+    url: "http://localhost/health"
+  env:
+    HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+    HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+    http_proxy: "http://proxy.alcf.anl.gov:3128"
+    https_proxy: "http://proxy.alcf.anl.gov:3128"
+    ftp_proxy: "http://proxy.alcf.anl.gov:3128"
+    TRANSFORMERS_OFFLINE: "1"
+    OMP_NUM_THREADS: "4"
+    VLLM_LOG_LEVEL: "WARN"
+    USE_FASTSAFETENSOR: "true"
+    VLLM_IMAGE_FETCH_TIMEOUT: "60"
+    VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
+    TORCHINDUCTOR_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/torch_inductor"
+    VLLM_CACHE_ROOT: "/raid/scratch/inference_service/model_weights/.cache/vllm"
+    TRITON_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/triton"
+  serve_script_template: |
+    #!/bin/bash
+    set -euo pipefail
+
+    ulimit -c unlimited
+    mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR"
+
+    source {{ parameters.venv_path | quote }}/bin/activate
+
+    exec vllm serve {{ parameters.weights_cache_path | quote }} \
+      --served-model-name {{ runtime.served_model_name | quote }} \
+      --uds {{ runtime.uds | quote }} \
+      --enable-auto-tool-choice \
+      --tool-call-parser gemma4 \
+      --reasoning-parser gemma4 \
+      --async-scheduling \
+      --tensor-parallel-size {{ runtime.gpus_per_node }} \
+      --max-model-len {{ runtime.max_model_len }} \
+      --trust-remote-code \
+      --gpu-memory-utilization 0.9
+
 ---
 
 kind: PilotDeployment
@@ -83,52 +138,12 @@ spec:
   prometheus_metrics_path: "/metrics"
   prometheus_scrape_interval_sec: 30
 
+  launch_template_name: vllm-sophia
   launch_spec:
     served_model_name: google/gemma-4-31B-it
     num_nodes: 1
     gpus_per_node: 8
-
-    venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
-    weights_path: /eagle/inference_service/model_weights/google/gemma-4-31B-it
-    weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it
-
-    max_startup_sec: 500
-    health_check:
-      url: "http://localhost/health"
-
-    env:
-      HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
-      HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
-      http_proxy: "http://proxy.alcf.anl.gov:3128"
-      https_proxy: "http://proxy.alcf.anl.gov:3128"
-      ftp_proxy: "http://proxy.alcf.anl.gov:3128"
-      TRANSFORMERS_OFFLINE: "1"
-      OMP_NUM_THREADS: "4"
-      VLLM_LOG_LEVEL: "WARN"
-      USE_FASTSAFETENSOR: "true"
-      VLLM_IMAGE_FETCH_TIMEOUT: "60"
-      VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
-      TORCHINDUCTOR_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/torch_inductor"
-      VLLM_CACHE_ROOT: "/raid/scratch/inference_service/model_weights/.cache/vllm"
-      TRITON_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/triton"
-
-    serve_script_template: |
-      #!/bin/bash
-      set -euo pipefail
-
-      ulimit -c unlimited
-      mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR"
-
-      source {{ quote(venv_path) }}/bin/activate
-
-      exec vllm serve {{ quote(weights_cache_path) }} \
-        --served-model-name {{ quote(served_model_name) }} \
-        --uds {{ quote(uds) }} \
-        --enable-auto-tool-choice \
-        --tool-call-parser gemma4 \
-        --reasoning-parser gemma4 \
-        --async-scheduling \
-        --tensor-parallel-size {{ gpus_per_node }} \
-        --max-model-len 262144 \
-        --trust-remote-code \
-        --gpu-memory-utilization 0.9
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      weights_path: /eagle/inference_service/model_weights/google/gemma-4-31B-it
+      weights_cache_path: /raid/scratch/inference_service/model_weights/google/gemma-4-31B-it

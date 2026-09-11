@@ -26,6 +26,7 @@ from first_gateway.database.redis.router_config import (
 )
 
 from .fixtures.auth import ADMIN_TOKEN, USER_TOKEN, auth_header
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
 
 # --- DB seeding --------------------------------------------------------------
 
@@ -62,6 +63,7 @@ async def _seed(
                 supported_endpoints=["chat/completions", "completions"],
             )
         )
+        sess.add(launch_template())
         sess.add(
             db.StaticDeployment(
                 name="sophia/static/llama-3-8b",
@@ -82,6 +84,7 @@ async def _seed(
                 name="sophia/pilot/llama-3-8b",
                 cluster_name="sophia",
                 model_name="meta-llama/llama-3-8b",
+                launch_template_name=LAUNCH_TEMPLATE_NAME,
                 router_params={},
                 prometheus_metrics_path=None,
                 prometheus_scrape_interval_sec=30,

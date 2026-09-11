@@ -39,6 +39,8 @@ from first_gateway.database.redis.keys import Keys
 from first_gateway.database.redis.pubsub import Channel, RedisPubSub
 from first_gateway.database.redis.repo import RedisRepo
 
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+
 NOW = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -86,6 +88,7 @@ async def _seed_parents(
             demand_signal=demand_signal or {},
         )
     )
+    sess.add(launch_template())
     await sess.flush()
 
 
@@ -105,6 +108,7 @@ async def _insert_deployment(
         name=name,
         cluster_name="polaris",
         model_name=model_name,
+        launch_template_name=LAUNCH_TEMPLATE_NAME,
         router_params={},
         prometheus_scrape_interval_sec=30,
         min_replicas=min_replicas,

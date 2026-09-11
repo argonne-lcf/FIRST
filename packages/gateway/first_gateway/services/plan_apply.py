@@ -14,6 +14,7 @@ from first_common.schema.resources.plan_apply import (
 from first_common.schema.resources.spec import (
     AccessGroupSpec,
     ClusterSpec,
+    LaunchTemplateSpec,
     ModelSpec,
     PilotDeploymentSpec,
     StaticDeploymentSpec,
@@ -46,6 +47,7 @@ def validate_resources(
         ("StaticDeployment", "Model", "model_name"),
         ("PilotDeployment", "Cluster", "cluster_name"),
         ("PilotDeployment", "Model", "model_name"),
+        ("PilotDeployment", "LaunchTemplate", "launch_template_name"),
     ]
 
     for r in resources:
@@ -60,6 +62,22 @@ def validate_resources(
                     f"{child_kind}.{child.name} references nonexistant {parent_kind}.{parent_name}"
                 )
 
+    # Resolve every deployment against its template so a template edit that
+    # breaks a dependent (or an invalid launch_spec) fails at plan time.
+    templates = {r.name: r.spec for r in by_kind["LaunchTemplate"]}
+    models_by_name = {r.name: r.spec for r in by_kind["Model"]}
+    for deployment in by_kind["PilotDeployment"]:
+        spec = deployment.spec
+        assert isinstance(spec, PilotDeploymentSpec)
+        template = templates[spec.launch_template_name]
+        model = models_by_name[spec.model_name]
+        assert isinstance(template, LaunchTemplateSpec)
+        assert isinstance(model, ModelSpec)
+        try:
+            template.resolve(spec.launch_spec, model.max_model_len)
+        except ValueError as exc:
+            raise InvalidSpecError(f"PilotDeployment.{deployment.name}: {exc}") from exc
+
     # Return Grouped by Kind
     return by_kind
 
@@ -71,6 +89,7 @@ async def create_plan(
         (models.AccessGroup, AccessGroupSpec),
         (models.Model, ModelSpec),
         (models.Cluster, ClusterSpec),
+        (models.LaunchTemplate, LaunchTemplateSpec),
         (models.StaticDeployment, StaticDeploymentSpec),
         (models.PilotDeployment, PilotDeploymentSpec),
     )

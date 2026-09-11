@@ -30,8 +30,8 @@ from first_common.schema.types import (
     HealthCheckParams,
     HealthCheckResult,
     PilotConfig,
-    PilotLaunchSpec,
     ReplicaState,
+    ResolvedLaunchSpec,
 )
 from first_gateway.services.certmanager import gen_ca_pem, generate_client_cert
 from first_gateway.services.pilot_submitter import PilotSubmitter
@@ -48,7 +48,7 @@ pytestmark = [
 
 # A bash one-liner that becomes the replica process: a stdlib HTTP server
 # bound to a Unix domain socket, answering 200 on /health. Rendered by
-# Replica._render_script as Jinja (only `{{uds}}` is interpolated here).
+# Replica._render_script as Jinja (only `runtime.uds` is interpolated here).
 _MOCK_REPLICA_SCRIPT = """\
 #!/bin/bash
 exec python -c '
@@ -60,7 +60,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a, **kw): pass
 class S(http.server.HTTPServer):
     address_family = socket.AF_UNIX
-S("{{uds}}", H).serve_forever()
+S("{{ runtime.uds }}", H).serve_forever()
 '
 """
 
@@ -286,16 +286,20 @@ async def test_replica_lifecycle(
         start_req = {
             "name": "r0",
             "deployment_name": "depl",
-            "launch_spec": PilotLaunchSpec(
+            "launch_spec": ResolvedLaunchSpec(
                 served_model_name="mock",
                 gpus_per_node=1,
                 num_nodes=1,
-                venv_path=Path("/unused"),
-                weights_path=Path("/unused"),
-                weights_cache_path=Path("/unused"),
+                max_model_len=None,
                 env={},
+                parameters={},
                 serve_script_template=_MOCK_REPLICA_SCRIPT,
+                pre_stop_script_template=None,
+                post_stop_script_template=None,
                 max_startup_sec=20,
+                max_unhealthy_sec=None,
+                pre_stop_timeout_sec=20.0,
+                post_stop_timeout_sec=50.0,
                 health_check=HealthCheckParams(url="http://localhost/health"),
             ).model_dump(mode="json"),
             "gpu_indices": [(0, 0)],

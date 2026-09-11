@@ -11,6 +11,7 @@ from first_common.schema.resources.read import (
     AccessGroup,
     ClusterDetail,
     ClusterSummary,
+    LaunchTemplate,
     ModelSummary,
     PilotDeploymentDetail,
     PilotDeploymentSummary,
@@ -70,6 +71,11 @@ async def list_models(
     return [
         ModelSummary.merge(model, runtime=rt) for (model, rt) in zip(models, runtimes)
     ]
+
+
+@admin_router.get("/launch-templates", response_model=list[LaunchTemplate])
+async def list_launch_templates(sess: DbSession) -> list[db.LaunchTemplate]:
+    return await db.LaunchTemplate.list(sess)
 
 
 @user_router.get("/deployments/pilot", response_model=list[PilotDeploymentSummary])

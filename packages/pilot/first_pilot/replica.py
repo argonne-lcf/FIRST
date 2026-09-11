@@ -10,16 +10,16 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from httpx import Client, HTTPTransport
-from jinja2 import Environment, StrictUndefined
 
 from first_common.errors import ReplicaTeardownError
 from first_common.health import perform_health_check_sync
 from first_common.schema.types import (
     GpuClaim,
     HealthCheckResult,
-    PilotLaunchSpec,
     ReplicaState,
+    ResolvedLaunchSpec,
     ScriptTemplateContext,
+    render_script,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,7 +192,7 @@ class Replica:
         name: str,
         uds: str,
         resources: list[GpuClaim],
-        launch_spec: PilotLaunchSpec,
+        launch_spec: ResolvedLaunchSpec,
         workdir: Path,
     ) -> None:
         self.name = name
@@ -309,22 +309,21 @@ class Replica:
         for claim in self.resources:
             gpus_by_host.setdefault(claim.hostname, []).extend(claim.gpu_ids)
 
-        context: ScriptTemplateContext = {
-            "replica_name": self.name,
-            "served_model_name": spec.served_model_name,
-            "uds": self.uds,
-            "gpus_per_node": spec.gpus_per_node,
-            "num_nodes": spec.num_nodes,
-            "gpus_by_host": gpus_by_host,
-            "venv_path": str(spec.venv_path),
-            "weights_path": str(spec.weights_path),
-            "weights_cache_path": str(spec.weights_cache_path),
-            "env": spec.env,
-            "quote": shlex.quote,
-        }
-
-        env = Environment(undefined=StrictUndefined)
-        return env.from_string(template).render(**context)
+        context = ScriptTemplateContext(
+            runtime={
+                "replica_name": self.name,
+                "served_model_name": spec.served_model_name,
+                "uds": self.uds,
+                "gpus_per_node": spec.gpus_per_node,
+                "num_nodes": spec.num_nodes,
+                "gpus_by_host": gpus_by_host,
+                "env": spec.env,
+                "max_model_len": spec.max_model_len,
+            },
+            parameters=spec.parameters,
+            quote=shlex.quote,
+        )
+        return render_script(template, context)
 
     def _check_health(self) -> HealthCheckResult:
         if not self._health_params.url:

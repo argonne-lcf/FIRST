@@ -523,7 +523,7 @@ free = sorted(inventory - used)
 Starting with a pending `PilotReplica` and the list of all eligible `PilotJobs`, placement
 must follow these rules:
 
-- Use the replica's parent PilotDeployment.launch_spec (a JSONB-encoded `PilotLaunchSpec`) to determine the replica resource requirements (`num_nodes` and `gpus_per_node`)
+- Use the replica's parent PilotDeployment.launch_spec (a JSONB-encoded `ResolvedLaunchSpec`) to determine the replica resource requirements (`num_nodes` and `gpus_per_node`)
 - If `num_nodes >= 2`, the replica requires a dedicated, empty multi-node pilot job all to itself.  No bin-packing.
 - If `num_nodes == 1`, the replica can be placed into any single-node PilotJob with free GPU resources.
 - A Replica may only choose from the free GPUs in a job (defined above)

@@ -179,9 +179,41 @@ def upgrade() -> None:
         schema="first",
     )
     op.create_table(
+        "launch_template",
+        sa.Column(
+            "parameters", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+        ),
+        sa.Column("env", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("serve_script_template", sa.String(), nullable=False),
+        sa.Column("pre_stop_script_template", sa.String(), nullable=True),
+        sa.Column("post_stop_script_template", sa.String(), nullable=True),
+        sa.Column("max_startup_sec", sa.Integer(), nullable=False),
+        sa.Column("max_unhealthy_sec", sa.Integer(), nullable=True),
+        sa.Column("pre_stop_timeout_sec", sa.Float(), nullable=False),
+        sa.Column("post_stop_timeout_sec", sa.Float(), nullable=False),
+        sa.Column(
+            "health_check", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+        ),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("reconcile_failures", sa.Integer(), nullable=False),
+        sa.Column("reconcile_last_error", sa.Text(), nullable=True),
+        sa.Column("reconcile_retry_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("uid", sa.BigInteger(), nullable=False),
+        sa.PrimaryKeyConstraint("uid"),
+        sa.UniqueConstraint("name"),
+        schema="first",
+    )
+    op.create_table(
         "pilot_deployment",
         sa.Column("cluster_name", sa.Text(), nullable=False),
         sa.Column("model_name", sa.Text(), nullable=False),
+        sa.Column("launch_template_name", sa.Text(), nullable=False),
         sa.Column(
             "router_params", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
@@ -199,6 +231,7 @@ def upgrade() -> None:
         sa.Column("desired_replicas", sa.Integer(), nullable=False),
         sa.Column("state", sa.String(), nullable=False),
         sa.Column("consecutive_launch_failures", sa.Integer(), nullable=False),
+        sa.Column("last_startup_sec", sa.Float(), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
@@ -218,8 +251,19 @@ def upgrade() -> None:
             ["model_name"],
             ["first.model.name"],
         ),
+        sa.ForeignKeyConstraint(
+            ["launch_template_name"],
+            ["first.launch_template.name"],
+        ),
         sa.PrimaryKeyConstraint("uid"),
         sa.UniqueConstraint("name"),
+        schema="first",
+    )
+    op.create_index(
+        op.f("ix_first_pilot_deployment_launch_template_name"),
+        "pilot_deployment",
+        ["launch_template_name"],
+        unique=False,
         schema="first",
     )
     op.create_index(
@@ -303,6 +347,7 @@ def upgrade() -> None:
         sa.Column("state_message", sa.String(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("stopped_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("placed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("log_path", sa.String(), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
@@ -381,7 +426,13 @@ def downgrade() -> None:
         table_name="pilot_deployment",
         schema="first",
     )
+    op.drop_index(
+        op.f("ix_first_pilot_deployment_launch_template_name"),
+        table_name="pilot_deployment",
+        schema="first",
+    )
     op.drop_table("pilot_deployment", schema="first")
+    op.drop_table("launch_template", schema="first")
     op.drop_index(
         op.f("ix_first_pilot_job_cluster_name"), table_name="pilot_job", schema="first"
     )

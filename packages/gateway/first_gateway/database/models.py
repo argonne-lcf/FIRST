@@ -21,10 +21,12 @@ from sqlalchemy.orm import (
 from first_common.errors import NotFound, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.base_scheduler import SchedulerJobState
+from first_common.schema.resources.spec import LaunchSpec, LaunchTemplateSpec
 from first_common.schema.types import (
     HealthCheckResult,
     PilotDeploymentState,
     ReplicaState,
+    ResolvedLaunchSpec,
     ResourceName,
 )
 
@@ -350,6 +352,21 @@ class StaticDeployment(ResourceRow):
         return f"static_deployment/{self.uid}"
 
 
+class LaunchTemplate(ResourceRow):
+    __tablename__ = "launch_template"
+
+    parameters: Mapped[DictJsonb]
+    env: Mapped[DictJsonb]
+    serve_script_template: Mapped[str]
+    pre_stop_script_template: Mapped[str | None]
+    post_stop_script_template: Mapped[str | None]
+    max_startup_sec: Mapped[int]
+    max_unhealthy_sec: Mapped[int | None]
+    pre_stop_timeout_sec: Mapped[float]
+    post_stop_timeout_sec: Mapped[float]
+    health_check: Mapped[DictJsonb]
+
+
 class PilotDeployment(ResourceRow):
     __tablename__ = "pilot_deployment"
 
@@ -364,7 +381,11 @@ class PilotDeployment(ResourceRow):
     min_replicas: Mapped[int]
     max_replicas: Mapped[int]
 
+    launch_template_name: Mapped[str] = mapped_column(
+        sa.ForeignKey("launch_template.name"), index=True
+    )
     launch_spec: Mapped[DictJsonb]
+    launch_template: Mapped[LaunchTemplate] = relationship(lazy="raise")
     max_consecutive_launch_failures: Mapped[int] = mapped_column(default=3)
 
     desired_replicas: Mapped[int] = mapped_column(default=0)
@@ -389,6 +410,13 @@ class PilotDeployment(ResourceRow):
 
     def set_desired_replicas(self, n: int) -> None:
         self.desired_replicas = n
+
+    def resolve_launch_spec(self) -> ResolvedLaunchSpec:
+        """Requires `launch_template` and `model` to be loaded."""
+        template = LaunchTemplateSpec.model_validate(self.launch_template)
+        return template.resolve(
+            LaunchSpec.model_validate(self.launch_spec), self.model.max_model_len
+        )
 
     @classmethod
     async def get_detail(cls, sess: AsyncSession, name: str) -> Self:

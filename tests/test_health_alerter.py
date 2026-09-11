@@ -58,6 +58,8 @@ from first_gateway.database.models import (
 )
 from first_gateway.database.redis.repo import RedisRepo
 
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+
 DEBOUNCE = timedelta(seconds=45)
 
 # A plausible chat.postMessage `ts`; truthy so threading wiring is exercised.
@@ -361,6 +363,7 @@ async def _seed_parents(sess: AsyncSession) -> None:
     sess.add(Cluster(name="cl", health_check={"url": "", "debounce": 2}))
     await sess.flush()
     sess.add(Model(name="mdl", access_group_name="ag", supported_endpoints=["chat"]))
+    sess.add(launch_template())
     await sess.flush()
 
 
@@ -756,6 +759,7 @@ async def test_check_pilot_deployment_state(
                 name="pd1",
                 cluster_name="cl",
                 model_name="mdl",
+                launch_template_name=LAUNCH_TEMPLATE_NAME,
                 router_params={},
                 scaling_strategy=None,
                 min_replicas=0,
@@ -830,6 +834,7 @@ async def test_check_pilot_replica_bad_state(
                 name="pd1",
                 cluster_name="cl",
                 model_name="mdl",
+                launch_template_name=LAUNCH_TEMPLATE_NAME,
                 router_params={},
                 scaling_strategy=None,
                 min_replicas=0,

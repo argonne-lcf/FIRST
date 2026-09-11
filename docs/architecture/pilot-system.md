@@ -95,7 +95,7 @@ proxied at `/replicas/{name}/`.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /start-replica` | Body `ReplicaStartRequest` — place a replica with the given `PilotLaunchSpec` and `GpuClaim`s; fails fast on local conflict |
+| `POST /start-replica` | Body `ReplicaStartRequest` — place a replica with the given `ResolvedLaunchSpec` and `GpuClaim`s; fails fast on local conflict |
 | `POST /stop-replica/{name}` | Terminate the replica subprocess, free its GPUs, drop its NGINX route |
 | `GET /status` | `PilotJobStatus` — replica list + node/GPU inventory |
 | `GET /logs/{name}` | On-demand tail (~200 lines) of `stdout`/`stderr`/user log |

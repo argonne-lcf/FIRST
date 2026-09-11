@@ -36,6 +36,8 @@ from first_gateway.database.redis.pubsub import Channel
 from first_gateway.platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from first_gateway.services.pilot_submitter import PilotSubmitter
 
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+
 _PATCH_BUILD = "first_gateway.controllers.workers.pilot_job_observer.build_scheduler"
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
@@ -142,6 +144,7 @@ async def _seed_deployment_parents(sess: AsyncSession) -> None:
     sess.add(AccessGroup(name="ag", allowed_groups=[], allowed_domains=[]))
     await sess.flush()
     sess.add(Model(name="model", access_group_name="ag", supported_endpoints=["chat"]))
+    sess.add(launch_template())
     await sess.flush()
 
 
@@ -156,6 +159,7 @@ async def _insert_deployment(
             name=name,
             cluster_name="polaris",
             model_name="model",
+            launch_template_name=LAUNCH_TEMPLATE_NAME,
             router_params={},
             prometheus_scrape_interval_sec=30,
             min_replicas=1,

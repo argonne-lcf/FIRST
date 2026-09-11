@@ -20,6 +20,8 @@ from first_gateway.database.models import (
     PilotReplica,
 )
 
+from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 PILOT_SYSTEM = {
@@ -70,6 +72,7 @@ async def _seed_parents(sess: AsyncSession) -> None:
             supported_endpoints=["chat"],
         )
     )
+    sess.add(launch_template())
     await sess.flush()
 
 
@@ -84,6 +87,7 @@ async def _insert_deployment(
         name=name,
         cluster_name="polaris",
         model_name="llama",
+        launch_template_name=LAUNCH_TEMPLATE_NAME,
         router_params={},
         prometheus_scrape_interval_sec=30,
         min_replicas=0,

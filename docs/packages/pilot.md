@@ -112,7 +112,7 @@ via `https://<job-ip>:<external_port>/control/`.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /start-replica` | Place a `ReplicaStartRequest` (name + `PilotLaunchSpec` + requested GPUs); fails fast on GPU conflict |
+| `POST /start-replica` | Place a `ReplicaStartRequest` (name + `ResolvedLaunchSpec` + requested GPUs); fails fast on GPU conflict |
 | `POST /stop-replica/{name}` | Terminate the replica subprocess, free its GPUs, drop its nginx route |
 | `GET  /status` | List `ReplicaInfo` and node status |
 | `GET  /logs/{name}` | On-demand tail (~200 lines) of `stdout`, `stderr`, and the user log file. Not scraped on an interval — admins pull when needed |

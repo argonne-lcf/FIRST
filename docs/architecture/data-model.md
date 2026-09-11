@@ -23,7 +23,7 @@ is an *API-shape* distinction, not a storage one. Each resource is a
 columns are the union of its Spec and Status fields.
 
 - Embedded value objects that are not independently addressable —
-  `PilotLaunchSpec`, `RouterParams`, the various `Status` blobs — are
+  `ResolvedLaunchSpec`, `RouterParams`, the various `Status` blobs — are
   stored as **JSONB columns**.
 - Genuinely high-churn, ephemeral state stays **out of Postgres
   entirely**: live in-flight request counts and load averages live in
@@ -92,16 +92,26 @@ configuration.
   adapter import path, queue/account, workdir, NGINX path, pilot
   version pin, etc.
 
+### `LaunchTemplate` — admin Spec only
+
+Reusable serve and stop script templates shared by a family of
+`PilotDeployment`s, with the typed `parameters` each deployment must
+supply and the lifecycle defaults (`env`, `health_check`, timeouts) a
+deployment may override. Templates are rendered once at apply time
+against a sample context, so template errors never reach a pilot. See
+[Declarative Configuration](declarative-config.md#launch-templates).
+
 ### `PilotDeployment` — admin Spec, controller Status
 
 An HPC-managed deployment of a model, hosted via the
 [pilot job system](pilot-system.md).
 
 - FK → `Model`, FK → `Cluster`.
-- `launch_spec: PilotLaunchSpec` — the Jinja template + GPU/node sizing
-  + env that the pilot uses to start each replica subprocess. The
-  template is validated at apply time against
-  `SCRIPT_TEMPLATE_VARIABLES`.
+- FK → `LaunchTemplate` via `launch_template_name`.
+- `launch_spec: LaunchSpec` — GPU/node sizing, the template's parameter
+  values, and optional overrides of the template's env and lifecycle
+  defaults. At launch the gateway resolves it against the template and
+  the Model's `max_model_len` into a `ResolvedLaunchSpec` for the pilot.
 - `router_params`, `prometheus_metrics_path` —
   how the deployment integrates with the router + observability.
 - Autoscaler controls: `scaling_strategy: DemandThresholdStrategy | None`,
