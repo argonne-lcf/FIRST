@@ -105,16 +105,35 @@ class HealthObserver(Worker):
         PilotJobObserver in that case) or when a first failure is being
         debounced.
         """
-        params = HealthCheckParams.model_validate(resource.health_check)
-        if not params.url:
-            return None
-        result = await perform_health_check(self.health_client, params)
+        params = None
+        try:
+            params = HealthCheckParams.model_validate(resource.health_check)
+            if not params.url:
+                return None
+            result = await perform_health_check(self.health_client, params)
+        except Exception as exc:
+            # A bad secret/configuration belongs to this resource, not the
+            # entire poll. Never log exception text or config: either can carry
+            # credentials. CancelledError remains uncaught for worker shutdown.
+            logger.warning(
+                "Health check failed for %s %s (uid=%s, error=%s)",
+                resource.kind,
+                resource.name,
+                resource.uid,
+                type(exc).__name__,
+            )
+            result = HealthCheckResult.unhealthy
 
         key = (resource.kind, resource.uid)
 
         if result == HealthCheckResult.unhealthy:
             self.fail_counts[key] += 1
-            if self.fail_counts[key] < params.debounce:
+            debounce = (
+                params.debounce
+                if params is not None
+                else HealthCheckParams(url="").debounce
+            )
+            if self.fail_counts[key] < debounce:
                 return None
         else:
             self.fail_counts.pop(key, None)
