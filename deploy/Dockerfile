@@ -29,6 +29,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Copy project files
 COPY packages packages
+# Git checkouts may inherit a restrictive umask. Runtime sources must remain
+# root-owned but readable/traversable by the unprivileged app user.
+RUN chmod -R u=rwX,go=rX /app/packages
 
 # Sync project
 RUN --mount=type=cache,target=/root/.cache/uv \
