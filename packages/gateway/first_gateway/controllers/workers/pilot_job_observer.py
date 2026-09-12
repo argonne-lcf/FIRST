@@ -83,11 +83,17 @@ class PilotJobObserver(Worker):
         wedged worker.
         """
         self.hb.beat()
+        deadline = asyncio.timeout(_RPC_TIMEOUT)
         try:
-            return await asyncio.wait_for(awaitable, timeout=_RPC_TIMEOUT)
+            async with deadline:
+                return await awaitable
         except TimeoutError as e:
-            # asyncio.wait_for raises a bare TimeoutError with an empty message;
-            # name the RPC so record_failure() stores something actionable.
+            # Adapters have their own shorter deadlines. Preserve those errors
+            # (including Compute task IDs) instead of claiming our 60s expired.
+            if not deadline.expired():
+                raise
+            # Our own deadline raises a bare TimeoutError; name the RPC so
+            # record_failure() stores something actionable.
             name = getattr(awaitable, "__qualname__", None) or repr(awaitable)
             raise TimeoutError(
                 f"Scheduler {name} RPC timed out after {_RPC_TIMEOUT:g}s"
