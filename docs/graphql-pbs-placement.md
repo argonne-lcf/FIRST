@@ -46,5 +46,24 @@ can use an operator-managed, requestable health resource through `task_resources
 creating or updating that resource is an operations responsibility. These
 constraints supplement, not replace, all-node pre-model health checks. Offline
 unit tests cover the resource mapping; field definitions come from the bundled
-GraphQL schema documentation. Live bridge/scheduler acceptance must be verified
-with a bounded model-free job before model launch.
+GraphQL schema documentation.
+
+## Tara submission qualification (2026-09-12)
+
+Authenticated schema introspection confirmed the resource fields. A held,
+two-node, four-GPU-per-node GraphQL submission (PBS job 6273) preserved
+`group=tier0` in PBS. A separate native held `qsub` submission (job 6274) requested
+the same placement. Both recorded `place=scatter:excl:group=tier0`, despite
+requesting `exclhost`. Thus the observed exclusivity normalization also occurs
+without GraphQL; it is not evidence of an adapter or bridge mapping defect.
+The adapter continues to express the requested sharing mode. Do not assume
+`excl` and `exclhost` are equivalent on every site or multi-vnode host.
+
+Both jobs remained held, allocated no execution hosts, and were deleted.
+These checks validate submission translation, not scheduled placement, GPU
+health, or full-model readiness. A bounded model-free allocation must still
+verify the actual host set and all-node preflight before another model launch.
+No supported negative-host submission constraint has been established. A
+temporary `task_resources.tier1` constraint to another permitted chassis keeps
+PBS in charge of host selection, but excludes an entire chassis rather than a
+single node and must not be described as automatic quarantine.
