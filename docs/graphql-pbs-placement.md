@@ -60,9 +60,14 @@ The adapter continues to express the requested sharing mode. Do not assume
 `excl` and `exclhost` are equivalent on every site or multi-vnode host.
 
 Both jobs remained held, allocated no execution hosts, and were deleted.
-These checks validate submission translation, not scheduled placement, GPU
-health, or full-model readiness. A bounded model-free allocation must still
-verify the actual host set and all-node preflight before another model launch.
+A subsequent bounded model-free GraphQL job (6275) requested
+`task_resources.tier1=x4820c6` with `group=tier0`. PBS selected
+`x4820c6s0b0n0` and `x4820c6s0b1n0`, preserving both topology constraints.
+All eight GPUs passed the new-image/headroom/process/ECC screen. HSN-only TCP
+passed 256 round trips in each direction. The job exited zero without loading
+a model. This qualifies scheduled placement and the standalone node probe,
+not the pilot admission wrapper, controller disposal, or model readiness.
+
 No supported negative-host submission constraint has been established. A
 temporary `task_resources.tier1` constraint to another permitted chassis keeps
 PBS in charge of host selection, but excludes an entire chassis rather than a
