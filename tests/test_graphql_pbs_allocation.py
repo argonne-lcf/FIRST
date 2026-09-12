@@ -1,9 +1,9 @@
 import base64
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from shlex import quote
+from typing import Any
 
 import httpx
 
@@ -15,10 +15,11 @@ from first_gateway.platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from first_gateway.services.pilot_submitter import PilotSubmitter
 
 
-def _successful_graphql_transport(queries: list[str]) -> httpx.MockTransport:
+def _successful_graphql_transport(
+    requests: list[dict[str, Any]],
+) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
-        query = json.loads(request.content)["query"]
-        queries.append(query)
+        requests.append(json.loads(request.content))
         return httpx.Response(
             200,
             json={
@@ -34,16 +35,16 @@ def _successful_graphql_transport(queries: list[str]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-def _submitted_script(query: str) -> str:
-    match = re.search(r'scriptContent:\s*"([A-Za-z0-9_=-]+)"', query)
-    assert match is not None
-    return base64.urlsafe_b64decode(match.group(1)).decode()
+def _submitted_script(request: dict[str, Any]) -> str:
+    return base64.urlsafe_b64decode(
+        request["variables"]["input"]["scriptContent"]
+    ).decode()
 
 
 async def test_graphql_submit_maps_exact_two_node_four_gpu_request() -> None:
-    queries: list[str] = []
+    requests: list[dict[str, Any]] = []
     async with httpx.AsyncClient(
-        transport=_successful_graphql_transport(queries)
+        transport=_successful_graphql_transport(requests)
     ) as client:
         adapter = GraphQLPBSAdapter(
             client, "test-service", "https://scheduler.example.test/graphql"
@@ -63,12 +64,16 @@ async def test_graphql_submit_maps_exact_two_node_four_gpu_request() -> None:
         )
 
     assert result.scheduler_id == "1234.test"
-    assert len(queries) == 1
-    query = queries[0]
-    assert "wallClockTime: 5400" in query
-    assert re.search(r"taskCount:\s*\{\s*min: 2\s*max: 2", query)
-    assert re.search(r'tasksResources:\s*\[\s*\{\s*index: "0-1"\s*gpus: 4', query)
-    assert _submitted_script(query) == ("#!/bin/bash\nexec /opt/test/bin/first-pilot\n")
+    assert len(requests) == 1
+    request = requests[0]
+    assert request["variables"]["input"]["resourcesRequested"] == {
+        "jobResources": {"index": "", "wallClockTime": 5400},
+        "taskCount": {"min": 2, "max": 2},
+        "tasksResources": [{"index": "0-1", "gpus": 4}],
+    }
+    assert _submitted_script(request) == (
+        "#!/bin/bash\nexec /opt/test/bin/first-pilot\n"
+    )
 
 
 async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
@@ -114,9 +119,9 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
         gpus_per_node=4,
     )
 
-    queries: list[str] = []
+    requests: list[dict[str, Any]] = []
     async with httpx.AsyncClient(
-        transport=_successful_graphql_transport(queries)
+        transport=_successful_graphql_transport(requests)
     ) as client:
         adapter = GraphQLPBSAdapter(
             client, "test-service", "https://scheduler.example.test/graphql"
@@ -125,7 +130,7 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
             pilot_job
         )
 
-    script = _submitted_script(queries[0])
+    script = _submitted_script(requests[0])
     expected_runtime_env = {
         "PILOT_CONFIG_FILE": str(config.pilot_config_path),
         "PILOT_JOB_NAME": pilot_job.name,

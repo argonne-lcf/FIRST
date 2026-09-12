@@ -16,6 +16,8 @@ from first_common.schema.base_scheduler import (
 )
 from first_gateway.settings import ClientState
 
+from .graphql_pbs_resources import TaskResourceConfig, requested_resources
+
 logger = logging.getLogger(__name__)
 
 # JobStatus.state integer codes -> normalized state (pbs_graphql_schema_doc.md)
@@ -113,10 +115,19 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
 
 
 class GraphQLPBSAdapter(SchedulerAdapter):
-    def __init__(self, client: AsyncClient, owner: str, url: str) -> None:
+    def __init__(
+        self,
+        client: AsyncClient,
+        owner: str,
+        url: str,
+        task_resources: dict[str, str] | None = None,
+    ) -> None:
         self.client = client
         self.owner = owner
         self.url = url
+        self.task_resources = TaskResourceConfig(
+            task_resources={} if task_resources is None else task_resources
+        ).task_resources
 
     @classmethod
     async def build(cls, deps: ClientState, config: dict[str, Any]) -> Self:
@@ -130,7 +141,15 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         name = config["keycloak_client_name"]
         owner = config["job_owner"]
         graphql_url = config["graphql_url"]
-        return cls(client=deps.keycloak_clients[name], owner=owner, url=graphql_url)
+        options = TaskResourceConfig.model_validate(
+            {"task_resources": config.get("task_resources", {})}
+        )
+        return cls(
+            client=deps.keycloak_clients[name],
+            owner=owner,
+            url=graphql_url,
+            task_resources=options.task_resources,
+        )
 
     async def _post(
         self, query: str, variables: dict[str, Any] | None = None
@@ -154,50 +173,29 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         # newlines/quotes/heredocs verbatim.
         script_b64 = base64.urlsafe_b64encode(job.script.encode()).decode()
 
-        node_index = f"0-{job.num_nodes - 1}" if job.num_nodes > 1 else "0"
-
-        query = f"""
-        mutation {{
-            createJob (
-                input: {{
-                    scriptContent: "{script_b64}"
-                    name: "{job.name}"
-                    resourcesRequested: {{
-                        jobResources: {{
-                            index: ""
-                            wallClockTime: {job.walltime_min * 60}
-                        }}
-                        taskCount: {{
-                            min: {job.num_nodes}
-                            max: {job.num_nodes}
-                        }}
-                        tasksResources: [
-                            {{
-                                index: "{node_index}"
-                                gpus: {job.gpus_per_node}
-                            }}
-                        ]
-                    }}
-                    queue: {{
-                        name: "{job.queue}"
-                    }}
-                    accountingId: "{job.account}"
-                    errorPath: "{job.log_path}"
-                    outputPath: "{job.log_path}"
-                    joinFiles: true
-                }}
-            ) {{
-                node {{
-                    jobId
-                }}
-                error {{
-                    errorCode
-                    errorMessage
-                }}
-            }}
-        }}
+        query = """
+        mutation SubmitJob($input: JobInput!) {
+            createJob(input: $input) {
+                node { jobId }
+                error { errorCode errorMessage }
+            }
+        }
         """
-        data = await self._post(query)
+        data = await self._post(
+            query,
+            {
+                "input": {
+                    "scriptContent": script_b64,
+                    "name": job.name,
+                    "resourcesRequested": requested_resources(job, self.task_resources),
+                    "queue": {"name": job.queue},
+                    "accountingId": job.account,
+                    "errorPath": str(job.log_path),
+                    "outputPath": str(job.log_path),
+                    "joinFiles": True,
+                }
+            },
+        )
         payload = data["createJob"]
         if payload.get("error"):
             raise RuntimeError(f"GraphQL createJob failed:\n{payload['error']}")
