@@ -10,4 +10,22 @@ There is a documentation discrepancy about forced deletion: [published PBS 2021.
 
 A pilot ready file is normally removed by its application lifespan cleanup. GraphQL endpoint discovery uses live scheduler state and the allocated head-node address, not that file; the adapter has no remote file-deletion operation. A forced kill or failed lifespan can therefore leave a stale file after scheduler/DB disposal. This change does not add stale-file recovery, a shutdown endpoint, or a larger grace period.
 
-Offline regressions check normal deletion, no force escalation, exact-ID validation, acknowledgement versus release, and lost-ack handling for absent, terminal, running and exiting jobs. Live graceful-pilot and ready-file cleanup qualification remains required.
+Offline regressions check normal deletion, no force escalation, exact-ID validation, acknowledgement versus release, and lost-ack handling for absent, terminal, running and exiting jobs.
+
+## Executed Tara qualification
+
+On 2026-09-13, owned empty-FIRST PBS 6293 completed its lifespan and removed its
+ready file/nginx prefix after one normal GraphQL deletion. Controller-owned
+Nemotron PBS 6295 subsequently passed a full-model single-request lifecycle
+with this change and submitter `exec`, deployed together as controller
+`5bccd83ff260e8ad7ca487f9f2e90c204dce39ca`. The pilot shut down gracefully;
+both model engine cleanups separately required bounded KILL escalation.
+PBS F/143 was not used alone as cleanup proof. Config11's temporary caps were
+restored once to the full fixture baseline as Config12, with identities and
+zero demand/failure counters preserved.
+
+The [submitter qualification note](https://github.com/argonne-lcf/FIRST/blob/fix/pilot-submitter-exec-20260913/docs/pilot-submitter-exec-qualification.md)
+holds the exact pins, UTC timeline, ownership and evidence scope. This result
+does not isolate `force:true` behavior or establish throughput, production
+readiness, or cleanup after every abrupt failure. Original PBS 6289 remains
+incomplete; its evidence was not rewritten.
