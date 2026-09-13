@@ -96,7 +96,8 @@ class PilotSubmitter:
             )
             script = (
                 f"{pc.submit_script_preamble}\n"
-                f"{assignments} {quote(str(pc.pilot_path))}\n"
+                # Keep the pilot at the batch-shell PID for scheduler signals.
+                f"{assignments} exec {quote(str(pc.pilot_path))}\n"
             )
         else:
             # Filesystem-backed: render the runtime config and submit script
@@ -130,7 +131,7 @@ class PilotSubmitter:
             body = (
                 f"{pc.submit_script_preamble}\n"
                 f"PILOT_CONFIG_FILE={quote(str(config_path))} "
-                f"{quote(str(pc.pilot_path))}\n"
+                f"exec {quote(str(pc.pilot_path))}\n"
             )
 
             await self.adapter.put_file(config_yaml, config_path, mode=0o600)

@@ -1,3 +1,6 @@
+import json
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Self
@@ -161,7 +164,7 @@ async def test_submit_renders_config_and_script(
     assert "BEGIN" in parsed["server_key"]
 
     assert script_content.startswith(pilot_config.submit_script_preamble)
-    assert f"PILOT_CONFIG_FILE={config_path} /test/first-pilot" in script_content
+    assert f"PILOT_CONFIG_FILE={config_path} exec /test/first-pilot" in script_content
 
     assert len(adapter.submitted) == 1
     payload = adapter.submitted[0]
@@ -239,7 +242,66 @@ async def test_graphql_submit_serializes_and_quotes_discovery_environment(
     ) in script
     assert "PILOT_PALS_PATH" not in script
     assert "PILOT_IP_ALLOWLIST_JSON" not in script
-    assert script.endswith("'/opt/test/first pilot'\n")
+    assert script.endswith("exec '/opt/test/first pilot'\n")
+
+
+@pytest.mark.parametrize("graphql", [False, True])
+@pytest.mark.parametrize("exit_code", [0, 7])
+async def test_submit_exec_preserves_batch_pid_environment_and_exit_status(
+    pilot_config: PilotConfig,
+    ca_pair: tuple[str, str],
+    tmp_path: Path,
+    graphql: bool,
+    exit_code: int,
+) -> None:
+    """Run the real rendered shell, with only an owned, short CPU stand-in."""
+    pilot = tmp_path / "pilot with 'quoted' spaces"
+    pilot.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "print(json.dumps({'pid': os.getpid(), 'config': "
+        "os.environ['PILOT_CONFIG_FILE'], 'job': "
+        "os.environ.get('PILOT_JOB_NAME')}), flush=True)\n"
+        f"sys.exit({exit_code})\n"
+    )
+    pilot.chmod(0o700)
+    config = pilot_config.model_copy(
+        update={
+            "pilot_path": pilot,
+            "workdir": tmp_path / "literal 'quotes' and $dollar",
+            "pilot_config_path": tmp_path / "prebaked 'config' $literal.yaml",
+            "submit_script_preamble": (
+                '#!/bin/bash\nset -euo pipefail\nprintf "%s\\n" "$$"'
+            ),
+        }
+    )
+    name = "exec-cpu-only"
+    adapter: FakeGraphQLSchedulerAdapter | FakeSchedulerAdapter
+    adapter = FakeGraphQLSchedulerAdapter() if graphql else FakeSchedulerAdapter()
+    await PilotSubmitter(config, adapter, *ca_pair).submit(_make_pilot_job(name))
+    if isinstance(adapter, FakeGraphQLSchedulerAdapter):
+        script = adapter.submitted[0].script
+        expected_config = config.pilot_config_path
+    else:
+        script_path = config.workdir / "submit_scripts" / f"{name}.sh"
+        script = adapter.files[str(script_path)][0]
+        expected_config = config.workdir / "submit_scripts" / f"{name}.config.yaml"
+    assert script is not None
+    completed = subprocess.run(
+        ["/bin/bash", "-s"],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=5,
+        check=False,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert completed.returncode == exit_code, completed.stderr
+    shell_pid, child_json = completed.stdout.splitlines()
+    child = json.loads(child_json)
+    assert child["pid"] == int(shell_pid)
+    assert child["config"] == str(expected_config)
+    assert child["job"] == (name if graphql else None)
 
 
 async def test_get_statuses_filters_by_prefix(
