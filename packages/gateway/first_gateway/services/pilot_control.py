@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 # fail fast on connect, but allow start-replica room to do its synchronous
 # on-node work before responding.
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
-# A configured pre-stop hook (maximum 25s), hook cleanup (2s), the pilot's
-# TERM/KILL process-group fallback (13s), a post-stop verifier (maximum 50s),
-# its cleanup (2s), and monitor join fit inside this bounded read deadline.
-STOP_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
+# Monitor join (15s), a configured pre-stop hook (maximum 80s), hook cleanup
+# (2s), model TERM/KILL fallback (13s), post-stop verification (maximum 50s),
+# and its cleanup (2s) total 162s, leaving 18s inside this read deadline.
+STOP_TIMEOUT = httpx.Timeout(connect=5.0, read=180.0, write=10.0, pool=5.0)
 STATUS_TIMEOUT = httpx.Timeout(connect=5.0, read=5.0, write=3.0, pool=5.0)
 
 # Short retry to ride out ephemeral hiccups (a dropped connection, a manager
@@ -36,6 +36,13 @@ STATUS_TIMEOUT = httpx.Timeout(connect=5.0, read=5.0, write=3.0, pool=5.0)
 _RETRY_ATTEMPTS = 3
 _RETRY_BACKOFF = 0.25  # seconds; scaled by attempt number
 _RETRYABLE_STATUS = frozenset({502, 503, 504})
+
+# The drainer must stay alive across all existing stop retries: each attempt
+# allows connect/read/write/pool = 5+180+10+5s, then retry backoff, with another
+# 30s for reconcile bookkeeping. Other controllers keep their usual watchdog.
+STOP_HEARTBEAT_TIMEOUT = (
+    _RETRY_ATTEMPTS * 200.0 + _RETRY_BACKOFF * sum(range(_RETRY_ATTEMPTS)) + 30.0
+)
 
 
 class PilotControlClient:
