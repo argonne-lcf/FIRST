@@ -190,6 +190,12 @@ async def test_graphql_get_endpoint_rejects_running_to_exiting_race() -> None:
                 await submitter.get_endpoint("model-canary")
 
 
+def _assert_normal_delete_request(body: dict[str, Any]) -> None:
+    assert body["variables"] == {"jobId": "101.tara"}
+    assert "input: {force: false}" in body["query"]
+    assert "force: true" not in body["query"]
+
+
 async def test_graphql_delete_returns_after_scheduler_acknowledgement() -> None:
     requests: list[dict[str, Any]] = []
 
@@ -216,9 +222,13 @@ async def test_graphql_delete_returns_after_scheduler_acknowledgement() -> None:
     assert len(requests) == 1
     assert requests[0]["variables"]["jobId"] == "101.tara"
     assert "mutation DeleteJob" in requests[0]["query"]
+    _assert_normal_delete_request(requests[0])
 
 
-async def test_graphql_delete_accepts_explicit_absence_after_lost_ack() -> None:
+@pytest.mark.parametrize("terminal_state", [None, 10, 11, 12])
+async def test_graphql_delete_accepts_explicit_absence_after_lost_ack(
+    terminal_state: int | None,
+) -> None:
     calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -226,6 +236,7 @@ async def test_graphql_delete_accepts_explicit_absence_after_lost_ack() -> None:
         calls += 1
         body = json.loads(request.content)
         if "mutation DeleteJob" in body["query"]:
+            _assert_normal_delete_request(body)
             return httpx.Response(
                 200,
                 json={
@@ -240,7 +251,14 @@ async def test_graphql_delete_accepts_explicit_absence_after_lost_ack() -> None:
                     }
                 },
             )
-        return httpx.Response(200, json=_jobs_payload([]))
+        assert body["variables"] == {"jobId": "101.tara"}
+        assert "withHistoryJobs: true" in body["query"]
+        edges: list[dict[str, object]] = (
+            []
+            if terminal_state is None
+            else [{"node": _job_node("101.tara", terminal_state), "error": None}]
+        )
+        return httpx.Response(200, json=_jobs_payload(edges))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         await GraphQLPBSAdapter(client, "svc", "https://bridge").terminate_job(
@@ -249,10 +267,17 @@ async def test_graphql_delete_accepts_explicit_absence_after_lost_ack() -> None:
     assert calls == 2
 
 
-async def test_graphql_delete_error_with_live_job_remains_failure() -> None:
+@pytest.mark.parametrize("live_state", [7, 9])
+async def test_graphql_delete_error_with_live_job_remains_failure(
+    live_state: int,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        calls.append(body)
         if "mutation DeleteJob" in body["query"]:
+            _assert_normal_delete_request(body)
             return httpx.Response(
                 200,
                 json={
@@ -266,7 +291,9 @@ async def test_graphql_delete_error_with_live_job_remains_failure() -> None:
             )
         return httpx.Response(
             200,
-            json=_jobs_payload([{"node": _job_node("101.tara", 7), "error": None}]),
+            json=_jobs_payload(
+                [{"node": _job_node("101.tara", live_state), "error": None}]
+            ),
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -274,6 +301,10 @@ async def test_graphql_delete_error_with_live_job_remains_failure() -> None:
             await GraphQLPBSAdapter(client, "svc", "https://bridge").terminate_job(
                 "101.tara"
             )
+    # One normal delete and one exact status check; no forced retry.
+    assert len(calls) == 2
+    assert calls[1]["variables"] == {"jobId": "101.tara"}
+    assert "withHistoryJobs: true" in calls[1]["query"]
 
 
 async def test_graphql_delete_mismatched_and_malformed_ids_fail_closed() -> None:
@@ -282,6 +313,7 @@ async def test_graphql_delete_mismatched_and_malformed_ids_fail_closed() -> None
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
+        _assert_normal_delete_request(json.loads(request.content))
         payload: dict[str, Any] = {
             "data": {
                 "deleteJob": {
