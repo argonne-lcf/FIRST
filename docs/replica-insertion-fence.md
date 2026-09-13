@@ -61,3 +61,14 @@ exiting-before-unassignment, duplicate concurrent observations, direct gone,
 distinct deployment counting, intentional/ready no-charge, already-draining
 no-charge, and atomic state/counter rollback on injected precommit failure.
 All 12 tests passed on the isolated PostgreSQL setup on 2026-09-13.
+
+A follow-up keeps terminal retirement monotonic: a locked `exiting` row cannot
+regress to a nonterminal observation, and `gone` cannot regress at all. Otherwise
+a stale running observation could reopen the next terminal transition's charge.
+Ordinary queued/starting/running transitions, including requeue, remain allowed.
+The existing adapter maps suspended/staging-out jobs to `exiting`, and FIRST
+already retires those allocations; this guard does not claim general PBS
+suspend/resume support for an identity that FIRST has begun retiring. Two added
+regressions cover stale observations across both terminal states and unchanged
+nonterminal transitions.
+The complete 14-test PostgreSQL suite passed again after this follow-up.

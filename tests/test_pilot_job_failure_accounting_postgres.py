@@ -6,6 +6,7 @@ scheduler, pilot, or model resources are accessed.
 """
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from unittest import main
 from unittest.mock import MagicMock, patch
@@ -132,6 +133,60 @@ class PilotFailureAccountingPostgresTests(fence_tests.ReplicaInsertionPostgresTe
         await self.observer._update_job(job, None)
         await self.observer._update_job(job, None)
         self.assertEqual(await self.failures(), 1)
+
+    async def test_terminal_states_reject_stale_observations_without_recharging(
+        self,
+    ) -> None:
+        job = await self.job()
+        exiting = self.exiting(job)
+        await self.observer._update_job(job, exiting)
+        for state in (
+            SchedulerJobState.queued,
+            SchedulerJobState.starting,
+            SchedulerJobState.running,
+        ):
+            with self.subTest(after="exiting", observed=state):
+                await self.observer._update_job(job, replace(exiting, state=state))
+                async with self.db() as session:
+                    current = await session.get(PilotJob, job.uid)
+                assert current is not None
+                self.assertEqual(
+                    current.scheduler_state, SchedulerJobState.exiting.value
+                )
+        await self.observer._update_job(job, None)
+        for state in (
+            SchedulerJobState.exiting,
+            SchedulerJobState.queued,
+            SchedulerJobState.starting,
+            SchedulerJobState.running,
+        ):
+            with self.subTest(after="gone", observed=state):
+                await self.observer._update_job(job, replace(exiting, state=state))
+                async with self.db() as session:
+                    current = await session.get(PilotJob, job.uid)
+                assert current is not None
+                self.assertEqual(current.scheduler_state, SchedulerJobState.gone.value)
+        await self.observer._update_job(job, None)
+        self.assertEqual(await self.failures(), 1)
+
+    async def test_nonterminal_scheduler_transitions_including_requeue_remain_allowed(
+        self,
+    ) -> None:
+        job = await self.job()
+        for state in (
+            SchedulerJobState.queued,
+            SchedulerJobState.starting,
+            SchedulerJobState.running,
+        ):
+            with self.subTest(observed=state):
+                await self.observer._update_job(
+                    job, replace(self.exiting(job), state=state)
+                )
+                async with self.db() as session:
+                    current = await session.get(PilotJob, job.uid)
+                assert current is not None
+                self.assertEqual(current.scheduler_state, state.value)
+                self.assertEqual(await self.failures(), 0)
 
     async def test_multiple_replicas_charge_each_distinct_deployment_once(self) -> None:
         job = await self.job()
