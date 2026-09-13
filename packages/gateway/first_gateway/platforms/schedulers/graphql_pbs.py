@@ -289,9 +289,12 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         if _PBS_JOB_ID.fullmatch(job_id) is None:
             raise ValueError(f"invalid PBS scheduler job ID: {job_id!r}")
 
+        # Ordinary lifecycle disposal must allow the scheduler's normal
+        # termination/cleanup path. Never silently escalate a failed request
+        # to forced deletion, which can discard scheduler-side job state.
         query = """
         mutation DeleteJob($jobId: String!) {
-            deleteJob (jobId: $jobId, input: {force: true}) {
+            deleteJob (jobId: $jobId, input: {force: false}) {
                 node {
                     jobId
                 }
