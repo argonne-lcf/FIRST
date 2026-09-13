@@ -282,6 +282,17 @@ class PilotAutoscaler(Controller):
         """Premised UPDATE of one deployment's desired_replicas. A stale premise
         is logged and skipped (the next tick re-reads) rather than failing the
         whole model's reconcile."""
+        # A policy edit can leave desired and failures unchanged. Do not let an
+        # already-computed decision overwrite a new manual/scaling policy.
+        # Both SQL NULL and JSON null deserialize to None for this JSONB column.
+        strategy_matches = (
+            sa.or_(
+                PilotDeployment.scaling_strategy.is_(None),
+                PilotDeployment.scaling_strategy == sa.JSON.NULL,
+            )
+            if dep.scaling_strategy is None
+            else PilotDeployment.scaling_strategy == dep.scaling_strategy
+        )
         async with self.client_state.db_sessionmaker.begin() as sess:
             result = await sess.execute(
                 sa.update(PilotDeployment)
@@ -290,12 +301,17 @@ class PilotAutoscaler(Controller):
                     PilotDeployment.desired_replicas == dep.desired_replicas,
                     PilotDeployment.consecutive_launch_failures
                     == dep.consecutive_launch_failures,
+                    strategy_matches,
+                    PilotDeployment.min_replicas == dep.min_replicas,
+                    PilotDeployment.max_replicas == dep.max_replicas,
+                    PilotDeployment.max_consecutive_launch_failures
+                    == dep.max_consecutive_launch_failures,
                 )
                 .values(desired_replicas=new_desired)
             )
         if result.rowcount == 0:  # type: ignore[attr-defined]
             logger.warning(
-                "%s: deployment %s desired_replicas premise stale "
+                "%s: deployment %s desired/failure/policy premise stale "
                 "(desired=%d, failures=%d); retrying next tick",
                 self.name,
                 dep.name,
