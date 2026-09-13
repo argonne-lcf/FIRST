@@ -242,6 +242,17 @@ class PilotJobObserver(Worker):
                 target_state = status.state.value
                 new_started = status.started_at
 
+            # FIRST retires an allocation at exiting; a delayed scheduler
+            # response must not resurrect it or reopen its one-time charge.
+            # Nonterminal PBS transitions (including requeue) remain allowed.
+            if (
+                prev_state in _TERMINAL_STATES and target_state not in _TERMINAL_STATES
+            ) or (
+                prev_state == SchedulerJobState.gone.value
+                and target_state != SchedulerJobState.gone.value
+            ):
+                return
+
             if prev_state == target_state and current.time_started == new_started:
                 return
 
