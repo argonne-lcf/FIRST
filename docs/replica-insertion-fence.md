@@ -42,3 +42,22 @@ waiters before releasing it, exercising concurrent inserters, scale-to-zero
 and failure-budget commits while insertion waits, same-name UID replacement,
 and immediate replacement of terminal replicas. These results do not claim a
 full migration, DB/Redis integration-suite, or live deployment qualification.
+
+## First-terminal pilot failure accounting
+
+The observer now charges pre-manager failures on the first `exiting` **or**
+`gone` transition. Waiting until `gone` allowed the reconciler/controller to
+begin draining at `exiting`, clearing the active assignment or marking the job
+for deletion before failure accounting could see it. A locked current PilotJob
+row serializes concurrent observations; the terminal state and distinct affected
+deployment increments remain in one transaction. Intentional deletion,
+already-draining replicas, and jobs that published manager readiness retain
+their no-charge behavior. This does not change scheduler cleanup ownership.
+
+The separate opt-in `tests/test_pilot_job_failure_accounting_postgres.py` suite
+reuses the same guarded disposable PostgreSQL setup, with pilot RPC construction
+mocked. It includes the five insertion tests plus seven accounting cases:
+exiting-before-unassignment, duplicate concurrent observations, direct gone,
+distinct deployment counting, intentional/ready no-charge, already-draining
+no-charge, and atomic state/counter rollback on injected precommit failure.
+All 12 tests passed on the isolated PostgreSQL setup on 2026-09-13.
