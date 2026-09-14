@@ -197,6 +197,13 @@ async def _insert_pilot_job(
     return job.uid
 
 
+async def _get_job(db: async_sessionmaker[AsyncSession], uid: int) -> PilotJob:
+    async with db() as sess:
+        job = await sess.get(PilotJob, uid)
+    assert job is not None
+    return job
+
+
 async def test_submitted_to_running_and_endpoint_discovery(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -325,6 +332,52 @@ async def test_graphql_head_ip_requires_live_manager_status(
         assert job is not None
         assert job.manager_url == candidate
     publish.assert_awaited_once_with(Channel.pilot_job_ready, "job-graphql")
+
+
+async def test_running_job_without_manager_is_idle_until_discovered(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A running job idles until its manager is discovered, then idle clears."""
+    adapter = FakeSchedulerAdapter()
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        uid = await _insert_pilot_job(
+            sess, "job-boot", "boot.pbs", state=SchedulerJobState.running
+        )
+        queued_uid = await _insert_pilot_job(
+            sess, "job-queued", "queued.pbs", state=SchedulerJobState.queued
+        )
+
+    observer = _make_observer(db)
+    submitter = PilotSubmitter(
+        PilotConfig.model_validate(PILOT_SYSTEM), adapter, "fake-ca-crt", "fake-ca-key"
+    )
+
+    await observer._discover_endpoints(submitter, "polaris")
+    job = await _get_job(db, uid)
+    assert job.manager_url is None
+    assert job.idle_since is not None
+    first_idle = job.idle_since
+    assert (await _get_job(db, queued_uid)).idle_since is None
+
+    # Later polls keep the original idle start, so the idle timeout can expire.
+    await observer._discover_endpoints(submitter, "polaris")
+    assert (await _get_job(db, uid)).idle_since == first_idle
+
+    addr = AddressInfo(
+        hostname="x3001", ip="10.1.2.3", external_port=8443, control_path="/control"
+    )
+    readyfile_dir = str(Path(WORKDIR) / "readyfiles")
+    adapter.directories[readyfile_dir] = ["job-boot.ready.json"]
+    adapter.files[str(Path(readyfile_dir) / "job-boot.ready.json")] = (
+        addr.model_dump_json(),
+        0o644,
+    )
+
+    await observer._discover_endpoints(submitter, "polaris")
+    job = await _get_job(db, uid)
+    assert job.manager_url == "https://10.1.2.3:8443/control"
+    assert job.idle_since is None
 
 
 async def test_graphql_known_job_omitted_from_bulk_page_uses_exact_truth(
