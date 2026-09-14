@@ -215,3 +215,112 @@ def test_native_chunk_tier_and_quoted_flags() -> None:
             "customResources": [{"name": "tier1", "value": "x4820c7"}],
         }
     ]
+
+
+@pytest.mark.parametrize("rack", ["x4818", "x4819", "x4820"])
+@pytest.mark.parametrize("sharing,value", [("excl", 1), ("exclhost", 2)])
+def test_explicit_hosts_can_span_chassis_in_one_configured_rack(
+    rack: str, sharing: str, value: int
+) -> None:
+    # Preserve the requested execution-head order; do not sort the host list.
+    hosts = [f"{rack}c7s4b0n0", f"{rack}c6s3b1n0"]
+    select = "+".join(f"1:host={host}:ngpus=4" for host in hosts)
+    result = requested_resources(
+        job(f"-lplace=scatter:{sharing}:group=tier0 -lselect={select}"),
+        {"tier0": rack, "service_healthy": "true"},
+    )
+    assert result["jobPlacementRescGroupName"] == "tier0"
+    assert result["jobPlacementSharing"] == value
+    assert result["taskCount"] == {"min": 2, "max": 2}
+    assert result["tasksResources"] == [
+        {
+            "index": str(index),
+            "gpus": 4,
+            "candidateMachineName": host,
+            "customResources": [
+                {"name": "service_healthy", "value": "true"},
+                {"name": "tier0", "value": rack},
+            ],
+        }
+        for index, host in enumerate(hosts)
+    ]
+
+
+def test_rack_hosts_retain_compatible_per_chunk_chassis_resources() -> None:
+    result = requested_resources(
+        job(
+            "-lplace=scatter:exclhost:group=tier0 "
+            "-lselect=1:host=x4820c6s1b0n0:tier1=x4820c6+"
+            "1:host=x4820c7s1b0n0:tier1=x4820c7"
+        ),
+        {"tier0": "x4820"},
+    )
+    assert [task["customResources"] for task in result["tasksResources"]] == [
+        [{"name": "tier0", "value": "x4820"}, {"name": "tier1", "value": chassis}]
+        for chassis in ("x4820c6", "x4820c7")
+    ]
+
+
+@pytest.mark.parametrize(
+    "flags,resources",
+    [
+        ("-lplace=scatter:exclhost:group=tier0 -lselect=" + HOSTS, {}),
+        ("-lplace=scatter:exclhost:group=tier0 -lselect=" + HOSTS, TIER),
+        (f"{PLACE} -lselect={HOSTS}", {"tier0": "x4819", **TIER}),
+        (
+            "-lplace=scatter:exclhost:group=tier0 -lselect=" + HOSTS,
+            {"tier0": "x4820", "tier1": "x4820c6"},
+        ),
+        (
+            "-lplace=scatter:exclhost:group=tier0 "
+            "-lselect=1:host=x4820c6s1b0n0+1:host=x4819c7s1b0n0",
+            {"tier0": "x4820"},
+        ),
+        (
+            "-lplace=scatter:exclhost:group=tier0 "
+            "-lselect=1:host=x4820c6s1b0n0+1:host=x4820c7s1b0n0:tier1=x4820c6",
+            {"tier0": "x4820"},
+        ),
+        (
+            "-lplace=scatter:exclhost:group=tier0 "
+            "-lselect=1:host=x4820c7s1b0n0:tier1=x4820c6+1:host=x4820c7s2b0n0",
+            {"tier0": "x4820", "tier1": "x4820c7"},
+        ),
+        (
+            "-lplace=scatter:exclhost:group=tier0 -lselect=1:host=x4820c6s1b0n0+1",
+            {"tier0": "x4820"},
+        ),
+        (
+            "-lplace=scatter:exclhost:group=tier0 -lselect=2:host=x4820c6s1b0n0",
+            {"tier0": "x4820"},
+        ),
+        (
+            "-lplace=scatter:exclhost:group=tier0 "
+            "-lselect=1:host=x4820c6s1b0n0+1:host=x4820c6s1b0n0",
+            {"tier0": "x4820"},
+        ),
+        (
+            "-lplace=scatter:exclhost:group=tier0 "
+            "-lselect=1:host=x4820c6s1b0n0+1:host=x4820c7s1b0n0.example",
+            {"tier0": "x4820"},
+        ),
+        ("-lselect=1:host=x4820c6s1b0n0+1:host=x4820c7s1b0n0", {"tier0": "x4820"}),
+        ("-lplace=scatter:exclhost:group=other -lselect=" + HOSTS, {"tier0": "x4820"}),
+        # No new PBS exclusion syntax or host negation is inferred.
+        ("-lexclude=x4820c6s1b0n0", {"tier0": "x4820"}),
+        (
+            "-lplace=scatter:exclhost:group=tier0 "
+            "-lselect=1:host=^x4820c6s1b0n0+1:host=x4820c7s1b0n0",
+            {"tier0": "x4820"},
+        ),
+    ],
+)
+async def test_invalid_rack_host_constraints_never_submit(
+    flags: str, resources: dict[str, str]
+) -> None:
+    async with httpx.AsyncClient() as client:
+        adapter = GraphQLPBSAdapter(client, "service", "https://bridge", resources)
+        with patch.object(adapter, "_post", new_callable=AsyncMock) as post:
+            with pytest.raises(ValueError):
+                await adapter.submit_job(job(flags))
+            post.assert_not_awaited()
