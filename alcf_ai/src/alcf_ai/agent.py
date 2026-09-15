@@ -1,8 +1,10 @@
 import copy
 import json
 import logging
+import shlex
 import shutil
 import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -14,6 +16,8 @@ from alcf_tokens.auth import get_access_token
 from httpx import URL
 
 from .client import INFERENCE_SERVICE
+
+logger = logging.getLogger(__name__)
 
 cli = typer.Typer(no_args_is_help=True)
 
@@ -79,6 +83,28 @@ def _provider_name(cluster_name: str, framework: str) -> str:
         f"ALCF Inference Service ({cluster_name.title()}, "
         f"{'vLLM' if framework == 'vllm' else 'Direct API'})"
     )
+
+
+def _token_helper_command() -> list[str] | None:
+    """
+    Command that silently refreshes and prints an inference access token.
+
+    Returns None when no way to run the helper was found.
+    """
+    if exe := shutil.which("alcf-tokens"):
+        return [exe, "get-token", "inference"]
+    if exe := shutil.which("alcf-ai"):
+        return [exe, "auth", "get-access-token"]
+    argv0 = Path(sys.argv[0])
+    if argv0.name.startswith("alcf-ai") and argv0.is_file():
+        return [str(argv0.resolve()), "auth", "get-access-token"]
+    if uvx := shutil.which("uvx"):
+        return [uvx, "alcf-tokens", "get-token", "inference"]
+    return None
+
+
+# npm package (alcf-ai-opencode-plugin) that injects a refreshed token.
+OPENCODE_PLUGIN_PACKAGE = "alcf-ai-opencode-plugin"
 
 
 def _merge_capabilities(model: dict[str, Any]) -> dict[str, Any]:
@@ -212,14 +238,19 @@ def generate_codex_model_configs(
         upstream, prompt_text = _fetch_catalog_and_prompt(version)
         template = json.loads(upstream)
     except (httpx.HTTPError, OSError, ValueError) as err:
-        logging.warning(f"Skipping codex model catalog generation: {err}")
+        logger.warning(f"Skipping codex model catalog generation: {err}")
         return
 
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
-            protocols = [p for m in group if (pl := m.get("api_protocols")) for p in pl]
+            protocols = [
+                p
+                for m in group
+                if (pl := _merge_capabilities(m).get("api_protocols"))
+                for p in pl
+            ]
             if (
-                tuple(map(int, version.split("."))) > (0, 94, 0)
+                tuple(map(int, version.split("-")[0].split("."))) > (0, 94, 0)
                 and "responses" not in protocols
             ):
                 continue
@@ -243,7 +274,7 @@ def generate_codex_model_configs(
                     )
                     catalog_path.parent.mkdir(exist_ok=True, parents=True)
                     catalog_path.write_text(json.dumps(catalog, indent=2))
-                    logging.info(f"Created {catalog_path} for Codex {version}")
+                    logger.info(f"Created {catalog_path} for Codex {version}")
 
                     profile_path = (
                         _CODEX_HOME
@@ -254,7 +285,7 @@ def generate_codex_model_configs(
                     profile["model"] = slug
                     profile["model_catalog_json"] = str(catalog_path)
                     profile_path.write_text(tomlkit.dumps(profile))
-                    logging.info(f"Created {profile_path}")
+                    logger.info(f"Created {profile_path}")
 
 
 def edit_opencode(
@@ -264,6 +295,7 @@ def edit_opencode(
 ) -> None:
     path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
     config = _load_json_config(path)
+    token_helper = _token_helper_command()
 
     providers = config.get("provider", {})
     for cluster_name, models in model_infos.items():
@@ -315,7 +347,7 @@ def edit_opencode(
                 "npm": "@ai-sdk/openai-compatible",
                 "options": {
                     "baseURL": f"{base_url}{cluster_name}/{framework}/v1",
-                    "apiKey": f"{api_key}",
+                    "apiKey": "alcf-ai-auto-refresh" if token_helper else api_key,
                     "headers": {
                         "X-ALCF-Session-ID": "{env:ALCF_SESSION_ID}",
                     },
@@ -325,9 +357,19 @@ def edit_opencode(
 
     config["provider"] = providers
 
+    # opencode installs this npm plugin itself; it injects a refreshed token.
+    plugins = [
+        p
+        for p in config.get("plugin", [])
+        if (p if isinstance(p, str) else p[0]) != OPENCODE_PLUGIN_PACKAGE
+    ]
+    if token_helper:
+        plugins.append([OPENCODE_PLUGIN_PACKAGE, {"tokenHelper": token_helper}])
+    config["plugin"] = plugins
+
     _write_json_config(path, config)
 
-    logging.info(f"Updated configuration at {path}")
+    logger.info(f"Updated configuration at {path}")
 
 
 def edit_pi(
@@ -354,7 +396,7 @@ def edit_pi(
                 if name := model.get("display_name"):
                     entry["name"] = name
 
-                if protocols := model.get("api_protocols"):
+                if protocols := caps.get("api_protocols"):
                     entry["api"] = (
                         "openai-responses"
                         if "responses" in protocols
@@ -390,7 +432,9 @@ def edit_pi(
             providers[_provider_key(cluster_name, framework)] = {
                 "baseUrl": f"{base_url}{cluster_name}/{framework}/v1",
                 "api": "openai-completions",
-                "apiKey": f"{api_key}",
+                "apiKey": f"!{shlex.join(token_helper)}"
+                if (token_helper := _token_helper_command())
+                else api_key,
                 # pi resolves "$VAR" headers strictly (errors when unset), so
                 # expand the session id in a shell that supplies a default.
                 "headers": {
@@ -406,7 +450,7 @@ def edit_pi(
 
     _write_json_config(path, config)
 
-    logging.info(f"Updated configuration at {path}")
+    logger.info(f"Updated configuration at {path}")
 
 
 def edit_codex(
@@ -422,14 +466,28 @@ def edit_codex(
     try:
         version = _codex_version()
     except (OSError, RuntimeError, subprocess.SubprocessError) as err:
-        logging.warning(f"Skipping codex model catalog generation: {err}")
+        logger.warning(f"Skipping codex model catalog generation: {err}")
         return
+
+    version_tuple = tuple(map(int, version.split("-")[0].split(".")))
+    # Command-based provider auth (auto token refresh) requires codex >= 0.118.0.
+    supports_auth_command = version_tuple >= (0, 118, 0)
+    if (token_helper := _token_helper_command()) and not supports_auth_command:
+        logger.warning(
+            f"Codex {version} does not support provider auth commands; the "
+            "embedded token will not auto-refresh. Upgrade to codex >= 0.118.0."
+        )
 
     providers = config.get("model_providers", {})
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
-            protocols = [p for m in group if (pl := m.get("api_protocols")) for p in pl]
-            if tuple(map(int, version.split("."))) > (0, 94, 0):
+            protocols = [
+                p
+                for m in group
+                if (pl := _merge_capabilities(m).get("api_protocols"))
+                for p in pl
+            ]
+            if version_tuple > (0, 94, 0):
                 if "responses" not in protocols:
                     continue
                 wire_api = "responses"
@@ -438,13 +496,20 @@ def edit_codex(
 
             env_http_headers = tomlkit.inline_table()
             env_http_headers["X-ALCF-Session-ID"] = "ALCF_SESSION_ID"
-            providers[_provider_key(cluster_name, framework)] = {
+            provider: dict[str, Any] = {
                 "name": _provider_name(cluster_name, framework),
                 "base_url": f"{base_url}{cluster_name}/{framework}/v1",
-                "experimental_bearer_token": f"{api_key}",
                 "wire_api": wire_api,
                 "env_http_headers": env_http_headers,
             }
+            if token_helper and supports_auth_command:
+                provider["auth"] = {
+                    "command": token_helper[0],
+                    "args": token_helper[1:],
+                }
+            else:
+                provider["experimental_bearer_token"] = api_key
+            providers[_provider_key(cluster_name, framework)] = provider
 
     config["model_providers"] = providers
 
@@ -457,7 +522,7 @@ def edit_codex(
 
     generate_codex_model_configs(model_infos, version)
 
-    logging.info(f"Updated configuration at {path}")
+    logger.info(f"Updated configuration at {path}")
 
 
 def edit_claude(
@@ -473,18 +538,23 @@ def edit_claude(
     env.update(
         {
             "ANTHROPIC_BASE_URL": f"{base_url}{default_cluster}/api",
-            "ANTHROPIC_AUTH_TOKEN": api_key,
             "ANTHROPIC_MODEL": default_model,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": default_model,
             "ANTHROPIC_DEFAULT_SONNET_MODEL": default_model,
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": default_model,
         }
     )
+    if token_helper := _token_helper_command():
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        config["apiKeyHelper"] = shlex.join(token_helper)
+    else:
+        env["ANTHROPIC_AUTH_TOKEN"] = api_key
+        config.pop("apiKeyHelper", None)
     config["env"] = env
 
     _write_json_config(path, config)
 
-    logging.info(f"Updated configuration at {path}")
+    logger.info(f"Updated configuration at {path}")
 
 
 @cli.command()
@@ -544,7 +614,14 @@ def configure(
         case "claude":
             edit_claude(client.base_url, api_key, model, cluster)
 
-    logging.info(
-        "The access token expires; re-run this command to refresh it when "
-        "the agent reports an authentication error."
-    )
+    if _token_helper_command() is None:
+        logger.warning(
+            "Could not find a token helper (alcf-tokens or alcf-ai); embedded "
+            "the current access token instead. Re-run this command when it "
+            "expires."
+        )
+    else:
+        logger.info(
+            "Configured agents to refresh access tokens automatically; "
+            "run `alcf-tokens login` if the refresh token expires."
+        )
