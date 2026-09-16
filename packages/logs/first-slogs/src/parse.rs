@@ -15,18 +15,22 @@ use rayon::prelude::*;
 use polars::{
     df,
     frame::{DataFrame, UniqueKeepStrategy},
+    io::HiveOptions,
     prelude::{
         ExtraColumnsPolicy, FileWriteFormat, IntoLazy, JoinType, LazyFileListReader, LazyFrame,
         LazyJsonLineReader, MatchToSchemaPerColumn, MissingColumnsPolicy,
         MissingColumnsPolicyOrExpr, ParquetWriteOptions, PlRefPath, ScanArgsParquet, Schema,
         SinkDestination, SinkTarget, SortMultipleOptions, UnifiedSinkArgs, UpcastOrForbid, by_name,
-        col,
+        col, lit,
     },
 };
 use regex::regex;
 use sonic_rs::{JsonValueTrait, to_object_iter};
 
-use crate::{artifacts, files, schema::schema_of};
+use crate::{
+    artifacts, files,
+    schema::{primary_key_of, schema_of},
+};
 
 const STREAMS: &[&str] = &[
     "access_log",
@@ -309,15 +313,22 @@ fn to_parquet(dataset_dir: &Path, path: &Path, lines: LazyFrame) -> anyhow::Resu
 /// Convert an `.ndjson` partition next to `path` into a `.parquet` file of
 /// the same stem, returning the parquet path.
 fn ndjson_to_parquet(dataset_dir: &Path, path: &Path) -> anyhow::Result<PathBuf> {
-    // the log is append-ordered, so a key's last line is its latest
-    // upsert; every stream keys its rows by exactly one of its id columns
+    // the log is append-ordered, so a key's last line is its latest upsert
     let lines = LazyJsonLineReader::new(PlRefPath::try_from_path(path)?)
         .with_infer_schema_length(None)
-        .finish()?
-        .unique(
-            Some(by_name(["request_id", "batch_id", "id"], false, false)),
-            UniqueKeepStrategy::Last,
-        );
+        .finish()?;
+    // the partition's stream, which `partition` names as the extension
+    // before the `ndjson` one
+    let lines = match path
+        .file_stem()
+        .map(Path::new)
+        .and_then(Path::extension)
+        .and_then(|stream| stream.to_str())
+        .and_then(primary_key_of)
+    {
+        Some(key) => lines.unique(Some(by_name([key], false, false)), UniqueKeepStrategy::Last),
+        None => lines,
+    };
 
     to_parquet(dataset_dir, path, lines)
 }
@@ -356,6 +367,107 @@ fn partitions_to_parquet(
     }
 
     Ok(partitions)
+}
+
+/// Deduplicate the upsert streams' requests that landed in two adjacent day
+/// partitions, keeping the later day's row. A request that starts before
+/// midnight and finishes after is written to both days' logs, and the
+/// per-partition upsert only collapses the rows within one partition. The
+/// `user` stream is left alone: its rows are one snapshot per user per day.
+pub fn dedup_adjacent(dataset_dir: &Path) -> anyhow::Result<()> {
+    for stream in [
+        "request_log",
+        "request_metrics",
+        "batch_log",
+        "batch_metrics",
+    ] {
+        let Some(key) = primary_key_of(stream) else {
+            continue;
+        };
+        let mut partitions: Vec<(String, PathBuf)> = artifacts(dataset_dir, stream)?
+            .into_iter()
+            .filter_map(|path| {
+                let name = path.file_name()?.to_str()?;
+                let date = regex!(r"[0-9]{4}-[0-9]{2}-[0-9]{2}").find(name)?;
+                Some((date.as_str().to_string(), path))
+            })
+            .collect();
+        partitions.sort();
+
+        for pair in partitions.windows(2) {
+            let [(_, prev), (_, next)] = pair else {
+                continue;
+            };
+
+            // the hive dirs around a partition must not add their
+            // year/month/day columns to the frame
+            let next_ids = LazyFrame::scan_parquet(
+                PlRefPath::try_from_path(next)?,
+                ScanArgsParquet {
+                    hive_options: HiveOptions::new_disabled(),
+                    ..Default::default()
+                },
+            )?
+            .select([col(key)])
+            .unique(None, UniqueKeepStrategy::Any)
+            .collect()?;
+            if next_ids.height() == 0 {
+                continue;
+            }
+
+            let prev_lines = LazyFrame::scan_parquet(
+                PlRefPath::try_from_path(prev)?,
+                ScanArgsParquet {
+                    hive_options: HiveOptions::new_disabled(),
+                    ..Default::default()
+                },
+            )?;
+
+            // the requests the later partition already holds
+            let superseded = prev_lines
+                .clone()
+                .select([col(key)])
+                .join_builder()
+                .with(next_ids.lazy().with_columns([lit(true).alias("_dup")]))
+                .how(JoinType::Left)
+                .on([col(key)])
+                .finish()
+                .filter(col("_dup").is_not_null())
+                .unique(None, UniqueKeepStrategy::Any)
+                .collect()?;
+            let count = superseded.height();
+            if count == 0 {
+                continue;
+            }
+
+            // rewrite the earlier partition without them; the rename keeps
+            // the path valid for a reader that is not watching
+            let lines = prev_lines
+                .join_builder()
+                .with(superseded.lazy().with_columns([lit(true).alias("_dup")]))
+                .how(JoinType::Left)
+                .on([col(key)])
+                .finish()
+                .filter(col("_dup").is_null())
+                .drop(by_name(["_dup"], false, false));
+
+            let tmp = prev.with_extension("tmp");
+            lines
+                .sink(
+                    SinkDestination::File {
+                        target: SinkTarget::Path(PlRefPath::try_from_path(&tmp)?),
+                    },
+                    FileWriteFormat::Parquet(ParquetWriteOptions::default().into()),
+                    UnifiedSinkArgs::default(),
+                )?
+                .with_streaming(true)
+                .collect()?;
+            fs::rename(&tmp, prev)?;
+            println!("Deduplicated {count} {stream} rows from {}", prev.display());
+        }
+    }
+
+    Ok(())
 }
 
 fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
@@ -409,15 +521,14 @@ fn write_merged_request_metrics(
     request_metrics: &Path,
     request_log: &Path,
 ) -> anyhow::Result<PathBuf> {
-    // the log is append-ordered, so a key's last line is its latest
-    // upsert; every stream keys its rows by exactly one of its id columns
+    // the log is append-ordered, so a key's last line is its latest upsert
     let lines = LazyJsonLineReader::new(PlRefPath::try_from_path(request_metrics)?)
         .with_infer_schema_length(None)
-        .finish()?
-        .unique(
-            Some(by_name(["request_id", "batch_id", "id"], false, false)),
-            UniqueKeepStrategy::Last,
-        );
+        .finish()?;
+    let lines = match primary_key_of("request_metrics") {
+        Some(key) => lines.unique(Some(by_name([key], false, false)), UniqueKeepStrategy::Last),
+        None => lines,
+    };
 
     // access_log->request_log mapping
     let mapping = LazyFrame::scan_parquet(
@@ -584,7 +695,9 @@ pub fn parse_logs(dataset_dir: &Path, logs: &Path, skip: &[String]) -> anyhow::R
     // each log is parsed into its own dated partitions, so logs are
     // independent and parsed in parallel
     logs.par_iter()
-        .try_for_each(|log| parse_log(dataset_dir, log))
+        .try_for_each(|log| parse_log(dataset_dir, log))?;
+
+    dedup_adjacent(dataset_dir)
 }
 
 fn parse_log(dataset_dir: &Path, log: &Path) -> anyhow::Result<()> {

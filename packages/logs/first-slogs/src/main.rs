@@ -42,6 +42,8 @@ enum Command {
     },
     /// Write an index of the large request checksums of each squashfs image in the dataset dir
     Index,
+    /// Deduplicate requests whose upserts landed in two adjacent day partitions
+    Dedup,
     /// Verify the large requests bundled into each squashfs image in the dataset dir against their source files
     Vet {
         /// Directory of large request payloads
@@ -173,6 +175,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             })
         }
+        Command::Dedup => parse::dedup_adjacent(&args.dataset_dir),
         Command::Vet { large_requests } => {
             // the source listing is shared by every image
             let sources = parse::source_request_ids(&large_requests)?;

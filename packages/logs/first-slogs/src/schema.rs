@@ -13,6 +13,17 @@ const ENVELOPE: &[(&str, DataType)] = &[
     ("stream", DataType::String),
 ];
 
+/// The column a stream's rows are keyed by, whose repeated lines replace
+/// each other; `None` for the streams that hold no keyed rows.
+pub fn primary_key_of(stream: &str) -> Option<&'static str> {
+    match stream {
+        "access_log" | "batch_log" | "request_log" | "user" => Some("id"),
+        "request_metrics" => Some("request_id"),
+        "batch_metrics" => Some("batch_id"),
+        _ => None,
+    }
+}
+
 /// The schema of each stream's rows, mirrored from the structured logs'
 /// pydantic models of `first_common` — `schema/structured_logs.py` and
 /// `schema/auth.py` — and the fields their emitters add around them
