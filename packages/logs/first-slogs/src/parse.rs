@@ -16,8 +16,8 @@ use polars::{
     df,
     frame::{DataFrame, UniqueKeepStrategy},
     prelude::{
-        ExtraColumnsPolicy, FileWriteFormat, IntoLazy, JoinCoalesce, JoinType, LazyFileListReader,
-        LazyFrame, LazyJsonLineReader, MatchToSchemaPerColumn, MissingColumnsPolicy,
+        ExtraColumnsPolicy, FileWriteFormat, IntoLazy, JoinType, LazyFileListReader, LazyFrame,
+        LazyJsonLineReader, MatchToSchemaPerColumn, MissingColumnsPolicy,
         MissingColumnsPolicyOrExpr, ParquetWriteOptions, PlRefPath, ScanArgsParquet, Schema,
         SinkDestination, SinkTarget, SortMultipleOptions, UnifiedSinkArgs, UpcastOrForbid, by_name,
         col,
@@ -327,7 +327,10 @@ fn partitions_to_parquet(
     mut partitions: HashMap<&'static str, PathBuf>,
 ) -> anyhow::Result<HashMap<&'static str, PathBuf>> {
     for (stream, path) in &mut partitions {
-        if matches!(*stream, "app" | "malformed" | "unknown_stream" | "request_metrics") {
+        if matches!(
+            *stream,
+            "app" | "malformed" | "unknown_stream" | "request_metrics"
+        ) {
             continue; // app, unknown_stream, and malformed stay ndjson, request_metrics is merged below
         }
 
@@ -362,7 +365,7 @@ fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
     };
 
     let re = regex!(
-        r"Token estimation for ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}): ([0-9]+) total \(([0-9]+) completion, ([0-9]+) prompt\)"
+        r"Token estimation for [0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}: ([0-9]+) total \(([0-9]+) completion, ([0-9]+) prompt\)"
     );
     let mut access_ids = Vec::new();
     // the token counts parse as i64, the dtype their schema column holds
@@ -371,10 +374,13 @@ fn pull_streaming_metrics(app: &Path) -> anyhow::Result<DataFrame> {
     let mut prompt_tokens: Vec<Option<i64>> = Vec::new();
 
     for line in lines(&mmap) {
-        if let Some(msg) = sonic_rs::get(line, &["msg"]).as_str()
+        // the message's uuid is the ephemeral streaming task id; the
+        // line's access_id is the access_log_id the merge joins on
+        if let Some(access_id) = sonic_rs::get(line, &["access_id"]).as_str()
+            && let Some(msg) = sonic_rs::get(line, &["message"]).as_str()
             && let Some(caps) = re.captures(msg)
         {
-            let (_, [access_id, total, completion, prompt]) = caps.extract();
+            let (_, [total, completion, prompt]) = caps.extract();
             access_ids.push(access_id.to_string());
             total_tokens.push(total.parse().ok());
             completion_tokens.push(completion.parse().ok());
@@ -420,23 +426,35 @@ fn write_merged_request_metrics(
     )?
     .select([col("access_log_id"), col("id").alias("request_id")]);
 
-    // the estimations map onto the requests of this log
+    // the estimations map onto the requests of this log; their token
+    // columns are renamed so the merge can fill the nulls streaming rows
+    // leave behind
     let streaming_metrics = streaming_metrics
         .lazy()
         .join_builder()
         .with(mapping)
         .on([col("access_log_id")])
         .how(JoinType::Inner)
-        .finish();
+        .finish()
+        .select([
+            col("request_id"),
+            col("total_tokens").alias("est_total_tokens"),
+            col("completion_tokens").alias("est_completion_tokens"),
+            col("prompt_tokens").alias("est_prompt_tokens"),
+        ]);
 
-    // merge the estimations with the rows
+    // merge the estimations into the rows their stream left blank
     let merged = lines
         .join_builder()
         .with(streaming_metrics)
         .how(JoinType::Left)
         .on([col("request_id")])
-        .coalesce(JoinCoalesce::CoalesceColumns)
-        .finish();
+        .finish()
+        .with_columns([
+            col("total_tokens").fill_null(col("est_total_tokens")),
+            col("completion_tokens").fill_null(col("est_completion_tokens")),
+            col("prompt_tokens").fill_null(col("est_prompt_tokens")),
+        ]);
 
     to_parquet(dataset_dir, request_metrics, merged)
 }
