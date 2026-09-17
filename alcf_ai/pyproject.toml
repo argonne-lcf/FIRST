@@ -6,6 +6,7 @@ authors = [{ name = "Misha Salim", email = "msalim@anl.gov" }]
 requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [
+    "alcf-tokens>=0.2",
     "httpx",
     "numpy",
     "rich",
@@ -20,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-alcf-ai = "alcf_ai:cli"
+alcf-ai = "alcf_ai:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

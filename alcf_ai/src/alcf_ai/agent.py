@@ -10,9 +10,10 @@ from typing import Annotated, Any, Literal
 import httpx
 import tomlkit
 import typer
+from alcf_tokens.auth import get_access_token
 from httpx import URL
 
-from alcf_ai.auth import get_inference_authorizer
+from .client import INFERENCE_SERVICE
 
 cli = typer.Typer(no_args_is_help=True)
 
@@ -519,9 +520,7 @@ def configure(
     from .cli import _cli_state
 
     client = _cli_state["client"]
-    auth = get_inference_authorizer()
-    auth.ensure_valid_token()  # type: ignore[attr-defined]
-    api_key = auth.access_token  # type: ignore[attr-defined]
+    api_key = get_access_token(INFERENCE_SERVICE)
 
     model_infos: dict[str, list[dict[str, Any]]] = {
         cluster_name: models

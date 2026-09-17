@@ -15,8 +15,8 @@ import typer
 from PIL.Image import Image, fromarray
 from PIL.Image import open as imopen
 
-from .auth import STAGING_COLLECTION_ROOT
 from .resources.sam3 import Sam3BatchResult, Sam3ImageResult
+from .transfer import STAGING_COLLECTION_ROOT
 
 NDArray = npt.NDArray[Any]
 

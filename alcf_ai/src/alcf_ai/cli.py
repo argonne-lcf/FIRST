@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 import typer
+from alcf_tokens.auth import AuthError
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from rich import print
 from rich.console import Console
@@ -13,7 +14,6 @@ from rich.markdown import Markdown
 from typer import Typer
 
 from .agent import cli as agent_cli
-from .auth import cli as auth_cli
 from .client import InferenceClient
 from .dinov3 import cli as dinov3_cli
 from .sam3 import cli as sam3_cli
@@ -29,7 +29,6 @@ class CliState(TypedDict, total=False):
 cli = Typer(no_args_is_help=True)
 _cli_state: CliState = {}
 
-cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
 cli.add_typer(
     dinov3_cli, name="dinov3", help="Use the DINOv3 image segmentation service"
 )
@@ -38,7 +37,7 @@ cli.add_typer(agent_cli, name="agent", help="Utilities to quick-configure agents
 
 
 @cli.callback()
-def main(
+def _root(
     base_url: str | None = None,
     log_level: str = "INFO",
 ) -> None:
@@ -182,5 +181,20 @@ def version() -> None:
     print(version("alcf-ai"))
 
 
+def main() -> None:
+    """
+    Entry point used by the `alcf-ai` script.
+
+    Logging in is handled by the `alcf-tokens` CLI, so a missing or expired
+    login surfaces here as an AuthError naming the command that fixes it.
+    Report it as a one-line message rather than a traceback.
+    """
+    try:
+        cli()
+    except AuthError as exc:
+        console.print(f"[red]Authentication error:[/red] {exc}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    cli()
+    main()
