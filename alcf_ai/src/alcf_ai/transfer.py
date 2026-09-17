@@ -1,3 +1,8 @@
+"""
+Globus Transfer helpers: move files or directories between a user's collection
+and the inference data-staging collection, or HTTPS-upload a single file.
+"""
+
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,10 +11,13 @@ from time import perf_counter
 
 import globus_sdk
 import httpx
-
-from .auth import STAGING_COLLECTION_ID, get_https_authorizer, get_transfer_authorizer
+from alcf_tokens.auth import get_https_authorizer, get_transfer_authorizer
 
 logger = logging.getLogger(__name__)
+
+# inference_data_staging Globus Guest Collection:
+STAGING_COLLECTION_ID = "96c7390b-a3e8-4dd4-a327-1af7d143283e"
+STAGING_COLLECTION_ROOT = "/eagle/IRIBeta/inference_data_staging/"
 
 
 class TransferError(Exception):
@@ -54,7 +62,7 @@ def run_globus_transfer(
         if source_collection_id != STAGING_COLLECTION_ID
         else destination_collection_id
     )
-    auth = get_transfer_authorizer(auth_collection_id)
+    auth = get_transfer_authorizer([auth_collection_id])
     tc = globus_sdk.TransferClient(authorizer=auth)
 
     tdata = globus_sdk.TransferData(
@@ -114,10 +122,10 @@ def https_put_to_collection(local_path: Path, remote_path: Path) -> TransferResu
     """
     HTTPS PUT a local file into the inference staging area.
     """
-    transfer_auth = get_transfer_authorizer(f"{STAGING_COLLECTION_ID}:https")
+    transfer_auth = get_transfer_authorizer([f"{STAGING_COLLECTION_ID}:https"])
     tc = globus_sdk.TransferClient(authorizer=transfer_auth)
 
-    https_auth = get_https_authorizer(f"{STAGING_COLLECTION_ID}:https")
+    https_auth = get_https_authorizer(STAGING_COLLECTION_ID)
 
     endpoint = tc.get_endpoint(STAGING_COLLECTION_ID)
     https_server = endpoint["https_server"]

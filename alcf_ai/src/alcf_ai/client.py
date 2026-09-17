@@ -2,10 +2,10 @@ import os
 from pathlib import Path
 from typing import Any, Generator
 
+from alcf_tokens.auth import ServiceName, get_access_token
 from httpx import Auth, Client, Request, Response, Timeout
 from pydantic import BaseModel
 
-from .auth import get_inference_authorizer
 from .resources import (
     ClientResource,
     ClusterResource,
@@ -14,18 +14,21 @@ from .resources import (
 )
 from .transfer import TransferResult, https_put_to_collection, run_globus_transfer
 
+# The alcf-tokens service whose scope the gateway accepts
+INFERENCE_SERVICE = ServiceName.inference
+
 DEFAULT_BASE_URL = os.environ.get(
     "inference_base_url", "https://inference-api.alcf.anl.gov/resource_server/"
 )
 
 
 class AutoGlobusAuth(Auth):
-    def auth_flow(self, request: Request) -> Generator[Request, Response, None]:
-        auth = get_inference_authorizer()
-        auth.ensure_valid_token()  # type: ignore[attr-defined]
-        assert auth.access_token, "Empty access token"  # type: ignore[attr-defined]
+    """httpx auth flow that attaches a fresh Globus access token to every request."""
 
-        request.headers["Authorization"] = f"Bearer {auth.access_token}"  # type: ignore[attr-defined]
+    def auth_flow(self, request: Request) -> Generator[Request, Response, None]:
+        request.headers["Authorization"] = (
+            f"Bearer {get_access_token(INFERENCE_SERVICE)}"
+        )
         yield request
 
 

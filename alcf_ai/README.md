@@ -8,7 +8,7 @@ This package provides Python client and CLI tools to facilitate usage of the ALC
 
 ```bash
 # Log in with Globus:
-uvx alcf-ai auth login
+uvx alcf-tokens login
 
 # Chat with a model
 # The default --model is meta-llama/Llama-4-Scout-17B-16E-Instruct
@@ -17,19 +17,42 @@ uvx alcf-ai chat "How do I know Pi is irrational? Be concise."
 
 ### Auth
 
-```bash
-# Login for Inference Service only:
-uvx alcf-ai auth login
+Logging in is handled by [`alcf-tokens`](https://pypi.org/project/alcf-tokens/),
+the shared ALCF CLI: one interactive login issues tokens for several ALCF
+services, and `alcf-ai` reads the tokens it cached.  `alcf-ai` itself never
+starts a login -- if no valid token is cached, it fails and prints the
+`alcf-tokens login` command that would fix it.
 
-# Login for Inference+Globus data transfers
-# (append :data_access only if required for your collection)
-SOURCE_COLLECTION="your globus collection UUID"
-uvx alcf-ai auth login --authorize-transfers $SOURCE_COLLECTION:data_access
+```bash
+# Interactive Globus login (caches a refresh token):
+uvx alcf-tokens login
+
+# Check that the gateway accepts your token:
+uvx alcf-tokens test-token inference
 
 # Get an access token to use externally:
-token=$(uvx alcf-ai auth get-access-token)
+token=$(uvx alcf-tokens get-token inference)
 curl -H "Authorization: Bearer $token" https://inference-api.alcf.anl.gov/resource_server/list-endpoints | jq
 ```
+
+If you will stage data in or out, authorize those collections in the *same*
+login with `--authorize-transfer` (repeat the flag per collection).  Each entry
+is a collection UUID -- or a known alias, such as `home`, `eagle` or `flare`.
+Append colon-separated scopes as needed: `:data_access` for collections that require it
+for Transfer, and `:https` to read and write files directly over HTTPS.
+
+```bash
+STAGING=96c7390b-a3e8-4dd4-a327-1af7d143283e   # IRIBeta inference_data_staging
+SOURCE_COLLECTION="your globus collection UUID"
+
+uvx alcf-tokens login \
+  --authorize-transfer $SOURCE_COLLECTION:data_access \
+  --authorize-transfer $STAGING:https
+```
+
+Re-running `alcf-tokens login` with more `--authorize-transfer` entries
+re-consents with the wider set, so list every collection you want authorized in
+the same command.
 
 ### Discovering Models
 
@@ -92,7 +115,7 @@ to the inference service:
 SOURCE_COLLECTION="your globus collection UUID"
 
 # Append ":data_access" if this scope is required:
-uvx alcf-ai auth login --authorize-transfers $SOURCE_COLLECTION:data_access
+uvx alcf-tokens login --authorize-transfer $SOURCE_COLLECTION:data_access
 ```
 
 Then use the tool to drive data staging and batch inference:
@@ -133,7 +156,7 @@ so first authorize transfers against your collection:
 SOURCE_COLLECTION="your globus collection UUID"
 
 # Append ":data_access" if this scope is required:
-uvx alcf-ai auth login --authorize-transfers $SOURCE_COLLECTION:data_access
+uvx alcf-tokens login --authorize-transfer $SOURCE_COLLECTION:data_access
 ```
 
 Then submit a folder for segmentation with the CLI. It stages the folder in,
@@ -159,7 +182,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from alcf_ai import InferenceClient
-from alcf_ai.auth import STAGING_COLLECTION_ROOT
+from alcf_ai.transfer import STAGING_COLLECTION_ROOT
 from rich import print
 
 client = InferenceClient()
@@ -236,7 +259,7 @@ URL:
 from alcf_ai import InferenceClient
 from rich import print
 
-# Automatically uses cached refresh tokens from previous login:
+# Automatically uses the tokens cached by `alcf-tokens login`:
 client = InferenceClient()
 
 # Programmatically discover endpoints:
@@ -261,7 +284,7 @@ read/write access to it.
 
 ```python
 from alcf_ai import InferenceClient
-from alcf_ai.auth import STAGING_COLLECTION_ROOT
+from alcf_ai.transfer import STAGING_COLLECTION_ROOT
 client = InferenceClient()
 
 dataset_path = Path("/path/to/my-dataset.tar")

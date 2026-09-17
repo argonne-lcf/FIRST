@@ -22,6 +22,7 @@ constraints = [
 name = "alcf-ai"
 source = { editable = "alcf_ai" }
 dependencies = [
+    { name = "alcf-tokens" },
     { name = "globus-sdk" },
     { name = "httpx" },
     { name = "matplotlib" },
@@ -37,6 +38,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alcf-tokens", specifier = ">=0.2" },
     { name = "globus-sdk", specifier = ">=3.65.0,<4" },
     { name = "httpx" },
     { name = "matplotlib" },
@@ -48,6 +50,20 @@ requires-dist = [
     { name = "tifffile" },
     { name = "tomlkit", specifier = ">=0.15.1" },
     { name = "typer" },
+]
+
+[[package]]
+name = "alcf-tokens"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "globus-sdk" },
+    { name = "httpx" },
+    { name = "typer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9b/89/7750cd5f9b9ac7f6f8514cd6eebeb15376f875018dd6f66267d4e15d69bf/alcf_tokens-0.2.0.tar.gz", hash = "sha256:a2100c490941906b1eb38129ef00a2cca8a17ddbd1db07dfc97338c1cc828978", size = 12654, upload-time = "2026-09-15T18:24:45.34Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/da/b0aa196d097fc6d36229ff7e90f077ee056d401e62ca784f9d856997d1b6/alcf_tokens-0.2.0-py3-none-any.whl", hash = "sha256:c0644d29e68f12a6794ab81b4c54e80d584f64000886fd3e6d5e92dbfa1f2650", size = 10463, upload-time = "2026-09-15T18:24:44.466Z" },
 ]
 
 [[package]]

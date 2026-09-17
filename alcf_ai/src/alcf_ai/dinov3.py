@@ -3,7 +3,7 @@ from pathlib import Path
 
 import typer
 
-from .auth import STAGING_COLLECTION_ROOT
+from .transfer import STAGING_COLLECTION_ROOT
 
 logger = logging.getLogger(__name__)
 
