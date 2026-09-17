@@ -6,6 +6,8 @@ from typing import Any, TypedDict
 
 import typer
 from alcf_tokens.auth import AuthError
+from alcf_tokens.cli import cli as auth_cli
+from alcf_tokens.cli import get_token
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from rich import print
 from rich.console import Console
@@ -29,11 +31,20 @@ class CliState(TypedDict, total=False):
 cli = Typer(no_args_is_help=True)
 _cli_state: CliState = {}
 
+cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
 cli.add_typer(
     dinov3_cli, name="dinov3", help="Use the DINOv3 image segmentation service"
 )
 cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation service")
 cli.add_typer(agent_cli, name="agent", help="Utilities to quick-configure agents")
+
+
+@auth_cli.command("get-access-token")
+def get_access_token() -> None:
+    """
+    Alias for `alcf-ai auth get-token inference`
+    """
+    return get_token("inference")
 
 
 @cli.callback()
@@ -52,22 +63,6 @@ def _root(
     logging.getLogger("httpx").setLevel(logging.WARNING)
     _cli_state["client"] = InferenceClient(base_url)
     logger.debug(f"Using client: {_cli_state['client']}")
-
-
-@cli.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-)
-def auth() -> None:
-    """
-    [red]REMOVED: install `alcf-tokens` to login and manage tokens!
-    """
-    console.print(
-        "[red]alcf-ai auth[/red] [b]has been replaced by[/b] [green]alcf-tokens[/green]!"
-    )
-    console.print(
-        "Install `alcf-tokens` and run the `alcf-tokens` command to login and get access tokens for inference and other ALCF services!"
-    )
-    sys.exit(1)
 
 
 @cli.command()
