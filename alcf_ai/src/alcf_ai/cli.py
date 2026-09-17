@@ -54,6 +54,22 @@ def _root(
     logger.debug(f"Using client: {_cli_state['client']}")
 
 
+@cli.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def auth() -> None:
+    """
+    [red]REMOVED: install `alcf-tokens` to login and manage tokens!
+    """
+    console.print(
+        "[red]alcf-ai auth[/red] [b]has been replaced by[/b] [green]alcf-tokens[/green]!"
+    )
+    console.print(
+        "Install `alcf-tokens` and run the `alcf-tokens` command to login and get access tokens for inference and other ALCF services!"
+    )
+    sys.exit(1)
+
+
 @cli.command()
 def ls_endpoints() -> None:
     """
@@ -148,12 +164,12 @@ def chat(
                 max_tokens=max_tokens,
                 stream=True,
             )
-            for chunk in response:
-                all_chunks.append(chunk)
-                if chunk.choices and chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    print(token, end="")
-                    collected.append(token)
+        for chunk in response:
+            all_chunks.append(chunk)
+            if chunk.choices and chunk.choices[0].delta.content:
+                token = chunk.choices[0].delta.content
+                print(token, end="")
+                collected.append(token)
 
         if not collected:
             print("Failed to collect the chat completions streaming response.")
