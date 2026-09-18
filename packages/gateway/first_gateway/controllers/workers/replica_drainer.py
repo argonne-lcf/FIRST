@@ -11,7 +11,7 @@ from first_common.schema.types import ReplicaState
 
 from ...database.models import PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
-from ...services.pilot_control import PilotControlClient
+from ...services.pilot_control import STOP_HEARTBEAT_TIMEOUT, PilotControlClient
 from ...settings import ClientState
 from ..controller import Controller, StaleReconcile
 from ..wakeup import WakeupDispatcher
@@ -69,7 +69,7 @@ class ReplicaDrainer(Controller):
         *,
         restart_backoff: float = 1.0,
         max_backoff: float = 30.0,
-        heartbeat_timeout: float = 120.0,
+        heartbeat_timeout: float = STOP_HEARTBEAT_TIMEOUT,
     ) -> None:
         super().__init__(
             name,

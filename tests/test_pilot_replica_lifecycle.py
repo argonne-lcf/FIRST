@@ -1,5 +1,6 @@
 """Focused tests for cooperative replica quiesce and bounded fallback."""
 
+import inspect
 import time
 from pathlib import Path
 from typing import Any
@@ -8,13 +9,19 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from first_common.errors import ReplicaTeardownError
+from first_common.schema.resources.spec import LaunchTemplateSpec
 from first_common.schema.types import (
     GpuClaim,
     HealthCheckParams,
     ReplicaState,
     ResolvedLaunchSpec,
 )
-from first_gateway.services.pilot_control import STOP_TIMEOUT
+from first_gateway.services.pilot_control import (
+    _RETRY_ATTEMPTS,
+    _RETRY_BACKOFF,
+    STOP_HEARTBEAT_TIMEOUT,
+    STOP_TIMEOUT,
+)
 from first_pilot.replica import (
     Replica,
     _ManagedGroup,
@@ -84,8 +91,32 @@ def test_unhealthy_deadline_defaults_to_startup_deadline() -> None:
 
 
 def test_stop_rpc_and_join_budgets_cover_sequential_hooks() -> None:
-    assert STOP_TIMEOUT.read == 120.0
-    assert ReplicaManager._STOP_JOIN_TIMEOUT == 120.0
+    properties = LaunchTemplateSpec.model_json_schema()["properties"]
+    monitor_join = inspect.signature(Replica.stop).parameters["timeout"].default + 5
+    hook_cleanup = Replica._HOOK_TERM_GRACE + Replica._HOOK_KILL_GRACE
+    stop_budget = (
+        monitor_join
+        + properties["pre_stop_timeout_sec"]["maximum"]
+        + hook_cleanup
+        + Replica._TERM_GRACE
+        + Replica._KILL_GRACE
+        + properties["post_stop_timeout_sec"]["maximum"]
+        + hook_cleanup
+    )
+    assert stop_budget == 162
+    assert STOP_TIMEOUT.read == 180.0
+    assert ReplicaManager._STOP_JOIN_TIMEOUT == 180.0
+    assert stop_budget < STOP_TIMEOUT.read
+    assert stop_budget < ReplicaManager._STOP_JOIN_TIMEOUT
+    assert (STOP_TIMEOUT.connect, STOP_TIMEOUT.write, STOP_TIMEOUT.pool) == (5, 10, 5)
+    phase_timeouts = STOP_TIMEOUT.as_dict().values()
+    assert all(timeout is not None for timeout in phase_timeouts)
+    request_budget = sum(timeout for timeout in phase_timeouts if timeout is not None)
+    retry_budget = _RETRY_ATTEMPTS * request_budget + _RETRY_BACKOFF * sum(
+        range(_RETRY_ATTEMPTS)
+    )
+    assert retry_budget == 600.75
+    assert STOP_HEARTBEAT_TIMEOUT == retry_budget + 30.0
 
 
 def test_process_group_probe_is_fail_closed_on_permission_error() -> None:

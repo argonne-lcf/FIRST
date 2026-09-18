@@ -3,7 +3,7 @@
 import itertools
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -24,7 +24,10 @@ from first_gateway.database.models import (
     PilotJob,
     PilotReplica,
 )
-from first_gateway.services.pilot_control import PilotControlClient
+from first_gateway.services.pilot_control import (
+    STOP_HEARTBEAT_TIMEOUT,
+    PilotControlClient,
+)
 
 from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
 
@@ -34,6 +37,28 @@ MANAGER_URL = "https://10.0.0.1:8443/control"
 
 
 # ── Transport / controller construction ─────────────────────────────────
+
+
+def test_stop_retry_heartbeat_allowance_is_drainer_only() -> None:
+    with (
+        patch("first_gateway.controllers.worker.monotonic", return_value=0),
+        patch("first_gateway.controllers.workers.replica_drainer.PilotControlClient"),
+    ):
+        drainer = ReplicaDrainer("drainer", MagicMock(), MagicMock())
+        heartbeat = drainer.register_heartbeat("reconcile")
+        explicit = ReplicaDrainer(
+            "explicit", MagicMock(), MagicMock(), heartbeat_timeout=42
+        )
+        ordinary = ReplicaDrainer.__new__(ReplicaDrainer)
+        Worker.__init__(ordinary, "ordinary", MagicMock(), MagicMock())
+
+    assert heartbeat.timeout == STOP_HEARTBEAT_TIMEOUT == 630.75
+    assert explicit._heartbeat_timeout == 42
+    assert ordinary._heartbeat_timeout == 120
+    with patch("first_gateway.controllers.worker.monotonic", return_value=600):
+        assert not drainer.check_heartbeat().timed_out
+    with patch("first_gateway.controllers.worker.monotonic", return_value=631):
+        assert drainer.check_heartbeat().timed_out
 
 
 def _reject(request: httpx.Request) -> httpx.Response:

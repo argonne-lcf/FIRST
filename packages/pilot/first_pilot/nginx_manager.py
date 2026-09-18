@@ -83,7 +83,8 @@ _conf_template_str = """
                 allow 127.0.0.1;
                 deny all;
                 proxy_pass http://control_api/;
-
+                # Let the controller's 180s stop read deadline expire first.
+                proxy_read_timeout 185s;
             }
 
             {% for replica in replicas %}

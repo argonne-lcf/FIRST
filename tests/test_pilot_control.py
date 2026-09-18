@@ -1,13 +1,41 @@
 """Tests for PilotControlClient's built-in timeout/retry behavior."""
 
+import re
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from jinja2 import Template
 
 from first_common.errors import ReplicaTeardownError
-from first_gateway.services.pilot_control import PilotControlClient
+from first_gateway.services.pilot_control import STOP_TIMEOUT, PilotControlClient
 from first_pilot.control_api import app, get_manager
+from first_pilot.nginx_manager import ReplicaUpstream, _conf_template_str
+
+
+def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() -> None:
+    rendered = Template(_conf_template_str).render(
+        config=SimpleNamespace(
+            control_uds_path=Path("/tmp/control.sock"),
+            external_port=8443,
+            ip_allowlist=["127.0.0.1"],
+        ),
+        nginx_tmpdir="/tmp/nginx",
+        control_path="/control/",
+        ca_crt_path="/tmp/ca.crt",
+        server_crt_path="/tmp/server.crt",
+        server_key_path="/tmp/server.key",
+        replicas=[ReplicaUpstream(name="model", uds="/tmp/model.sock")],
+    )
+    control = rendered.split("location /control/ {", 1)[1].split("}", 1)[0]
+    model = rendered.split("location /replicas/model/ {", 1)[1].split("}", 1)[0]
+    control_timeout = re.findall(r"proxy_read_timeout\s+(\d+)s;", control)
+    assert control_timeout == ["185"]
+    assert STOP_TIMEOUT.read is not None and 162 < STOP_TIMEOUT.read < 185
+    assert re.findall(r"proxy_read_timeout\s+(\d+)s;", model) == ["920"]
+    assert "proxy_pass http://control_api/;" in control
 
 
 def _make_client(handler: object) -> PilotControlClient:
