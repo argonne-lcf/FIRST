@@ -37,7 +37,8 @@ class PilotJobObserver(Worker):
     Polls each cluster's HPC scheduler for pilot job statuses and discovers
     manager endpoints via readyfiles.
 
-    Writes scheduler_state, time_started, and manager_url to Postgres.
+    Writes scheduler_state, time_started, and manager_url to Postgres, and
+    idle_since while a running job has no manager_url.
     Reaps orphaned scheduler jobs that have no matching PilotJob row.
     """
 
@@ -338,6 +339,22 @@ class PilotJobObserver(Worker):
         if not actionable:
             return
 
+        # A running pilot without a manager cannot host replicas, so it is idle.
+        # Start the idle clock now so the controller can reap one that never
+        # publishes its manager. This does not race with PilotReplicaObserver:
+        # that observer writes idle_since only after manager_url is set.
+        async with self.client_state.db_sessionmaker.begin() as sess:
+            await sess.execute(
+                sa.update(PilotJob)
+                .where(
+                    PilotJob.cluster_name == cluster_name,
+                    PilotJob.scheduler_state == SchedulerJobState.running.value,
+                    PilotJob.manager_url.is_(None),
+                    PilotJob.idle_since.is_(None),
+                )
+                .values(idle_since=datetime.now(timezone.utc))
+            )
+
         actionable_by_name: dict[str, int] = {name: uid for uid, name in actionable}
         ready_names = await self._rpc(submitter.list_ready_endpoints())
         ready_jobs = set(ready_names) & set(actionable_by_name)
@@ -374,7 +391,10 @@ class PilotJobObserver(Worker):
                         PilotJob.scheduler_state == SchedulerJobState.running.value,
                         PilotJob.manager_url.is_(None),
                     )
-                    .values(manager_url=addr.control_url)
+                    # Clear the pre-manager idle clock in the same statement, so
+                    # the controller's premised idle reap cannot match a
+                    # reachable pilot.
+                    .values(manager_url=addr.control_url, idle_since=None)
                 )
 
             if result.rowcount == 0:  # type: ignore[attr-defined]
