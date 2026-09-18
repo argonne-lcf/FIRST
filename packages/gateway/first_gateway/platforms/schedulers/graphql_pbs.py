@@ -47,6 +47,10 @@ _HSN_RESOURCE_NAME = "hsn_ips"
 _PBS_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _STATUS_PAGE_SIZE = 500
 _STATUS_MAX_PAGES = 10
+_EXEC_VNODE_PART = re.compile(
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,254})"
+    r"(?::[A-Za-z_][A-Za-z0-9_.-]*=[^():+\s=]+)+"
+)
 
 
 def _parse_epoch_micros(raw: int | None) -> datetime | None:
@@ -56,28 +60,51 @@ def _parse_epoch_micros(raw: int | None) -> datetime | None:
     return datetime.fromtimestamp(raw / 1_000_000, tz=timezone.utc)
 
 
-def _head_node_ip(machines: list[dict[str, Any]]) -> str | None:
-    """
-    Pull the head node's first hsn_ips address off the job's allocated machines.
+def _execution_head(
+    machines: list[dict[str, Any]], extension: Any
+) -> dict[str, Any] | None:
+    """Resolve the first PBS exec_vnode; allocatedMachines is unordered.
 
-    The head node is the primary execution host = the first vnode in the allocation.
+    Older bridges without exec_vnode are safe only for a single-machine job.
+    Present but malformed metadata never falls back, even for one machine.
     """
-    if not machines:
+    if extension is None or (
+        isinstance(extension, dict) and "exec_vnode" not in extension
+    ):
+        return machines[0] if len(machines) == 1 else None
+    if not isinstance(extension, dict):
         return None
-    head = machines[0]
+    raw = extension.get("exec_vnode")
+    if (
+        not isinstance(raw, str)
+        or not 0 < len(raw) <= 65536
+        or not raw.startswith("(")
+        or not raw.endswith(")")
+    ):
+        return None
+    names = []
+    for chunk in raw[1:-1].split(")+("):
+        for part in chunk.split("+"):
+            match = _EXEC_VNODE_PART.fullmatch(part)
+            if match is None:
+                return None
+            names.append(match.group("name"))
+    matches = [
+        machine
+        for machine in machines
+        if names[0] in (machine.get("name"), machine.get("hostname"))
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _head_node_ip(head: dict[str, Any]) -> str | None:
+    """Pull the proven execution head's first hsn_ips address."""
     resources_avail = head.get("resourcesAvail") or {}
     for pair in resources_avail.get("customResources") or []:
         if pair.get("name") == _HSN_RESOURCE_NAME:
             ips = pair["value"].replace(",", " ").split()
             return ips[0] if ips else None
     return None
-
-
-def _head_node_hostname(machines: list[dict[str, Any]]) -> str | None:
-    """Pull the head node's hostname off the job's allocated machines."""
-    if not machines:
-        return None
-    return machines[0].get("hostname") or None
 
 
 def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
@@ -98,8 +125,12 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
     head_hostname = None
     if state_code in _ACTIVE_STATES:
         machines = node.get("allocatedMachines") or []
-        head_ip = _head_node_ip(machines)
-        head_hostname = _head_node_hostname(machines)
+        head = _execution_head(machines, node.get("extension"))
+        if head is not None:
+            head_ip = _head_node_ip(head)
+            head_hostname = head.get("hostname") or None
+        elif machines:
+            logger.warning("Cannot resolve execution head for PBS job %s", job_id)
 
     return JobStatusInfo(
         id=job_id,
@@ -218,6 +249,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                         name
                         submitTime
                         startTime
+                        extension
                         status {{
                             state
                         }}
@@ -340,6 +372,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                         name
                         submitTime
                         startTime
+                        extension
                         status { state }
                         resourcesRequested {
                             jobResources { wallClockTime }

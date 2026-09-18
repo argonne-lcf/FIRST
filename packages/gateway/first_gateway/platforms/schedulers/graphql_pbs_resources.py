@@ -10,7 +10,7 @@ from first_common.schema.base_scheduler import JobSubmitPayload
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_]{0,63}"
 _VALUE = r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
-_HOST = re.compile(r"(x[0-9]{4}c[0-7])s[0-7]b[01]n[0-3]")
+_HOST = re.compile(r"(?P<tier1>(?P<tier0>x[0-9]{4})c[0-7])s[0-7]b[01]n[0-3]")
 _RESERVED = {
     "host",
     "vnode",
@@ -133,12 +133,19 @@ def requested_resources(
             if (
                 count != 1
                 or match is None
-                or match[1] != custom.get("tier1")
-                or group != "tier1"
+                or group not in {"tier0", "tier1"}
+                or custom.get(group or "") != match.groupdict().get(group or "")
+                # A rack-level placement must still honor any narrower
+                # configured/per-chunk chassis constraint, and vice versa.
+                or any(
+                    key in custom and custom[key] != match[key]
+                    for key in ("tier0", "tier1")
+                )
                 or host in hosts
             ):
                 raise ValueError(
-                    "explicit hosts require unique xnames in one constrained tier1"
+                    "explicit hosts require unique xnames in one constrained "
+                    f"{group if group in {'tier0', 'tier1'} else 'tier0 or tier1'}"
                 )
             hosts.append(host)
             task["candidateMachineName"] = host
@@ -148,7 +155,9 @@ def requested_resources(
         raise ValueError("select count differs from FIRST node count")
     if group == "tier1" and len(tiers - {None}) > 1:
         raise ValueError("select chunks conflict with same-tier1 placement")
-    if hosts and (len(hosts) != job.num_nodes or len(tiers) != 1):
-        raise ValueError("explicit hosts must cover every task in the same tier1")
+    if hosts and (
+        len(hosts) != job.num_nodes or (group == "tier1" and len(tiers) != 1)
+    ):
+        raise ValueError("explicit hosts must cover every task in the same group")
     result["tasksResources"] = tasks
     return result

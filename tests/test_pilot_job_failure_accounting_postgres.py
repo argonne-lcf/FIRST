@@ -12,13 +12,14 @@ from unittest import main
 from unittest.mock import MagicMock, patch
 
 import sqlalchemy as sa
-import test_replica_reconciler_fence_postgres as fence_tests
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
 from first_common.schema.types import ReplicaState, ResourceName
 from first_gateway.controllers.workers.pilot_job_observer import PilotJobObserver
 from first_gateway.database.models import PilotDeployment, PilotJob, PilotReplica
+
+from . import test_replica_reconciler_fence_postgres as fence_tests
 
 NOW = datetime(2026, 9, 13, tzinfo=timezone.utc)
 
