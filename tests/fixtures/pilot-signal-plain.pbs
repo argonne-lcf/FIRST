@@ -1,0 +1,15 @@
+#!/bin/bash
+#PBS -N TARA_SIGNAL_PLAIN
+#PBS -A inference_service
+#PBS -q workq
+#PBS -l select=1:ngpus=4:tier1=x4820c6
+#PBS -l place=scatter:excl:group=tier0
+#PBS -l walltime=00:02:00
+#PBS -j oe
+set -euo pipefail
+umask 077
+probe=${PBS_O_WORKDIR:?}/tests/fixtures/pilot_signal_probe.py
+test -f "$probe" && test ! -L "$probe"
+sha256sum -- "$probe"
+printf 'pilot_signal_shell variant=plain job_id=%s pid=%s\n' "${PBS_JOBID:?}" "$$"
+PILOT_SIGNAL_TEST=1 /opt/cray/pe/python/3.12.12/bin/python3 -IB "$probe" --variant plain
