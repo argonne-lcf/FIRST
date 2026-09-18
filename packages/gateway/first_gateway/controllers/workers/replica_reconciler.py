@@ -138,6 +138,22 @@ class ReplicaReconciler(Controller):
         ts = r.started_at or r.created_at
         return (rank, ts)
 
+    @staticmethod
+    def _counts_toward_desired(replica: PilotReplica) -> bool:
+        job = replica.pilot_job
+        return (
+            replica.deleted_at is None
+            and replica.scheduled_deletion_at is None
+            and replica.state in _LIVE_STATES
+            and not (
+                job is not None
+                and (
+                    job.scheduler_state in _TERMINAL_JOB_STATES
+                    or job.scheduled_deletion
+                )
+            )
+        )
+
     async def _apply_drains(self, dep: PilotDeployment, drain_uids: set[int]) -> None:
         if not drain_uids:
             return
@@ -168,13 +184,40 @@ class ReplicaReconciler(Controller):
         if n_new < 1:
             return
         async with self.client_state.db_sessionmaker.begin() as sess:
-            sess.add_all(PilotReplica.create(dep.name) for _ in range(n_new))
+            # The initial reconcile snapshot can outlive a scale-down, exhausted
+            # failure budget, or another inserter. Serialize insertion on the
+            # exact deployment UID, then read capacity again under that lock.
+            current = await sess.scalar(
+                sa.select(PilotDeployment)
+                .where(PilotDeployment.uid == dep.uid)
+                .with_for_update()
+                .options(
+                    selectinload(PilotDeployment.replicas).selectinload(
+                        PilotReplica.pilot_job
+                    )
+                )
+            )
+            if current is None or (
+                current.consecutive_launch_failures
+                > current.max_consecutive_launch_failures
+            ):
+                return
+            # Preserve immediate replacement of terminal/draining replicas;
+            # this is not a new no-overlap or teardown-wait policy. Equality at
+            # the failure limit still permits the existing final retry.
+            live = sum(self._counts_toward_desired(r) for r in current.replicas)
+            n_new = current.desired_replicas - live
+            if n_new < 1:
+                return
+            sess.add_all(PilotReplica.create(current.name) for _ in range(n_new))
         logger.info(
             "ReplicaReconciler: deployment %s created %d pending replica(s) "
             "(desired=%d)",
-            dep.name,
+            current.name,
             n_new,
-            dep.desired_replicas,
+            current.desired_replicas,
         )
         # Wake the Placement controller now that pending replicas exist
-        await self.client_state.redis_pubsub.publish(Channel.replica_created, dep.name)
+        await self.client_state.redis_pubsub.publish(
+            Channel.replica_created, current.name
+        )

@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 _RPC_TIMEOUT = 60.0
 
-_TERMINAL_STATES = frozenset({SchedulerJobState.gone.value})
+# Reconciler/controller cleanup begins at exiting. Account for a failed
+# bootstrap in that same first terminal transition, before claims can drain.
+_TERMINAL_STATES = frozenset(
+    {SchedulerJobState.exiting.value, SchedulerJobState.gone.value}
+)
 
 _T = TypeVar("_T")
 
@@ -223,7 +227,9 @@ class PilotJobObserver(Worker):
 
     async def _update_job(self, db_job: PilotJob, status: JobStatusInfo | None) -> None:
         async with self.client_state.db_sessionmaker.begin() as sess:
-            current = await sess.get(PilotJob, db_job.uid)
+            # Serialize competing observations and intentional job retirement;
+            # the first terminal transition and its charge commit together.
+            current = await sess.get(PilotJob, db_job.uid, with_for_update=True)
             if current is None:
                 return
 
@@ -235,6 +241,17 @@ class PilotJobObserver(Worker):
             else:
                 target_state = status.state.value
                 new_started = status.started_at
+
+            # FIRST retires an allocation at exiting; a delayed scheduler
+            # response must not resurrect it or reopen its one-time charge.
+            # Nonterminal PBS transitions (including requeue) remain allowed.
+            if (
+                prev_state in _TERMINAL_STATES and target_state not in _TERMINAL_STATES
+            ) or (
+                prev_state == SchedulerJobState.gone.value
+                and target_state != SchedulerJobState.gone.value
+            ):
+                return
 
             if prev_state == target_state and current.time_started == new_started:
                 return
@@ -260,7 +277,7 @@ class PilotJobObserver(Worker):
                 logger.info(f"PilotJob {current.name}: {prev_state} -> {target_state}")
 
             if charge:
-                await self._record_pre_manager_launch_failure(sess, db_job)
+                await self._record_pre_manager_launch_failure(sess, current)
 
     @staticmethod
     async def _record_pre_manager_launch_failure(
