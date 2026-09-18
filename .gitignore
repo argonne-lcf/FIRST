@@ -64,3 +64,4 @@ vllm/
 site/
 .claude/
 *.code-workspace
+prompt-records/

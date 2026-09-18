@@ -1,6 +1,7 @@
 """CPU-only health-check isolation; no database, secrets, or network required."""
 
 import asyncio
+import logging
 from collections import defaultdict
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +15,13 @@ from first_gateway.controllers.workers.health_observer import HealthObserver
 from first_gateway.database.models import Cluster, StaticDeployment
 
 _CHECK = "first_gateway.controllers.workers.health_observer.perform_health_check"
+
+
+@pytest.fixture(autouse=True)
+def _propagate_gateway_logs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The apiserver lifespan (run by other tests) calls config_logging(), which
+    # stops first_gateway from propagating to the root logger caplog listens on.
+    monkeypatch.setattr(logging.getLogger("first_gateway"), "propagate", True)
 
 
 def _observer() -> HealthObserver:

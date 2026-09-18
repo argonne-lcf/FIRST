@@ -490,9 +490,11 @@ async def test_graphql_unready_terminal_allocation_is_charged_once(
     await observer._update_job(job, terminal)
     await observer._update_job(job, terminal)
 
+    # The first terminal transition (exiting) charges; later observations,
+    # including the job leaving the scheduler, must not charge again.
     async with db() as sess:
         dep = await PilotDeployment.get_by_name(sess, "dep-a")
-        assert dep.consecutive_launch_failures == 0
+        assert dep.consecutive_launch_failures == 1
 
     await observer._update_job(job, None)
     await observer._update_job(job, None)
