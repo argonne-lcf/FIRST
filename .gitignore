@@ -64,3 +64,6 @@ vllm/
 site/
 .claude/
 *.code-workspace
+
+# Rust
+packages/logs/first-slogs/target/
