@@ -106,7 +106,7 @@ class PilotSubmitter:
                 cn=name,
                 ca_cert_pem=self.ca_crt,
                 ca_key_pem=self.ca_key,
-                days=ceil(self.pilot_config.job_walltime_min / 60 / 24),
+                days=ceil(self.pilot_config.job_walltime_min / 60 / 24) + 2,
             )
             runtime_cfg = PilotRuntimeConfig(
                 ca_crt=self.ca_crt,
