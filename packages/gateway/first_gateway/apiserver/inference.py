@@ -417,26 +417,28 @@ class InferenceService:
                     content += chunk
                     yield chunk
             finally:
-                tap.close()
                 with anyio.CancelScope(shield=True):
                     await response.aclose()
-                usage = (
-                    parser.parse_stream(tap.first, tap.last) if parser else TokenUsage()
-                )
-                await self.admission_controller.settle(
-                    self.request_id, actual_tokens=usage.total_tokens or 0
-                )
-                self._emit_inference_log(
-                    payload,
-                    model,
-                    deployment,
-                    backend,
-                    outcome="success",
-                    usage=usage,
-                    latency_sec=time.perf_counter() - t0,
-                    raw_body=bytes(content),
-                )
-                await self._record_token_stats(payload, model, usage)
+                    tap.close()
+                    usage = (
+                        parser.parse_stream(tap.first, tap.last)
+                        if parser
+                        else TokenUsage()
+                    )
+                    await self.admission_controller.settle(
+                        self.request_id, actual_tokens=usage.total_tokens or 0
+                    )
+                    self._emit_inference_log(
+                        payload,
+                        model,
+                        deployment,
+                        backend,
+                        outcome="success",
+                        usage=usage,
+                        latency_sec=time.perf_counter() - t0,
+                        raw_body=bytes(content),
+                    )
+                    await self._record_token_stats(payload, model, usage)
 
         return StreamingResponse(
             _relay(),
