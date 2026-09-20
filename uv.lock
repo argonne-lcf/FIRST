@@ -39,7 +39,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "alcf-tokens", specifier = ">=0.2" },
-    { name = "globus-sdk", specifier = ">=3.65.0,<4" },
+    { name = "globus-sdk", specifier = ">=3.65" },
     { name = "httpx" },
     { name = "matplotlib" },
     { name = "numpy" },
