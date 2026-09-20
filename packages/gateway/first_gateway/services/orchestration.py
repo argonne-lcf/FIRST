@@ -35,7 +35,11 @@ def get_shuffled_backends(
     """
 
     if deployment_name:
-        d = next((d for d in model.deployments if d.name == deployment_name))
+        d = next((d for d in model.deployments if d.name == deployment_name), None)
+        if d is None:
+            raise NotFound(
+                f"{deployment_name=} was not found in the current configuration."
+            )
         deployments = [d]
     else:
         deployments = model.deployments
