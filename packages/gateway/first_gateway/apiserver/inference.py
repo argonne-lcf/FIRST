@@ -31,7 +31,7 @@ from ..services.orchestration import (
 )
 from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
 from .auth import enforce_permission
-from .backend_client_manager import BackendClientManager
+from .backend_client_manager import UNARY_TIMEOUT, BackendClientManager
 from .context import get_request_id
 from .dependencies import AuthUser
 from .router_config_manager import RouterConfigManager
@@ -333,7 +333,7 @@ class InferenceService:
         t0 = time.perf_counter()
         try:
             response = await client.post(
-                f"/v1/{payload.endpoint}", json=upstream_payload
+                f"/v1/{payload.endpoint}", json=upstream_payload, timeout=UNARY_TIMEOUT
             )
         except httpx.RequestError as exc:
             logger.warning(
