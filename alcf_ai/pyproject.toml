@@ -3,7 +3,7 @@ name = "alcf-ai"
 dynamic = ["version"]
 description = "ALCF Inference Gateway SDK"
 authors = [{ name = "Misha Salim", email = "msalim@anl.gov" }]
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 readme = "README.md"
 dependencies = [
     "alcf-tokens>=0.2",
@@ -11,7 +11,7 @@ dependencies = [
     "numpy",
     "rich",
     "typer",
-    "globus-sdk>=3.65.0,<4",
+    "globus-sdk>=3.65",
     "openai",
     "matplotlib",
     "Pillow",
