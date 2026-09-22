@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_common.schema.base_scheduler import (
@@ -19,9 +20,12 @@ from first_common.schema.base_scheduler import (
 from first_common.schema.pilot import AddressInfo, PilotJobStatus, PilotResources
 from first_common.schema.resources.runtime import AutoscalerModelRuntime, ModelRuntime
 from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaState
+from first_gateway.controllers.controller import StaleReconcile
 from first_gateway.controllers.worker import Worker
 from first_gateway.controllers.workers.autoscaler import PilotAutoscaler
+from first_gateway.controllers.workers.pilot_job_controller import PilotJobController
 from first_gateway.controllers.workers.pilot_job_observer import PilotJobObserver
+from first_gateway.controllers.workers.replica_drainer import ReplicaDrainer
 from first_gateway.controllers.workers.replica_placement import ReplicaPlacer
 from first_gateway.controllers.workers.replica_reconciler import ReplicaReconciler
 from first_gateway.database.models import (
@@ -378,6 +382,173 @@ async def test_running_job_without_manager_is_idle_until_discovered(
     job = await _get_job(db, uid)
     assert job.manager_url == "https://10.1.2.3:8443/control"
     assert job.idle_since is None
+
+
+async def test_manager_discovery_invalidates_detached_idle_deletion(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A controller's expired snapshot cannot reap a newly reachable manager."""
+    adapter = FakeSchedulerAdapter()
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        uid = await _insert_pilot_job(
+            sess, "job-race", "race.pbs", state=SchedulerJobState.running
+        )
+        await sess.execute(
+            update(PilotJob)
+            .where(PilotJob.uid == uid)
+            .values(idle_since=datetime.now(timezone.utc) - timedelta(hours=2))
+        )
+    stale_job = await _get_job(db, uid)
+    addr = AddressInfo(
+        hostname="x3001", ip="10.1.2.3", external_port=8443, control_path="/control"
+    )
+    ready_dir = str(Path(WORKDIR) / "readyfiles")
+    adapter.directories[ready_dir] = ["job-race.ready.json"]
+    adapter.files[str(Path(ready_dir) / "job-race.ready.json")] = (
+        addr.model_dump_json(),
+        0o644,
+    )
+    observer = _make_observer(db)
+    submitter = PilotSubmitter(
+        PilotConfig.model_validate(PILOT_SYSTEM), adapter, "fake-ca", "fake-key"
+    )
+    await observer._discover_endpoints(submitter, "polaris")
+
+    controller = PilotJobController("test", _make_client_state(db), MagicMock())
+    with pytest.raises(StaleReconcile):
+        await controller._mark_idle_deletion(stale_job)
+    current = await _get_job(db, uid)
+    assert current.manager_url == addr.control_url
+    assert current.idle_since is None
+    assert current.scheduled_deletion_at is None
+
+
+async def test_readyfile_rpc_failure_does_not_reset_pre_manager_idle_clock(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        uid = await _insert_pilot_job(
+            sess, "job-rpc", "rpc.pbs", state=SchedulerJobState.running
+        )
+    observer = _make_observer(db)
+    submitter = MagicMock()
+    submitter.list_ready_endpoints = AsyncMock(side_effect=RuntimeError("offline"))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="offline"):
+            await observer._discover_endpoints(submitter, "polaris")
+        current = await _get_job(db, uid)
+        assert current.manager_url is None
+        assert current.idle_since is not None
+        if _ == 0:
+            first_idle = current.idle_since
+        else:
+            assert current.idle_since == first_idle
+
+
+@pytest.mark.parametrize(
+    "initial_state", [SchedulerJobState.queued, SchedulerJobState.running]
+)
+async def test_stop_before_manager_readiness_drains_then_expires_idle_pilot(
+    db: async_sessionmaker[AsyncSession], initial_state: SchedulerJobState
+) -> None:
+    """Stop releases claims without manager RPC; #352 reaps once running/idle."""
+    adapter = FakeSchedulerAdapter()
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_deployment_parents(sess)
+        await _insert_deployment(sess, "dep-stop")
+        job_uid = await _insert_pilot_job(
+            sess, "job-stop", "stop.pbs", state=initial_state
+        )
+        replica = PilotReplica(
+            name="dep-stop/replica/test",
+            pilot_deployment_name="dep-stop",
+            state=ReplicaState.placed.value,
+        )
+        sess.add(replica)
+        await sess.flush()
+        replica_uid = replica.uid
+        assert await PilotJob.assign_replica(sess, job_uid, replica_uid, {(0, 0)})
+        dep = await PilotDeployment.get_by_name(sess, "dep-stop")
+        dep_uid = dep.uid
+
+    cs = _make_client_state(db)
+    controller = PilotJobController("test", cs, MagicMock())
+    observer = _make_observer(db)
+    submitter = PilotSubmitter(
+        PilotConfig.model_validate(PILOT_SYSTEM), adapter, "fake-ca", "fake-key"
+    )
+    await observer._discover_endpoints(submitter, "polaris")
+    if initial_state == SchedulerJobState.running:
+        async with db.begin() as sess:
+            await sess.execute(
+                update(PilotJob)
+                .where(PilotJob.uid == job_uid)
+                .values(idle_since=datetime.now(timezone.utc) - timedelta(hours=2))
+            )
+        # A live assignment remains protected even if its manager never appears.
+        with pytest.raises(StaleReconcile):
+            await controller.reconcile(job_uid)
+    else:
+        assert (await _get_job(db, job_uid)).idle_since is None
+
+    async with db.begin() as sess:
+        stopping_dep = await sess.get(PilotDeployment, dep_uid)
+        assert stopping_dep is not None
+        stopping_dep.set_desired_replicas(0)
+    await ReplicaReconciler("test", cs, MagicMock()).reconcile(dep_uid)
+    with patch(
+        "first_gateway.controllers.workers.replica_drainer.PilotControlClient"
+    ) as client:
+        drainer = ReplicaDrainer("test", cs, MagicMock())
+        await drainer.reconcile(replica_uid)
+        client.return_value.stop_replica.assert_not_called()
+    async with db() as sess:
+        stopped = await sess.get(PilotReplica, replica_uid)
+        assert stopped is not None
+        assert stopped.deleted_at is not None
+        assert stopped.state == ReplicaState.terminated.value
+        assert stopped.claimed_gpu_ids == []
+    assert (await _get_job(db, job_uid)).claimed_gpu_ids == []
+
+    if initial_state == SchedulerJobState.queued:
+        # Queue time is deliberately not bootstrap-idle time: no immediate qdel.
+        await controller.reconcile(job_uid)
+        assert not (await _get_job(db, job_uid)).scheduled_deletion
+        async with db.begin() as sess:
+            await sess.execute(
+                update(PilotJob)
+                .where(PilotJob.uid == job_uid)
+                .values(scheduler_state=SchedulerJobState.running.value)
+            )
+        await observer._discover_endpoints(submitter, "polaris")
+        assert (await _get_job(db, job_uid)).idle_since is not None
+        async with db.begin() as sess:
+            await sess.execute(
+                update(PilotJob)
+                .where(PilotJob.uid == job_uid)
+                .values(idle_since=datetime.now(timezone.utc) - timedelta(hours=2))
+            )
+
+    await controller.reconcile(job_uid)
+    assert (await _get_job(db, job_uid)).scheduled_deletion
+    with patch(
+        "first_gateway.controllers.workers.pilot_job_controller.build_scheduler",
+        new_callable=AsyncMock,
+        return_value=adapter,
+    ):
+        await controller.reconcile(job_uid)
+    assert adapter.terminated == ["stop.pbs"]
+    await observer._update_job(await _get_job(db, job_uid), None)
+    assert (await _get_job(db, job_uid)).deleted_at is not None
+    async with db() as sess:
+        assert job_uid not in await controller.list_actionable(sess)
+        final_dep = await sess.get(PilotDeployment, dep_uid)
+        assert final_dep is not None
+        assert final_dep.desired_replicas == 0
+        assert final_dep.consecutive_launch_failures == 0
 
 
 async def test_graphql_known_job_omitted_from_bulk_page_uses_exact_truth(
