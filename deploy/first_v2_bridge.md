@@ -81,6 +81,18 @@ cd /home/webportal/inference-gateway
 .venv/bin/python manage.py first_v2_bridge --once
 ```
 
+### Access-control limits
+
+- **Before V2 adds an access-control dimension beyond groups/domains**, it must be
+  modelled in `first_v2_bridge/router_config.py` and enforced in V1; until then the
+  bridge silently ignores it and V1 has no column or check.
+- A parse failure aborts the tick rather than writing, so the last-reconciled rows
+  (including a permissive one) persist. Audit after an outage or a V2 schema change.
+- `_reconcile_endpoints` matches rows by `endpoint_slug` only, so it can overwrite
+  a same-slug row created by another adapter.
+- V1's adapter cache has a 60 s TTL, so a reconciled restriction can take up to
+  a minute to apply.
+
 ### Operations
 
 ```sh
