@@ -1,0 +1,29 @@
+---
+# Sample ClickHouse datasource for Grafana provisioning.
+#
+# Grafana interpolates ${VAR} from the container environment, so the password
+# comes from grafana/.env. The CA PEM is multi-line and cannot live in .env:
+# paste the contents of clickhouse/certs/ca.crt into tlsCACert below.
+apiVersion: 1
+
+datasources:
+  - name: ClickHouse
+    type: grafana-clickhouse-datasource
+    uid: clickhouse
+    access: proxy
+    isDefault: true
+    jsonData:
+      server: clickhouse
+      port: 9440
+      protocol: native
+      username: ${CLICKHOUSE_USER}
+      defaultDatabase: analytics
+      secure: true
+      tlsAuthWithCACert: true
+      tlsSkipVerify: false
+    secureJsonData:
+      password: ${CLICKHOUSE_PASSWORD}
+      tlsCACert: |
+        -----BEGIN CERTIFICATE-----
+        <paste clickhouse/certs/ca.crt here>
+        -----END CERTIFICATE-----
