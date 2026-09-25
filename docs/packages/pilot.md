@@ -63,7 +63,7 @@ per-job fields as `PILOT_*` overrides:
 | `network_interfaces` | IPv4 interfaces (e.g. `[hsn0, hsn1, hsn2, hsn3]`) NGINX binds, in preference order, alongside `127.0.0.1`. Interfaces that are missing, down, or have no IPv4 address are skipped; at least one must resolve. The first resolved address is advertised as the pilot endpoint and in replica URLs. Under GraphQL PBS the gateway dials an unordered `hsn_ips[0]`, so list every HSN interface |
 | `nginx_path` | Absolute path to the `nginx` binary on the compute node |
 | `ip_allowlist` | NGINX `allow` ACL — typically the gateway's egress range |
-| `workdir` | Rendezvous directory: pidfiles, ready-file, replica workdirs, nginx tmp |
+| `workdir` | Rendezvous directory: pidfiles, ready-file, replica workdirs, nginx tmp, audit |
 | `node_file_env` | Name of the env var (e.g. `PBS_NODEFILE`) that holds the scheduler's host list |
 | `job_name` | Unique pilot job name, used in file naming and the ready-file |
 
@@ -139,6 +139,28 @@ Resource bookkeeping is **mirrored**: the pilot rejects local conflicts,
 and the gateway's placement controller tracks the same inventory upstream
 so it doesn't try to place two replicas on the same GPU in the first
 place.
+
+### Control-plane audit trail
+
+These live under `workdir`, not the per-job tmpdir, so they outlive the allocation:
+
+* **`/control/` requests** — one JSON line per request in
+  `<workdir>/audit/<job_name>.control-access.jsonl`, including the mTLS subject
+  NGINX authenticated (`$ssl_client_s_dn`). A request counts as a control
+  request by its normalized path, and is recorded whatever its outcome:
+  requests denied by role (403) or by a failed client-certificate check (400)
+  are included.
+* **All requests** — the full NGINX access log (`combined` format, control and
+  data plane) in `<workdir>/audit/<job_name>.access.log`.
+* **Replica scripts** — the rendered `serve.sh`, `pre-stop.sh` and
+  `post-stop.sh` in `<workdir>/replicas/<name>/`. That directory is never
+  removed, and replica names are unique per launch. If a name is nonetheless
+  reused with a different script, the earlier file is kept as
+  `<script>.<UTC time it was written>`.
+
+Joining them by DN and timestamp — with the gateway's
+`ConfigVersion.applied_by` — attributes a start to its caller and script; the
+source address alone cannot, because every allowed host presents a CA-signed cert.
 
 ### Service discovery
 

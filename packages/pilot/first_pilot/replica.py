@@ -203,27 +203,21 @@ class Replica:
 
         self.log_path = workdir / "out.log"
 
-        script_path = self.workdir / "serve.sh"
-        script_path.write_text(
-            self._render_script(self.launch_spec.serve_script_template)
+        script_path = self._write_script(
+            "serve.sh", self.launch_spec.serve_script_template, 0o700
         )
-        script_path.chmod(0o755)
 
         self._pre_stop_script_path: Path | None = None
         if self.launch_spec.pre_stop_script_template is not None:
-            self._pre_stop_script_path = self.workdir / "pre-stop.sh"
-            self._pre_stop_script_path.write_text(
-                self._render_script(self.launch_spec.pre_stop_script_template)
+            self._pre_stop_script_path = self._write_script(
+                "pre-stop.sh", self.launch_spec.pre_stop_script_template, 0o700
             )
-            self._pre_stop_script_path.chmod(0o700)
 
         self._post_stop_script_path: Path | None = None
         if self.launch_spec.post_stop_script_template is not None:
-            self._post_stop_script_path = self.workdir / "post-stop.sh"
-            self._post_stop_script_path.write_text(
-                self._render_script(self.launch_spec.post_stop_script_template)
+            self._post_stop_script_path = self._write_script(
+                "post-stop.sh", self.launch_spec.post_stop_script_template, 0o700
             )
-            self._post_stop_script_path.chmod(0o700)
 
         self._log_fh = open(self.log_path, "ab")
 
@@ -301,6 +295,22 @@ class Replica:
             daemon=True,
         )
         self._monitor.start()
+
+    def _write_script(self, filename: str, template: str, mode: int) -> Path:
+        """
+        Render a script into the replica workdir. The workdir outlives the
+        replica and the job, so the rendered scripts are the audit record of
+        what ran. If the replica name is reused with a different script, the
+        earlier one is kept alongside rather than overwritten.
+        """
+        path = self.workdir / filename
+        content = self._render_script(template)
+        if path.exists() and path.read_text() != content:
+            written = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            path.rename(path.with_name(f"{filename}.{written:%Y%m%dT%H%M%S.%fZ}"))
+        path.write_text(content)
+        path.chmod(mode)
+        return path
 
     def _render_script(self, template: str) -> str:
         spec = self.launch_spec

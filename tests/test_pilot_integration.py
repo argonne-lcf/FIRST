@@ -10,14 +10,16 @@ the pilot uses POSIX process groups + SIGTERM.
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import sys
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import which
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import httpx
 import pytest
@@ -25,6 +27,7 @@ import yaml
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.pilot import (
+    PILOT_SERVER_CN,
     AddressInfo,
     PilotClientRole,
     PilotJobStatus,
@@ -196,6 +199,23 @@ def _control_base_url(addr: AddressInfo) -> str:
     return f"https://127.0.0.1:{addr.external_port}{addr.control_path.rstrip('/')}"
 
 
+async def _wait_for_jsonl(
+    path: Path, ready: Callable[[list[dict[str, Any]]], bool], timeout: float = 15.0
+) -> list[dict[str, Any]]:
+    """Read an append-only JSONL audit file once `ready` accepts its records."""
+    deadline = time.monotonic() + timeout
+    records: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        if path.exists():
+            records = [
+                json.loads(line) for line in path.read_text().splitlines() if line
+            ]
+            if ready(records):
+                return records
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{path} never satisfied the check; got {records}")
+
+
 async def _submit_and_wait_ready(
     submitter: PilotSubmitter, scheduler: LocalSchedulerAdapter, name: str
 ) -> AddressInfo:
@@ -295,6 +315,7 @@ async def test_replica_lifecycle(
     submitter: PilotSubmitter,
     scheduler: LocalSchedulerAdapter,
     pilot_pki: PilotPKI,
+    workdir: Path,
 ) -> None:
     """start_replica → poll until ready → logs → stop_replica."""
     addr = await _submit_and_wait_ready(submitter, scheduler, "beta")
@@ -316,6 +337,20 @@ async def test_replica_lifecycle(
 
         s_after = PilotJobStatus.model_validate((await client.get("/status")).json())
         assert all(rep.name != "r0" for rep in s_after.replicas)
+
+    # The replica workdir outlives the replica: the script it ran is on record.
+    serve_script = (workdir / "replicas" / "r0" / "serve.sh").read_text()
+    assert "exec python -c" in serve_script
+
+    # NGINX's audit line carries the authenticated subject.
+    start_request = "POST /control/start-replica HTTP/1.1"
+    access = await _wait_for_jsonl(
+        workdir / "audit" / "beta.control-access.jsonl",
+        lambda records: any(r["request"] == start_request for r in records),
+    )
+    control_dn = f"CN={PilotClientRole.control.value}"
+    assert all(record["client_dn"] == control_dn for record in access)
+    assert all(record["uri"].startswith("/control/") for record in access)
 
 
 # Where a request ended up. Each "allowed" outcome is identified positively by
@@ -379,6 +414,7 @@ async def test_authorization_matrix(
     submitter: PilotSubmitter,
     scheduler: LocalSchedulerAdapter,
     pilot_pki: PilotPKI,
+    workdir: Path,
     subtests: pytest.Subtests,
 ) -> None:
     """
@@ -433,3 +469,29 @@ async def test_authorization_matrix(
         # (here: serverAuth-only EKU) and then rejects every request with 400.
         assert resp.status_code == 400
         assert "The SSL certificate error" in resp.text
+
+    with subtests.test("rejected control requests are audited"):
+        # Neither rejection reaches the /control/ location: the role check and
+        # the client-certificate check both answer at server level.
+        def rejections(records: list[dict[str, Any]]) -> list[tuple[str, str, int]]:
+            return [
+                (r["client_dn"], r["request"], r["status"])
+                for r in records
+                if r["status"] != 200
+            ]
+
+        denied = (
+            f"CN={PilotClientRole.router.value}",
+            "POST //control/start-replica HTTP/1.1",
+            403,
+        )
+        bad_cert = (f"CN={PILOT_SERVER_CN}", "GET /control/status HTTP/1.1", 400)
+        records = await _wait_for_jsonl(
+            workdir / "audit" / "gamma.control-access.jsonl",
+            lambda records: {denied, bad_cert} <= set(rejections(records)),
+        )
+        # Data-plane traffic stays out of the control audit log, but is kept
+        # in the full access log next to it.
+        assert all(r["uri"].startswith("/control/") for r in records)
+        access_log = (workdir / "audit" / "gamma.access.log").read_text()
+        assert "POST /replicas/r0/v1/chat/completions HTTP/1.1" in access_log

@@ -29,6 +29,8 @@ def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() ->
         ca_crt_path="/tmp/ca.crt",
         server_crt_path="/tmp/server.crt",
         server_key_path="/tmp/server.key",
+        access_log_path="/tmp/audit/alpha.access.log",
+        audit_log_path="/tmp/audit/alpha.control-access.jsonl",
         replicas=[ReplicaUpstream(name="model", uds="/tmp/model.sock")],
     )
     control = rendered.split("location /control/ {", 1)[1].split("}", 1)[0]
@@ -38,6 +40,43 @@ def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() ->
     assert STOP_TIMEOUT.read is not None and 162 < STOP_TIMEOUT.read < 185
     assert re.findall(r"proxy_read_timeout\s+(\d+)s;", model) == ["920"]
     assert "proxy_pass http://control_api/;" in control
+
+
+def test_control_requests_are_audited_with_the_authenticated_subject() -> None:
+    rendered = Template(_conf_template_str).render(
+        config=SimpleNamespace(
+            control_uds_path=Path("/tmp/control.sock"),
+            external_port=8443,
+            ip_allowlist=["127.0.0.1"],
+        ),
+        nginx_tmpdir="/tmp/nginx",
+        control_path="/control/",
+        roles=PilotClientRole,
+        ca_crt_path="/tmp/ca.crt",
+        server_crt_path="/tmp/server.crt",
+        server_key_path="/tmp/server.key",
+        access_log_path="/tmp/audit/alpha.access.log",
+        audit_log_path="/tmp/audit/alpha.control-access.jsonl",
+        replicas=[],
+    )
+    control = rendered.split("location /control/ {", 1)[1].split("}", 1)[0]
+
+    assert "log_format control_audit escape=json" in rendered
+    assert "$ssl_client_s_dn" in rendered
+    assert "$ssl_client_verify" in rendered
+    # Declared at http level, ahead of the server block's default-deny, so a
+    # request rejected before reaching the location is still audited.
+    http_level = rendered.split("server {", 1)[0]
+    assert (
+        "access_log /tmp/audit/alpha.control-access.jsonl control_audit "
+        "buffer=64k flush=5s if=$audit_control;"
+    ) in http_level
+    # The full access log is kept next to it rather than in the job tmpdir.
+    assert (
+        "access_log /tmp/audit/alpha.access.log combined buffer=64k flush=5s;"
+    ) in http_level
+    assert '"~^/control/" 1;' in http_level
+    assert "access_log" not in control
 
 
 def _make_client(handler: object) -> PilotControlClient:

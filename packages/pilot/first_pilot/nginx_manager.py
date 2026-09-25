@@ -35,9 +35,28 @@ _conf_template_str = """
         client_body_temp_path {{nginx_tmpdir}}/client_body;
         proxy_temp_path {{nginx_tmpdir}}/proxy;
         fastcgi_temp_path {{nginx_tmpdir}}/fastcgi;
-        access_log {{nginx_tmpdir}}/access.log combined buffer=64k flush=5s;
         uwsgi_temp_path {{nginx_tmpdir}}/uwsgi;
         scgi_temp_path {{nginx_tmpdir}}/scgi;
+
+        # access logs are retained after job shutdown
+        access_log {{access_log_path}} combined buffer=64k flush=5s;
+
+        # Control-plane audit: one JSON line per request
+        map $uri $audit_control {
+            default 0;
+            "~^{{control_path}}" 1;
+        }
+        log_format control_audit escape=json
+            '{"time":"$time_iso8601"'
+            ',"remote_addr":"$remote_addr"'
+            ',"client_dn":"$ssl_client_s_dn"'
+            ',"client_verify":"$ssl_client_verify"'
+            ',"request":"$request"'
+            ',"uri":"$uri"'
+            ',"status":$status'
+            ',"body_bytes_sent":$body_bytes_sent'
+            ',"request_time":$request_time}';
+        access_log {{audit_log_path}} control_audit buffer=64k flush=5s if=$audit_control;
 
         tcp_nodelay on;                 # push token frames immediately
         gzip off;                       # never compress SSE (it buffers tokens)
@@ -187,6 +206,12 @@ class NginxManager:
         self.tmpdir = Path(tmpdir).resolve()
         self.tmpdir.mkdir(parents=True, exist_ok=True)
 
+        self.access_log_path = config.audit_dir / f"{config.job_name}.access.log"
+        self.audit_log_path = config.audit_dir / (
+            f"{config.job_name}.control-access.jsonl"
+        )
+        self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Materialize cert/key PEMs from the config
         self.ca_crt_path = self._write_secret("ca.crt", config.ca_crt)
         self.server_crt_path = self._write_secret("server.crt", config.server_crt)
@@ -225,6 +250,8 @@ class NginxManager:
             ca_crt_path=self.ca_crt_path.as_posix(),
             server_crt_path=self.server_crt_path.as_posix(),
             server_key_path=self.server_key_path.as_posix(),
+            access_log_path=self.access_log_path.as_posix(),
+            audit_log_path=self.audit_log_path.as_posix(),
         )
 
     def start(self) -> None:
