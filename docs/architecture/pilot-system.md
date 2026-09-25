@@ -84,6 +84,11 @@ behind a single NGINX terminator.
 - The NGINX manager re-renders the NGINX config and `SIGHUP`-reloads
   **gracefully** as replicas come and go — in-flight traffic is not
   dropped.
+- Every `/control/` request is logged as one JSON line carrying the mTLS
+  subject NGINX authenticated (`$ssl_client_s_dn`), the request, source
+  address, timestamp, and outcome. Each replica also appends the rendered
+  launch script it runs to its durable `out.log`. See the
+  [pilot package reference](../packages/pilot.md#control-plane-audit-trail).
 
 ### Control APIs
 

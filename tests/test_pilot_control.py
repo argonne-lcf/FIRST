@@ -27,6 +27,7 @@ def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() ->
         ca_crt_path="/tmp/ca.crt",
         server_crt_path="/tmp/server.crt",
         server_key_path="/tmp/server.key",
+        audit_log_path="/tmp/audit/alpha.control-access.jsonl",
         replicas=[ReplicaUpstream(name="model", uds="/tmp/model.sock")],
     )
     control = rendered.split("location /control/ {", 1)[1].split("}", 1)[0]
@@ -36,6 +37,29 @@ def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() ->
     assert STOP_TIMEOUT.read is not None and 162 < STOP_TIMEOUT.read < 185
     assert re.findall(r"proxy_read_timeout\s+(\d+)s;", model) == ["920"]
     assert "proxy_pass http://control_api/;" in control
+
+
+def test_control_location_audits_the_authenticated_subject() -> None:
+    rendered = Template(_conf_template_str).render(
+        config=SimpleNamespace(
+            control_uds_path=Path("/tmp/control.sock"),
+            external_port=8443,
+            ip_allowlist=["127.0.0.1"],
+        ),
+        nginx_tmpdir="/tmp/nginx",
+        control_path="/control/",
+        ca_crt_path="/tmp/ca.crt",
+        server_crt_path="/tmp/server.crt",
+        server_key_path="/tmp/server.key",
+        audit_log_path="/tmp/audit/alpha.control-access.jsonl",
+        replicas=[],
+    )
+    control = rendered.split("location /control/ {", 1)[1].split("}", 1)[0]
+
+    assert "log_format control_audit escape=json" in rendered
+    assert "$ssl_client_s_dn" in rendered
+    assert "$ssl_client_verify" in rendered
+    assert "access_log /tmp/audit/alpha.control-access.jsonl control_audit" in control
 
 
 def _make_client(handler: object) -> PilotControlClient:

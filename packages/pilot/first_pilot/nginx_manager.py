@@ -31,6 +31,18 @@ _conf_template_str = """
         proxy_temp_path {{nginx_tmpdir}}/proxy;
         fastcgi_temp_path {{nginx_tmpdir}}/fastcgi;
         access_log {{nginx_tmpdir}}/access.log combined buffer=64k flush=5s;
+
+        # Control-plane audit: one JSON line per /control/ request, with the
+        # mTLS subject NGINX authenticated ($ssl_client_s_dn).
+        log_format control_audit escape=json
+            '{"time":"$time_iso8601"'
+            ',"remote_addr":"$remote_addr"'
+            ',"client_dn":"$ssl_client_s_dn"'
+            ',"client_verify":"$ssl_client_verify"'
+            ',"request":"$request"'
+            ',"status":$status'
+            ',"body_bytes_sent":$body_bytes_sent'
+            ',"request_time":$request_time}';
         uwsgi_temp_path {{nginx_tmpdir}}/uwsgi;
         scgi_temp_path {{nginx_tmpdir}}/scgi;
 
@@ -77,6 +89,7 @@ _conf_template_str = """
             client_body_buffer_size 1m;
 
             location {{control_path}} {
+                access_log {{audit_log_path}} control_audit buffer=4k flush=1s;
                 {% for ip in config.ip_allowlist -%}
                 allow {{ip}};
                 {% endfor -%}
@@ -133,6 +146,11 @@ class NginxManager:
         self.tmpdir = Path(tmpdir).resolve()
         self.tmpdir.mkdir(parents=True, exist_ok=True)
 
+        self.audit_log_path = config.audit_dir / (
+            f"{config.job_name}.control-access.jsonl"
+        )
+        self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Materialize cert/key PEMs from the config
         self.ca_crt_path = self._write_secret("ca.crt", config.ca_crt)
         self.server_crt_path = self._write_secret("server.crt", config.server_crt)
@@ -160,6 +178,7 @@ class NginxManager:
             ca_crt_path=self.ca_crt_path.as_posix(),
             server_crt_path=self.server_crt_path.as_posix(),
             server_key_path=self.server_key_path.as_posix(),
+            audit_log_path=self.audit_log_path.as_posix(),
         )
 
     def start(self) -> None:

@@ -167,13 +167,23 @@ class PilotRuntimeConfig(BaseSettings):
         return self.workdir / "readyfiles"
 
     @property
+    def audit_dir(self) -> Path:
+        # Durable across the allocation: never move this under nginx_base_dir.
+        return self.workdir / "audit"
+
+    @property
     def control_uds_path(self) -> Path:
         if self._tmpdir is None:
             self._tmpdir = TemporaryDirectory()
         return Path(self._tmpdir.name) / f"pilot-control-{os.getpid()}.sock"
 
     def ensure_dirs(self) -> None:
-        for d in (self.nginx_base_dir, self.replica_base_dir, self.readyfile_dir):
+        for d in (
+            self.nginx_base_dir,
+            self.replica_base_dir,
+            self.readyfile_dir,
+            self.audit_dir,
+        ):
             d.mkdir(exist_ok=True, parents=True)
 
     @classmethod

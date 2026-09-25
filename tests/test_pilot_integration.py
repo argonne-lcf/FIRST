@@ -10,6 +10,7 @@ the pilot uses POSIX process groups + SIGTERM.
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import ssl
 import sys
@@ -19,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from shutil import which
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import httpx
 import pytest
@@ -214,6 +216,23 @@ def _control_base_url(addr: AddressInfo) -> str:
     return f"https://127.0.0.1:{addr.external_port}{addr.control_path.rstrip('/')}"
 
 
+async def _wait_for_jsonl(
+    path: Path, *, minimum: int, timeout: float = 5.0
+) -> list[dict[str, Any]]:
+    """Read an append-only JSONL audit file once it has `minimum` records."""
+    deadline = time.monotonic() + timeout
+    records: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        if path.exists():
+            records = [
+                json.loads(line) for line in path.read_text().splitlines() if line
+            ]
+            if len(records) >= minimum:
+                return records
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{path} did not reach {minimum} records; got {records}")
+
+
 async def _submit_and_wait_ready(
     submitter: PilotSubmitter, scheduler: LocalSchedulerAdapter, name: str
 ) -> AddressInfo:
@@ -339,3 +358,24 @@ async def test_replica_lifecycle(
 
         s_after = PilotJobStatus.model_validate((await client.get("/status")).json())
         assert all(rep.name != "r0" for rep in s_after.replicas)
+
+    out_log = (workdir / "replicas" / "r0" / "out.log").read_text()
+    audit_line = next(
+        line
+        for line in out_log.splitlines()
+        if line.startswith("[FIRST lifecycle] replica.start ")
+    )
+    record = json.loads(audit_line.removeprefix("[FIRST lifecycle] replica.start "))
+    assert record["replica"] == "r0"
+    assert record["gpus"][0]["gpu_ids"] == ["0"]
+    assert "exec python -c" in record["serve_script"]
+    assert record["uds"] in record["serve_script"]
+
+    # NGINX's own access line carries the same authenticated subject.
+    access = await _wait_for_jsonl(
+        workdir / "audit" / "beta.control-access.jsonl", minimum=1
+    )
+    assert all(record["client_dn"] == "CN=first_gateway-test" for record in access)
+    assert any(
+        record["request"] == "POST /control/start-replica HTTP/1.1" for record in access
+    )
