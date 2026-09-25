@@ -59,7 +59,7 @@ into the allocation's working directory:
 | `external_port` | Single externally-exposed TCP port. NGINX listens here; control API and replicas live on `+1`, `+2…` internally |
 | `nginx_path` | Absolute path to the `nginx` binary on the compute node |
 | `ip_allowlist` | NGINX `allow` ACL — typically the gateway's egress range |
-| `workdir` | Rendezvous directory: pidfiles, ready-file, replica workdirs, nginx tmp |
+| `workdir` | Rendezvous directory: pidfiles, ready-file, replica workdirs, nginx tmp, audit |
 | `node_file_env` | Name of the env var (e.g. `PBS_NODEFILE`) that holds the scheduler's host list |
 | `job_name` | Unique pilot job name, used in file naming and the ready-file |
 
@@ -121,6 +121,20 @@ Resource bookkeeping is **mirrored**: the pilot rejects local conflicts,
 and the gateway's placement controller tracks the same inventory upstream
 so it doesn't try to place two replicas on the same GPU in the first
 place.
+
+### Control-plane audit trail
+
+Both live under `workdir`, not the per-job tmpdir, so they outlive the allocation:
+
+* **`/control/` requests** — one JSON line per request to
+  `<workdir>/audit/<job_name>.control-access.jsonl`, including the mTLS subject
+  NGINX authenticated (`$ssl_client_s_dn`).
+* **Replica starts** — the exact rendered `serve.sh` appended to the replica's
+  `out.log` under `<workdir>/replicas/<name>/`.
+
+Joining them by DN and timestamp — with the gateway's
+`ConfigVersion.applied_by` — attributes a start to its caller and script; the
+source address alone cannot, because every allowed host presents a CA-signed cert.
 
 ### Service discovery
 

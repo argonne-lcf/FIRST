@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shlex
@@ -226,6 +227,19 @@ class Replica:
             self._post_stop_script_path.chmod(0o700)
 
         self._log_fh = open(self.log_path, "ab")
+        # Record the exact script in the durable out.log (it appends on reuse).
+        self._write_lifecycle_log(
+            "replica.start "
+            + json.dumps(
+                {
+                    "replica": self.name,
+                    "uds": self.uds,
+                    "gpus": [claim.model_dump(mode="json") for claim in self.resources],
+                    "serve_script": script_path.read_text(),
+                },
+                sort_keys=True,
+            )
+        )
 
         self._env = os.environ.copy()
         self._env.update(self.launch_spec.env)

@@ -1,6 +1,7 @@
 """Focused tests for cooperative replica quiesce and bounded fallback."""
 
 import inspect
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,25 @@ def _replica(tmp_path: Path, spec: ResolvedLaunchSpec) -> Replica:
         launch_spec=spec,
         workdir=workdir,
     )
+
+
+def test_start_appends_the_rendered_script_to_the_durable_out_log(
+    tmp_path: Path,
+) -> None:
+    replica = _replica(tmp_path, _launch_spec())
+    try:
+        line = next(
+            line
+            for line in replica.log_path.read_text().splitlines()
+            if line.startswith("[FIRST lifecycle] replica.start ")
+        )
+        record = json.loads(line.removeprefix("[FIRST lifecycle] replica.start "))
+        assert record["replica"] == "deployment/replica/one"
+        assert record["gpus"] == [{"hostname": "node-a", "gpu_ids": ["0", "1"]}]
+        assert record["serve_script"] == (replica.workdir / "serve.sh").read_text()
+        assert "sleep 0.1" in record["serve_script"]
+    finally:
+        replica.stop()
 
 
 def _teardown_complete(replica: Replica) -> bool:
