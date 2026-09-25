@@ -1,0 +1,52 @@
+---
+# VM2: Grafana over the analytics tables. The gateway stack's Grafana
+# (deploy/compose.yaml) stays on Prometheus; this one is the usage dashboard.
+# See docs/architecture/structured-logging-clickhouse.md.
+name: first-analytics-grafana
+
+services:
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana-oss:13.0.2}
+    container_name: first-analytics-grafana
+    environment:
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_SECURITY_ADMIN_PASSWORD: >-
+        ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-https://localhost:3000}"
+      GF_SERVER_PROTOCOL: "https"
+      GF_SERVER_CERT_FILE: /etc/grafana/certs/server.crt
+      GF_SERVER_CERT_KEY: /etc/grafana/certs/server.key
+      GF_SECURITY_COOKIE_SECURE: "true"
+      # Read by provisioning/datasources/clickhouse.yaml.
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-grafana}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./certs:/etc/grafana/certs:ro
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --no-check-certificate -O- https://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - analytics
+
+networks:
+  analytics:
+    external: true
+    name: ${ANALYTICS_NETWORK:-first-analytics}
+
+volumes:
+  grafana_data:

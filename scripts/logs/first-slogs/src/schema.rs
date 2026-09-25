@@ -24,11 +24,14 @@ pub fn primary_key_of(stream: &str) -> Option<&'static str> {
     }
 }
 
-/// The schema of each stream's rows, mirrored from the structured logs'
-/// pydantic models of `first_common` — `schema/structured_logs.py` and
-/// `schema/auth.py` — and the fields their emitters add around them
-/// (`user.name`, `user.id`); the datetimes stay the iso strings the lines
-/// log them as. `None` for the streams that hold no structured rows.
+/// The schema of each stream's rows, mirrored from the V1 gateway's structured
+/// logs — `access_log`, `request_log`, `request_metrics`, `batch_log`,
+/// `batch_metrics` — and `first_common`'s `schema/auth.py` for `user`; the
+/// datetimes stay the iso strings the lines log them as. `None` for the streams
+/// that hold no structured rows.
+///
+/// The V2 gateway emits a different set — `request`, `response`, `inference`,
+/// each carrying an `event_id` — which this tool does not parse.
 pub fn schema_of(stream: &str) -> Option<Schema> {
     use DataType::*;
 

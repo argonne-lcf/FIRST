@@ -1,0 +1,25 @@
+# Sample server certificate configuration for ClickHouse (VM2).
+#
+# Edit [alt_names] so every name and address a client dials is listed:
+#   - `clickhouse` is the container name Grafana dials on the compose network
+#   - `localhost` / 127.0.0.1 are the loopback clients
+#   - the VM2 hostname is what Vector dials from VM1
+[req]
+distinguished_name = dn
+prompt = no
+req_extensions = v3_req
+
+[dn]
+CN = clickhouse
+
+[v3_req]
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = clickhouse
+DNS.2 = localhost
+DNS.3 = vm2.example.com
+IP.1 = 127.0.0.1
