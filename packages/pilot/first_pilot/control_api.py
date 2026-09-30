@@ -20,7 +20,7 @@ from first_common.schema.pilot import (
     ReplicaStartRequest,
 )
 
-from .nginx_manager import NginxManager, ReplicaUpstream
+from .nginx_manager import NginxManager, ReplicaUpstream, check_server_cert_expiry
 from .replica_manager import ReplicaManager
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 class _PilotManager:
     def __init__(self, config: PilotRuntimeConfig, nginx_tmpdir: Path) -> None:
         self.config = config
+        check_server_cert_expiry(config.server_crt, config.walltime_min)
         self.nginx = NginxManager(self.config, nginx_tmpdir)
         self.replica_manager = ReplicaManager(self.config)
         self._endpoint = self.discover_service_endpoint()

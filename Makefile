@@ -24,6 +24,12 @@ test: sync
 install-dev: sync
 	pre-commit install
 
+# Local dev pilot mTLS identities: CA (if absent), pilot server, and one client
+# cert per role. Compose mounts these as secrets (see deploy/compose.yaml).
+.PHONY: pki  # a pki/ directory exists, so the target must be phony
+pki: sync
+	uv run pilot-certmanager standard --dir pki
+
 # The compose shortcuts below read COMPOSE_FILE / COMPOSE_PROJECT_NAME from .env.
 # For local dev, .env should contain:
 #   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml

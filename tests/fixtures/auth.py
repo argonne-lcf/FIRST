@@ -111,11 +111,13 @@ def mock_globus(monkeypatch: pytest.MonkeyPatch) -> None:
 async def client(
     db: async_sessionmaker[AsyncSession],
     mock_globus: None,
+    pilot_mtls_settings: None,
 ) -> AsyncGenerator[httpx.AsyncClient, None]:
     """
     An httpx client bound to the user-facing apiserver app, with its lifespan run.
 
-    Relies on db and mock_globus fixtures to patch postgres, redis, and globus auth.
+    Relies on db, mock_globus, and pilot_mtls_settings fixtures to patch
+    postgres, redis, globus auth, and the pilot mTLS cert files.
     """
 
     # See https://fastapi.tiangolo.com/advanced/async-tests/

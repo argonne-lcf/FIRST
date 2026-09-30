@@ -7,6 +7,7 @@ Redis) and the real SQL in each check function.
 """
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from redis.asyncio import Redis
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from first_common.schema.pilot import PilotClientRole
 from first_common.schema.resources.runtime import (
     CommittedAlert,
     HealthAlertState,
@@ -32,6 +34,7 @@ from first_gateway.controllers.workers.health_alerter.checks import (
     Check,
     check_cluster_health,
     check_db_liveness,
+    check_pilot_client_cert,
     check_pilot_deployment,
     check_pilot_job,
     check_pilot_replica,
@@ -57,8 +60,10 @@ from first_gateway.database.models import (
     StaticDeployment,
 )
 from first_gateway.database.redis.repo import RedisRepo
+from first_gateway.services.certmanager import gen_ca_pem, generate_client_cert
 
 from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
+from .fixtures.pki import PilotPKI
 
 DEBOUNCE = timedelta(seconds=45)
 
@@ -953,3 +958,22 @@ async def test_check_db_liveness_healthy(
     alerter = _make_alerter(db, redis)
     obs = await check_db_liveness(alerter.client_state)
     assert len(obs) == 0
+
+
+async def test_check_pilot_client_cert_expiry(
+    pilot_pki: PilotPKI, tmp_path: Path
+) -> None:
+    client_state = MagicMock()
+    client_state.settings.pilot_client_crt_file = pilot_pki.clients[
+        PilotClientRole.control
+    ].crt
+    assert await check_pilot_client_cert(client_state) == []
+
+    ca_crt, ca_key = gen_ca_pem(name="test-ca")
+    crt, _ = generate_client_cert(
+        cn=PilotClientRole.control, ca_cert_pem=ca_crt, ca_key_pem=ca_key, days=10
+    )
+    client_state.settings.pilot_client_crt_file = tmp_path / "expiring.crt"
+    client_state.settings.pilot_client_crt_file.write_text(crt)
+    [obs] = await check_pilot_client_cert(client_state)
+    assert (obs.status, obs.severity) == ("expiring", "warn")

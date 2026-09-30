@@ -13,7 +13,7 @@ from first_gateway.settings import Settings
 async def main():
     s = Settings()
     async with s.build_clients() as cs:
-        c = PilotControlClient(cs, cn="test")
+        c = PilotControlClient(cs)
 
     url = "https://10.124.186.87:8000/replicas/tara/openai/gpt-oss-20b/replica/3fe49df4/v1/chat/completions"
     async with c._client.stream(

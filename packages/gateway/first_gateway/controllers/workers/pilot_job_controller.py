@@ -280,13 +280,7 @@ class PilotJobController(Controller):
                 return
 
         adapter = await build_scheduler(pilot_config, self.client_state)
-        settings = self.client_state.settings
-        submitter = PilotSubmitter(
-            pilot_config,
-            adapter,
-            settings.pilot_ca_crt,
-            settings.pilot_ca_key.get_secret_value(),
-        )
+        submitter = PilotSubmitter(pilot_config, adapter)
 
         # Check if already queued to prevent duplicates on partial failure
         statuses = await asyncio.wait_for(

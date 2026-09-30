@@ -126,9 +126,7 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
         adapter = GraphQLPBSAdapter(
             client, "test-service", "https://scheduler.example.test/graphql"
         )
-        await PilotSubmitter(config, adapter, "unused-ca", "unused-key").submit(
-            pilot_job
-        )
+        await PilotSubmitter(config, adapter).submit(pilot_job)
 
     script = _submitted_script(requests[0])
     expected_runtime_env = {
@@ -144,6 +142,7 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
         ),
         "PILOT_NUM_NODES": str(pilot_job.num_nodes),
         "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
+        "PILOT_WALLTIME_MIN": str(pilot_job.walltime_min),
     }
     for key, value in expected_runtime_env.items():
         assert f"{key}={quote(value)}" in script

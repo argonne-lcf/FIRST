@@ -48,7 +48,7 @@ class ReplicaLauncher(Controller):
             max_backoff=max_backoff,
             heartbeat_timeout=heartbeat_timeout,
         )
-        self.client = PilotControlClient(client_state, cn="replica-launcher")
+        self.client = PilotControlClient(client_state)
 
     async def list_actionable(self, sess: AsyncSession) -> list[int]:
         stmt = (

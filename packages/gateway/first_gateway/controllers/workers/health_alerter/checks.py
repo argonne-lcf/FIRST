@@ -2,9 +2,11 @@ import asyncio
 import logging
 import traceback
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 import sqlalchemy as sa
+from cryptography import x509
 from httpx import AsyncClient
 from sqlalchemy.orm import load_only, selectinload
 
@@ -31,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _SCHEDULER_CHECK_TIMEOUT_S = 10.0
 _DEBOUNCE_S = 150.0
+_CERT_EXPIRY_WARNING = timedelta(days=30)
 
 
 def _error_tail(err: str | None, limit: int = 300) -> str:
@@ -475,6 +478,32 @@ async def check_host(client_state: ClientState) -> list[Observation]:
     return obs
 
 
+async def check_pilot_client_cert(client_state: ClientState) -> list[Observation]:
+    """
+    Alert before this service's pilot client cert expires. The router and
+    metrics certs are issued alongside it, so this covers them too.
+    """
+    path = client_state.settings.pilot_client_crt_file
+    cert = x509.load_pem_x509_certificate(path.read_bytes())
+    expires = cert.not_valid_after_utc
+    remaining = expires - datetime.now(timezone.utc)
+    if remaining >= _CERT_EXPIRY_WARNING:
+        return []
+    expired = remaining <= timedelta(0)
+    return [
+        Observation(
+            key="pilot_client_cert/expiry",
+            status="expired" if expired else "expiring",
+            summary=(
+                f"Pilot client certificate {'expired' if expired else 'expires'} "
+                f"{expires:%Y-%m-%d}: re-issue with `pilot-certmanager standard`"
+            ),
+            display_name="Pilot client certificate",
+            severity="crit" if expired else "warn",
+        )
+    ]
+
+
 CHECK_REGISTRY = [
     Check(check_cluster_health, "Clusters"),
     Check(check_schedulers, "Clusters"),
@@ -484,4 +513,5 @@ CHECK_REGISTRY = [
     Check(check_pilot_replica, "Pilot Replicas"),
     Check(check_db_liveness, "Infrastructure"),
     Check(check_host, "Infrastructure"),
+    Check(check_pilot_client_cert, "Infrastructure"),
 ]

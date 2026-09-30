@@ -41,9 +41,25 @@ inference_base_url=http://localhost:8000
 ```ini
 FIRST_GLOBUS__APP_ID="globus auth app id" # use same as previous
 FIRST_GLOBUS__APP_SECRET="globus auth app secret"
-FIRST_PILOT_CA_CRT="CA certificate" # can be fake for now
-FIRST_PILOT_CA_KEY="CA key" # can be fake for now
 ```
+
+### Generate dev certificates
+
+The gateway talks to pilots over mTLS and loads its certificates from files,
+not env vars. Generate a throwaway dev CA and the standard certificate set into
+the `.gitignore`d `pki/` directory:
+
+```bash
+make pki
+```
+
+Compose mounts these into each service as Docker secrets
+(`/run/secrets/pilot_ca.crt`, `pilot_client.crt`, `pilot_client.key`), each
+service getting its own identity. When running the gateway outside Compose,
+point `FIRST_PILOT_CA_CRT_FILE`, `FIRST_PILOT_CLIENT_CRT_FILE` and
+`FIRST_PILOT_CLIENT_KEY_FILE` at files in `pki/` (`.env.local` already does,
+with the `first-control` identity). Tests generate their own throwaway CA. See the
+[Certificate Manager](../packages/certmanager.md) for details.
 
 ### Start local services and test
 Bring everything up in the Dev Docker Compose stack with:

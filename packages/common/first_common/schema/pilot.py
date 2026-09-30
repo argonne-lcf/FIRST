@@ -6,6 +6,7 @@ Do not confuse with admin-created pilot resources inside `resources` subpackage
 
 import os
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Self
@@ -22,6 +23,21 @@ from .types import (
     SSHDiscovery,
 )
 
+PILOT_SERVER_CN = "first-pilot"
+PILOT_SERVER_SAN = "first-pilot.internal"
+
+
+class PilotClientRole(StrEnum):
+    """
+    Client identities accepted by pilot NGINX. The value is the certificate CN;
+    the pilot authorizes each request by role (see nginx_manager).
+    """
+
+    control = "first-control"
+    router = "first-router"
+    metrics = "first-metrics"
+
+
 _JOB_ENV_OVERRIDE_FIELDS = frozenset(
     {
         "job_name",
@@ -33,6 +49,7 @@ _JOB_ENV_OVERRIDE_FIELDS = frozenset(
         "gpu_discovery",
         "num_nodes",
         "gpus_per_node",
+        "walltime_min",
     }
 )
 
@@ -147,6 +164,8 @@ class PilotRuntimeConfig(BaseSettings):
     num_nodes: int = Field(ge=1)
     gpus_per_node: int = Field(ge=1)
     job_name: str
+    # Scheduler walltime; the server certificate must outlive it.
+    walltime_min: int = Field(ge=1)
 
     # Name of the IPv4 network interface (e.g. "hsn0") whose address the pilot
     # should advertise as its externally-reachable endpoint. When None, the IP

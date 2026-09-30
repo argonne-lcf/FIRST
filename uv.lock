@@ -638,6 +638,7 @@ source = { editable = "packages/gateway" }
 dependencies = [
     { name = "alcf-ai" },
     { name = "alembic" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "first-common" },
     { name = "globus-compute-sdk" },
@@ -661,6 +662,7 @@ dependencies = [
 requires-dist = [
     { name = "alcf-ai", editable = "packages/client" },
     { name = "alembic" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "first-common", editable = "packages/common" },
     { name = "globus-compute-sdk" },
@@ -686,6 +688,7 @@ version = "0.1.0"
 source = { editable = "packages/pilot" }
 dependencies = [
     { name = "cachetools" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "first-common" },
     { name = "jinja2" },
@@ -696,6 +699,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cachetools" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "first-common", editable = "packages/common" },
     { name = "jinja2" },

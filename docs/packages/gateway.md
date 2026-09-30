@@ -37,7 +37,7 @@ one object that every downstream layer is given.
 | `controllers` | `Worker` base class + supervising `manager.main`. The framework is implemented; today `HealthObserver` and `RetentionSweeper` are registered (see [Controller Framework](../architecture/controllers.md) for the full design). |
 | `database` | SQLAlchemy ORM (`models.py`) and Alembic migrations. Each `ResourceRow` subclass auto-registers into `resource_registry` so `plan_apply` can dispatch by `kind`. All relationships are `lazy="raise"`; callers must explicitly eager-load. See [Data Model](../architecture/data-model.md). |
 | `platforms` | Adapters to specific HPC environments. `schedulers/globus_compute_pbs.py` (the only adapter shipped today). |
-| `services` | Cross-cutting business logic kept out of API views — `plan_apply` (declarative config), `pilot_submitter` (renders pilot config + cert + submit script, then calls the scheduler adapter), and `certmanager` (library + CLI for the mTLS PKI; see [Certificate Manager](certmanager.md)). |
+| `services` | Cross-cutting business logic kept out of API views — `plan_apply` (declarative config), `pilot_submitter` (builds the submit script and per-job `PILOT_*` overrides for the cluster's pre-staged pilot config, then calls the scheduler adapter), and `certmanager` (offline CLI for the mTLS PKI, not used by running services; see [Certificate Manager](certmanager.md)). |
 | `settings.py` | Pydantic-based settings validation; loads from env vars (and `.env.*` files in dev). Defines `ClientState`. |
 
 ## Request lifecycle (apiserver)

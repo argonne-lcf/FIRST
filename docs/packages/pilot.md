@@ -16,8 +16,9 @@ model replicas.
 ```
 
 The gateway never reaches a model replica directly. NGINX terminates TLS,
-authenticates the gateway's client cert, and reverse-proxies to either the
-control API or to a replica's local HTTP port.
+authenticates the caller's client cert, authorizes the request by the cert's
+subject (see NGINX manager below), and
+reverse-proxies to either the control API or to a replica's local HTTP port.
 
 
 ## System requirements
@@ -48,14 +49,16 @@ reverse-proxies inbound mTLS traffic to it.
 `PilotRuntimeConfig` (defined in
 `first_common.schema.pilot:PilotRuntimeConfig`) is the on-disk YAML
 contract between the gateway and the pilot. It is loaded once at startup
-from the path in `$PILOT_CONFIG_FILE`. The control plane (not the
-cluster) renders this config at **job submission time** and stages it
-into the allocation's working directory:
+from the path in `$PILOT_CONFIG_FILE`, then overlaid with any `PILOT_*`
+environment variables. An admin pre-stages one such file per cluster
+(`PilotConfig.pilot_config_path`), and the gateway's submitter passes the
+per-job fields as `PILOT_*` overrides:
 
 | Field | Meaning |
 |---|---|
 | `ca_crt` | Root-CA PEM (inline string) the pilot trusts for incoming mTLS clients |
-| `server_crt`, `server_key` | Server cert + key PEMs (inline strings), JIT-issued so the cert's lifetime tracks the job's max walltime. |
+| `server_crt`, `server_key` | `CN=first-pilot` server cert + key PEMs (inline strings), issued offline and shared by every pilot on the cluster |
+| `walltime_min` | Job walltime (`PILOT_WALLTIME_MIN`). The pilot refuses to start if `server_crt` expires before `now + walltime_min` |
 | `external_port` | Single externally-exposed TCP port. NGINX listens here; control API and replicas live on `+1`, `+2…` internally |
 | `nginx_path` | Absolute path to the `nginx` binary on the compute node |
 | `ip_allowlist` | NGINX `allow` ACL — typically the gateway's egress range |
@@ -63,11 +66,11 @@ into the allocation's working directory:
 | `node_file_env` | Name of the env var (e.g. `PBS_NODEFILE`) that holds the scheduler's host list |
 | `job_name` | Unique pilot job name, used in file naming and the ready-file |
 
-Because everything except the **root CA** is rendered per-job, admins do
-not need to maintain pilot config files on the HPC cluster. Server certs
-are ephemeral and re-issued for every submission via
-`first_gateway.services.certmanager.generate_server_cert` (called from
-`PilotSubmitter.submit`); see the [Certificate Manager](certmanager.md) docs.
+Only `ca_crt`, `server_crt` and `server_key` must live in the staged file;
+the gateway supplies the other fields in the table per job through the
+environment, overriding the file. The optional `network_interface` can only be
+set in the file. The gateway holds no CA key and never issues certificates.
+See the [Certificate Manager](certmanager.md) runbook for issuing and renewal.
 
 
 ## Subsystems
@@ -81,8 +84,22 @@ replicas changes. Two location classes:
 * `/control` → control plane API (`127.0.0.1:external_port + 1`)
 * `/replicas/{name}/` → that replica's local port (`external_port + 2 + i`)
 
-NGINX is also what enforces the IP allowlist and the gateway's
-mTLS client-cert requirement (`ssl_verify_client on`).
+NGINX is also what enforces the IP allowlist, the mTLS client-cert
+requirement (`ssl_verify_client on`), and per-role authorization. A `map` on
+`$ssl_client_s_dn` assigns each caller a role (the CNs are
+`first_common.schema.pilot.PilotClientRole`), and a server-level rule returns
+403 for any role/method/path combination not listed:
+
+| Client CN | Role | Permitted |
+|---|---|---|
+| `first-control` | control | All paths |
+| `first-router` | router | `/replicas/…`; `GET /control/logs/…` |
+| `first-metrics` | metrics | `GET /replicas/…/metrics` only |
+| anything else | none | Nothing (403) |
+
+Matching uses the normalized `$uri`. Replicas must expose Prometheus metrics
+at `/metrics` for the metrics role to scrape them. See the
+[F-01 response](../security/control-plane-mtls-response.md) for rationale.
 
 ### Replica manager — `replica_manager.py`
 
@@ -133,11 +150,11 @@ job's control host/port.
 ## Lifecycle
 
 1. Scheduler runs the submission script. The script `uvx`-launches the
-   pilot with a freshly-rendered config + freshly-issued certs in the
-   rendezvous dir.
+   pilot with the cluster's pre-staged config plus per-job `PILOT_*`
+   overrides. The pilot checks its server cert covers the walltime.
 2. Pilot starts NGINX, waits for it to bind `external_port`, writes the
    ready-file.
-3. Gateway reads the ready-file, opens an mTLS client to
+3. Gateway reads the ready-file, opens an mTLS client (as `first-control`) to
    `https://<ip>:<external_port>/control/`, and starts placing replicas.
 4. Replicas come up; nginx is reloaded as each replica reaches `ready`;
    the gateway proxies user traffic to

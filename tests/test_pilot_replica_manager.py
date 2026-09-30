@@ -428,6 +428,7 @@ def test_runtime_config_loads_public_fields_from_environment(
     )
     monkeypatch.setenv("PILOT_NUM_NODES", "2")
     monkeypatch.setenv("PILOT_GPUS_PER_NODE", "4")
+    monkeypatch.setenv("PILOT_WALLTIME_MIN", "90")
 
     config = PilotRuntimeConfig.load()
 
@@ -443,4 +444,5 @@ def test_runtime_config_loads_public_fields_from_environment(
     )
     assert config.num_nodes == 2
     assert config.gpus_per_node == 4
+    assert config.walltime_min == 90
     assert config.network_interface == "hsn0"

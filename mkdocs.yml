@@ -89,4 +89,7 @@ nav:
   - Deployment:
       - Docker: deployment/docker.md
       - Database Migrations: deployment/database.md
+  - Security:
+      - "F-01: Control-Plane mTLS": security/control-plane-mtls-response.md
+      - "F-01: Hardening Plan": security/control-plane-mtls-hardening-plan.md
   - Roadmap: roadmap.md

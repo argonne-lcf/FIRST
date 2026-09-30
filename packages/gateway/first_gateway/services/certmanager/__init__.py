@@ -4,6 +4,8 @@ import tempfile
 from pathlib import Path
 from shutil import which
 
+from first_common.schema.pilot import PILOT_SERVER_SAN
+
 
 class OpenSSLError(RuntimeError):
     """openssl is missing or a subprocess invocation failed."""
@@ -80,6 +82,11 @@ def _issue_leaf_pem(
     # Random 159-bit positive serial — keeps each issued cert unique without
     # needing a persistent serial counter on disk.
     serial_hex = f"0x{secrets.randbits(159):x}"
+    # Only the pilot server cert carries the SAN (Prometheus' server_name);
+    # client identities are distinguished by CN alone.
+    san = []
+    if eku == "serverAuth":
+        san = ["-addext", f"subjectAltName=DNS:{PILOT_SERVER_SAN}"]
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         key_path = d / "leaf.key"
@@ -102,8 +109,7 @@ def _issue_leaf_pem(
             "keyUsage=critical,digitalSignature",
             "-addext",
             f"extendedKeyUsage={eku}",
-            "-addext",
-            "subjectAltName=DNS:first-pilot.internal",
+            *san,
         )
         cert_pem = _run(
             "x509",

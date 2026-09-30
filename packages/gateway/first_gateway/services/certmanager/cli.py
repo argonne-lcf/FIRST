@@ -1,12 +1,14 @@
 """Manage self-signed certificates for mTLS on disk.
 
 Workflow:
+    pilot-certmanager standard --dir pki    # CA (if absent) + pilot server + all client roles
     pilot-certmanager ca --name "FIRST CA"  # self-signed Root CA (default 10 years)
-    pilot-certmanager server first_pilot    # server cert signed by the CA (default 2 years)
-    pilot-certmanager client first_gateway  # client cert signed by the CA (default 2 years)
+    pilot-certmanager server first-pilot    # server cert signed by the CA (default 2 years)
+    pilot-certmanager client first-control  # client cert signed by the CA (default 2 years)
 
-Re-running ``server`` / ``client`` with the same name re-issues that cert against
-the existing CA. Requires OpenSSL 3.x.
+Certs are written as ``<dir>/<cn>.crt`` and ``<dir>/<cn>.key``. Re-running
+``server`` / ``client`` / ``standard`` re-issues the leaf certs against the
+existing CA. Requires OpenSSL 3.x.
 """
 
 import re
@@ -14,6 +16,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+
+from first_common.schema.pilot import PILOT_SERVER_CN, PilotClientRole
 
 from . import (
     OpenSSLError,
@@ -124,6 +128,22 @@ def client(
 ) -> None:
     """Issue a client certificate (clientAuth) signed by the CA (default 2 years)."""
     _issue_to_disk(kind="Client", cn=cn, directory=directory, days=days)
+
+
+@app.command()
+def standard(
+    directory: DirOpt = Path("pki"),
+    ca_name: Annotated[
+        str, typer.Option(help="CA common name, if a CA must be created.")
+    ] = "FIRST Pilot CA",
+    days: Annotated[int, typer.Option(help="Leaf validity in days.")] = 730,
+) -> None:
+    """Issue the pilot server cert and one client cert per role (CA if absent)."""
+    if not (directory / "ca.crt").exists():
+        ca(name=ca_name, directory=directory)
+    _issue_to_disk(kind="Server", cn=PILOT_SERVER_CN, directory=directory, days=days)
+    for role in PilotClientRole:
+        _issue_to_disk(kind="Client", cn=role.value, directory=directory, days=days)
 
 
 if __name__ == "__main__":

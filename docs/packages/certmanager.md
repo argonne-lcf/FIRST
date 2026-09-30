@@ -1,184 +1,158 @@
-# mTLS Certificate Tool
+# Certificate Manager
 
-A small [Typer](https://typer.tiangolo.com/) CLI that wraps `openssl` to manage a
-private certificate authority and issue server/client certificates for **mutual TLS**.
+`pilot-certmanager` is a small [Typer](https://typer.tiangolo.com/) CLI, shipped
+with `first-gateway`, that wraps `openssl` to run the private CA for the
+gateway ⇄ pilot mTLS link. It is an **offline** tool: an administrator runs it
+on a trusted host, and no running service imports it or holds a CA key.
 
-Built for one specific topology:
-
-```
-   Inference Gateway       ──mTLS──▶   NGINX (ephemeral HPC host)
-presents  client.crt                   presents  server.crt
-verifies  server.crt  ◀── same CA ──▶  verifies  client.crt
-```
-
-The gateway is the **TLS client**; the HPC NGINX instances are the **TLS servers**.
-Both sides authenticate each other against a single private CA.
-
-* The **gateway** presents `client.crt` and verifies that the server's certificate
-  chains to `ca.crt`.
-* Each **NGINX server** presents `server.crt` and *requires* a client certificate
-  that chains to `ca.crt`.
-
-Because HPC servers launch on **random, ephemeral IPs**, the gateway does **not**
-check the server's hostname/IP against the certificate.
+This page is the issuing and renewal runbook. For why the model looks like
+this, see the [F-01 response](../security/control-plane-mtls-response.md).
 
 
-## Prerequisites
+## Identities
 
-* **OpenSSL 3.x** (`openssl version`) — the tool uses `-addext` and `-copy_extensions`.
+Every environment (dev, prod) has its own CA and one fixed set of leaf
+certificates. The subjects are constants in `first_common.schema.pilot`
+(`PILOT_SERVER_CN`, `PILOT_SERVER_SAN`, `PilotClientRole`):
 
-Keys are **EC P-256**, certificates use **SHA-256**, and private keys are written
-**unencrypted** (required for unattended machine-to-machine startup).
+| Subject | EKU | SAN | Holder | Pilot role |
+|---|---|---|---|---|
+| `CN=first-pilot` | serverAuth | `DNS:first-pilot.internal` | pilot NGINX, every cluster | — |
+| `CN=first-control` | clientAuth | — | `controller-manager` | control |
+| `CN=first-router` | clientAuth | — | `inference-gateway` (API server) | router |
+| `CN=first-metrics` | clientAuth | — | `prometheus` | metrics |
 
+Pilot NGINX maps the client subject to a role and authorizes every request
+against it, denying by default:
 
-## Quick start
+| Role | Permitted |
+|---|---|
+| control | All paths |
+| router | `/replicas/…` (inference); `GET /control/logs/…` |
+| metrics | `GET /replicas/…/metrics` only |
+| anything else | Nothing (403) |
 
-The CLI is shipped with `first-gateway` as `pilot-certmanager` (see
-`packages/gateway/pyproject.toml`). Run these on a **trusted admin host** —
-this is the only machine that should ever hold the CA private key.
-
-```bash
-# 1. Create the Root CA (default 10 years). Do this once.
-pilot-certmanager ca --name "FIRST Inference Root CA"
-
-# 2. Issue the server certificate (default 2 years).
-pilot-certmanager server inference-server
-
-# 3. Issue the gateway's client certificate (default 2 years).
-pilot-certmanager client inference-gateway
-```
-
-Override a lifetime with `--days`, e.g. `pilot-certmanager server inference-server --days 365`.
-
-All files land in `./pki/` by default (`--dir` to change it). File names
-are derived from the CN argument (`ca.{key,crt}`, `<slug(cn)>.{key,crt}`).
-
-### Programmatic use
-
-The gateway itself does **not** invoke this CLI in production. Instead,
-`first_gateway.services.pilot_submitter.PilotSubmitter` calls
-`first_gateway.services.certmanager.generate_server_cert(...)` directly at job submit
-time, issuing a fresh server cert per pilot job that is rendered into the
-pilot's `PilotRuntimeConfig` YAML and staged onto the cluster. The CLI is
-the operator-facing wrapper for one-time CA bootstrap and client-cert
-issuance.
+Clients do **not** verify the pilot's hostname: compute nodes have no DNS
+names, and the node a pilot lands on is chosen by the scheduler after the
+certificate must already exist. The pilot is identified by chaining to the
+environment's CA with a `serverAuth` certificate, which only pilots hold.
+Prometheus sets `server_name: first-pilot.internal` to satisfy its TLS client.
 
 
-## Output files
+## Issuing the standard set
 
-| File | Contents | Secret? | Deploy to |
-|---|---|---|---|
-| `ca.key` | CA **private** key | **YES — crown jewel** | Admin host only. Never deploy. |
-| `ca.crt` | CA public certificate (trust anchor) | No | **Both** gateway and HPC |
-| `ca.srl`| CA serial ledger | No (keep with `ca.key`) | Admin host only |
-| `server.key` | Server **private** key | **YES** | HPC filesystem only |
-| `server.crt` | Server public certificate | No | HPC filesystem |
-| `client.key` | Client **private** key | **YES** | Gateway only |
-| `client.crt` | Client public certificate | No | Gateway |
-
-Anyone holding `ca.key` can mint trusted **server and client** certificates and
-impersonate either side. Keep it off all production machines.
-
-**Private keys** (`*.key`) are owner-read-only secrets. Never commit them, never log
-them, never copy `ca.key` off the admin host.
-
-## Deployment
-
-### A. Inference Gateway (FastAPI + httpx)
-
-Copy these three files to the gateway (e.g. `/etc/inference/tls/`):
-
-* `ca.crt` — public (to verify ephemeral servers)
-* `client.crt` - public (presented to HPC servers)
-* `client.key` — secret gateway's identity
+Run on a **trusted admin host**, never on the gateway or a cluster. Requires
+OpenSSL 3.x. Keys are EC P-256, certificates SHA-256, and private keys are
+unencrypted (services start unattended).
 
 ```bash
-chmod 644 client.crt ca.crt
-chmod 600 client.key
+# CA (if absent) + first-pilot server + the three client certificates
+pilot-certmanager standard --dir pki-prod/ --ca-name "FIRST Pilot CA (prod)"
 ```
 
-Build the httpx client with an SSL context that **verifies the CA but skips the
-hostname check** (this is what makes random IPs work):
+The command creates `ca.{key,crt}` only if the directory has no `ca.crt`, then
+(re)issues `first-pilot`, `first-control`, `first-router` and `first-metrics`,
+each as `<cn>.{crt,key}` (`--days`, default 730, sets leaf validity). For local development, `make pki` runs it into the
+repo's `.gitignore`d `pki/`, which is all the Compose stack and the tests need.
 
-```python
-import ssl
-import httpx
+The lower-level `ca`, `server <cn>` and `client <cn>` commands remain for
+one-off issuing; see `pilot-certmanager --help`.
 
-TLS = "/etc/inference/tls"
 
-ctx = ssl.create_default_context(cafile=f"{TLS}/ca.crt")
-ctx.check_hostname = False                       # ephemeral IPs: trust the CA, not the host
-ctx.load_cert_chain(f"{TLS}/client.crt", f"{TLS}/client.key")  # present our client cert
+## Where each file goes
 
-# Reuse one client; the context still requires a CA-signed server cert.
-client = httpx.Client(verify=ctx, timeout=30.0)
+| File | Secret | Destination |
+|---|---|---|
+| `ca.key` | **yes** | Admin host / offline storage only. Never deployed. |
+| `ca.crt` | no | Gateway `pki/` and every cluster's runtime config |
+| `first-pilot.{crt,key}` | key | Every cluster's runtime config only |
+| `first-control.{crt,key}` | key | Gateway `pki/` → `controller-manager` |
+| `first-router.{crt,key}` | key | Gateway `pki/` → `inference-gateway` |
+| `first-metrics.{crt,key}` | key | Gateway `pki/` → `prometheus` |
 
-# The pilot system tells the gateway the ephemeral host:port.
-resp = client.get(f"https://{ephemeral_ip}:8443/v1/health")
-resp.raise_for_status()
+### Gateway host
+
+Copy `ca.crt` and the three client pairs into `pki/` at the repo root
+(`chmod 600 *.key`; on Linux also match the key owners to the container
+users, see [Docker](../deployment/docker.md#filesystem-dependencies)).
+`deploy/compose.yaml` declares them as Docker secrets and
+mounts a **different identity behind the same names** in each service:
+
+| Service | `/run/secrets/pilot_client.{crt,key}` |
+|---|---|
+| `inference-gateway` | `first-router` |
+| `controller-manager` | `first-control` |
+| `prometheus` | `first-metrics` |
+
+Every service also gets `/run/secrets/pilot_ca.crt`. The gateway reads these
+through `pilot_ca_crt_file`, `pilot_client_crt_file` and `pilot_client_key_file`
+(env `FIRST_PILOT_CA_CRT_FILE`, `FIRST_PILOT_CLIENT_CRT_FILE`,
+`FIRST_PILOT_CLIENT_KEY_FILE`), which default to those paths, so code never
+knows which role it holds. No CA material belongs in `.env.secret`.
+
+### Each cluster
+
+Every cluster runs its pilots from a pre-staged `PilotRuntimeConfig` YAML at
+`PilotConfig.pilot_config_path` (required). It carries the PEMs inline:
+
+```yaml
+ca_crt: |
+  -----BEGIN CERTIFICATE-----
+  ...
+server_crt: |
+  -----BEGIN CERTIFICATE-----
+  ...
+server_key: |
+  -----BEGIN PRIVATE KEY-----
+  ...
 ```
 
-### B. HPC NGINX servers
+These three are the only fields the file must carry. The submitter supplies
+every other required field per job as `PILOT_*` environment overrides, taken
+from the cluster's `PilotConfig` and the job (`PILOT_JOB_NAME`,
+`PILOT_EXTERNAL_PORT`, `PILOT_NGINX_PATH`, `PILOT_IP_ALLOWLIST`,
+`PILOT_WORKDIR`, `PILOT_NODE_FILE_ENV`, `PILOT_GPU_DISCOVERY`,
+`PILOT_NUM_NODES`, `PILOT_GPUS_PER_NODE`, `PILOT_WALLTIME_MIN`); those override
+any value in the file. The optional `network_interface` is not overridable and
+can only be set in the file. Make the file readable only by the pilot service
+account (`chmod 600`).
 
-Stage these on the HPC filesystem where the pilot job system can read them:
 
-* `server.crt`, `server.key` — the server's identity
-* `ca.crt` — to verify incoming client certs
+## Renewal
 
-```bash
-chmod 600 server.key          # see the shared-filesystem note below
-chmod 644 server.crt ca.crt
-```
+Leaf certificates default to 2 years; the CA to 10. Renewal re-issues leaves
+against the **same CA**, so nothing else needs to change:
 
-Minimal NGINX server block enforcing mTLS and proxying to the local backend:
+1. Re-run `pilot-certmanager standard` against the environment's CA directory.
+2. Replace the client pairs in the gateway's `pki/` and restart the stack
+   (`docker compose up -d --force-recreate`).
+3. Replace `server_crt`/`server_key` in each cluster's runtime config. Running
+   pilots keep their old certificate until they exit; new submissions pick up
+   the new one.
 
-```nginx
-server {
-    listen 8443 ssl;
-    server_name _;                                   # no fixed name needed
+Two checks surface expiry before it bites:
 
-    ssl_certificate           /hpc/secure/server.crt;
-    ssl_certificate_key       /hpc/secure/server.key;
+- The `controller-manager`'s `health_alerter` checks its mounted client
+  certificate (`first-control`): a `warn` alert when it expires in under 30
+  days, `crit` once expired, posted to Slack when configured. The client
+  certificates are issued together, so one alert covers the set.
+- A pilot refuses to start if its server certificate expires before
+  `now + walltime_min`. Renew the server certificate at least one job walltime
+  ahead of expiry.
 
-    ssl_client_certificate    /hpc/secure/ca.crt;    # CA that client certs must chain to
-    ssl_verify_client         on;                    # REQUIRE a valid client cert
-    ssl_verify_depth          1;                     # leaf signed directly by the root
 
-    ssl_protocols             TLSv1.2 TLSv1.3;
+## CA rotation (suspected leak)
 
-    location / {
-        # optional: surface client identity to the backend
-        proxy_set_header X-Client-Verify  $ssl_client_verify;
-        proxy_set_header X-Client-DN      $ssl_client_s_dn;
-        proxy_pass http://127.0.0.1:8000;            # the real inference server
-    }
-}
-```
+There is no CRL. If any private key may have leaked, replace the CA and the
+whole standard set for that environment:
 
-With `ssl_verify_client on`, NGINX rejects any connection that doesn't present a
-client certificate signed by your CA — so only the gateway can reach the backend.
+1. Run `pilot-certmanager standard` into an empty directory; a new CA is
+   created because none is present.
+2. Stage the new `ca.crt` and `first-pilot` pair in every cluster's runtime
+   config.
+3. Replace the gateway's `pki/` contents and recreate the stack.
+4. Terminate running pilot jobs; they still trust the old CA. The controller
+   resubmits them with the new config.
+5. Destroy the old CA key.
 
----
-
-## Rotating a certificate
-
-Rotation is just re-issuing against the **same CA** — the CA and the other side are
-untouched.
-
-```bash
-# Rotate the server cert (new key + new serial, same CA):
-pilot-certmanager server inference-server
-# redeploy server.crt + server.key to the HPC filesystem, reload NGINX.
-
-# Rotate the gateway client cert:
-pilot-certmanager client inference-gateway
-# redeploy client.crt + client.key to the gateway, restart the gateway.
-```
-
-Re-running a command overwrites the existing `.key`/`.crt` for that name and mints a
-fresh serial number. Because both sides validate by **CA chain**, a rotated cert is
-trusted immediately with no coordination — as long as the CA itself hasn't changed.
-
-Rotating the **CA** (`ca.crt`) is a fleet-wide event: you must redistribute the new
-`ca.crt` to *both* ends and re-issue all leaf certs. Plan for it before the 10-year
-expiry.
+Rotation at the CA's 10-year expiry follows the same steps.

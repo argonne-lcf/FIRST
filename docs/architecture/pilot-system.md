@@ -28,12 +28,16 @@ plus `put_file`/`list_files`/`read_file` for staging the pilot's config
 `PilotSubmitter` (in `first_gateway.services.pilot_submitter`) is the
 layer above the adapter. Per pilot-job submission it:
 
-1. Generates a fresh per-job server cert via `certmanager.generate_server_cert`.
-2. Renders a `PilotRuntimeConfig` YAML (certs, ports, allowlist, workdir,
-   job name) and writes it to the cluster via `adapter.put_file`.
-3. Writes a small shell script that `uvx`-launches the pinned
-   `first-pilot` version with `PILOT_CONFIG_FILE` pointing at the YAML.
-4. Calls `adapter.submit_job` with the resulting `JobSubmitPayload`,
+1. Builds per-job `PILOT_*` environment overrides (job name, port,
+   allowlist, workdir, node/GPU counts, `PILOT_WALLTIME_MIN`) on top of the
+   cluster's pre-staged `PilotRuntimeConfig` at
+   `PilotConfig.pilot_config_path`, which holds the CA and the `first-pilot`
+   server certificate. The gateway does not issue certificates.
+2. Builds a small shell script that execs the pinned `first-pilot`
+   (`PilotConfig.pilot_path`) with `PILOT_CONFIG_FILE` pointing at that YAML.
+   GraphQL-PBS takes the script inline; Globus Compute needs it staged
+   via `adapter.put_file`.
+3. Calls `adapter.submit_job` with the resulting `JobSubmitPayload`,
    under a prefixed name so zombie discovery can
    distinguish FIRST-owned jobs from anything else on the queue.
 
@@ -79,11 +83,34 @@ behind a single NGINX terminator.
 - The pilot API starts NGINX first and puts itself behind it.
 - **One** external port is opened per compute node; everything else is
   loopback.
-- The port is secured by **mTLS**: only the gateway, presenting a CA-signed
-  client cert, can connect.
+- The port is secured by **mTLS** plus an IP allow-list. NGINX requires a
+  client cert signed by the environment's CA, then **authorizes by subject**:
+  it maps `$ssl_client_s_dn` to a role and denies by default (see
+  [Authorization](#authorization)).
 - The NGINX manager re-renders the NGINX config and `SIGHUP`-reloads
   **gracefully** as replicas come and go — in-flight traffic is not
   dropped.
+
+### Authorization
+
+Each gateway service holds exactly one client identity, and the pilot
+checks every request's normalized path against that identity's role:
+
+| Client CN | Holder | Permitted |
+|---|---|---|
+| `first-control` | `controller-manager` | All paths |
+| `first-router` | `inference-gateway` (API server) | `/replicas/…` (inference); `GET /control/logs/…` |
+| `first-metrics` | `prometheus` | `GET /replicas/…/metrics` only |
+| anything else | — | Nothing (403) |
+
+Because the metrics role is limited to that path, pilot deployments must
+serve Prometheus metrics at `/metrics`.
+
+The pilot presents `CN=first-pilot` (serverAuth). Clients verify the CA
+chain but not the hostname: compute nodes have no DNS names and the node
+is picked by the scheduler after the certificate is issued. See the
+[F-01 response](../security/control-plane-mtls-response.md) for the threat
+model and the [Certificate Manager](../packages/certmanager.md) for issuing.
 
 ### Control APIs
 
@@ -124,10 +151,10 @@ A few non-obvious design choices fall out of this architecture:
   the pilot owns the allocation, the *replica* is what binds to a
   specific model recipe.
 - **The gateway never reaches a replica directly.** Every request hits
-  NGINX first, which authenticates the client cert and proxies to the
-  right local port.
-- **Certs are per-job.** The gateway's
-  [certificate manager](../packages/certmanager.md) mints fresh server
-  certs at submission time, so each pilot's cert lifetime tracks the
-  job's max walltime. Only the intended audience, the gateway itself, can
-  authenticate.
+  NGINX first, which authenticates and authorizes the client cert and
+  proxies to the right local port.
+- **Certs are issued offline.** No gateway process holds a CA key. An
+  admin issues one server cert per environment and one client cert per
+  gateway role with the [certificate manager](../packages/certmanager.md)
+  and stages them ahead of time. A pilot refuses to start if its server
+  cert would expire within the job's walltime.

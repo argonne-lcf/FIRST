@@ -115,8 +115,11 @@ class Settings(BaseSettings):
 
     globus: GlobusAuthSettings
     data_staging_globus_collection_id: str = ""
-    pilot_ca_crt: str
-    pilot_ca_key: SecretStr
+    # Pilot mTLS: the CA that signs pilot server certs, and this service's own
+    # client identity. Compose decides which role's cert is mounted here.
+    pilot_ca_crt_file: Path = Path("/run/secrets/pilot_ca.crt")
+    pilot_client_crt_file: Path = Path("/run/secrets/pilot_client.crt")
+    pilot_client_key_file: Path = Path("/run/secrets/pilot_client.key")
     health_slack_bot_token: SecretStr | None = None
     health_slack_channel: str | None = None
     gateway_health_url: str = "http://127.0.0.1/health"

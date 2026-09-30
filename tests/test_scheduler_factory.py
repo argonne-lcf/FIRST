@@ -37,6 +37,7 @@ async def test_build_scheduler_dispatches_globus_compute_pbs() -> None:
             "node_file_env": "PBS_NODEFILE",
             "submit_script_preamble": "#!/bin/bash",
             "pilot_path": "/test/first-pilot",
+            "pilot_config_path": "/test/pilot-config.yaml",
         }
     )
 

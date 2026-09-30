@@ -62,7 +62,7 @@ class PilotJobObserver(Worker):
             max_backoff=max_backoff,
             heartbeat_timeout=heartbeat_timeout,
         )
-        self.client = PilotControlClient(client_state, cn="pilot-job-observer")
+        self.client = PilotControlClient(client_state)
         self.hb = self.register_heartbeat("poll")
         # Per-cluster throttle for the "skipping (maintenance)" log line.
         self._maintenance_logged_at: dict[int, datetime] = {}
@@ -124,13 +124,7 @@ class PilotJobObserver(Worker):
             pilot_config = PilotConfig.model_validate(cluster.pilot_system)
             adapter = await build_scheduler(pilot_config, self.client_state)
 
-            settings = self.client_state.settings
-            submitter = PilotSubmitter(
-                pilot_config,
-                adapter,
-                settings.pilot_ca_crt,
-                settings.pilot_ca_key.get_secret_value(),
-            )
+            submitter = PilotSubmitter(pilot_config, adapter)
             try:
                 await self._poll_cluster(submitter, cluster.name)
             except Exception as e:

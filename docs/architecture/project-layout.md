@@ -62,7 +62,7 @@ dev workflow over the workspace.
 ├── platforms          (Platform-specific: extend here to support new HPC clusters)
 │   └── schedulers     (Platform-specific SchedulerAdapters)
 └── services           (Any significant chunk of logic factored out of the FastAPI app)
-    └── certmanager    (Generator of mTLS certificates)
+    └── certmanager    (Offline CLI issuing pilot mTLS certificates)
     pilot_control.py   (mTLS httpx Client)
     pilot_submitter.py (uses SchedulerAdapter to launch PilotJobs)
     plan_apply.py      (The declarative YAML config apply logic)

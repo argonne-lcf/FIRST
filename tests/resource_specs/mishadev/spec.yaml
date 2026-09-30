@@ -26,6 +26,7 @@ spec:
     ip_allowlist: ["0.0.0.0/0"]
     node_file_env: PBS_NODEFILE
     pilot_path: /eagle/inference_service/env/firstv2-pilot/bin/first-pilot
+    pilot_config_path: /eagle/inference_service/firstv2-pilot/config.yaml
     job_name_prefix: __FIRST_PILOT_MISHADEV_
 
 ---

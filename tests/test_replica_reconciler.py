@@ -43,6 +43,7 @@ PILOT_SYSTEM = {
     "node_file_env": "PBS_NODEFILE",
     "submit_script_preamble": "#!/bin/bash",
     "pilot_path": "/test/first-pilot",
+    "pilot_config_path": "/test/pilot-config.yaml",
 }
 
 

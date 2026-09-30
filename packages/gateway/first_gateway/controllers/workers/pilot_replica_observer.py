@@ -156,7 +156,7 @@ class PilotReplicaObserver(Worker):
             max_backoff=max_backoff,
             heartbeat_timeout=heartbeat_timeout,
         )
-        self.client = PilotControlClient(client_state, cn="pilot-replica-observer")
+        self.client = PilotControlClient(client_state)
         self._status_cooldown: dict[int, tuple[float, int]] = {}
 
     async def run(self) -> None:

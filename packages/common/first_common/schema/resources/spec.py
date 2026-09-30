@@ -294,6 +294,8 @@ class PilotDeploymentSpec(ResourceSpec):
 
     router_params: RouterParams = RouterParams()
 
+    # Pilot NGINX admits the metrics identity only on GET /replicas/.../metrics,
+    # so pilot deployments must expose Prometheus metrics at /metrics.
     prometheus_metrics_path: str | None = "/metrics"
     prometheus_scrape_interval_sec: int = 15
 

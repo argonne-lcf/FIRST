@@ -7,6 +7,7 @@ believe it is on a GPU node.
 import asyncio
 import logging
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -14,8 +15,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Self
-
-import yaml
 
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
@@ -78,11 +77,18 @@ class LocalSchedulerAdapter(SchedulerAdapter):
 
     async def submit_job(self, job: JobSubmitPayload) -> JobSubmitResult:
         assert job.script_path is not None  # LocalScheduler submits by path
-        # PilotSubmitter writes `<name>.config.yaml` next to `<name>.sh`.
-        config_path = job.script_path.with_name(job.script_path.stem + ".config.yaml")
-        cfg = yaml.safe_load(config_path.read_text())
+        # The script ends in `PILOT_X=... exec first-pilot`: take its PILOT_*
+        # environment (incl. PILOT_CONFIG_FILE, the pre-staged runtime config).
+        exec_line = job.script_path.read_text().strip().splitlines()[-1]
+        submitted_env = dict(
+            word.split("=", 1)
+            for word in shlex.split(exec_line)
+            if word.startswith("PILOT_")
+        )
         readyfile = (
-            Path(cfg["workdir"]) / "readyfiles" / f"{cfg['job_name']}.ready.json"
+            Path(submitted_env["PILOT_WORKDIR"])
+            / "readyfiles"
+            / f"{submitted_env['PILOT_JOB_NAME']}.ready.json"
         )
 
         job.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +96,7 @@ class LocalSchedulerAdapter(SchedulerAdapter):
 
         env = os.environ.copy()
         env.update(self.extra_env)
-        env["PILOT_CONFIG_FILE"] = str(config_path)
+        env.update(submitted_env)
 
         proc = subprocess.Popen(
             [sys.executable, "-c", _PILOT_BOOTSTRAP],

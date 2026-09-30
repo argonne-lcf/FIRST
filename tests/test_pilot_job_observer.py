@@ -98,18 +98,15 @@ PILOT_SYSTEM: dict[str, Any] = {
     "node_file_env": "PBS_NODEFILE",
     "submit_script_preamble": "#!/bin/bash",
     "pilot_path": "/test/first-pilot",
+    "pilot_config_path": "/tmp/pilot-config.yaml",
 }
 
 
 def _make_client_state(
     db: async_sessionmaker[AsyncSession],
 ) -> MagicMock:
-    settings = MagicMock()
-    settings.pilot_ca_crt = "fake-ca-crt"
-    settings.pilot_ca_key.get_secret_value.return_value = "fake-ca-key"
     cs = MagicMock()
     cs.db_sessionmaker = db
-    cs.settings = settings
     cs.redis_pubsub.publish = AsyncMock()
     return cs
 
@@ -231,7 +228,7 @@ async def test_submitted_to_running_and_endpoint_discovery(
 
     observer = _make_observer(db)
     pilot_config = PilotConfig.model_validate(PILOT_SYSTEM)
-    submitter = PilotSubmitter(pilot_config, adapter, "fake-ca-crt", "fake-ca-key")
+    submitter = PilotSubmitter(pilot_config, adapter)
 
     await observer._poll_cluster(submitter, "polaris")
 
@@ -293,12 +290,7 @@ async def test_graphql_head_ip_requires_live_manager_status(
         head_node_hostname="x3001",
     )
     adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
-    submitter = PilotSubmitter(
-        PilotConfig.model_validate(PILOT_SYSTEM),
-        adapter,
-        "fake-ca-crt",
-        "fake-ca-key",
-    )
+    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
     observer = _make_observer(db)
     get_status = cast(AsyncMock, observer.client.get_status)
     publish = cast(AsyncMock, observer.client_state.redis_pubsub.publish)
@@ -349,9 +341,7 @@ async def test_running_job_without_manager_is_idle_until_discovered(
         )
 
     observer = _make_observer(db)
-    submitter = PilotSubmitter(
-        PilotConfig.model_validate(PILOT_SYSTEM), adapter, "fake-ca-crt", "fake-ca-key"
-    )
+    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
 
     await observer._discover_endpoints(submitter, "polaris")
     job = await _get_job(db, uid)
@@ -407,12 +397,7 @@ async def test_graphql_known_job_omitted_from_bulk_page_uses_exact_truth(
     exact_lookup = AsyncMock(return_value=exact)
     adapter.get_job_statuses = bulk  # type: ignore[method-assign]
     adapter.get_exact_job_status = exact_lookup  # type: ignore[method-assign]
-    submitter = PilotSubmitter(
-        PilotConfig.model_validate(PILOT_SYSTEM),
-        adapter,
-        "fake-ca-crt",
-        "fake-ca-key",
-    )
+    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
     observer = _make_observer(db)
     await observer._poll_cluster(submitter, "polaris")
 
@@ -458,12 +443,7 @@ async def test_graphql_unready_terminal_allocation_is_charged_once(
         head_node_hostname="x3002",
     )
     adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
-    submitter = PilotSubmitter(
-        PilotConfig.model_validate(PILOT_SYSTEM),
-        adapter,
-        "fake-ca-crt",
-        "fake-ca-key",
-    )
+    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
     observer = _make_observer(db)
     get_status = cast(AsyncMock, observer.client.get_status)
     get_status.side_effect = RuntimeError("PALS inventory failed before bind")
@@ -624,7 +604,7 @@ async def test_missing_exiting_job_completes_nonblocking_termination(
 
     observer = _make_observer(db)
     pilot_config = PilotConfig.model_validate(PILOT_SYSTEM)
-    submitter = PilotSubmitter(pilot_config, adapter, "fake-ca-crt", "fake-ca-key")
+    submitter = PilotSubmitter(pilot_config, adapter)
     await observer._poll_cluster(submitter, "polaris")
 
     async with db() as sess:

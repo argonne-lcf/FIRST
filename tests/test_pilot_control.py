@@ -10,6 +10,7 @@ import pytest
 from jinja2 import Template
 
 from first_common.errors import ReplicaTeardownError
+from first_common.schema.pilot import PilotClientRole
 from first_gateway.services.pilot_control import STOP_TIMEOUT, PilotControlClient
 from first_pilot.control_api import app, get_manager
 from first_pilot.nginx_manager import ReplicaUpstream, _conf_template_str
@@ -24,6 +25,7 @@ def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() ->
         ),
         nginx_tmpdir="/tmp/nginx",
         control_path="/control/",
+        roles=PilotClientRole,
         ca_crt_path="/tmp/ca.crt",
         server_crt_path="/tmp/server.crt",
         server_key_path="/tmp/server.key",
