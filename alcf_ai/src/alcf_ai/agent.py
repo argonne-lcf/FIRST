@@ -1,11 +1,14 @@
 import copy
 import json
 import logging
+import os
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -35,33 +38,81 @@ DEFAULT_CAPABILITIES: dict[str, Any] = {
 }
 
 
+class ConfigLoadError(RuntimeError):
+    """An existing agent config file could not be read or parsed."""
+
+    def __init__(self, path: Path, reason: object) -> None:
+        super().__init__(
+            f"Refusing to modify {path}: the existing file could not be loaded "
+            f"({reason}). Fix or move it aside, then re-run this command."
+        )
+        self.path = path
+
+
 def _load_json_config(path: Path) -> dict[str, Any]:
     try:
         with path.open() as f:
-            result: dict[str, Any] = json.load(f)
-            return result
-    except (FileNotFoundError, json.JSONDecodeError):
+            config = json.load(f)
+    except FileNotFoundError:
         return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise ConfigLoadError(path, err) from err
+    if not isinstance(config, dict):
+        raise ConfigLoadError(path, "top-level value is not a JSON object")
+    return config
 
 
 def _load_toml_config(path: Path) -> tomlkit.TOMLDocument:
     try:
         with path.open() as f:
             return tomlkit.load(f)
-    except (FileNotFoundError, tomlkit.exceptions.ParseError):
+    except FileNotFoundError:
         return tomlkit.TOMLDocument()
+    except (OSError, UnicodeDecodeError, tomlkit.exceptions.TOMLKitError) as err:
+        raise ConfigLoadError(path, err) from err
+
+
+def _write_config_file(path: Path, content: str) -> None:
+    """
+    Atomically write ``content`` to ``path``.
+
+    If the file already exists with different contents, a copy is first saved
+    alongside it as ``<name>.bak.<timestamp>``.
+    """
+    # Write through symlinks (e.g. dotfile managers) rather than replacing them.
+    target = path.resolve()
+    target.parent.mkdir(exist_ok=True, parents=True)
+
+    try:
+        existing: bytes | None = target.read_bytes()
+    except FileNotFoundError:
+        existing = None
+    if existing == content.encode():
+        return
+    if existing is not None:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = target.with_name(f"{target.name}.bak.{timestamp}")
+        shutil.copy2(target, backup)
+        logger.info(f"Backed up {path} to {backup}")
+
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        if existing is not None:
+            shutil.copymode(target, tmp)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _write_json_config(path: Path, config: dict[str, Any]) -> None:
-    path.parent.mkdir(exist_ok=True, parents=True)
-    with path.open("w") as f:
-        json.dump(config, f, indent=2)
+    _write_config_file(path, json.dumps(config, indent=2) + "\n")
 
 
 def _write_toml_config(path: Path, config: tomlkit.TOMLDocument) -> None:
-    path.parent.mkdir(exist_ok=True, parents=True)
-    with path.open("w") as f:
-        tomlkit.dump(config, f)
+    _write_config_file(path, tomlkit.dumps(config))
 
 
 def _group_by_framework(
@@ -272,8 +323,7 @@ def generate_codex_model_configs(
                         context_window=ctx,
                         version=version,
                     )
-                    catalog_path.parent.mkdir(exist_ok=True, parents=True)
-                    catalog_path.write_text(json.dumps(catalog, indent=2))
+                    _write_json_config(catalog_path, catalog)
                     logger.info(f"Created {catalog_path} for Codex {version}")
 
                     profile_path = (
@@ -284,7 +334,7 @@ def generate_codex_model_configs(
                     profile["model_provider"] = provider_key
                     profile["model"] = slug
                     profile["model_catalog_json"] = str(catalog_path)
-                    profile_path.write_text(tomlkit.dumps(profile))
+                    _write_toml_config(profile_path, profile)
                     logger.info(f"Created {profile_path}")
 
 
@@ -604,15 +654,19 @@ def configure(
         )
     }
 
-    match agent:
-        case "opencode":
-            edit_opencode(client.base_url, api_key, model_infos)
-        case "codex":
-            edit_codex(client.base_url, api_key, model_infos, model, cluster)
-        case "pi":
-            edit_pi(client.base_url, api_key, model_infos)
-        case "claude":
-            edit_claude(client.base_url, api_key, model, cluster)
+    try:
+        match agent:
+            case "opencode":
+                edit_opencode(client.base_url, api_key, model_infos)
+            case "codex":
+                edit_codex(client.base_url, api_key, model_infos, model, cluster)
+            case "pi":
+                edit_pi(client.base_url, api_key, model_infos)
+            case "claude":
+                edit_claude(client.base_url, api_key, model, cluster)
+    except ConfigLoadError as err:
+        logger.error(str(err))
+        raise typer.Exit(1) from err
 
     if _token_helper_command() is None:
         logger.warning(
