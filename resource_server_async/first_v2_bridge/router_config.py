@@ -56,8 +56,8 @@ class ModelConfig(BaseModel):
 
     name: str
     aliases: list[str] = []
-    allowed_groups: list[str] = []
-    allowed_domains: list[str] = []
+    allowed_groups: list[str]
+    allowed_domains: list[str]
     deployments: list[DeploymentConfig] = []
 
 
