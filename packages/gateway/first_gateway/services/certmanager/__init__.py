@@ -135,7 +135,7 @@ def generate_client_cert(
     cn: str,
     ca_cert_pem: str,
     ca_key_pem: str,
-    days: int = 730,
+    days: int = 365,
 ) -> tuple[str, str]:
     """Issue a clientAuth leaf cert. Returns ``(cert_pem, key_pem)``."""
     return _issue_leaf_pem(
@@ -152,7 +152,7 @@ def generate_server_cert(
     cn: str,
     ca_cert_pem: str,
     ca_key_pem: str,
-    days: int = 730,
+    days: int = 365,
 ) -> tuple[str, str]:
     """Issue a serverAuth leaf cert. Returns ``(cert_pem, key_pem)``."""
     return _issue_leaf_pem(

@@ -112,9 +112,9 @@ def server(
         str, typer.Argument(help="Server hostname / identity, e.g. api.internal.")
     ],
     directory: DirOpt = Path("pki"),
-    days: Annotated[int, typer.Option(help="Validity in days.")] = 730,
+    days: Annotated[int, typer.Option(help="Validity in days.")] = 365,
 ) -> None:
-    """Issue a server certificate (serverAuth) signed by the CA (default 2 years)."""
+    """Issue a server certificate (serverAuth) signed by the CA (default 1 year)."""
     _issue_to_disk(kind="Server", cn=cn, directory=directory, days=days)
 
 
@@ -124,9 +124,9 @@ def client(
         str, typer.Argument(help="Client identity, e.g. alice or a service name.")
     ],
     directory: DirOpt = Path("pki"),
-    days: Annotated[int, typer.Option(help="Validity in days.")] = 730,
+    days: Annotated[int, typer.Option(help="Validity in days.")] = 365,
 ) -> None:
-    """Issue a client certificate (clientAuth) signed by the CA (default 2 years)."""
+    """Issue a client certificate (clientAuth) signed by the CA (default 1 year)."""
     _issue_to_disk(kind="Client", cn=cn, directory=directory, days=days)
 
 
@@ -136,7 +136,7 @@ def standard(
     ca_name: Annotated[
         str, typer.Option(help="CA common name, if a CA must be created.")
     ] = "FIRST Pilot CA",
-    days: Annotated[int, typer.Option(help="Leaf validity in days.")] = 730,
+    days: Annotated[int, typer.Option(help="Leaf validity in days.")] = 365,
 ) -> None:
     """Issue the pilot server cert and one client cert per role (CA if absent)."""
     if not (directory / "ca.crt").exists():
