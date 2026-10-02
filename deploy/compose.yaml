@@ -20,6 +20,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    secrets:
+      - source: pilot_ca
+        target: pilot_ca.crt
+      - source: router_crt
+        target: pilot_client.crt
+      - source: router_key
+        target: pilot_client.key
     networks:
       - gateway
     restart: unless-stopped
@@ -37,6 +44,13 @@ services:
     command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
     ports:
       - "127.0.0.1:9100:9100"
+    secrets:
+      - source: pilot_ca
+        target: pilot_ca.crt
+      - source: control_crt
+        target: pilot_client.crt
+      - source: control_key
+        target: pilot_client.key
     depends_on:
       postgres:
         condition: service_healthy
@@ -121,9 +135,13 @@ services:
       - gateway
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ../pki/ca.crt:/etc/prometheus/certs/ca.crt:ro
-      - ../pki/client.first-pilot.internal.crt:/etc/prometheus/certs/client.crt:ro
-      - ../pki/client.first-pilot.internal.key:/etc/prometheus/certs/client.key:ro
+    secrets:
+      - source: pilot_ca
+        target: pilot_ca.crt
+      - source: metrics_crt
+        target: pilot_client.crt
+      - source: metrics_key
+        target: pilot_client.key
     restart: unless-stopped
     logging: *logging
 
@@ -147,3 +165,23 @@ services:
 networks:
   gateway:
     driver: bridge
+
+# Pilot mTLS identities, issued offline by `make pki` (pilot-certmanager).
+# Each service mounts the CA plus exactly one client identity, always at
+# /run/secrets/pilot_{ca.crt,client.crt,client.key}; the pilot authorizes
+# requests by the client cert's CN. No CA key is mounted anywhere.
+secrets:
+  pilot_ca:
+    file: ../pki/ca.crt
+  control_crt:
+    file: ../pki/first-control.crt
+  control_key:
+    file: ../pki/first-control.key
+  router_crt:
+    file: ../pki/first-router.crt
+  router_key:
+    file: ../pki/first-router.key
+  metrics_crt:
+    file: ../pki/first-metrics.crt
+  metrics_key:
+    file: ../pki/first-metrics.key

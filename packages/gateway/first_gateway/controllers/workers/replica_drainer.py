@@ -79,7 +79,7 @@ class ReplicaDrainer(Controller):
             max_backoff=max_backoff,
             heartbeat_timeout=heartbeat_timeout,
         )
-        self.client = PilotControlClient(client_state, cn="replica-drainer")
+        self.client = PilotControlClient(client_state)
 
     async def list_actionable(self, sess: AsyncSession) -> list[int]:
         stmt = sa.select(PilotReplica.uid).where(

@@ -176,11 +176,12 @@ async def test_graphql_get_endpoint_rejects_running_to_exiting_race() -> None:
             "node_file_env": "PBS_NODEFILE",
             "submit_script_preamble": "#!/bin/bash",
             "pilot_path": "/service/first-pilot",
+            "pilot_config_path": "/service/pilot-config.yaml",
         }
     )
     async with httpx.AsyncClient() as client:
         adapter = GraphQLPBSAdapter(client, "service", "https://bridge")
-        submitter = PilotSubmitter(config, adapter, "unused-ca", "unused-key")
+        submitter = PilotSubmitter(config, adapter)
         with patch.object(
             adapter,
             "get_job_statuses",

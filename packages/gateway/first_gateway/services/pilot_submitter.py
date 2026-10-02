@@ -1,10 +1,7 @@
 import json
 from dataclasses import replace
-from math import ceil
 from pathlib import Path
 from shlex import quote
-
-import yaml
 
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
@@ -13,27 +10,14 @@ from first_common.schema.base_scheduler import (
     SchedulerAdapter,
     SchedulerJobState,
 )
-from first_common.schema.pilot import AddressInfo, PilotRuntimeConfig
+from first_common.schema.pilot import AddressInfo
 from first_common.schema.resources.read import PilotJob
 from first_common.schema.types import PilotConfig
 
 from ..database import models as db
 from ..platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
-from .certmanager import generate_server_cert
 
 _READY_SUFFIX = ".ready.json"
-
-
-class _BlockStringDumper(yaml.SafeDumper):
-    """SafeDumper that emits multi-line strings as block literals (|)."""
-
-
-def _str_representer(dumper: _BlockStringDumper, data: str) -> yaml.ScalarNode:
-    style = "|" if "\n" in data else None
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
-
-
-_BlockStringDumper.add_representer(str, _str_representer)
 
 
 class PilotSubmitter:
@@ -42,111 +26,62 @@ class PilotSubmitter:
 
     One instance is bound to one PilotConfig (one cluster). The adapter
     handles the raw HPC scheduler + filesystem RPC; this class layers
-    pilot-specific concerns (script rendering, cert injection, name
-    namespacing, readyfile discovery) on top of it.
+    pilot-specific concerns (script rendering, name namespacing, readyfile
+    discovery) on top of it.
     """
 
-    def __init__(
-        self,
-        pilot_config: PilotConfig,
-        adapter: SchedulerAdapter,
-        ca_crt: str,
-        ca_key: str,
-    ) -> None:
+    def __init__(self, pilot_config: PilotConfig, adapter: SchedulerAdapter) -> None:
         self.pilot_config = pilot_config
         self.adapter = adapter
-        self.ca_crt = ca_crt
-        self.ca_key = ca_key
+
+    def _render_script(self, pilot_job: PilotJob | db.PilotJob) -> str:
+        """
+        The job body: exec the pilot against the pre-staged runtime config
+        (CA + server cert), specialized for this job via PILOT_* overrides.
+        """
+        pc = self.pilot_config
+        runtime_env = {
+            "PILOT_CONFIG_FILE": str(pc.pilot_config_path),
+            "PILOT_JOB_NAME": pilot_job.name,
+            "PILOT_EXTERNAL_PORT": str(pc.external_port),
+            "PILOT_NGINX_PATH": str(pc.nginx_path),
+            "PILOT_IP_ALLOWLIST": json.dumps(pc.ip_allowlist, separators=(",", ":")),
+            "PILOT_WORKDIR": str(pc.workdir),
+            "PILOT_NODE_FILE_ENV": pc.node_file_env,
+            "PILOT_GPU_DISCOVERY": json.dumps(
+                pc.gpu_discovery.model_dump(mode="json"), separators=(",", ":")
+            ),
+            "PILOT_NUM_NODES": str(pilot_job.num_nodes),
+            "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
+            "PILOT_WALLTIME_MIN": str(pilot_job.walltime_min),
+        }
+        assignments = " ".join(f"{k}={quote(v)}" for k, v in runtime_env.items())
+        return (
+            f"{pc.submit_script_preamble}\n"
+            # Keep the pilot at the batch-shell PID for scheduler signals.
+            f"{assignments} exec {quote(str(pc.pilot_path))}\n"
+        )
 
     async def submit(self, pilot_job: PilotJob | db.PilotJob) -> JobSubmitResult:
         pc = self.pilot_config
-        name = pilot_job.name
-        scheduler_name = f"{pc.job_name_prefix}{name}"
-        log_path = pc.workdir / "submit_scripts" / f"{name}.log"
-
-        script: str | None = None
+        submit_dir = pc.workdir / "submit_scripts"
+        script = self._render_script(pilot_job)
         script_path: Path | None = None
-
-        if isinstance(self.adapter, GraphQLPBSAdapter):
-            # No filesystem access: the runtime config is a pre-baked YAML already
-            # on the target system, referenced by path. The script is submitted
-            # inline (no put_file).
-            if pc.pilot_config_path is None:
-                raise ValueError(
-                    "GraphQLPBSAdapter requires PilotConfig.pilot_config_path"
-                )
-            runtime_env = {
-                "PILOT_CONFIG_FILE": str(pc.pilot_config_path),
-                "PILOT_JOB_NAME": name,
-                "PILOT_EXTERNAL_PORT": str(pc.external_port),
-                "PILOT_NGINX_PATH": str(pc.nginx_path),
-                "PILOT_IP_ALLOWLIST": json.dumps(
-                    pc.ip_allowlist, separators=(",", ":")
-                ),
-                "PILOT_WORKDIR": str(pc.workdir),
-                "PILOT_NODE_FILE_ENV": pc.node_file_env,
-                "PILOT_GPU_DISCOVERY": json.dumps(
-                    pc.gpu_discovery.model_dump(mode="json"), separators=(",", ":")
-                ),
-                "PILOT_NUM_NODES": str(pilot_job.num_nodes),
-                "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
-            }
-            assignments = " ".join(
-                f"{key}={quote(value)}" for key, value in runtime_env.items()
-            )
-            script = (
-                f"{pc.submit_script_preamble}\n"
-                # Keep the pilot at the batch-shell PID for scheduler signals.
-                f"{assignments} exec {quote(str(pc.pilot_path))}\n"
-            )
-        else:
-            # Filesystem-backed: render the runtime config and submit script
-            # just-in-time, then place them on the target system.
-            server_crt, server_key = generate_server_cert(
-                cn=name,
-                ca_cert_pem=self.ca_crt,
-                ca_key_pem=self.ca_key,
-                days=ceil(self.pilot_config.job_walltime_min / 60 / 24) + 2,
-            )
-            runtime_cfg = PilotRuntimeConfig(
-                ca_crt=self.ca_crt,
-                server_crt=server_crt,
-                server_key=server_key,
-                external_port=pc.external_port,
-                nginx_path=pc.nginx_path,
-                ip_allowlist=pc.ip_allowlist,
-                workdir=pc.workdir,
-                node_file_env=pc.node_file_env,
-                gpu_discovery=pc.gpu_discovery,
-                num_nodes=pilot_job.num_nodes,
-                gpus_per_node=pilot_job.gpus_per_node,
-                job_name=name,
-            )
-            config_yaml = yaml.dump(
-                runtime_cfg.model_dump(mode="json"), Dumper=_BlockStringDumper
-            )
-
-            config_path = pc.workdir / "submit_scripts" / f"{name}.config.yaml"
-            script_path = pc.workdir / "submit_scripts" / f"{name}.sh"
-            body = (
-                f"{pc.submit_script_preamble}\n"
-                f"PILOT_CONFIG_FILE={quote(str(config_path))} "
-                f"exec {quote(str(pc.pilot_path))}\n"
-            )
-
-            await self.adapter.put_file(config_yaml, config_path, mode=0o600)
-            await self.adapter.put_file(body, script_path, mode=0o755)
+        if not isinstance(self.adapter, GraphQLPBSAdapter):
+            # GraphQL-PBS takes the script inline; Globus Compute needs a path.
+            script_path = submit_dir / f"{pilot_job.name}.sh"
+            await self.adapter.put_file(script, script_path, mode=0o755)
 
         payload = JobSubmitPayload(
-            name=scheduler_name,
+            name=f"{pc.job_name_prefix}{pilot_job.name}",
             queue=pc.queue,
             account=pc.account,
             scheduler_flags=pc.scheduler_flags,
             num_nodes=pilot_job.num_nodes,
             gpus_per_node=pilot_job.gpus_per_node,
             walltime_min=pilot_job.walltime_min,
-            log_path=log_path,
-            script=script,
+            log_path=submit_dir / f"{pilot_job.name}.log",
+            script=None if script_path else script,
             script_path=script_path,
         )
         return await self.adapter.submit_job(payload)

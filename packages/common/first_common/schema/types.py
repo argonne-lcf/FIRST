@@ -253,9 +253,10 @@ class PilotConfig(BaseModel):
     pilot_path: Path
     job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
 
-    # Path to PilotRuntimeConfig YAML already present on the target
-    # filesystem. Used by adapters that cannot write files (e.g. GraphQLPBSAdapter)
-    pilot_config_path: Path | None = None
+    # Path to the pre-staged PilotRuntimeConfig YAML on the target filesystem,
+    # holding the CA and pilot server cert. The submitter specializes it per
+    # job with PILOT_* environment overrides.
+    pilot_config_path: Path
 
 
 class DemandSignalConfig(BaseModel):

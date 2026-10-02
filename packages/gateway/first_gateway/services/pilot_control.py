@@ -9,15 +9,12 @@ construction and request wrappers.
 import asyncio
 import logging
 import ssl
-import tempfile
-from pathlib import Path
 
 import httpx
 
 from first_common.schema.pilot import PilotJobStatus, ReplicaStartRequest
 
-from ..settings import ClientState
-from .certmanager import generate_client_cert
+from ..settings import ClientState, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -45,39 +42,30 @@ STOP_HEARTBEAT_TIMEOUT = (
 )
 
 
+def pilot_ssl_context(settings: Settings) -> ssl.SSLContext:
+    """
+    mTLS context for calling pilots: trusts the pilot CA and presents this
+    service's mounted client cert, whose CN is its role on the pilot.
+    """
+    ctx = ssl.create_default_context(cafile=settings.pilot_ca_crt_file)
+    # Compute node DNS names are not accessible to the gateway, and the
+    # scheduler picks the pilot NGINX host after the job is submitted, so no
+    # hostname can be bound into it. The peer is identified instead by chain +
+    # serverAuth EKU (only pilots hold serverAuth certs from this CA).
+    ctx.check_hostname = False
+    ctx.load_cert_chain(settings.pilot_client_crt_file, settings.pilot_client_key_file)
+    return ctx
+
+
 class PilotControlClient:
     def __init__(
         self,
         client_state: ClientState,
         *,
-        cn: str,
         timeout: httpx.Timeout | float = DEFAULT_TIMEOUT,
     ) -> None:
-        """
-        Build an httpx client configured with an mTLS client cert signed by the
-        pilot CA. ``cn`` is the common name embedded in the client cert (used for
-        logging/audit on the pilot side).
-        """
-        settings = client_state.settings
-
-        ctx = ssl.create_default_context(cadata=settings.pilot_ca_crt)
-        # Pilot server certs use the job name as CN and are reached by IP, so
-        # hostname verification is intentionally relaxed (chain is still verified).
-        ctx.check_hostname = False
-
-        client_crt_pem, client_key_pem = generate_client_cert(
-            cn=cn,
-            ca_cert_pem=settings.pilot_ca_crt,
-            ca_key_pem=settings.pilot_ca_key.get_secret_value(),
-        )
-
-        with tempfile.TemporaryDirectory(delete=True) as tmpdir:
-            crt_path = Path(tmpdir) / "client.crt"
-            key_path = Path(tmpdir) / "client.key"
-            crt_path.write_text(client_crt_pem)
-            key_path.write_text(client_key_pem)
-            ctx.load_cert_chain(crt_path, key_path)
-
+        """Build an httpx client that authenticates to pilots over mTLS."""
+        ctx = pilot_ssl_context(client_state.settings)
         self._client = httpx.AsyncClient(verify=ctx, timeout=timeout)
 
     async def _request(self, method: str, url: str, **kwargs: object) -> httpx.Response:

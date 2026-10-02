@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Self
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 from first_common.schema.base_scheduler import (
@@ -25,7 +24,6 @@ from first_common.schema.types import (
     SSHDiscovery,
 )
 from first_gateway.platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
-from first_gateway.services.certmanager import gen_ca_pem
 from first_gateway.services.pilot_submitter import PilotSubmitter
 
 
@@ -77,11 +75,6 @@ class FakeGraphQLSchedulerAdapter(GraphQLPBSAdapter):
 
 
 @pytest.fixture
-def ca_pair() -> tuple[str, str]:
-    return gen_ca_pem(name="test-ca")
-
-
-@pytest.fixture
 def pilot_config(tmp_path: Path) -> PilotConfig:
     nginx_path = tmp_path / "nginx"
     nginx_path.write_text("#!/bin/sh\n")
@@ -106,6 +99,7 @@ def pilot_config(tmp_path: Path) -> PilotConfig:
             },
             "submit_script_preamble": "#!/bin/bash\nset -eu\nmodule load python",
             "pilot_path": "/test/first-pilot",
+            "pilot_config_path": "/opt/test/pilot-config.yaml",
         }
     )
 
@@ -130,41 +124,32 @@ def _make_pilot_job(name: str) -> PilotJob:
     )
 
 
-async def test_submit_renders_config_and_script(
-    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+async def test_submit_places_script_and_submits_by_path(
+    pilot_config: PilotConfig,
 ) -> None:
-    ca_crt, ca_key = ca_pair
     adapter = FakeSchedulerAdapter()
-    submitter = PilotSubmitter(pilot_config, adapter, ca_crt, ca_key)
+    submitter = PilotSubmitter(pilot_config, adapter)
 
     pilot_job = _make_pilot_job("alpha-7")
     result = await submitter.submit(pilot_job)
 
-    config_path = pilot_config.workdir / "submit_scripts" / "alpha-7.config.yaml"
+    # Only the script is placed: certs live in the pre-staged runtime config.
     script_path = pilot_config.workdir / "submit_scripts" / "alpha-7.sh"
-
-    config_content, config_mode = adapter.files[str(config_path)]
+    assert list(adapter.files) == [str(script_path)]
     script_content, script_mode = adapter.files[str(script_path)]
-
-    assert config_mode == 0o600
     assert script_mode == 0o755
 
-    parsed = yaml.safe_load(config_content)
-    assert parsed["job_name"] == "alpha-7"
-    assert parsed["ca_crt"] == ca_crt
-    assert parsed["external_port"] == 8443
-    assert parsed["gpu_discovery"] == {
-        "method": "pals",
-        "launcher_path": "/opt/test/mpiexec",
-        "timeout_sec": 35.0,
-    }
-    assert parsed["num_nodes"] == 2
-    assert parsed["gpus_per_node"] == 4
-    assert "BEGIN CERTIFICATE" in parsed["server_crt"]
-    assert "BEGIN" in parsed["server_key"]
-
     assert script_content.startswith(pilot_config.submit_script_preamble)
-    assert f"PILOT_CONFIG_FILE={config_path} exec /test/first-pilot" in script_content
+    for assignment in (
+        "PILOT_CONFIG_FILE=/opt/test/pilot-config.yaml",
+        "PILOT_JOB_NAME=alpha-7",
+        "PILOT_EXTERNAL_PORT=8443",
+        "PILOT_NUM_NODES=2",
+        "PILOT_GPUS_PER_NODE=4",
+        "PILOT_WALLTIME_MIN=120",
+    ):
+        assert assignment in script_content
+    assert script_content.endswith(" exec /test/first-pilot\n")
 
     assert len(adapter.submitted) == 1
     payload = adapter.submitted[0]
@@ -175,6 +160,7 @@ async def test_submit_renders_config_and_script(
     assert payload.num_nodes == 2
     assert payload.gpus_per_node == 4
     assert payload.walltime_min == 120
+    assert payload.script is None
     assert payload.script_path == script_path
     assert payload.log_path == pilot_config.workdir / "submit_scripts" / "alpha-7.log"
 
@@ -182,19 +168,32 @@ async def test_submit_renders_config_and_script(
     assert result.scheduler_id == "42.fake"
 
 
+async def test_submit_script_is_identical_across_adapters(
+    pilot_config: PilotConfig,
+) -> None:
+    by_path = FakeSchedulerAdapter()
+    inline = FakeGraphQLSchedulerAdapter()
+    for adapter in (by_path, inline):
+        await PilotSubmitter(pilot_config, adapter).submit(_make_pilot_job("same"))
+
+    script_path = pilot_config.workdir / "submit_scripts" / "same.sh"
+    assert inline.submitted[0].script_path is None
+    assert inline.submitted[0].script == by_path.files[str(script_path)][0]
+
+
 async def test_submit_accepts_multi_node_ssh_discovery(
-    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+    pilot_config: PilotConfig,
 ) -> None:
     ssh_config = pilot_config.model_copy(update={"gpu_discovery": SSHDiscovery()})
     adapter = FakeSchedulerAdapter()
-    submitter = PilotSubmitter(ssh_config, adapter, *ca_pair)
+    submitter = PilotSubmitter(ssh_config, adapter)
 
     await submitter.submit(_make_pilot_job("portable-ssh"))
 
     assert len(adapter.submitted) == 1
-    config_path = ssh_config.workdir / "submit_scripts" / "portable-ssh.config.yaml"
-    parsed = yaml.safe_load(adapter.files[str(config_path)][0])
-    assert parsed["gpu_discovery"] == {"method": "ssh", "timeout_sec": 5.0}
+    script_path = ssh_config.workdir / "submit_scripts" / "portable-ssh.sh"
+    script = adapter.files[str(script_path)][0]
+    assert """PILOT_GPU_DISCOVERY='{"method":"ssh","timeout_sec":5.0}'""" in script
 
 
 def test_pals_discovery_requires_launcher_path(pilot_config: PilotConfig) -> None:
@@ -214,7 +213,7 @@ def test_gpu_discovery_defaults_to_ssh(pilot_config: PilotConfig) -> None:
 
 
 async def test_graphql_submit_serializes_and_quotes_discovery_environment(
-    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+    pilot_config: PilotConfig,
 ) -> None:
     config = pilot_config.model_copy(
         update={
@@ -226,9 +225,7 @@ async def test_graphql_submit_serializes_and_quotes_discovery_environment(
     )
     adapter = FakeGraphQLSchedulerAdapter()
 
-    await PilotSubmitter(config, adapter, *ca_pair).submit(
-        _make_pilot_job("graphql-pilot")
-    )
+    await PilotSubmitter(config, adapter).submit(_make_pilot_job("graphql-pilot"))
 
     assert len(adapter.submitted) == 1
     script = adapter.submitted[0].script
@@ -249,7 +246,6 @@ async def test_graphql_submit_serializes_and_quotes_discovery_environment(
 @pytest.mark.parametrize("exit_code", [0, 7])
 async def test_submit_exec_preserves_batch_pid_environment_and_exit_status(
     pilot_config: PilotConfig,
-    ca_pair: tuple[str, str],
     tmp_path: Path,
     graphql: bool,
     exit_code: int,
@@ -278,14 +274,12 @@ async def test_submit_exec_preserves_batch_pid_environment_and_exit_status(
     name = "exec-cpu-only"
     adapter: FakeGraphQLSchedulerAdapter | FakeSchedulerAdapter
     adapter = FakeGraphQLSchedulerAdapter() if graphql else FakeSchedulerAdapter()
-    await PilotSubmitter(config, adapter, *ca_pair).submit(_make_pilot_job(name))
+    await PilotSubmitter(config, adapter).submit(_make_pilot_job(name))
     if isinstance(adapter, FakeGraphQLSchedulerAdapter):
         script = adapter.submitted[0].script
-        expected_config = config.pilot_config_path
     else:
         script_path = config.workdir / "submit_scripts" / f"{name}.sh"
         script = adapter.files[str(script_path)][0]
-        expected_config = config.workdir / "submit_scripts" / f"{name}.config.yaml"
     assert script is not None
     completed = subprocess.run(
         ["/bin/bash", "-s"],
@@ -300,12 +294,12 @@ async def test_submit_exec_preserves_batch_pid_environment_and_exit_status(
     shell_pid, child_json = completed.stdout.splitlines()
     child = json.loads(child_json)
     assert child["pid"] == int(shell_pid)
-    assert child["config"] == str(expected_config)
-    assert child["job"] == (name if graphql else None)
+    assert child["config"] == str(config.pilot_config_path)
+    assert child["job"] == name
 
 
 async def test_get_statuses_filters_by_prefix(
-    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+    pilot_config: PilotConfig,
 ) -> None:
     adapter = FakeSchedulerAdapter()
     now = datetime.now(timezone.utc)
@@ -327,14 +321,14 @@ async def test_get_statuses_filters_by_prefix(
             walltime_minutes=60,
         ),
     ]
-    submitter = PilotSubmitter(pilot_config, adapter, *ca_pair)
+    submitter = PilotSubmitter(pilot_config, adapter)
 
     statuses = await submitter.get_statuses()
     assert [s.name for s in statuses] == ["mine"]
 
 
 async def test_list_ready_endpoints_strips_suffix(
-    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+    pilot_config: PilotConfig,
 ) -> None:
     adapter = FakeSchedulerAdapter()
     adapter.directories[str(pilot_config.workdir / "readyfiles")] = [
@@ -342,13 +336,13 @@ async def test_list_ready_endpoints_strips_suffix(
         "beta.ready.json",
         "ignore.txt",
     ]
-    submitter = PilotSubmitter(pilot_config, adapter, *ca_pair)
+    submitter = PilotSubmitter(pilot_config, adapter)
 
     assert sorted(await submitter.list_ready_endpoints()) == ["alpha", "beta"]
 
 
 async def test_get_endpoint_roundtrips_address_info(
-    pilot_config: PilotConfig, ca_pair: tuple[str, str]
+    pilot_config: PilotConfig,
 ) -> None:
     addr = AddressInfo(
         hostname="x3001",
@@ -359,7 +353,7 @@ async def test_get_endpoint_roundtrips_address_info(
     adapter = FakeSchedulerAdapter()
     path = pilot_config.workdir / "readyfiles" / "alpha.ready.json"
     adapter.files[str(path)] = (addr.model_dump_json(), 0o644)
-    submitter = PilotSubmitter(pilot_config, adapter, *ca_pair)
+    submitter = PilotSubmitter(pilot_config, adapter)
 
     got = await submitter.get_endpoint("alpha")
     assert got.hostname == addr.hostname

@@ -14,6 +14,7 @@ from first_common.schema.structured_logs import RequestLog
 from ..database.redis.pubsub import RedisPubSub as _RedisPubSub
 from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
+from ..services.pilot_control import PilotControlClient
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
 from .context import get_request_id
@@ -38,6 +39,14 @@ async def get_router_config(request: Request) -> _RouterConfig:
 
 
 RouterConfigDep = Annotated[_RouterConfig, Depends(get_router_config)]
+
+
+async def get_pilot_control(request: Request) -> PilotControlClient:
+    """Process-wide pilot mTLS client (built once in the lifespan)."""
+    return cast(PilotControlClient, request.app.state.pilot_control_client)
+
+
+PilotControl = Annotated[PilotControlClient, Depends(get_pilot_control)]
 
 
 async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:

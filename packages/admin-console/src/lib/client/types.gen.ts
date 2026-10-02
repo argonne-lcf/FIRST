@@ -1153,7 +1153,7 @@ export type PilotConfig = {
   /**
    * Pilot Config Path
    */
-  pilot_config_path?: string | null;
+  pilot_config_path: string;
 };
 
 /**

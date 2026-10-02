@@ -4,13 +4,15 @@ import signal
 import socket
 import subprocess
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from textwrap import dedent
 from typing import NamedTuple
 
+from cryptography import x509
 from jinja2 import Template
 
-from first_common.schema.pilot import PilotRuntimeConfig
+from first_common.schema.pilot import PilotClientRole, PilotRuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,23 @@ _conf_template_str = """
         keepalive_timeout  300s;
         keepalive_requests 10000;
 
+        # Authorization by client certificate identity. Match on $uri (the
+        # normalized path), never $request_uri, so "..", "//", and
+        # percent-encoding cannot smuggle a request past a prefix rule.
+        map $ssl_client_s_dn $role {
+            {% for role in roles -%}
+            "CN={{role.value}}" {{role.name}};
+            {% endfor -%}
+            default none;
+        }
+        map "$role:$request_method:$uri" $authorized {
+            default 0;
+            "~^{{roles.control.name}}:" 1;
+            "~^{{roles.router.name}}:[A-Z]+:/replicas/" 1;
+            "~^{{roles.router.name}}:GET:{{control_path}}logs/" 1;
+            "~^{{roles.metrics.name}}:GET:/replicas/.+/metrics$" 1;
+        }
+
         upstream control_api {
             server unix:{{config.control_uds_path.as_posix()}};
             keepalive 8;
@@ -71,6 +90,11 @@ _conf_template_str = """
             ssl_client_certificate {{ca_crt_path}};
             ssl_verify_client on;
             ssl_verify_depth 1;
+
+            # Default deny: every location inherits the role policy above.
+            if ($authorized = 0) {
+                return 403;
+            }
 
             # Prompts can be MBs of JSON; keep them out of disk spool.
             client_max_body_size    32m;
@@ -120,6 +144,22 @@ _conf_template_str = """
 conf_template = Template(dedent(_conf_template_str).lstrip())
 
 
+def check_server_cert_expiry(
+    server_crt: str, walltime_min: int, now: datetime | None = None
+) -> None:
+    """
+    Refuse to start a pilot whose server certificate would expire mid-job.
+    """
+    not_after = x509.load_pem_x509_certificate(server_crt.encode()).not_valid_after_utc
+    job_end = (now or datetime.now(timezone.utc)) + timedelta(minutes=walltime_min)
+    if not_after < job_end:
+        raise RuntimeError(
+            f"Pilot server certificate expires at {not_after.isoformat()}, before "
+            f"the end of the {walltime_min} minute walltime ({job_end.isoformat()}). "
+            "Re-issue the pilot certificates before submitting this job."
+        )
+
+
 class ReplicaUpstream(NamedTuple):
     name: str
     uds: str
@@ -157,6 +197,7 @@ class NginxManager:
             nginx_tmpdir=self.tmpdir.as_posix().rstrip("/"),
             replicas=replicas,
             control_path=self.control_path,
+            roles=PilotClientRole,
             ca_crt_path=self.ca_crt_path.as_posix(),
             server_crt_path=self.server_crt_path.as_posix(),
             server_key_path=self.server_key_path.as_posix(),

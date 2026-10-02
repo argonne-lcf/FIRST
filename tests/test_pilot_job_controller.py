@@ -26,7 +26,6 @@ from first_gateway.database.models import (
     PilotJob,
     PilotReplica,
 )
-from first_gateway.services.certmanager import gen_ca_pem
 
 from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
 
@@ -91,12 +90,8 @@ PILOT_SYSTEM: dict[str, Any] = {
     "node_file_env": "PBS_NODEFILE",
     "submit_script_preamble": "#!/bin/bash",
     "pilot_path": "/test/first-pilot",
+    "pilot_config_path": "/tmp/pilot-config.yaml",
 }
-
-
-@pytest.fixture(scope="module")
-def ca_pair() -> tuple[str, str]:
-    return gen_ca_pem(name="test-ca")
 
 
 @pytest.fixture
@@ -104,26 +99,15 @@ def adapter() -> FakeSchedulerAdapter:
     return FakeSchedulerAdapter()
 
 
-def _make_client_state(
-    db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
-) -> MagicMock:
-    ca_crt, ca_key = ca_pair
-    settings = MagicMock()
-    settings.pilot_ca_crt = ca_crt
-    settings.pilot_ca_key.get_secret_value.return_value = ca_key
+def _make_client_state(db: async_sessionmaker[AsyncSession]) -> MagicMock:
     cs = MagicMock()
     cs.db_sessionmaker = db
-    cs.settings = settings
     return cs
 
 
-def _make_controller(
-    db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
-) -> PilotJobController:
+def _make_controller(db: async_sessionmaker[AsyncSession]) -> PilotJobController:
     return PilotJobController(
-        "pilot-job-controller", _make_client_state(db, ca_pair), MagicMock()
+        "pilot-job-controller", _make_client_state(db), MagicMock()
     )
 
 
@@ -234,9 +218,7 @@ async def _get_job(db: async_sessionmaker[AsyncSession], uid: int) -> PilotJob:
 # ---------------------------------------------------------------------------
 
 
-async def test_list_actionable(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
-) -> None:
+async def test_list_actionable(db: async_sessionmaker[AsyncSession]) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
         uid_sched_del = await _insert_pilot_job(
@@ -275,7 +257,7 @@ async def test_list_actionable(
             reconcile_retry_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     async with db() as sess:
         actionable = await controller.list_actionable(sess)
 
@@ -294,17 +276,17 @@ async def test_list_actionable(
 
 
 async def test_reconcile_missing_job_is_noop(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(999_999)
 
 
 async def test_reconcile_cluster_without_pilot_system(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     """Jobs on a cluster whose pilot_system was removed are skipped."""
     async with db.begin() as sess:
@@ -323,7 +305,7 @@ async def test_reconcile_cluster_without_pilot_system(
             scheduler_state=SchedulerJobState.pending_submit,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(uid)
 
     job = await _get_job(db, uid)
@@ -337,7 +319,6 @@ async def test_reconcile_cluster_without_pilot_system(
 
 async def test_scheduled_deletion_requests_nonblocking_termination(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     async with db.begin() as sess:
@@ -349,7 +330,7 @@ async def test_scheduled_deletion_requests_nonblocking_termination(
             scheduled_deletion_at=NOW,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -362,7 +343,6 @@ async def test_scheduled_deletion_requests_nonblocking_termination(
 
 async def test_scheduled_deletion_waits_for_exiting_job_to_become_gone(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     async with db.begin() as sess:
@@ -375,7 +355,7 @@ async def test_scheduled_deletion_waits_for_exiting_job_to_become_gone(
             scheduled_deletion_at=NOW,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -387,7 +367,6 @@ async def test_scheduled_deletion_waits_for_exiting_job_to_become_gone(
 
 async def test_scheduled_deletion_without_scheduler_job_skips_terminate(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     """A job that was never submitted can still be soft-deleted."""
@@ -400,7 +379,7 @@ async def test_scheduled_deletion_without_scheduler_job_skips_terminate(
             scheduled_deletion_at=NOW,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -412,7 +391,6 @@ async def test_scheduled_deletion_without_scheduler_job_skips_terminate(
 
 async def test_scheduled_deletion_skips_terminate_when_already_terminal(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     """No terminate RPC when the scheduler already reports the job as gone."""
@@ -426,7 +404,7 @@ async def test_scheduled_deletion_skips_terminate_when_already_terminal(
             scheduled_deletion_at=NOW,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -444,7 +422,6 @@ async def test_scheduled_deletion_skips_terminate_when_already_terminal(
 @pytest.mark.parametrize("state", [SchedulerJobState.exiting, SchedulerJobState.gone])
 async def test_terminal_state_marks_scheduled_deletion(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     state: SchedulerJobState,
 ) -> None:
     async with db.begin() as sess:
@@ -453,7 +430,7 @@ async def test_terminal_state_marks_scheduled_deletion(
             sess, f"terminal-{state.value}", scheduler_state=state
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(uid)
 
     job = await _get_job(db, uid)
@@ -466,7 +443,7 @@ async def test_terminal_state_marks_scheduled_deletion(
 
 
 async def test_idle_past_threshold_marks_deletion(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
@@ -476,7 +453,7 @@ async def test_idle_past_threshold_marks_deletion(
             idle_since=datetime.now(timezone.utc) - timedelta(minutes=90),
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(uid)
 
     job = await _get_job(db, uid)
@@ -484,7 +461,7 @@ async def test_idle_past_threshold_marks_deletion(
 
 
 async def test_idle_within_threshold_no_action(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
@@ -494,7 +471,7 @@ async def test_idle_within_threshold_no_action(
             idle_since=datetime.now(timezone.utc) - timedelta(minutes=30),
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(uid)
 
     job = await _get_job(db, uid)
@@ -507,7 +484,7 @@ async def test_idle_within_threshold_no_action(
 
 
 async def test_unhealthy_past_threshold_marks_deletion(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
@@ -518,7 +495,7 @@ async def test_unhealthy_past_threshold_marks_deletion(
             manager_unhealthy_since=datetime.now(timezone.utc) - timedelta(minutes=10),
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(uid)
 
     job = await _get_job(db, uid)
@@ -526,7 +503,7 @@ async def test_unhealthy_past_threshold_marks_deletion(
 
 
 async def test_unhealthy_within_threshold_no_action(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
@@ -537,7 +514,7 @@ async def test_unhealthy_within_threshold_no_action(
             manager_unhealthy_since=datetime.now(timezone.utc) - timedelta(minutes=2),
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(uid)
 
     job = await _get_job(db, uid)
@@ -551,7 +528,6 @@ async def test_unhealthy_within_threshold_no_action(
 
 async def test_submit_under_caps(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     """A pending job is submitted when under both caps."""
@@ -564,7 +540,7 @@ async def test_submit_under_caps(
             num_nodes=2,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -578,7 +554,6 @@ async def test_submit_under_caps(
 
 async def test_submit_deferred_by_concurrent_jobs_cap(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     """Submission is deferred when max_concurrent_jobs (3) is exceeded."""
@@ -592,7 +567,7 @@ async def test_submit_deferred_by_concurrent_jobs_cap(
             scheduler_state=SchedulerJobState.pending_submit,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -605,7 +580,6 @@ async def test_submit_deferred_by_concurrent_jobs_cap(
 
 async def test_exiting_job_does_not_delay_replacement_submission(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     """An acknowledged qdel frees its FIRST submission-capacity slot."""
@@ -625,7 +599,7 @@ async def test_exiting_job_does_not_delay_replacement_submission(
             scheduler_state=SchedulerJobState.pending_submit,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -637,7 +611,6 @@ async def test_exiting_job_does_not_delay_replacement_submission(
 
 async def test_submit_deferred_by_node_cap(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     """Submission is deferred when max_num_nodes (10) is exceeded."""
@@ -651,7 +624,7 @@ async def test_submit_deferred_by_node_cap(
             num_nodes=2,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -663,7 +636,6 @@ async def test_submit_deferred_by_node_cap(
 
 async def test_exiting_job_does_not_delay_replacement_at_node_cap(
     db: async_sessionmaker[AsyncSession],
-    ca_pair: tuple[str, str],
     adapter: FakeSchedulerAdapter,
 ) -> None:
     """Exiting nodes remain PBS-owned but do not consume FIRST submit capacity."""
@@ -683,7 +655,7 @@ async def test_exiting_job_does_not_delay_replacement_at_node_cap(
             num_nodes=2,
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
         await controller.reconcile(uid)
 
@@ -699,7 +671,7 @@ async def test_exiting_job_does_not_delay_replacement_at_node_cap(
 
 
 async def test_restarted_idle_period_prevents_stale_mark(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     """A newly restarted idle interval cannot inherit an old interval's age."""
     async with db.begin() as sess:
@@ -725,7 +697,7 @@ async def test_restarted_idle_period_prevents_stale_mark(
             .values(idle_since=restarted_at)
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with pytest.raises(StaleReconcile):
         await controller._mark_idle_deletion(job)
 
@@ -735,7 +707,7 @@ async def test_restarted_idle_period_prevents_stale_mark(
 
 
 async def test_expired_idle_job_with_live_assignment_is_not_actionable(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
@@ -749,7 +721,7 @@ async def test_expired_idle_job_with_live_assignment_is_not_actionable(
             sess, "idle-assigned", name="test-deployment/replica/live"
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     async with db() as sess:
         assert uid not in await controller.list_actionable(sess)
     with pytest.raises(StaleReconcile):
@@ -758,7 +730,7 @@ async def test_expired_idle_job_with_live_assignment_is_not_actionable(
 
 
 async def test_assignment_inserted_between_idle_read_and_update_blocks_delete(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
@@ -779,14 +751,14 @@ async def test_assignment_inserted_between_idle_read_and_update_blocks_delete(
             name="test-deployment/replica/racing",
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with pytest.raises(StaleReconcile):
         await controller._mark_idle_deletion(job)
     assert not (await _get_job(db, uid)).scheduled_deletion
 
 
 async def test_deleted_historical_assignment_does_not_block_idle_delete(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     async with db.begin() as sess:
         await _seed_cluster(sess)
@@ -803,13 +775,13 @@ async def test_deleted_historical_assignment_does_not_block_idle_delete(
             deleted_at=datetime.now(timezone.utc),
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     await controller.reconcile(uid)
     assert (await _get_job(db, uid)).scheduled_deletion
 
 
 async def test_unhealthy_premise_prevents_stale_mark(
-    db: async_sessionmaker[AsyncSession], ca_pair: tuple[str, str]
+    db: async_sessionmaker[AsyncSession],
 ) -> None:
     """If manager recovers between read and write, the premised UPDATE
     correctly rejects the stale mark."""
@@ -837,7 +809,7 @@ async def test_unhealthy_premise_prevents_stale_mark(
             )
         )
 
-    controller = _make_controller(db, ca_pair)
+    controller = _make_controller(db)
     with pytest.raises(StaleReconcile):
         await controller._mark_scheduled_deletion(
             job,
