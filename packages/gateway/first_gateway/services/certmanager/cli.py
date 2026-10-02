@@ -3,8 +3,8 @@
 Workflow:
     pilot-certmanager standard --dir pki    # CA (if absent) + pilot server + all client roles
     pilot-certmanager ca --name "FIRST CA"  # self-signed Root CA (default 10 years)
-    pilot-certmanager server first-pilot    # server cert signed by the CA (default 2 years)
-    pilot-certmanager client first-control  # client cert signed by the CA (default 2 years)
+    pilot-certmanager server first-pilot    # server cert signed by the CA (default 1 year)
+    pilot-certmanager client first-control  # client cert signed by the CA (default 1 year)
 
 Certs are written as ``<dir>/<cn>.crt`` and ``<dir>/<cn>.key``. Re-running
 ``server`` / ``client`` / ``standard`` re-issues the leaf certs against the

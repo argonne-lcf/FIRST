@@ -48,10 +48,10 @@ def pilot_ssl_context(settings: Settings) -> ssl.SSLContext:
     service's mounted client cert, whose CN is its role on the pilot.
     """
     ctx = ssl.create_default_context(cafile=settings.pilot_ca_crt_file)
-    # Compute nodes have no DNS names, and the scheduler picks the host only
-    # after the server cert must already exist, so no hostname can be bound
-    # into it. The peer is identified instead by chain + serverAuth EKU (only
-    # pilots hold serverAuth certs from this CA).
+    # Compute node DNS names are not accessible to the gateway, and the
+    # scheduler picks the pilot NGINX host after the job is submitted, so no
+    # hostname can be bound into it. The peer is identified instead by chain +
+    # serverAuth EKU (only pilots hold serverAuth certs from this CA).
     ctx.check_hostname = False
     ctx.load_cert_chain(settings.pilot_client_crt_file, settings.pilot_client_key_file)
     return ctx

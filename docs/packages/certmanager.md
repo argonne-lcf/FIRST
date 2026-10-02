@@ -120,7 +120,7 @@ account (`chmod 600`).
 
 ## Renewal
 
-Leaf certificates default to 2 years; the CA to 10. Renewal re-issues leaves
+Leaf certificates default to 1 year; the CA to 10. Renewal re-issues leaves
 against the **same CA**, so nothing else needs to change:
 
 1. Re-run `pilot-certmanager standard` against the environment's CA directory.
