@@ -212,6 +212,7 @@ def _build_codex_catalog(
     display_name: str,
     description: str,
     context_window: int,
+    input_modalities: list[str],
     version: str,
 ) -> dict[str, Any]:
     """Clone a version-matched upstream entry and adapt it to a served model."""
@@ -249,7 +250,7 @@ def _build_codex_catalog(
             "supports_search_tool": False,
             "web_search_tool_type": "text",
             "experimental_supported_tools": [],
-            "input_modalities": ["text"],
+            "input_modalities": input_modalities,
             "supports_image_detail_original": False,
             "prefer_websockets": False,
             "use_responses_lite": False,
@@ -313,6 +314,12 @@ def generate_codex_model_configs(
                     and (ctx := caps.get("context_window_tokens"))
                     and (name := model.get("display_name"))
                 ):
+                    # Codex's catalog accepts only text/image/audio modalities.
+                    input_modalities = [
+                        m
+                        for m in dict.fromkeys(caps.get("input_modalities") or [])
+                        if m in ("text", "image", "audio")
+                    ]
                     catalog_path = _CODEX_CATALOG_DIR / f"{slug.replace('/', '-')}.json"
                     catalog = _build_codex_catalog(
                         template,
@@ -321,6 +328,7 @@ def generate_codex_model_configs(
                         display_name=name,
                         description=f"{slug} served through ALCF {cluster_name.title()}",
                         context_window=ctx,
+                        input_modalities=input_modalities or ["text"],
                         version=version,
                     )
                     _write_json_config(catalog_path, catalog)
