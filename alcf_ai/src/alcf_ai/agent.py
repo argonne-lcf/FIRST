@@ -457,7 +457,12 @@ def edit_pi(
                     entry["contextWindow"] = ctx
 
                 if inputs := caps.get("input_modalities"):
-                    entry["input"] = inputs
+                    # pi's models.json schema knows only text/image
+                    supported = [
+                        m for m in dict.fromkeys(inputs) if m in ("text", "image")
+                    ]
+                    if supported:
+                        entry["input"] = supported
 
                 if reasoning := caps.get("reasoning"):
                     if reasoning.get("supported", False):
