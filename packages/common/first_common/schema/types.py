@@ -23,6 +23,11 @@ from .base_scheduler import SchedulerAdapter
 
 ResourceName = NewType("ResourceName", str)
 
+# Allowed characters in resource names (and the replica names generated from
+# them). Names are interpolated into URL paths and the pilot NGINX config, so
+# this must stay free of whitespace and NGINX metacharacters ({ } ; " ' $ \ #).
+RESOURCE_NAME_PATTERN = r"^[a-zA-Z0-9._\-/]+$"
+
 
 class HealthCheckParams(BaseModel):
     """

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from ..base_scheduler import SchedulerJobState
 from ..pilot import PilotResources
 from ..types import (
+    RESOURCE_NAME_PATTERN,
     GpuClaim,
     HealthCheckResult,
     PilotDeploymentState,
@@ -49,7 +50,7 @@ class ResourceMeta(BaseModel):
     name: str = Field(
         min_length=1,
         max_length=320,  # larger than spec to accomodate generated names
-        pattern=r"^[a-zA-Z0-9._\-/]+$",
+        pattern=RESOURCE_NAME_PATTERN,
         examples=["meta-llama/Meta-Llama-3.1-8B"],
     )
     uid: int

@@ -9,6 +9,7 @@ from pydantic import (
 )
 
 from ..types import (
+    RESOURCE_NAME_PATTERN,
     ResourceName,
 )
 from .spec import ResourceSpec
@@ -31,7 +32,7 @@ class ResourceManifest(BaseModel):
     name: ResourceName = Field(
         min_length=1,
         max_length=256,
-        pattern=r"^[a-zA-Z0-9._\-/]+$",
+        pattern=RESOURCE_NAME_PATTERN,
         examples=["meta-llama/Meta-Llama-3.1-8B"],
     )
     spec: SerializeAsAny[ResourceSpec]

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, PrivateAttr, computed_field
 from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 from .types import (
+    RESOURCE_NAME_PATTERN,
     GpuClaim,
     GpuDiscovery,
     ReplicaState,
@@ -57,9 +58,12 @@ _JOB_ENV_OVERRIDE_FIELDS = frozenset(
 class ReplicaStartRequest(BaseModel):
     """
     Gateway request to start a replica on the pilot manager.
+
+    `name` is interpolated into the pilot NGINX config as a location path, so
+    it is restricted to the same character set as resource names.
     """
 
-    name: str
+    name: str = Field(min_length=1, max_length=320, pattern=RESOURCE_NAME_PATTERN)
     deployment_name: str
     launch_spec: ResolvedLaunchSpec
     gpu_indices: list[tuple[int, int]]

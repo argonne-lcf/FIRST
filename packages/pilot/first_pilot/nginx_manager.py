@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -13,6 +14,7 @@ from cryptography import x509
 from jinja2 import Template
 
 from first_common.schema.pilot import PilotClientRole, PilotRuntimeConfig
+from first_common.schema.types import RESOURCE_NAME_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +145,8 @@ _conf_template_str = """
 
 conf_template = Template(dedent(_conf_template_str).lstrip())
 
+_SAFE_REPLICA_NAME = re.compile(RESOURCE_NAME_PATTERN)
+
 
 def check_server_cert_expiry(
     server_crt: str, walltime_min: int, now: datetime | None = None
@@ -191,6 +195,15 @@ class NginxManager:
         return path
 
     def render_config(self, replicas: list[ReplicaUpstream]) -> str:
+        # replica.name is interpolated verbatim into a `location` directive.
+        # ReplicaStartRequest already enforces this pattern; re-check here so
+        # the template can never render a name that escapes its directive.
+        for replica in replicas:
+            if _SAFE_REPLICA_NAME.fullmatch(replica.name) is None:
+                raise ValueError(
+                    f"refusing to render NGINX config: unsafe replica name "
+                    f"{replica.name!r}"
+                )
 
         return conf_template.render(
             config=self.pilot_config,

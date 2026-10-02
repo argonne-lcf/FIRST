@@ -9,8 +9,13 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from pydantic import ValidationError
 
-from first_common.schema.pilot import PilotClientRole, PilotRuntimeConfig
+from first_common.schema.pilot import (
+    PilotClientRole,
+    PilotRuntimeConfig,
+    ReplicaStartRequest,
+)
 from first_pilot.nginx_manager import (
     NginxManager,
     ReplicaUpstream,
@@ -118,6 +123,42 @@ def test_rendered_config_passes_nginx_syntax_check(manager: NginxManager) -> Non
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+UNSAFE_REPLICA_NAMES = [
+    "",
+    "m/ { return 200; } location /x",
+    "m;",
+    "m}",
+    "m m",
+    "m\n",
+    "m$uri",
+    'm"',
+    "m#",
+    "m\\",
+]
+
+
+@pytest.mark.parametrize("name", UNSAFE_REPLICA_NAMES)
+def test_render_config_refuses_unsafe_replica_name(
+    manager: NginxManager, name: str
+) -> None:
+    with pytest.raises(ValueError, match="unsafe replica name"):
+        manager.render_config([ReplicaUpstream(name=name, uds="/tmp/m.sock")])
+
+
+@pytest.mark.parametrize("name", UNSAFE_REPLICA_NAMES)
+def test_replica_start_request_rejects_unsafe_name(name: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        ReplicaStartRequest.model_validate({"name": name})
+    assert ("name",) in [e["loc"] for e in exc_info.value.errors()]
+
+
+def test_replica_start_request_accepts_generated_name() -> None:
+    name = "meta-llama/Meta-Llama-3.1-8B_v2/replica/0a1b2c3d"
+    with pytest.raises(ValidationError) as exc_info:
+        ReplicaStartRequest.model_validate({"name": name})
+    assert ("name",) not in [e["loc"] for e in exc_info.value.errors()]
 
 
 def test_cert_expiry_check_accepts_cert_outliving_walltime() -> None:
