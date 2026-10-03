@@ -1,5 +1,6 @@
 """Isolated endpoint adapter for V2-managed (pilot) backends."""
 
+import asyncio
 import json
 import logging
 import random
@@ -10,12 +11,13 @@ import httpx
 from django.http import StreamingHttpResponse
 from pydantic import BaseModel
 
-from resource_server_async.endpoints.direct_api import DirectAPIEndpoint
+from resource_server_async.endpoints.direct_api import DirectAPIEndpoint, StreamingState
 from resource_server_async.endpoints.endpoint import BaseEndpoint
 from resource_server_async.httpx_client import create_ssl_context
 from resource_server_async.streaming import create_streaming_response_headers
 
 from ..errors import EndpointError
+from ..logging import get_request_context
 from ..schemas.endpoints import (
     SubmitStreamingTaskResponse,
     SubmitTaskResult,
@@ -134,14 +136,17 @@ class FirstV2Endpoint(DirectAPIEndpoint):
     async def submit_streaming_task(
         self, data: dict[str, Any]
     ) -> SubmitStreamingTaskResponse:
-        """Proxy the backend stream.
-
-        Unlike DirectAPIEndpoint, this path never assembles the stream, so no
-        request_metrics row is emitted and the request_log keeps the in-progress
-        marker written by the middleware.
-        """
         url, body = self._build_request(data, stream=True)
         log.info(f"Making First V2 API call for model {self.model} (stream=True)")
+
+        streaming_state: StreamingState = {
+            "chunks": [],
+            "total_chunks": 0,
+            "completed": False,
+            "error": None,
+            "start_time": time.time(),
+            "usage": None,
+        }
 
         async def sse_generator() -> AsyncGenerator[str, None]:
             try:
@@ -154,8 +159,11 @@ class FirstV2Endpoint(DirectAPIEndpoint):
                         )
                     async for chunk in response.aiter_text():
                         if chunk:
+                            streaming_state["total_chunks"] += 1
                             yield chunk
+                            self._collect_streaming_chunk(streaming_state, chunk)
             except Exception as e:
+                streaming_state["error"] = str(e)
                 error_chunk = {
                     "id": "chatcmpl-api-error",
                     "object": "chat.completion.chunk",
@@ -174,6 +182,14 @@ class FirstV2Endpoint(DirectAPIEndpoint):
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
                 yield "data: [DONE]\n\n"
+            finally:
+                streaming_state["completed"] = True
+
+        try:
+            context = get_request_context()
+            asyncio.create_task(self._update_streaming_log(context, streaming_state))
+        except LookupError:
+            pass
 
         response = StreamingHttpResponse(
             streaming_content=sse_generator(), content_type="text/event-stream"

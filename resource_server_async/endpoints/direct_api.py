@@ -21,6 +21,7 @@ from ..schemas.endpoints import (
     SubmitStreamingTaskResponse,
     SubmitTaskResult,
 )
+from ..schemas.structured_logs import UsageTokens, extract_usage
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class StreamingState(TypedDict):
     completed: bool
     error: str | None
     start_time: float
+    usage: UsageTokens | None
 
 
 # DirectAPI endpoint implementation of a BaseEndpoint
@@ -186,6 +188,19 @@ class DirectAPIEndpoint(BaseEndpoint):
         request_data = self._prepare_request_body(data, stream=True)
         return await self._submit_streaming_task_with_headers(request_data)
 
+    @staticmethod
+    def _collect_streaming_chunk(state: StreamingState, chunk: str) -> None:
+        """Keep token usage and a bounded sample of chunks for the final log."""
+        if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
+            return
+
+        usage = extract_usage(chunk[6:])
+        if usage.total_tokens is not None:
+            state["usage"] = usage
+
+        if len(state["chunks"]) < 100:
+            state["chunks"].append(chunk[6:].strip())
+
     async def _submit_streaming_task_with_headers(
         self,
         data: dict[str, Any],
@@ -209,6 +224,7 @@ class DirectAPIEndpoint(BaseEndpoint):
             "completed": False,
             "error": None,
             "start_time": time.time(),
+            "usage": None,
         }
 
         # SSE generator
@@ -225,15 +241,7 @@ class DirectAPIEndpoint(BaseEndpoint):
                         streaming_state["total_chunks"] += 1
                         yield chunk  # Pass through SSE format
 
-                        # Collect limited chunks for logging (optimize memory)
-                        if chunk.startswith("data: ") and not chunk.startswith(
-                            "data: [DONE]"
-                        ):
-                            if len(streaming_state["chunks"]) < 100:
-                                try:
-                                    streaming_state["chunks"].append(chunk[6:].strip())
-                                except:
-                                    pass
+                        self._collect_streaming_chunk(streaming_state, chunk)
 
                 streaming_state["completed"] = True
 
@@ -263,7 +271,7 @@ class DirectAPIEndpoint(BaseEndpoint):
 
         try:
             context = get_request_context()
-            asyncio.create_task(self.__update_streaming_log(context, streaming_state))
+            asyncio.create_task(self._update_streaming_log(context, streaming_state))
         except LookupError:
             pass
 
@@ -329,7 +337,7 @@ class DirectAPIEndpoint(BaseEndpoint):
             raise ValueError(f"Error: Unexpected error calling stream API: {e}")
 
     # Update streaming log
-    async def __update_streaming_log(
+    async def _update_streaming_log(
         self, context: RequestContext, streaming_state: StreamingState
     ) -> None:
         """Background task to log after streaming completes."""
@@ -361,12 +369,12 @@ class DirectAPIEndpoint(BaseEndpoint):
                     else "streaming_completed"
                 )
                 log.info(
-                    f"Metis streaming completed for {self.endpoint_slug}: {total_chunks} chunks in {duration:.2f}s"
+                    f"Streaming completed for {self.endpoint_slug}: {total_chunks} chunks in {duration:.2f}s"
                 )
 
             if context.request_log:
                 context.request_log.emit(result, status_code=None)
-                await context.request_log.emit_metrics()
+                await context.request_log.emit_metrics(streaming_state["usage"])
 
         # Log error if something went wrong
         except Exception as e:
