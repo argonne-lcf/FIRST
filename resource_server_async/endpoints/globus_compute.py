@@ -26,6 +26,7 @@ from resource_server_async.streaming import (
     format_streaming_error_for_openai,
     get_streaming_data_and_status_batch,
     get_streaming_metadata,
+    include_streaming_usage,
     prepare_streaming_task_data,
     process_streaming_completion_async,
     set_streaming_error,
@@ -281,6 +282,9 @@ class GlobusComputeEndpoint(BaseEndpoint):
         model_params = data.setdefault("model_params", {})
         if isinstance(model_params, dict):
             model_params["api_port"] = self.config.api_port
+            include_streaming_usage(
+                model_params, str(model_params.get("openai_endpoint", "")).strip("/")
+            )
         else:
             remove_endpoint_from_cache(self.endpoint_slug)
             raise AssertionError(

@@ -13,7 +13,10 @@ from resource_server_async.endpoints.endpoint import (
     BaseEndpoint,
 )
 from resource_server_async.httpx_client import AsyncHttpClient, create_ssl_context
-from resource_server_async.streaming import create_streaming_response_headers
+from resource_server_async.streaming import (
+    create_streaming_response_headers,
+    include_streaming_usage,
+)
 
 from ..errors import EndpointError
 from ..logging import RequestContext, get_request_context
@@ -201,6 +204,7 @@ class DirectAPIEndpoint(BaseEndpoint):
         if len(state["chunks"]) < 100:
             state["chunks"].append(chunk[6:].strip())
 
+
     async def _submit_streaming_task_with_headers(
         self,
         data: dict[str, Any],
@@ -212,6 +216,7 @@ class DirectAPIEndpoint(BaseEndpoint):
         # generator. Endpoint adapters and HTTP clients are shared objects.
         request_data = dict(data)
         endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
+        include_streaming_usage(request_data, endpoint)
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
         captured_headers = _merge_forwarded_request_headers(
             request_headers, self.httpx_client.headers

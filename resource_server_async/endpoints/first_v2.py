@@ -14,7 +14,10 @@ from pydantic import BaseModel
 from resource_server_async.endpoints.direct_api import DirectAPIEndpoint, StreamingState
 from resource_server_async.endpoints.endpoint import BaseEndpoint
 from resource_server_async.httpx_client import create_ssl_context
-from resource_server_async.streaming import create_streaming_response_headers
+from resource_server_async.streaming import (
+    create_streaming_response_headers,
+    include_streaming_usage,
+)
 
 from ..errors import EndpointError
 from ..logging import get_request_context
@@ -106,6 +109,8 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         )
         # Backends expect their own model name, not the alias.
         body["model"] = self._cfg.backend_model_name
+        if stream:
+            include_streaming_usage(body, openai_endpoint)
         url = f"{self._pick_url().rstrip('/')}/v1/{openai_endpoint}"
         return url, body
 

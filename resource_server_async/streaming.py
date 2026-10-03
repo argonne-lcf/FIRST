@@ -457,6 +457,22 @@ def prepare_streaming_task_data(
     return data
 
 
+def include_streaming_usage(body: dict[str, Any], endpoint: str | None) -> None:
+    """Opt into the usage chunk the request_metrics row needs.
+
+    Hack: vLLM sends the usage chunk only when the request asks for it. Without
+    it the gateway can only estimate the counts from the text. Drop once the
+    backends run with `--enable-force-include-usage`.
+    """
+    if endpoint not in {"chat/completions", "completions"}:
+        return
+
+    options = body.get("stream_options")
+    options = dict(options) if isinstance(options, dict) else {}
+    options.setdefault("include_usage", True)
+    body["stream_options"] = options
+
+
 def create_streaming_response_headers() -> dict[str, str]:
     """Create standard headers for SSE streaming responses"""
     return {
