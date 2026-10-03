@@ -19,7 +19,7 @@ from .cache import (
     remove_item_from_cache,
 )
 from .logging import RequestContext
-from .schemas.structured_logs import UsageTokens
+from .schemas.structured_logs import UsageTokens, usage_from_dict
 
 logger = getLogger(__name__)
 
@@ -645,15 +645,15 @@ def collect_and_aggregate_streaming_content(
                 except json.JSONDecodeError:
                     continue
 
-        # If no usage info was captured from chunks, estimate from content
-        if not usage_info or not usage_info.get("total_tokens", 0):
+        usage = usage_from_dict({"usage": usage_info})
+        if usage.total_tokens is None:
             usage = estimate_usage(full_content, original_prompt, request_id or task_id)
-            usage_info = {
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-                "total_tokens": usage.total_tokens,
-                "prompt_tokens_details": None,
-            }
+        usage_info = {
+            **usage_info,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }
 
         # Ensure we have the correct object type for a complete response (not chunk)
         model_info["object"] = "chat.completion"  # Always set to completion, not chunk
