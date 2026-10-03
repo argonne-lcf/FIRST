@@ -421,7 +421,7 @@ class GlobusComputeEndpoint(BaseEndpoint):
                         for i in range(last_chunk_index, len(chunks)):
                             chunk = chunks[i]
                             # Only send actual vLLM content chunks (skip our custom control messages)
-                            if chunk.startswith("data: "):
+                            if chunk.startswith("data:"):
                                 # Send the vLLM chunk as-is
                                 yield f"{chunk}\n\n"
 
@@ -440,7 +440,7 @@ class GlobusComputeEndpoint(BaseEndpoint):
                         if final_chunks and len(final_chunks) > last_chunk_index:
                             for i in range(last_chunk_index, len(final_chunks)):
                                 chunk = final_chunks[i]
-                                if chunk.startswith("data: "):
+                                if chunk.startswith("data:"):
                                     yield f"{chunk}\n\n"
 
                         log.info(

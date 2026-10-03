@@ -16,8 +16,10 @@ from resource_server_async.endpoints.endpoint import (
 from resource_server_async.httpx_client import AsyncHttpClient, create_ssl_context
 from resource_server_async.streaming import (
     create_streaming_response_headers,
+    delta_content,
     estimate_usage,
     extract_status_code_from_error,
+    merge_usage,
 )
 
 from ..errors import EndpointError
@@ -59,39 +61,6 @@ def _merge_forwarded_request_headers(
     return forwarded
 
 
-def _delta_content(body: str) -> str:
-    """Return the text delta of an SSE body, if it carries one."""
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        return ""
-
-    if not isinstance(data, dict):
-        return ""
-
-    delta = data.get("delta")
-    if isinstance(delta, str):
-        return delta
-    text = delta.get("text") if isinstance(delta, dict) else None
-    if isinstance(text, str):
-        return text
-
-    choices = data.get("choices")
-    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        choice = choices[0]
-        choice_delta = choice.get("delta")
-        content = (
-            choice_delta.get("content") if isinstance(choice_delta, dict) else None
-        )
-        if isinstance(content, str):
-            return content
-        text = choice.get("text")
-        if isinstance(text, str):
-            return text
-
-    return ""
-
-
 def _decoded_prompt(prompt: str) -> str | list[str | dict[str, Any]]:
     """Decode the JSON prompt stored on the request log."""
     try:
@@ -120,6 +89,20 @@ class StreamingState(TypedDict):
     start_time: float
     usage: UsageTokens | None
     content: str
+    pending: str
+
+
+def new_streaming_state() -> StreamingState:
+    return {
+        "chunks": [],
+        "total_chunks": 0,
+        "completed": False,
+        "error": None,
+        "start_time": time.time(),
+        "usage": None,
+        "content": "",
+        "pending": "",
+    }
 
 
 # DirectAPI endpoint implementation of a BaseEndpoint
@@ -239,20 +222,56 @@ class DirectAPIEndpoint(BaseEndpoint):
     @staticmethod
     def _collect_streaming_chunk(state: StreamingState, chunk: str) -> None:
         """Keep token usage and a bounded sample of chunks for the final log."""
-        if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
-            return
+        text = state["pending"] + chunk.replace("\r\n", "\n").replace("\r", "\n")
+        lines = text.split("\n")
+        state["pending"] = lines.pop()
 
-        body = chunk[6:].strip()
-        usage = extract_usage(body)
-        if usage.total_tokens is not None:
-            state["usage"] = usage
+        for line in lines:
+            if not line.startswith("data:"):
+                continue
 
-        state["content"] += _delta_content(body)
-        if len(state["chunks"]) < 100:
-            state["chunks"].append(body)
+            body = line[5:].strip()
+            if not body or body == "[DONE]":
+                continue
 
-    # HACK: vLLM streams the usage chunk only when asked. Drop this once
-    # the backends run with --enable-force-include-usage.
+            usage = extract_usage(body)
+            if usage.total_tokens is not None:
+                state["usage"] = merge_usage(state["usage"], usage)
+
+            state["content"] += delta_content(body)
+            if len(state["chunks"]) < 100:
+                state["chunks"].append(line)
+
+    @staticmethod
+    def _finalize_stream(state: StreamingState) -> None:
+        DirectAPIEndpoint._collect_streaming_chunk(state, "\n")
+        state["completed"] = True
+
+    @staticmethod
+    def _sse_error_chunk(model: str, message: str) -> str:
+        """Return an OpenAI-compatible SSE error frame."""
+        chunk = {
+            "id": "chatcmpl-api-error",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": f"\n\n[ERROR] {message}",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        return f"data: {json.dumps(chunk)}\n\n"
+
+    # HACK: vLLM streams the usage chunk only when asked. Drop this once the
+    # backends run with --enable-force-include-usage; until then an unasked
+    # stream falls back to the token estimate. Covers DirectAPI, Metis/Minerva,
+    # and the V2 bridge.
     @staticmethod
     def _include_streaming_usage(body: dict[str, Any], endpoint: str) -> None:
         """Opt into the usage chunk FIRST needs for request_metrics.
@@ -284,16 +303,7 @@ class DirectAPIEndpoint(BaseEndpoint):
             request_headers, self.httpx_client.headers
         )
 
-        # Shared state for tracking streaming (optimized - minimal memory)
-        streaming_state: StreamingState = {
-            "chunks": [],  # Limited to 100 chunks
-            "total_chunks": 0,
-            "completed": False,
-            "error": None,
-            "start_time": time.time(),
-            "usage": None,
-            "content": "",
-        }
+        streaming_state = new_streaming_state()
 
         # SSE generator
         async def sse_generator() -> AsyncGenerator[str, None]:
@@ -307,34 +317,17 @@ class DirectAPIEndpoint(BaseEndpoint):
                     if chunk:
                         # Send chunk
                         streaming_state["total_chunks"] += 1
-                        yield chunk  # Pass through SSE format
-
                         self._collect_streaming_chunk(streaming_state, chunk)
+                        yield chunk  # Pass through SSE format
 
             # Send error as OpenAI streaming chunk format (compatible with OpenAI clients)
             except Exception as e:
                 error_str = str(e)
                 streaming_state["error"] = error_str
-                error_chunk = {
-                    "id": "chatcmpl-api-error",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": self.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant",
-                                "content": f"\n\n[ERROR] {error_str}",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(error_chunk)}\n\n"
+                yield self._sse_error_chunk(self.model, error_str)
                 yield "data: [DONE]\n\n"
             finally:
-                streaming_state["completed"] = True
+                self._finalize_stream(streaming_state)
 
         try:
             context = get_request_context()
@@ -438,7 +431,7 @@ class DirectAPIEndpoint(BaseEndpoint):
                     if streaming_state["chunks"]
                     else "streaming_completed"
                 )
-                status_code = None
+                status_code = 200
                 log.info(
                     f"Streaming completed for {self.endpoint_slug}: {total_chunks} chunks in {duration:.2f}s"
                 )
@@ -446,7 +439,11 @@ class DirectAPIEndpoint(BaseEndpoint):
             if context.request_log:
                 usage = streaming_state["usage"]
                 if (
-                    usage is None
+                    (
+                        usage is None
+                        or usage.prompt_tokens is None
+                        or usage.completion_tokens is None
+                    )
                     and streaming_state["content"]
                     and not streaming_state["error"]
                 ):

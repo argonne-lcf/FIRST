@@ -41,7 +41,7 @@ from resource_server_async.streaming import (
 
 ACCESS_ID = "access-a"
 REQUEST_ID = "request-a"
-OLD_COMPLETION_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+OLD_COMPLETION_TIME = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
 CONTENT_BODY = '{"choices": [{"delta": {"content": "hi"}}]}'
 USAGE_BODY = '{"usage":{"prompt_tokens":11,"completion_tokens":22,"total_tokens":33}}'
@@ -55,7 +55,7 @@ def make_context() -> RequestContext:
     return RequestContext(
         access_log=AccessLogPydantic(
             id=ACCESS_ID,
-            timestamp_request=datetime(2026, 8, 7, tzinfo=timezone.utc),
+            timestamp_request=datetime(2020, 1, 1, tzinfo=timezone.utc),
             api_route="/cluster/framework/v1/chat/completions",
             origin_ip="127.0.0.1",
         )
@@ -72,7 +72,7 @@ def make_request_log() -> RequestLogPydantic:
         model="model",
         openai_endpoint="chat/completions",
         prompt="hello",
-        timestamp_compute_request=datetime(2026, 8, 7, tzinfo=timezone.utc),
+        timestamp_compute_request=datetime(2020, 1, 1, tzinfo=timezone.utc),
     )
 
 
@@ -85,6 +85,7 @@ def make_streaming_state() -> StreamingState:
         "start_time": time.time(),
         "usage": None,
         "content": "",
+        "pending": "",
     }
 
 
@@ -119,25 +120,36 @@ class RequestLogStatusGuardTests(SimpleTestCase):
 class WriteLogsAccessIdTests(SimpleTestCase):
     async def test_access_id_present_after_middleware_context_reset(self) -> None:
         context = make_context()
+        context.request_log = make_request_log()
         token = _request_context.set(context)
         _request_context.reset(token)
 
         stream = StringIO()
         handler = logging.StreamHandler(stream)
         handler.setFormatter(GatewayJsonFormatter())
-        access_logger = logging.getLogger("resource_server_async.structured.access_log")
-        previous_level = access_logger.level
-        access_logger.setLevel(logging.INFO)
-        access_logger.addHandler(handler)
+        structured_logger = logging.getLogger("resource_server_async.structured")
+        previous_level = structured_logger.level
+        structured_logger.setLevel(logging.INFO)
+        structured_logger.addHandler(handler)
+        adapter = SimpleNamespace(record_token_usage=Mock())
         try:
-            await write_logs(context, HttpResponse(b"ok"))
+            with patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+            ):
+                await write_logs(context, HttpResponse(b"ok"))
         finally:
-            access_logger.removeHandler(handler)
-            access_logger.setLevel(previous_level)
+            structured_logger.removeHandler(handler)
+            structured_logger.setLevel(previous_level)
 
-        line = json.loads(stream.getvalue().strip())
-        self.assertEqual(line["stream"], "access_log")
-        self.assertEqual(line["access_id"], ACCESS_ID)
+        lines = {
+            line["stream"]: line
+            for line in (
+                json.loads(raw) for raw in stream.getvalue().strip().splitlines()
+            )
+        }
+        for stream_name in ("access_log", "request_log", "request_metrics"):
+            with self.subTest(stream=stream_name):
+                self.assertEqual(lines[stream_name]["access_id"], ACCESS_ID)
 
 
 class StreamingMetricsUsageTests(SimpleTestCase):
@@ -179,7 +191,7 @@ class DirectAPIStreamingChunkCollectionTests(SimpleTestCase):
         DirectAPIEndpoint._collect_streaming_chunk(state, USAGE_CHUNK)
 
         self.assertEqual(state["usage"], USAGE_TOKENS)
-        self.assertEqual(state["chunks"], [USAGE_BODY])
+        self.assertEqual(state["chunks"], [f"data: {USAGE_BODY}"])
 
     def test_done_and_non_data_chunks_leave_state_untouched(self) -> None:
         state = make_streaming_state()
@@ -189,6 +201,141 @@ class DirectAPIStreamingChunkCollectionTests(SimpleTestCase):
         DirectAPIEndpoint._collect_streaming_chunk(state, ": keep-alive\n\n")
 
         self.assertEqual(state, untouched)
+
+    def test_named_event_frame_is_collected(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state,
+            "event: response.output_text.delta\n"
+            'data: {"type": "response.output_text.delta", "delta": "hi"}\n\n',
+        )
+
+        self.assertEqual(state["content"], "hi")
+        self.assertEqual(
+            state["chunks"],
+            ['data: {"type": "response.output_text.delta", "delta": "hi"}'],
+        )
+
+    def test_done_frame_is_skipped_within_a_named_event(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state, "event: message_stop\ndata: [DONE]\n\n"
+        )
+
+        self.assertEqual(state["chunks"], [])
+        self.assertEqual(state["content"], "")
+        self.assertIsNone(state["usage"])
+
+    def test_split_usage_events_are_merged(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state,
+            'data: {"type": "message_start", '
+            '"message": {"usage": {"input_tokens": 25, "output_tokens": 1}}}\n\n',
+        )
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state,
+            'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, '
+            '"usage": {"output_tokens": 15}}\n\n',
+        )
+
+        self.assertEqual(
+            state["usage"],
+            UsageTokens(prompt_tokens=25, completion_tokens=15, total_tokens=40),
+        )
+
+    def test_split_frame_is_buffered_until_complete(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state, 'event: response.output_text.delta\ndata: {"type": "resp'
+        )
+        self.assertEqual(state["content"], "")
+        self.assertEqual(state["chunks"], [])
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state, 'onse.output_text.delta", "delta": "hi"}\n\n'
+        )
+        self.assertEqual(state["content"], "hi")
+        self.assertEqual(
+            state["chunks"],
+            ['data: {"type": "response.output_text.delta", "delta": "hi"}'],
+        )
+
+    def test_multiple_frames_in_one_chunk_are_collected(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state, 'data: {"a": 1}\n\ndata: {"b": 2}\n\n'
+        )
+
+        self.assertEqual(state["chunks"], ['data: {"a": 1}', 'data: {"b": 2}'])
+        self.assertEqual(state["pending"], "")
+
+    def test_partial_frame_after_a_complete_one_is_buffered(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state, 'data: {"a": 1}\n\ndata: {"b"'
+        )
+
+        self.assertEqual(state["chunks"], ['data: {"a": 1}'])
+        self.assertEqual(state["pending"], 'data: {"b"')
+
+    def test_unicode_line_separator_in_a_body_is_not_split(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(
+            state, 'data: {"delta": "a\u2028b"}\n\n'
+        )
+
+        self.assertEqual(state["chunks"], ['data: {"delta": "a\u2028b"}'])
+        self.assertEqual(state["content"], "a\u2028b")
+
+    def test_carriage_return_terminators_are_collected(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(state, 'data: {"a": 1}\r')
+        DirectAPIEndpoint._collect_streaming_chunk(state, 'data: {"b": 2}\r\n')
+
+        self.assertEqual(state["chunks"], ['data: {"a": 1}', 'data: {"b": 2}'])
+
+    def test_carriage_return_partial_frame_is_buffered(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(state, 'data: {"a": 1}\rdata: {"b"')
+
+        self.assertEqual(state["chunks"], ['data: {"a": 1}'])
+        self.assertEqual(state["pending"], 'data: {"b"')
+
+    def test_carriage_return_pair_split_across_chunks(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(state, 'data: {"a": 1}\r')
+        DirectAPIEndpoint._collect_streaming_chunk(state, '\ndata: {"b": 2}\r\n')
+
+        self.assertEqual(state["chunks"], ['data: {"a": 1}', 'data: {"b": 2}'])
+
+    def test_data_prefix_without_a_space_is_collected(self) -> None:
+        state = make_streaming_state()
+
+        DirectAPIEndpoint._collect_streaming_chunk(state, 'data:{"a": 1}\n\n')
+
+        self.assertEqual(state["chunks"], ['data:{"a": 1}'])
+
+    def test_chunk_sample_is_capped_at_100(self) -> None:
+        state = make_streaming_state()
+
+        for index in range(101):
+            DirectAPIEndpoint._collect_streaming_chunk(
+                state, f'data: {{"i": {index}}}\n\n'
+            )
+
+        self.assertEqual(len(state["chunks"]), 100)
+        self.assertEqual(state["chunks"][-1], 'data: {"i": 99}')
 
 
 class DirectAPIStreamingMetricsTests(SimpleTestCase):
@@ -256,9 +403,48 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
         self.assertEqual(streamed, [chunk.encode() for chunk in chunks])
         self.assertTrue(streaming_state["completed"])
         request_log.emit.assert_called_once_with(
-            f"{CONTENT_BODY}\n{USAGE_BODY}", status_code=None
+            f"data: {CONTENT_BODY}\ndata: {USAGE_BODY}", status_code=200
         )
         request_log.emit_metrics.assert_awaited_once_with(USAGE_TOKENS)
+
+    async def test_completion_is_marked_when_stream_closed_early(self) -> None:
+        chunks = [CONTENT_CHUNK]
+
+        @asynccontextmanager
+        async def fake_stream(*args: object, **kwargs: object):
+            async def aiter_text() -> AsyncGenerator[str, None]:
+                for chunk in chunks:
+                    yield chunk
+
+            yield SimpleNamespace(status_code=200, aiter_text=aiter_text)
+
+        endpoint = object.__new__(FirstV2Endpoint)
+        endpoint._cfg = FirstV2EndpointConfig(
+            model_urls=["https://v2.example"], backend_model_name="backend-model"
+        )
+        setattr(endpoint, "_BaseEndpoint__model", "model")
+        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "v2-test")
+        setattr(endpoint, "_client", SimpleNamespace(stream=fake_stream))
+        context = make_context()
+        context.request_log = Mock(emit_metrics=AsyncMock())
+        create_task = Mock()
+        with (
+            patch.object(first_v2, "get_request_context", return_value=context),
+            patch.object(first_v2.asyncio, "create_task", create_task),
+        ):
+            result = await endpoint.submit_streaming_task(
+                {"model_params": {"model": "model"}}
+            )
+            streaming_content = result.response.__aiter__()
+            self.assertEqual(await anext(streaming_content), CONTENT_CHUNK.encode())
+            await getattr(result.response, "_iterator").aclose()
+
+        final_log = create_task.call_args.args[0]
+        streaming_state = final_log.cr_frame.f_locals["streaming_state"]
+        final_log.close()
+        self.assertTrue(streaming_state["completed"])
+        self.assertEqual(streaming_state["chunks"], [f"data: {CONTENT_BODY}"])
+        self.assertEqual(streaming_state["content"], "hi")
 
 
 class StreamingUsageOptInTests(SimpleTestCase):
@@ -348,10 +534,11 @@ class EstimateUsageTests(SimpleTestCase):
         self.assertEqual(usage.prompt_tokens, 50)
         self.assertEqual(usage.completion_tokens, 2)
         self.assertEqual(usage.total_tokens, 52)
-        self.assertEqual(
-            logs.records[-1].getMessage(),
-            "Token estimation for request-a: 52 total (2 completion, 50 prompt)",
-        )
+        message = logs.records[-1].getMessage()
+        self.assertTrue(message.startswith("Token estimation for "))
+        self.assertIn("52 total", message)
+        self.assertIn("2 completion", message)
+        self.assertIn("50 prompt", message)
 
     def test_message_list_prompt_is_counted(self) -> None:
         usage = streaming.estimate_usage(
@@ -390,6 +577,32 @@ class DirectAPIEstimateUsageFallbackTests(SimpleTestCase):
             await update_streaming_log(context, streaming_state)
 
         adapter.record_token_usage.assert_called_once_with("user-a", 52)
+        metrics = logs.records[-1].__dict__
+        self.assertEqual(metrics["prompt_tokens"], 50)
+        self.assertEqual(metrics["completion_tokens"], 2)
+        self.assertEqual(metrics["total_tokens"], 52)
+
+    async def test_partial_usage_is_estimated(self) -> None:
+        endpoint = self.make_endpoint()
+        context = make_context()
+        context.request_log = make_request_log().model_copy(update={"prompt": ""})
+        adapter = SimpleNamespace(record_token_usage=Mock())
+        streaming_state = make_streaming_state()
+        streaming_state["content"] = "hello world"
+        streaming_state["completed"] = True
+        streaming_state["usage"] = UsageTokens(total_tokens=33)
+
+        update_streaming_log = getattr(endpoint, "_update_streaming_log")
+        with (
+            patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+            ),
+            self.assertLogs(
+                "resource_server_async.structured.request_metrics", level="INFO"
+            ) as logs,
+        ):
+            await update_streaming_log(context, streaming_state)
+
         metrics = logs.records[-1].__dict__
         self.assertEqual(metrics["prompt_tokens"], 50)
         self.assertEqual(metrics["completion_tokens"], 2)
@@ -476,6 +689,42 @@ class StreamingEstimateUsageAggregationTests(SimpleTestCase):
         self.assertEqual(usage["completion_tokens"], 2)
         self.assertEqual(usage["total_tokens"], 52)
 
+    def test_empty_content_is_not_estimated(self) -> None:
+        chunks = [
+            'data: {"choices": [{"delta": {"role": "assistant"}}]}',
+            "data: [DONE]",
+        ]
+
+        with patch.object(streaming, "get_streaming_data", return_value=chunks):
+            complete_response = streaming.collect_and_aggregate_streaming_content(
+                "task-a", None
+            )
+
+        if complete_response is None:
+            self.fail("stream aggregation returned no response")
+        usage = complete_response["usage"]
+        self.assertIsNone(usage["prompt_tokens"])
+        self.assertIsNone(usage["completion_tokens"])
+        self.assertIsNone(usage["total_tokens"])
+
+    def test_partial_usage_is_estimated(self) -> None:
+        chunk = (
+            'data: {"choices": [{"delta": {"content": "hello world"}}], '
+            '"usage": {"total_tokens": 33}}'
+        )
+
+        with patch.object(streaming, "get_streaming_data", return_value=[chunk]):
+            complete_response = streaming.collect_and_aggregate_streaming_content(
+                "task-a", None
+            )
+
+        if complete_response is None:
+            self.fail("stream aggregation returned no response")
+        usage = complete_response["usage"]
+        self.assertEqual(usage["prompt_tokens"], 50)
+        self.assertEqual(usage["completion_tokens"], 2)
+        self.assertEqual(usage["total_tokens"], 52)
+
 
 class NestedUsageNormalizationTests(SimpleTestCase):
     def test_response_usage_is_normalized(self) -> None:
@@ -527,19 +776,19 @@ class NestedUsageNormalizationTests(SimpleTestCase):
 class DeltaContentTests(SimpleTestCase):
     def test_chat_delta_content(self) -> None:
         self.assertEqual(
-            direct_api._delta_content('{"choices": [{"delta": {"content": "hi"}}]}'),
+            streaming.delta_content('{"choices": [{"delta": {"content": "hi"}}]}'),
             "hi",
         )
 
     def test_completions_text(self) -> None:
         self.assertEqual(
-            direct_api._delta_content('{"choices": [{"text": "hi"}]}'),
+            streaming.delta_content('{"choices": [{"text": "hi"}]}'),
             "hi",
         )
 
     def test_responses_output_text_delta(self) -> None:
         self.assertEqual(
-            direct_api._delta_content(
+            streaming.delta_content(
                 '{"type": "response.output_text.delta", "delta": "hi"}'
             ),
             "hi",
@@ -547,7 +796,7 @@ class DeltaContentTests(SimpleTestCase):
 
     def test_messages_content_block_delta(self) -> None:
         self.assertEqual(
-            direct_api._delta_content(
+            streaming.delta_content(
                 '{"type": "content_block_delta", '
                 '"delta": {"type": "text_delta", "text": "hi"}}'
             ),
@@ -556,13 +805,11 @@ class DeltaContentTests(SimpleTestCase):
 
     def test_non_text_deltas_return_empty(self) -> None:
         self.assertEqual(
-            direct_api._delta_content(
-                '{"choices": [{"delta": {"role": "assistant"}}]}'
-            ),
+            streaming.delta_content('{"choices": [{"delta": {"role": "assistant"}}]}'),
             "",
         )
         self.assertEqual(
-            direct_api._delta_content(
+            streaming.delta_content(
                 '{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}'
             ),
             "",
@@ -584,6 +831,51 @@ class StreamingAggregationUsageTests(SimpleTestCase):
         self.assertEqual(usage["prompt_tokens"], 10)
         self.assertEqual(usage["completion_tokens"], 20)
         self.assertEqual(usage["total_tokens"], 30)
+
+    def test_completions_text_and_nested_usage_are_collected(self) -> None:
+        chunks = [
+            'data: {"choices": [{"text": "hi"}], '
+            '"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}}',
+            'data: {"response": {"usage": '
+            '{"input_tokens": 4, "output_tokens": 5, "total_tokens": 9}}}',
+        ]
+
+        with patch.object(streaming, "get_streaming_data", return_value=chunks):
+            complete_response = streaming.collect_and_aggregate_streaming_content(
+                "task-a", None
+            )
+
+        if complete_response is None:
+            self.fail("stream aggregation returned no response")
+        self.assertEqual(complete_response["choices"][0]["message"]["content"], "hi")
+        usage = complete_response["usage"]
+        self.assertEqual(usage["prompt_tokens"], 4)
+        self.assertEqual(usage["completion_tokens"], 5)
+        self.assertEqual(usage["total_tokens"], 9)
+
+    def test_data_prefix_without_a_space_is_aggregated(self) -> None:
+        chunk = 'data:{"choices": [{"delta": {"content": "hi"}}]}'
+
+        with patch.object(streaming, "get_streaming_data", return_value=[chunk]):
+            complete_response = streaming.collect_and_aggregate_streaming_content(
+                "task-a", None
+            )
+
+        if complete_response is None:
+            self.fail("stream aggregation returned no response")
+        self.assertEqual(complete_response["choices"][0]["message"]["content"], "hi")
+
+    def test_non_dict_payload_is_skipped(self) -> None:
+        chunks = ["data: 42", 'data: {"usage": {"total_tokens": 33}}']
+
+        with patch.object(streaming, "get_streaming_data", return_value=chunks):
+            complete_response = streaming.collect_and_aggregate_streaming_content(
+                "task-a", None
+            )
+
+        if complete_response is None:
+            self.fail("stream aggregation returned no response")
+        self.assertEqual(complete_response["usage"]["total_tokens"], 33)
 
 
 class DirectAPIStreamingCloseTests(SimpleTestCase):
@@ -619,6 +911,38 @@ class DirectAPIStreamingCloseTests(SimpleTestCase):
         streaming_state = final_log.cr_frame.f_locals["streaming_state"]
         final_log.close()
         self.assertTrue(streaming_state["completed"])
+        self.assertEqual(streaming_state["total_chunks"], 1)
+        self.assertEqual(streaming_state["chunks"], [f"data: {CONTENT_BODY}"])
+        self.assertEqual(streaming_state["content"], "hi")
+
+    async def test_final_frame_without_newline_is_collected_on_completion(self) -> None:
+        endpoint = make_direct_endpoint()
+        frame = f"data: {USAGE_BODY}"
+        request_log = Mock(emit_metrics=AsyncMock())
+        context = make_context()
+        context.request_log = request_log
+
+        async def record_chunks(
+            url: str, body: dict[str, Any], headers: dict[str, str]
+        ) -> AsyncGenerator[str, None]:
+            yield frame
+
+        create_task = Mock()
+        with (
+            patch.object(
+                endpoint, "_DirectAPIEndpoint__get_stream_chunks", record_chunks
+            ),
+            patch.object(direct_api, "get_request_context", return_value=context),
+            patch.object(direct_api.asyncio, "create_task", create_task),
+        ):
+            result = await endpoint._submit_streaming_task_with_headers(
+                {"model": "model", "openai_endpoint": "chat/completions"}
+            )
+            streamed = [chunk async for chunk in result.response]
+
+        self.assertEqual(streamed, [frame.encode()])
+        await create_task.call_args.args[0]
+        request_log.emit_metrics.assert_awaited_once_with(USAGE_TOKENS)
 
 
 class DirectAPIFinalLogTests(SimpleTestCase):
@@ -674,8 +998,8 @@ class DirectAPIFinalLogTests(SimpleTestCase):
 
         self.assertEqual(request_log.status_code, 500)
 
-    async def test_success_keeps_existing_status(self) -> None:
-        request_log = make_request_log().model_copy(update={"status_code": 200})
+    async def test_success_records_status(self) -> None:
+        request_log = make_request_log()
         streaming_state = make_streaming_state()
         streaming_state["completed"] = True
         streaming_state["chunks"] = ["data: x"]
@@ -683,6 +1007,31 @@ class DirectAPIFinalLogTests(SimpleTestCase):
         await self.update_log(request_log, streaming_state)
 
         self.assertEqual(request_log.status_code, 200)
+
+    async def test_success_records_status_on_the_metrics_row(self) -> None:
+        request_log = make_request_log()
+        streaming_state = make_streaming_state()
+        streaming_state["completed"] = True
+        streaming_state["chunks"] = ["data: x"]
+        endpoint = object.__new__(DirectAPIEndpoint)
+        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
+        context = make_context()
+        context.request_log = request_log
+        adapter = SimpleNamespace(record_token_usage=Mock())
+        update_streaming_log = getattr(endpoint, "_update_streaming_log")
+
+        with (
+            patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+            ),
+            self.assertLogs(
+                "resource_server_async.structured.request_metrics", level="INFO"
+            ) as logs,
+        ):
+            await update_streaming_log(context, streaming_state)
+
+        self.assertEqual(request_log.status_code, 200)
+        self.assertEqual(logs.records[-1].__dict__["status_code"], 200)
 
 
 class GlobusFinalLogTests(SimpleTestCase):
@@ -714,6 +1063,21 @@ class GlobusFinalLogTests(SimpleTestCase):
         assert completed_at is not None
         self.assertGreater(completed_at, OLD_COMPLETION_TIME)
 
+    async def test_local_failure_defaults_to_500(self) -> None:
+        context = make_context()
+        request_log = make_request_log()
+        context.request_log = request_log
+        adapter = SimpleNamespace(record_token_usage=Mock())
+
+        with patch.object(
+            BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+        ):
+            await update_streaming_log_async(
+                context, {"final_status": "error"}, None, None
+            )
+
+        self.assertEqual(request_log.status_code, 500)
+
 
 class DirectAPIUpstreamStatusTests(SimpleTestCase):
     async def test_upstream_status_reaches_raised_error(self) -> None:
@@ -740,3 +1104,42 @@ class DirectAPIUpstreamStatusTests(SimpleTestCase):
         message = str(raised.exception)
         self.assertIn("status code: 503", message)
         self.assertEqual(extract_status_code_from_error(message), 503)
+
+
+class EstimateLineAccessIdTests(SimpleTestCase):
+    async def test_estimate_line_carries_access_id(self) -> None:
+        endpoint = object.__new__(DirectAPIEndpoint)
+        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
+        context = make_context()
+        context.request_log = make_request_log()
+        token = _request_context.set(context)
+        streaming_state = make_streaming_state()
+        streaming_state["content"] = "hello world"
+        streaming_state["completed"] = True
+        adapter = SimpleNamespace(record_token_usage=Mock())
+
+        stream = StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(GatewayJsonFormatter())
+        estimate_logger = logging.getLogger("resource_server_async.streaming")
+        previous_level = estimate_logger.level
+        estimate_logger.setLevel(logging.INFO)
+        estimate_logger.addHandler(handler)
+        try:
+            with patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+            ):
+                await endpoint._update_streaming_log(context, streaming_state)
+        finally:
+            estimate_logger.removeHandler(handler)
+            estimate_logger.setLevel(previous_level)
+            _request_context.reset(token)
+
+        lines = [json.loads(raw) for raw in stream.getvalue().strip().splitlines()]
+        estimate = next(
+            line
+            for line in lines
+            if line["message"].startswith("Token estimation for ")
+        )
+        self.assertEqual(estimate["stream"], "app")
+        self.assertEqual(estimate["access_id"], ACCESS_ID)
