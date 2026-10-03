@@ -1,17 +1,18 @@
 """Isolated endpoint adapter for V2-managed (pilot) backends."""
 
 import asyncio
-import json
 import logging
 import random
-import time
 from typing import Any, AsyncGenerator
 
 import httpx
 from django.http import StreamingHttpResponse
 from pydantic import BaseModel
 
-from resource_server_async.endpoints.direct_api import DirectAPIEndpoint, StreamingState
+from resource_server_async.endpoints.direct_api import (
+    DirectAPIEndpoint,
+    new_streaming_state,
+)
 from resource_server_async.endpoints.endpoint import BaseEndpoint
 from resource_server_async.httpx_client import create_ssl_context
 from resource_server_async.streaming import (
@@ -144,15 +145,7 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         url, body = self._build_request(data, stream=True)
         log.info(f"Making First V2 API call for model {self.model} (stream=True)")
 
-        streaming_state: StreamingState = {
-            "chunks": [],
-            "total_chunks": 0,
-            "completed": False,
-            "error": None,
-            "start_time": time.time(),
-            "usage": None,
-            "content": "",
-        }
+        streaming_state = new_streaming_state()
 
         async def sse_generator() -> AsyncGenerator[str, None]:
             try:
@@ -167,30 +160,14 @@ class FirstV2Endpoint(DirectAPIEndpoint):
                     async for chunk in response.aiter_text():
                         if chunk:
                             streaming_state["total_chunks"] += 1
-                            yield chunk
                             self._collect_streaming_chunk(streaming_state, chunk)
+                            yield chunk
             except Exception as e:
                 streaming_state["error"] = str(e)
-                error_chunk = {
-                    "id": "chatcmpl-api-error",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": self.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant",
-                                "content": f"\n\n[ERROR] {e}",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(error_chunk)}\n\n"
+                yield self._sse_error_chunk(self.model, str(e))
                 yield "data: [DONE]\n\n"
             finally:
-                streaming_state["completed"] = True
+                self._finalize_stream(streaming_state)
 
         try:
             context = get_request_context()
