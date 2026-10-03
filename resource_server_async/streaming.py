@@ -5,6 +5,7 @@ import re
 import secrets
 import time
 import uuid
+from datetime import datetime, timezone
 from logging import getLogger
 from typing import Any
 
@@ -19,7 +20,7 @@ from .cache import (
     remove_item_from_cache,
 )
 from .logging import RequestContext
-from .schemas.structured_logs import UsageTokens
+from .schemas.structured_logs import UsageTokens, usage_from_dict
 
 logger = getLogger(__name__)
 
@@ -518,6 +519,101 @@ def format_streaming_error_for_openai(error_message: str) -> str:
         return f"data: {json.dumps(fallback_error)}\n\n"
 
 
+def delta_content(body: str) -> str:
+    """Return the text delta of an SSE body, if it carries one."""
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return ""
+
+    if not isinstance(data, dict):
+        return ""
+
+    delta = data.get("delta")
+    if isinstance(delta, str):
+        return delta
+    text = delta.get("text") if isinstance(delta, dict) else None
+    if isinstance(text, str):
+        return text
+
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        choice = choices[0]
+        choice_delta = choice.get("delta")
+        content = (
+            choice_delta.get("content") if isinstance(choice_delta, dict) else None
+        )
+        if isinstance(content, str):
+            return content
+        text = choice.get("text")
+        if isinstance(text, str):
+            return text
+
+    return ""
+
+
+def merge_usage(current: UsageTokens | None, usage: UsageTokens) -> UsageTokens:
+    """Keep the latest non-null token counts so split usage events accumulate."""
+    if current is None:
+        return usage
+
+    prompt_tokens = usage.prompt_tokens or current.prompt_tokens
+    completion_tokens = usage.completion_tokens or current.completion_tokens
+    total_tokens = usage.total_tokens or current.total_tokens
+    if prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+    return UsageTokens(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
+
+
+def estimate_usage(
+    content: str,
+    prompt: str | list[str | dict[str, Any]] | None,
+    request_id: str,
+) -> UsageTokens:
+    """Estimate token counts and log the line the analytics back-fill reads."""
+    char_estimate = len(content) // 4
+    word_estimate = len(content.split()) * 1.3
+    completion_tokens = max(1, int((char_estimate + word_estimate) / 2))
+
+    prompt_tokens = 50
+    prompt_text = _prompt_text(prompt)
+    if prompt_text:
+        prompt_char_estimate = len(prompt_text) // 4
+        prompt_word_estimate = len(prompt_text.split()) * 1.3
+        prompt_tokens = max(10, int((prompt_char_estimate + prompt_word_estimate) / 2))
+        logger.info(
+            f"Prompt token estimation for {request_id}: {prompt_tokens} tokens from {len(prompt_text)} chars"
+        )
+
+    usage = UsageTokens(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+    logger.info(
+        f"Token estimation for {request_id}: {usage.total_tokens} total ({usage.completion_tokens} completion, {usage.prompt_tokens} prompt)"
+    )
+    return usage
+
+
+def _prompt_text(prompt: str | list[str | dict[str, Any]] | None) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    if not isinstance(prompt, list):
+        return ""
+
+    parts: list[str] = []
+    for message in prompt:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            parts.append(content)
+    return " ".join(parts)
+
+
 def collect_and_aggregate_streaming_content(
     task_id: str, original_prompt: str | list[str | dict[str, Any]] | None = None
 ) -> dict[str, Any] | None:
@@ -529,25 +625,25 @@ def collect_and_aggregate_streaming_content(
     try:
         # Reconstruct the complete streaming response
         full_content = ""
-        usage_info: dict[str, Any] = {}
+        usage = UsageTokens()
         model_info = {}
         finish_reason = None
-        content_chunks = 0
 
         for chunk in chunks:
-            if chunk.startswith("data: "):
-                chunk_data = chunk[6:]  # Remove "data: " prefix
-                if chunk_data.strip() == "[DONE]":
+            if chunk.startswith("data:"):
+                chunk_data = chunk[5:].strip()
+                if chunk_data == "[DONE]":
                     continue
 
                 try:
                     parsed_chunk = json.loads(chunk_data)
+                    if not isinstance(parsed_chunk, dict):
+                        continue
 
                     # Collect usage info (usually in the last chunk or special chunks)
-                    if "usage" in parsed_chunk and isinstance(
-                        parsed_chunk["usage"], dict
-                    ):
-                        usage_info.update(parsed_chunk["usage"])
+                    chunk_usage = usage_from_dict(parsed_chunk)
+                    if chunk_usage.total_tokens is not None:
+                        usage = merge_usage(usage, chunk_usage)
 
                     # Collect model info (from first chunk usually)
                     if "model" in parsed_chunk:
@@ -560,73 +656,31 @@ def collect_and_aggregate_streaming_content(
                         model_info["created"] = parsed_chunk["created"]
 
                     # Collect content from streaming chunks
+                    content = delta_content(chunk_data)
+                    if content:
+                        full_content += content
+
+                    # Check for finish reason (in final chunks)
                     choices = parsed_chunk.get("choices", [])
                     if choices and len(choices) > 0:
                         choice = choices[0]
-
-                        # For streaming responses, content is in delta
-                        delta = choice.get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            full_content += content
-                            content_chunks += 1
-
-                        # Check for finish reason (in final chunks)
                         if "finish_reason" in choice and choice["finish_reason"]:
                             finish_reason = choice["finish_reason"]
 
                 except json.JSONDecodeError:
                     continue
 
-        # If no usage info was captured from chunks, estimate from content
-        if not usage_info or not usage_info.get("total_tokens", 0):
-            # Enhanced token estimation using multiple methods
-            char_estimate = len(full_content) // 4  # ~4 chars per token
-            word_estimate = len(full_content.split()) * 1.3  # ~1.3 tokens per word
-
-            # Use average of methods for better accuracy
-            estimated_completion_tokens = int((char_estimate + word_estimate) / 2)
-            estimated_completion_tokens = max(1, estimated_completion_tokens)
-
-            # Estimate prompt tokens more accurately if we have the original prompt
-            estimated_prompt_tokens = 50  # Conservative default
-            if original_prompt:
-                try:
-                    if isinstance(original_prompt, str):
-                        prompt_text = original_prompt
-                    elif isinstance(original_prompt, list):
-                        # Handle messages format - extract all content
-                        prompt_parts: list[str] = []
-                        for msg in original_prompt:
-                            if isinstance(msg, dict) and msg.get("content"):
-                                prompt_parts.append(msg["content"])
-                        prompt_text = " ".join(prompt_parts)
-                    else:
-                        prompt_text = str(original_prompt)  # type: ignore[unreachable]
-
-                    # Better prompt token estimation using same dual method
-                    prompt_char_estimate = len(prompt_text) // 4
-                    prompt_word_estimate = len(prompt_text.split()) * 1.3
-                    estimated_prompt_tokens = int(
-                        (prompt_char_estimate + prompt_word_estimate) / 2
-                    )
-                    estimated_prompt_tokens = max(10, estimated_prompt_tokens)
-
-                    logger.info(
-                        f"Prompt token estimation for {task_id}: {estimated_prompt_tokens} tokens from {len(prompt_text)} chars"
-                    )
-                except Exception as e:
-                    logger.warning(f"Error parsing prompt for token estimation: {e}")
-
-            usage_info = {
-                "prompt_tokens": estimated_prompt_tokens,
-                "completion_tokens": estimated_completion_tokens,
-                "total_tokens": estimated_prompt_tokens + estimated_completion_tokens,
-                "prompt_tokens_details": None,
-            }
-            logger.info(
-                f"Token estimation for {task_id}: {usage_info['total_tokens']} total ({usage_info['completion_tokens']} completion, {usage_info['prompt_tokens']} prompt)"
-            )
+        if (
+            usage.total_tokens is None
+            or usage.prompt_tokens is None
+            or usage.completion_tokens is None
+        ) and full_content:
+            usage = estimate_usage(full_content, original_prompt, task_id)
+        usage_info = {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }
 
         # Ensure we have the correct object type for a complete response (not chunk)
         model_info["object"] = "chat.completion"  # Always set to completion, not chunk
@@ -672,16 +726,21 @@ async def update_streaming_log_async(
 
     try:
         # Check if there was a streaming error
-        if final_metrics.get("final_status") == "error" and stream_task_id:
-            # Get the actual error message
-            streaming_error = get_streaming_error(stream_task_id)
+        if final_metrics.get("final_status") == "error":
+            response_status = 500
+            streaming_error = (
+                get_streaming_error(stream_task_id) if stream_task_id else None
+            )
             if streaming_error:
                 # Extract status code using the simple utility function
                 response_status = extract_status_code_from_error(streaming_error)
 
         if complete_response and not streaming_error:
-            usage.total_tokens = complete_response.get("usage", {}).get(
-                "total_tokens", 0
+            usage_info = complete_response.get("usage") or {}
+            usage = UsageTokens(
+                prompt_tokens=usage_info.get("prompt_tokens"),
+                completion_tokens=usage_info.get("completion_tokens"),
+                total_tokens=usage_info.get("total_tokens"),
             )
             result = json.dumps(complete_response)
 
@@ -708,6 +767,7 @@ async def update_streaming_log_async(
                 },
             )
 
+        context.request_log.timestamp_compute_response = datetime.now(timezone.utc)
         context.request_log.emit(result, response_status)
         await context.request_log.emit_metrics(usage)
 
