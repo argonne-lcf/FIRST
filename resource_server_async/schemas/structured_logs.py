@@ -285,24 +285,12 @@ def extract_usage(result: str) -> UsageTokens:
     """
     Attempt to parse token usage counts from a JSON response body.
 
-    Handles three shapes:
-
-    - OpenAI chat/completions, completions, embeddings::
-        {"usage": {"prompt_tokens": int,
-                   "completion_tokens": int,
-                   "total_tokens": int}}
-    - OpenAI Responses API::
-        {"usage": {"input_tokens": int,
-                   "output_tokens": int,
-                   "total_tokens": int}}
-    - Anthropic Messages API::
-        {"usage": {"input_tokens": int,
-                   "output_tokens": int}}  # no total_tokens
-
-    Also honours a top-level ``metrics.total_tokens`` if present (the compute
-    function attaches that to non-streaming responses).  When the upstream
-    only reports input/output tokens, total_tokens is computed as their sum
-    so token-rate-limit accounting still works.
+    Handles the OpenAI and Anthropic usage shapes, including usage nested
+    under ``response`` (Responses API) or ``message`` (Messages API), plus a
+    top-level ``metrics.total_tokens`` if present (the compute function
+    attaches that to non-streaming responses).  When the upstream only reports
+    input/output tokens, total_tokens is computed as their sum so
+    token-rate-limit accounting still works.
     """
     try:
         data = json.loads(result)
@@ -312,7 +300,16 @@ def extract_usage(result: str) -> UsageTokens:
     except Exception:
         return UsageTokens()
 
-    usage = _get_dict(data, "usage")
+    return usage_from_dict(data)
+
+
+def usage_from_dict(data: dict[str, Any]) -> UsageTokens:
+    """Normalize a response body or usage object into token counts."""
+    usage = {
+        **_get_dict(_get_dict(data, "response"), "usage"),
+        **_get_dict(_get_dict(data, "message"), "usage"),
+        **_get_dict(data, "usage"),
+    }
     metrics = _get_dict(data, "metrics")
 
     prompt_tokens = _get_int(usage, "prompt_tokens") or _get_int(usage, "input_tokens")

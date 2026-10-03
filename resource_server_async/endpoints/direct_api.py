@@ -60,12 +60,34 @@ def _merge_forwarded_request_headers(
 def _delta_content(body: str) -> str:
     """Return the text delta of an SSE body, if it carries one."""
     try:
-        delta = json.loads(body)["choices"][0]["delta"]
-    except (json.JSONDecodeError, IndexError, KeyError, TypeError):
+        data = json.loads(body)
+    except json.JSONDecodeError:
         return ""
 
-    content = delta.get("content") if isinstance(delta, dict) else None
-    return content if isinstance(content, str) else ""
+    if not isinstance(data, dict):
+        return ""
+
+    delta = data.get("delta")
+    if isinstance(delta, str):
+        return delta
+    text = delta.get("text") if isinstance(delta, dict) else None
+    if isinstance(text, str):
+        return text
+
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        choice = choices[0]
+        choice_delta = choice.get("delta")
+        content = (
+            choice_delta.get("content") if isinstance(choice_delta, dict) else None
+        )
+        if isinstance(content, str):
+            return content
+        text = choice.get("text")
+        if isinstance(text, str):
+            return text
+
+    return ""
 
 
 def _decoded_prompt(prompt: str) -> str | list[str | dict[str, Any]]:
