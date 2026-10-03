@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, TypedDict
 
 import httpx
@@ -17,6 +18,7 @@ from resource_server_async.streaming import (
     create_streaming_response_headers,
     include_streaming_usage,
     estimate_usage,
+    extract_status_code_from_error,
 )
 
 from ..errors import EndpointError
@@ -295,13 +297,10 @@ class DirectAPIEndpoint(BaseEndpoint):
 
                         self._collect_streaming_chunk(streaming_state, chunk)
 
-                streaming_state["completed"] = True
-
             # Send error as OpenAI streaming chunk format (compatible with OpenAI clients)
             except Exception as e:
                 error_str = str(e)
                 streaming_state["error"] = error_str
-                streaming_state["completed"] = True
                 error_chunk = {
                     "id": "chatcmpl-api-error",
                     "object": "chat.completion.chunk",
@@ -320,6 +319,8 @@ class DirectAPIEndpoint(BaseEndpoint):
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
                 yield "data: [DONE]\n\n"
+            finally:
+                streaming_state["completed"] = True
 
         try:
             context = get_request_context()
@@ -370,7 +371,9 @@ class DirectAPIEndpoint(BaseEndpoint):
                     if response.status_code != 200:
                         error_text = await response.aread()
                         raise ValueError(
-                            f"Error: Could not send stream API call to {url}: {error_text.decode().strip()}"
+                            f"Error: Could not send stream API call to {url} "
+                            f"(status code: {response.status_code}): "
+                            f"{error_text.decode(errors='replace').strip()}"
                         )
 
                     # Stream the response
@@ -409,6 +412,7 @@ class DirectAPIEndpoint(BaseEndpoint):
             # Log error if something went wrong
             if streaming_state["error"]:
                 result = f"error: {streaming_state['error']}"
+                status_code = extract_status_code_from_error(streaming_state["error"])
                 log.error(
                     f"API streaming failed for {self.endpoint_slug}: {streaming_state['error']}"
                 )
@@ -420,6 +424,7 @@ class DirectAPIEndpoint(BaseEndpoint):
                     if streaming_state["chunks"]
                     else "streaming_completed"
                 )
+                status_code = None
                 log.info(
                     f"Streaming completed for {self.endpoint_slug}: {total_chunks} chunks in {duration:.2f}s"
                 )
@@ -436,8 +441,16 @@ class DirectAPIEndpoint(BaseEndpoint):
                         _decoded_prompt(context.request_log.prompt),
                         context.request_log.id,
                     )
-                context.request_log.emit(result, status_code=None)
+                context.request_log.timestamp_compute_response = datetime.now(
+                    timezone.utc
+                )
+                context.request_log.emit(result, status_code=status_code)
                 await context.request_log.emit_metrics(usage)
+
+                if context.access_log.status_code != status_code:
+                    context.access_log.emit_final(
+                        status_code, user=context.user, error=streaming_state["error"]
+                    )
 
         # Log error if something went wrong
         except Exception as e:

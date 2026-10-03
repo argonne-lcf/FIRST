@@ -99,6 +99,31 @@ class AccessLogPydantic(BaseModel):
             },
         )
 
+    def emit_final(
+        self,
+        status_code: int,
+        user: UserPydantic | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Re-emit the access log with the final status of a streamed response.
+
+        A streamed response is logged with its initial 200 before the stream ends, so
+        the final status and error are written once the stream reports its outcome.
+        The entry keeps its id, so consumers update the row they already have.
+        """
+        self.timestamp_response = datetime.now(timezone.utc)
+        self.status_code = status_code
+        if error is not None:
+            self.error = error
+
+        _access_slog.info(
+            "created",
+            extra={
+                **self.model_dump(mode="json"),
+                "user.id": user.id if user else None,
+            },
+        )
+
 
 class RequestLogPydantic(BaseModel):
     id: str

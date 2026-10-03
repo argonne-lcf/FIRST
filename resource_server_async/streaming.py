@@ -5,6 +5,7 @@ import re
 import secrets
 import time
 import uuid
+from datetime import datetime, timezone
 from logging import getLogger
 from typing import Any
 
@@ -738,8 +739,14 @@ async def update_streaming_log_async(
                 },
             )
 
+        context.request_log.timestamp_compute_response = datetime.now(timezone.utc)
         context.request_log.emit(result, response_status)
         await context.request_log.emit_metrics(usage)
+
+        if context.access_log.status_code != response_status:
+            context.access_log.emit_final(
+                response_status, user=context.user, error=streaming_error
+            )
 
     except Exception as e:
         logger.error(

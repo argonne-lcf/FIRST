@@ -37,6 +37,7 @@ from resource_server_async.logging import (
     _request_context,
     write_logs,
 )
+from resource_server_async.schemas import structured_logs
 from resource_server_async.schemas.structured_logs import (
     AccessLogPydantic,
     RequestLogPydantic,
@@ -44,11 +45,13 @@ from resource_server_async.schemas.structured_logs import (
 )
 from resource_server_async.streaming import (
     collect_and_aggregate_streaming_content,
+    extract_status_code_from_error,
     update_streaming_log_async,
 )
 
 ACCESS_ID = "access-a"
 REQUEST_ID = "request-a"
+OLD_COMPLETION_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 CONTENT_BODY = '{"choices": [{"delta": {"content": "hi"}}]}'
 USAGE_BODY = '{"usage":{"prompt_tokens":11,"completion_tokens":22,"total_tokens":33}}'
@@ -93,6 +96,24 @@ def make_streaming_state() -> StreamingState:
         "usage": None,
         "content": "",
     }
+
+
+def make_direct_endpoint() -> DirectAPIEndpoint:
+    endpoint = object.__new__(DirectAPIEndpoint)
+    config = DirectAPIEndpointConfig(
+        api_url="https://api.example/v1",
+        api_key_env_name="TEST_API_KEY",
+        trust_env=False,
+    )
+    setattr(endpoint, "_DirectAPIEndpoint__config", config)
+    setattr(
+        endpoint,
+        "_DirectAPIEndpoint__httpx_client",
+        SimpleNamespace(headers={"Content-Type": "application/json"}, post=AsyncMock()),
+    )
+    setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
+    setattr(endpoint, "_BaseEndpoint__model", "model")
+    return endpoint
 
 
 class RequestLogStatusGuardTests(SimpleTestCase):
@@ -200,6 +221,25 @@ class DirectAPIStreamingMetricsTests(SimpleTestCase):
 
         request_log.emit_metrics.assert_awaited_once_with(USAGE_TOKENS)
 
+    async def test_failed_stream_records_the_final_status(self) -> None:
+        endpoint = object.__new__(DirectAPIEndpoint)
+        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
+        context = make_context()
+        context.access_log.status_code = 200
+        context.request_log = make_request_log()
+        streaming_state = make_streaming_state()
+        streaming_state["completed"] = True
+        streaming_state["error"] = "upstream down (status code: 503)"
+        adapter = SimpleNamespace(record_token_usage=Mock())
+
+        with patch.object(
+            BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+        ):
+            await getattr(endpoint, "_update_streaming_log")(context, streaming_state)
+
+        self.assertEqual(context.access_log.status_code, 503)
+        self.assertEqual(context.request_log.status_code, 503)
+
 
 class FirstV2StreamingFinalLogTests(SimpleTestCase):
     async def test_streaming_emits_final_log_and_metrics(self) -> None:
@@ -252,23 +292,7 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
 
 class StreamingUsageOptInTests(SimpleTestCase):
     def make_direct_endpoint(self) -> DirectAPIEndpoint:
-        endpoint = object.__new__(DirectAPIEndpoint)
-        config = DirectAPIEndpointConfig(
-            api_url="https://api.example/v1",
-            api_key_env_name="TEST_API_KEY",
-            trust_env=False,
-        )
-        setattr(endpoint, "_DirectAPIEndpoint__config", config)
-        setattr(
-            endpoint,
-            "_DirectAPIEndpoint__httpx_client",
-            SimpleNamespace(
-                headers={"Content-Type": "application/json"}, post=AsyncMock()
-            ),
-        )
-        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
-        setattr(endpoint, "_BaseEndpoint__model", "model")
-        return endpoint
+        return make_direct_endpoint()
 
     async def sent_streaming_body(self, data: dict[str, Any]) -> dict[str, Any]:
         """Consume the lazy SSE response and return the body posted upstream."""
@@ -527,6 +551,312 @@ class StreamingEstimateUsageAggregationTests(SimpleTestCase):
         self.assertEqual(usage["total_tokens"], 52)
 
 
+class NestedUsageNormalizationTests(SimpleTestCase):
+    def test_response_usage_is_normalized(self) -> None:
+        usage = structured_logs.usage_from_dict(
+            {
+                "response": {
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 20,
+                        "total_tokens": 30,
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(
+            usage, UsageTokens(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+        )
+
+    def test_message_usage_derives_total(self) -> None:
+        usage = structured_logs.extract_usage(
+            json.dumps(
+                {"message": {"usage": {"input_tokens": 10, "output_tokens": 20}}}
+            )
+        )
+
+        self.assertEqual(
+            usage, UsageTokens(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+        )
+
+    def test_plain_chat_usage_is_unchanged(self) -> None:
+        usage = structured_logs.extract_usage(
+            json.dumps(
+                {
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "total_tokens": 30,
+                    }
+                }
+            )
+        )
+
+        self.assertEqual(
+            usage, UsageTokens(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+        )
+
+
+class DeltaContentTests(SimpleTestCase):
+    def test_chat_delta_content(self) -> None:
+        self.assertEqual(
+            direct_api._delta_content('{"choices": [{"delta": {"content": "hi"}}]}'),
+            "hi",
+        )
+
+    def test_completions_text(self) -> None:
+        self.assertEqual(
+            direct_api._delta_content('{"choices": [{"text": "hi"}]}'),
+            "hi",
+        )
+
+    def test_responses_output_text_delta(self) -> None:
+        self.assertEqual(
+            direct_api._delta_content(
+                '{"type": "response.output_text.delta", "delta": "hi"}'
+            ),
+            "hi",
+        )
+
+    def test_messages_content_block_delta(self) -> None:
+        self.assertEqual(
+            direct_api._delta_content(
+                '{"type": "content_block_delta", '
+                '"delta": {"type": "text_delta", "text": "hi"}}'
+            ),
+            "hi",
+        )
+
+    def test_non_text_deltas_return_empty(self) -> None:
+        self.assertEqual(
+            direct_api._delta_content(
+                '{"choices": [{"delta": {"role": "assistant"}}]}'
+            ),
+            "",
+        )
+        self.assertEqual(
+            direct_api._delta_content(
+                '{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}'
+            ),
+            "",
+        )
+
+
+class StreamingAggregationUsageTests(SimpleTestCase):
+    def test_aggregation_trusts_normalized_input_output_usage(self) -> None:
+        chunk = 'data: {"usage": {"input_tokens": 10, "output_tokens": 20}}'
+
+        with patch.object(streaming, "get_streaming_data", return_value=[chunk]):
+            complete_response = streaming.collect_and_aggregate_streaming_content(
+                "task-a", None
+            )
+
+        if complete_response is None:
+            self.fail("stream aggregation returned no response")
+        usage = complete_response["usage"]
+        self.assertEqual(usage["prompt_tokens"], 10)
+        self.assertEqual(usage["completion_tokens"], 20)
+        self.assertEqual(usage["total_tokens"], 30)
+
+
+class DirectAPIStreamingCloseTests(SimpleTestCase):
+    async def test_completion_is_marked_when_stream_closed_early(self) -> None:
+        endpoint = make_direct_endpoint()
+
+        async def record_chunks(
+            url: str, body: dict[str, Any], headers: dict[str, str]
+        ) -> AsyncGenerator[str, None]:
+            yield CONTENT_CHUNK
+
+        create_task = Mock()
+        with (
+            patch.object(
+                endpoint, "_DirectAPIEndpoint__get_stream_chunks", record_chunks
+            ),
+            patch.object(
+                direct_api, "get_request_context", return_value=make_context()
+            ),
+            patch.object(direct_api.asyncio, "create_task", create_task),
+        ):
+            result = await endpoint._submit_streaming_task_with_headers(
+                {"model": "model", "openai_endpoint": "chat/completions"}
+            )
+            streaming_content = result.response.__aiter__()
+            self.assertEqual(await anext(streaming_content), CONTENT_CHUNK.encode())
+            # Django's streaming_content wrapper does not forward aclose(), so close
+            # the private _iterator that holds the real sse_generator.
+            await getattr(result.response, "_iterator").aclose()
+
+        create_task.assert_called_once()
+        final_log = create_task.call_args.args[0]
+        streaming_state = final_log.cr_frame.f_locals["streaming_state"]
+        final_log.close()
+        self.assertTrue(streaming_state["completed"])
+
+
+class DirectAPIFinalLogTests(SimpleTestCase):
+    async def update_log(
+        self, request_log: RequestLogPydantic, streaming_state: StreamingState
+    ) -> None:
+        endpoint = object.__new__(DirectAPIEndpoint)
+        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
+        context = make_context()
+        context.request_log = request_log
+        adapter = SimpleNamespace(record_token_usage=Mock())
+
+        update_streaming_log = getattr(endpoint, "_update_streaming_log")
+        with patch.object(
+            BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+        ):
+            await update_streaming_log(context, streaming_state)
+
+    async def test_final_log_advances_completion_time(self) -> None:
+        request_log = make_request_log().model_copy(
+            update={"timestamp_compute_response": OLD_COMPLETION_TIME}
+        )
+        streaming_state = make_streaming_state()
+        streaming_state["completed"] = True
+
+        await self.update_log(request_log, streaming_state)
+
+        completed_at = request_log.timestamp_compute_response
+        self.assertIsNotNone(completed_at)
+        assert completed_at is not None
+        self.assertGreater(completed_at, OLD_COMPLETION_TIME)
+
+    async def test_error_status_code_is_recorded(self) -> None:
+        request_log = make_request_log()
+        streaming_state = make_streaming_state()
+        streaming_state["completed"] = True
+        streaming_state["error"] = (
+            "Error: Could not send stream API call to "
+            "https://api.example/v1/chat/completions (status code: 503): upstream down"
+        )
+
+        await self.update_log(request_log, streaming_state)
+
+        self.assertEqual(request_log.status_code, 503)
+
+    async def test_unknown_error_status_defaults_to_500(self) -> None:
+        request_log = make_request_log()
+        streaming_state = make_streaming_state()
+        streaming_state["completed"] = True
+        streaming_state["error"] = "boom"
+
+        await self.update_log(request_log, streaming_state)
+
+        self.assertEqual(request_log.status_code, 500)
+
+    async def test_success_keeps_existing_status(self) -> None:
+        request_log = make_request_log().model_copy(update={"status_code": 200})
+        streaming_state = make_streaming_state()
+        streaming_state["completed"] = True
+        streaming_state["chunks"] = ["data: x"]
+
+        await self.update_log(request_log, streaming_state)
+
+        self.assertEqual(request_log.status_code, 200)
+
+
+class GlobusFinalLogTests(SimpleTestCase):
+    async def test_final_log_advances_completion_time(self) -> None:
+        context = make_context()
+        request_log = make_request_log().model_copy(
+            update={"timestamp_compute_response": OLD_COMPLETION_TIME}
+        )
+        context.request_log = request_log
+        adapter = SimpleNamespace(record_token_usage=Mock())
+
+        with patch.object(
+            BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+        ):
+            await update_streaming_log_async(
+                context,
+                {"final_status": "completed"},
+                {
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 22,
+                        "total_tokens": 33,
+                    }
+                },
+            )
+
+        completed_at = request_log.timestamp_compute_response
+        self.assertIsNotNone(completed_at)
+        assert completed_at is not None
+        self.assertGreater(completed_at, OLD_COMPLETION_TIME)
+
+
+    async def test_failed_stream_records_the_final_status(self) -> None:
+        context = make_context()
+        context.access_log.status_code = 200
+        context.request_log = make_request_log()
+        adapter = SimpleNamespace(record_token_usage=Mock())
+
+        with (
+            patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+            ),
+            patch.object(
+                streaming,
+                "get_streaming_error",
+                return_value="upstream down (status code: 503)",
+            ),
+        ):
+            await update_streaming_log_async(
+                context, {"final_status": "error"}, None, "stream-task"
+            )
+
+        self.assertEqual(context.access_log.status_code, 503)
+        self.assertEqual(context.request_log.status_code, 503)
+
+    async def test_successful_stream_keeps_the_initial_status(self) -> None:
+        context = make_context()
+        context.access_log.status_code = 200
+        context.request_log = make_request_log()
+        adapter = SimpleNamespace(record_token_usage=Mock())
+
+        with (
+            patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+            ),
+            patch.object(structured_logs.AccessLogPydantic, "emit_final") as emit_final,
+        ):
+            await update_streaming_log_async(
+                context, {"final_status": "completed"}, {"usage": {}}, "stream-task"
+            )
+
+        emit_final.assert_not_called()
+        self.assertEqual(context.access_log.status_code, 200)
+
+
+class DirectAPIUpstreamStatusTests(SimpleTestCase):
+    async def test_upstream_status_reaches_raised_error(self) -> None:
+        endpoint = make_direct_endpoint()
+        response = SimpleNamespace(
+            status_code=503, aread=AsyncMock(return_value=b"upstream down")
+        )
+
+        @asynccontextmanager
+        async def fake_stream(*args: object, **kwargs: object):
+            yield response
+
+        @asynccontextmanager
+        async def fake_client(*args: object, **kwargs: object):
+            yield SimpleNamespace(stream=fake_stream)
+
+        get_stream_chunks = getattr(endpoint, "_DirectAPIEndpoint__get_stream_chunks")
+        with patch.object(direct_api.httpx, "AsyncClient", new=fake_client):
+            with self.assertRaises(ValueError) as raised:
+                await get_stream_chunks(
+                    "https://api.example/v1/chat/completions", {}, {}
+                ).__anext__()
+
+        message = str(raised.exception)
+        self.assertIn("status code: 503", message)
+        self.assertEqual(extract_status_code_from_error(message), 503)
 class GlobusEstimateRequestIdTests(SimpleTestCase):
     def test_estimate_line_names_the_request_row(self) -> None:
         chunks = [CONTENT_CHUNK]

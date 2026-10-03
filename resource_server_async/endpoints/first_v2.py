@@ -160,7 +160,8 @@ class FirstV2Endpoint(DirectAPIEndpoint):
                     if response.status_code != 200:
                         error_text = await response.aread()
                         raise ValueError(
-                            f"Upstream endpoint returned {response.status_code}: "
+                            f"Upstream endpoint returned an error "
+                            f"(status code: {response.status_code}): "
                             f"{error_text.decode(errors='replace').strip()[:256]}"
                         )
                     async for chunk in response.aiter_text():
