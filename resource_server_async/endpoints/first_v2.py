@@ -151,6 +151,7 @@ class FirstV2Endpoint(DirectAPIEndpoint):
             "error": None,
             "start_time": time.time(),
             "usage": None,
+            "content": "",
         }
 
         async def sse_generator() -> AsyncGenerator[str, None]:

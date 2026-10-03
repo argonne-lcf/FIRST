@@ -42,7 +42,10 @@ from resource_server_async.schemas.structured_logs import (
     RequestLogPydantic,
     UsageTokens,
 )
-from resource_server_async.streaming import update_streaming_log_async
+from resource_server_async.streaming import (
+    collect_and_aggregate_streaming_content,
+    update_streaming_log_async,
+)
 
 ACCESS_ID = "access-a"
 REQUEST_ID = "request-a"
@@ -88,6 +91,7 @@ def make_streaming_state() -> StreamingState:
         "error": None,
         "start_time": time.time(),
         "usage": None,
+        "content": "",
     }
 
 
@@ -384,3 +388,159 @@ class StreamingUsageOptInTests(SimpleTestCase):
         self.assertEqual(
             submitted[0]["model_params"]["stream_options"], {"include_usage": True}
         )
+
+
+class EstimateUsageTests(SimpleTestCase):
+    def test_estimates_completion_and_default_prompt(self) -> None:
+        with self.assertLogs("resource_server_async.streaming", level="INFO") as logs:
+            usage = streaming.estimate_usage("hello world", None, REQUEST_ID)
+
+        self.assertEqual(usage.prompt_tokens, 50)
+        self.assertEqual(usage.completion_tokens, 2)
+        self.assertEqual(usage.total_tokens, 52)
+        self.assertEqual(
+            logs.records[-1].getMessage(),
+            "Token estimation for request-a: 52 total (2 completion, 50 prompt)",
+        )
+
+    def test_message_list_prompt_is_counted(self) -> None:
+        usage = streaming.estimate_usage(
+            "hello world", [{"role": "user", "content": "hello world"}], REQUEST_ID
+        )
+
+        self.assertEqual(usage.prompt_tokens, 10)
+        self.assertEqual(usage.total_tokens, 12)
+
+
+class DirectAPIEstimateUsageFallbackTests(SimpleTestCase):
+    def make_endpoint(self) -> DirectAPIEndpoint:
+        endpoint = object.__new__(DirectAPIEndpoint)
+        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
+        return endpoint
+
+    async def test_absent_usage_is_estimated_from_content(self) -> None:
+        endpoint = self.make_endpoint()
+        context = make_context()
+        # Empty prompt keeps the conservative 50-token prompt estimate.
+        context.request_log = make_request_log().model_copy(update={"prompt": ""})
+        adapter = SimpleNamespace(record_token_usage=Mock())
+        streaming_state = make_streaming_state()
+        streaming_state["content"] = "hello world"
+        streaming_state["completed"] = True
+
+        update_streaming_log = getattr(endpoint, "_update_streaming_log")
+        with (
+            patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+            ),
+            self.assertLogs(
+                "resource_server_async.structured.request_metrics", level="INFO"
+            ) as logs,
+        ):
+            await update_streaming_log(context, streaming_state)
+
+        adapter.record_token_usage.assert_called_once_with("user-a", 52)
+        metrics = logs.records[-1].__dict__
+        self.assertEqual(metrics["prompt_tokens"], 50)
+        self.assertEqual(metrics["completion_tokens"], 2)
+        self.assertEqual(metrics["total_tokens"], 52)
+
+    async def test_captured_usage_is_emitted_without_estimation(self) -> None:
+        endpoint = self.make_endpoint()
+        request_log = Mock(emit_metrics=AsyncMock())
+        context = make_context()
+        context.request_log = request_log
+        streaming_state = make_streaming_state()
+        streaming_state["content"] = "a different response"
+        streaming_state["completed"] = True
+        streaming_state["usage"] = USAGE_TOKENS
+
+        update_streaming_log = getattr(endpoint, "_update_streaming_log")
+        with self.assertNoLogs("resource_server_async.streaming", level="INFO"):
+            await update_streaming_log(context, streaming_state)
+
+        request_log.emit_metrics.assert_awaited_once_with(USAGE_TOKENS)
+
+    async def test_streaming_error_is_emitted_without_estimation(self) -> None:
+        endpoint = self.make_endpoint()
+        request_log = Mock(emit_metrics=AsyncMock())
+        context = make_context()
+        context.request_log = request_log
+        streaming_state = make_streaming_state()
+        streaming_state["content"] = "partial response"
+        streaming_state["completed"] = True
+        streaming_state["error"] = "boom"
+
+        update_streaming_log = getattr(endpoint, "_update_streaming_log")
+        await update_streaming_log(context, streaming_state)
+
+        request_log.emit_metrics.assert_awaited_once_with(None)
+
+    def test_json_prompt_is_decoded(self) -> None:
+        self.assertEqual(
+            direct_api._decoded_prompt('[{"role": "user", "content": "hi"}]'),
+            [{"role": "user", "content": "hi"}],
+        )
+        self.assertEqual(direct_api._decoded_prompt('"hi"'), "hi")
+        self.assertEqual(direct_api._decoded_prompt("hi"), "hi")
+
+    async def test_json_prompt_is_decoded_for_estimation(self) -> None:
+        endpoint = self.make_endpoint()
+        context = make_context()
+        content = "word " * 100
+        context.request_log = make_request_log().model_copy(
+            update={"prompt": json.dumps([{"role": "user", "content": content}])}
+        )
+        adapter = SimpleNamespace(record_token_usage=Mock())
+        streaming_state = make_streaming_state()
+        streaming_state["content"] = content
+        streaming_state["completed"] = True
+        expected = streaming.estimate_usage(
+            content, [{"role": "user", "content": content}], REQUEST_ID
+        )
+
+        update_streaming_log = getattr(endpoint, "_update_streaming_log")
+        with patch.object(
+            BaseEndpoint, "load_adapter", new=AsyncMock(return_value=adapter)
+        ):
+            await update_streaming_log(context, streaming_state)
+
+        adapter.record_token_usage.assert_called_once_with(
+            "user-a", expected.total_tokens
+        )
+
+
+class StreamingEstimateUsageAggregationTests(SimpleTestCase):
+    def test_aggregation_estimates_usage_when_chunks_lack_it(self) -> None:
+        chunk = 'data: {"choices": [{"delta": {"content": "hello world"}}]}'
+
+        with patch.object(streaming, "get_streaming_data", return_value=[chunk]):
+            complete_response = streaming.collect_and_aggregate_streaming_content(
+                "task-a", None
+            )
+
+        if complete_response is None:
+            self.fail("stream aggregation returned no response")
+        usage = complete_response["usage"]
+        self.assertEqual(usage["prompt_tokens"], 50)
+        self.assertEqual(usage["completion_tokens"], 2)
+        self.assertEqual(usage["total_tokens"], 52)
+
+
+class GlobusEstimateRequestIdTests(SimpleTestCase):
+    def test_estimate_line_names_the_request_row(self) -> None:
+        chunks = [CONTENT_CHUNK]
+
+        with patch.object(streaming, "get_streaming_data", return_value=chunks):
+            with self.assertLogs("resource_server_async.streaming", level="INFO") as logs:
+                collect_and_aggregate_streaming_content(
+                    "stream-task",
+                    [{"role": "user", "content": "hello world"}],
+                    "request-row",
+                )
+
+        estimate = next(
+            message for message in logs.output if "Token estimation for " in message
+        )
+        self.assertIn("request-row", estimate)
+        self.assertNotIn("stream-task", estimate)

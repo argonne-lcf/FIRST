@@ -16,6 +16,7 @@ from resource_server_async.httpx_client import AsyncHttpClient, create_ssl_conte
 from resource_server_async.streaming import (
     create_streaming_response_headers,
     include_streaming_usage,
+    estimate_usage,
 )
 
 from ..errors import EndpointError
@@ -57,6 +58,26 @@ def _merge_forwarded_request_headers(
     return forwarded
 
 
+def _delta_content(body: str) -> str:
+    """Return the text delta of an SSE body, if it carries one."""
+    try:
+        delta = json.loads(body)["choices"][0]["delta"]
+    except (json.JSONDecodeError, IndexError, KeyError, TypeError):
+        return ""
+
+    content = delta.get("content") if isinstance(delta, dict) else None
+    return content if isinstance(content, str) else ""
+
+
+def _decoded_prompt(prompt: str) -> str | list[str | dict[str, Any]]:
+    """Decode the JSON prompt stored on the request log."""
+    try:
+        decoded = json.loads(prompt)
+    except json.JSONDecodeError:
+        return prompt
+    return decoded if isinstance(decoded, (str, list)) else prompt
+
+
 class DirectAPIEndpointConfig(BaseModel):
     api_url: str
     api_key_env_name: str
@@ -75,6 +96,7 @@ class StreamingState(TypedDict):
     error: str | None
     start_time: float
     usage: UsageTokens | None
+    content: str
 
 
 # DirectAPI endpoint implementation of a BaseEndpoint
@@ -197,12 +219,14 @@ class DirectAPIEndpoint(BaseEndpoint):
         if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
             return
 
-        usage = extract_usage(chunk[6:])
+        body = chunk[6:].strip()
+        usage = extract_usage(body)
         if usage.total_tokens is not None:
             state["usage"] = usage
 
+        state["content"] += _delta_content(body)
         if len(state["chunks"]) < 100:
-            state["chunks"].append(chunk[6:].strip())
+            state["chunks"].append(body)
 
 
     async def _submit_streaming_task_with_headers(
@@ -230,6 +254,7 @@ class DirectAPIEndpoint(BaseEndpoint):
             "error": None,
             "start_time": time.time(),
             "usage": None,
+            "content": "",
         }
 
         # SSE generator
@@ -378,8 +403,19 @@ class DirectAPIEndpoint(BaseEndpoint):
                 )
 
             if context.request_log:
+                usage = streaming_state["usage"]
+                if (
+                    usage is None
+                    and streaming_state["content"]
+                    and not streaming_state["error"]
+                ):
+                    usage = estimate_usage(
+                        streaming_state["content"],
+                        _decoded_prompt(context.request_log.prompt),
+                        context.request_log.id,
+                    )
                 context.request_log.emit(result, status_code=None)
-                await context.request_log.emit_metrics(streaming_state["usage"])
+                await context.request_log.emit_metrics(usage)
 
         # Log error if something went wrong
         except Exception as e:

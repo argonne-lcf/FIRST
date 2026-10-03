@@ -534,10 +534,61 @@ def format_streaming_error_for_openai(error_message: str) -> str:
         return f"data: {json.dumps(fallback_error)}\n\n"
 
 
+def estimate_usage(
+    content: str,
+    prompt: str | list[str | dict[str, Any]] | None,
+    request_id: str,
+) -> UsageTokens:
+    """Estimate token counts and log the line the analytics back-fill reads."""
+    char_estimate = len(content) // 4
+    word_estimate = len(content.split()) * 1.3
+    completion_tokens = max(1, int((char_estimate + word_estimate) / 2))
+
+    prompt_tokens = 50
+    prompt_text = _prompt_text(prompt)
+    if prompt_text:
+        prompt_char_estimate = len(prompt_text) // 4
+        prompt_word_estimate = len(prompt_text.split()) * 1.3
+        prompt_tokens = max(10, int((prompt_char_estimate + prompt_word_estimate) / 2))
+        logger.info(
+            f"Prompt token estimation for {request_id}: {prompt_tokens} tokens from {len(prompt_text)} chars"
+        )
+
+    usage = UsageTokens(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+    logger.info(
+        f"Token estimation for {request_id}: {usage.total_tokens} total ({usage.completion_tokens} completion, {usage.prompt_tokens} prompt)"
+    )
+    return usage
+
+
+def _prompt_text(prompt: str | list[str | dict[str, Any]] | None) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    if not isinstance(prompt, list):
+        return ""
+
+    parts: list[str] = []
+    for message in prompt:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            parts.append(content)
+    return " ".join(parts)
+
+
 def collect_and_aggregate_streaming_content(
-    task_id: str, original_prompt: str | list[str | dict[str, Any]] | None = None
+    task_id: str,
+    original_prompt: str | list[str | dict[str, Any]] | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Collect all streaming content and create a complete response"""
+    """Collect all streaming content and create a complete response.
+
+    ``request_id`` labels the token estimate line the analytics back-fill reads, and
+    falls back to ``task_id`` when the caller has no request row to name.
+    """
     chunks = get_streaming_data(task_id)
     if not chunks:
         return None
@@ -596,53 +647,13 @@ def collect_and_aggregate_streaming_content(
 
         # If no usage info was captured from chunks, estimate from content
         if not usage_info or not usage_info.get("total_tokens", 0):
-            # Enhanced token estimation using multiple methods
-            char_estimate = len(full_content) // 4  # ~4 chars per token
-            word_estimate = len(full_content.split()) * 1.3  # ~1.3 tokens per word
-
-            # Use average of methods for better accuracy
-            estimated_completion_tokens = int((char_estimate + word_estimate) / 2)
-            estimated_completion_tokens = max(1, estimated_completion_tokens)
-
-            # Estimate prompt tokens more accurately if we have the original prompt
-            estimated_prompt_tokens = 50  # Conservative default
-            if original_prompt:
-                try:
-                    if isinstance(original_prompt, str):
-                        prompt_text = original_prompt
-                    elif isinstance(original_prompt, list):
-                        # Handle messages format - extract all content
-                        prompt_parts: list[str] = []
-                        for msg in original_prompt:
-                            if isinstance(msg, dict) and msg.get("content"):
-                                prompt_parts.append(msg["content"])
-                        prompt_text = " ".join(prompt_parts)
-                    else:
-                        prompt_text = str(original_prompt)  # type: ignore[unreachable]
-
-                    # Better prompt token estimation using same dual method
-                    prompt_char_estimate = len(prompt_text) // 4
-                    prompt_word_estimate = len(prompt_text.split()) * 1.3
-                    estimated_prompt_tokens = int(
-                        (prompt_char_estimate + prompt_word_estimate) / 2
-                    )
-                    estimated_prompt_tokens = max(10, estimated_prompt_tokens)
-
-                    logger.info(
-                        f"Prompt token estimation for {task_id}: {estimated_prompt_tokens} tokens from {len(prompt_text)} chars"
-                    )
-                except Exception as e:
-                    logger.warning(f"Error parsing prompt for token estimation: {e}")
-
+            usage = estimate_usage(full_content, original_prompt, request_id or task_id)
             usage_info = {
-                "prompt_tokens": estimated_prompt_tokens,
-                "completion_tokens": estimated_completion_tokens,
-                "total_tokens": estimated_prompt_tokens + estimated_completion_tokens,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
                 "prompt_tokens_details": None,
             }
-            logger.info(
-                f"Token estimation for {task_id}: {usage_info['total_tokens']} total ({usage_info['completion_tokens']} completion, {usage_info['prompt_tokens']} prompt)"
-            )
 
         # Ensure we have the correct object type for a complete response (not chunk)
         model_info["object"] = "chat.completion"  # Always set to completion, not chunk
@@ -782,7 +793,9 @@ async def process_streaming_completion_async(
         # Collect final streaming data
         end_time = time.time()
         complete_response = collect_and_aggregate_streaming_content(
-            stream_task_id, original_prompt
+            stream_task_id,
+            original_prompt,
+            context.request_log.id if context.request_log else None,
         )
 
         # Simple metrics
