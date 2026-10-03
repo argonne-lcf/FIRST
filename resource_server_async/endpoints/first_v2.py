@@ -106,6 +106,8 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         )
         # Backends expect their own model name, not the alias.
         body["model"] = self._cfg.backend_model_name
+        if stream:
+            self._include_streaming_usage(body, openai_endpoint)
         url = f"{self._pick_url().rstrip('/')}/v1/{openai_endpoint}"
         return url, body
 

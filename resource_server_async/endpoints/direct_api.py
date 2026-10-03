@@ -201,6 +201,22 @@ class DirectAPIEndpoint(BaseEndpoint):
         if len(state["chunks"]) < 100:
             state["chunks"].append(chunk[6:].strip())
 
+    # HACK: vLLM streams the usage chunk only when asked. Drop this once
+    # the backends run with --enable-force-include-usage.
+    @staticmethod
+    def _include_streaming_usage(body: dict[str, Any], endpoint: str) -> None:
+        """Opt into the usage chunk FIRST needs for request_metrics.
+
+        Caller-provided stream_options are preserved.
+        """
+        if endpoint not in {"chat/completions", "completions"}:
+            return
+
+        options = body.get("stream_options")
+        options = dict(options) if isinstance(options, dict) else {}
+        options.setdefault("include_usage", True)
+        body["stream_options"] = options
+
     async def _submit_streaming_task_with_headers(
         self,
         data: dict[str, Any],
@@ -212,6 +228,7 @@ class DirectAPIEndpoint(BaseEndpoint):
         # generator. Endpoint adapters and HTTP clients are shared objects.
         request_data = dict(data)
         endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
+        self._include_streaming_usage(request_data, endpoint)
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
         captured_headers = _merge_forwarded_request_headers(
             request_headers, self.httpx_client.headers

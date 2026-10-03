@@ -5,16 +5,17 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from io import StringIO
 from types import SimpleNamespace
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, Mock, patch
 
 from django.http import HttpResponse
 from django.test import SimpleTestCase
 
 from inference_gateway.log_config import GatewayJsonFormatter
-from resource_server_async.endpoints import BaseEndpoint, first_v2
+from resource_server_async.endpoints import BaseEndpoint, direct_api, first_v2
 from resource_server_async.endpoints.direct_api import (
     DirectAPIEndpoint,
+    DirectAPIEndpointConfig,
     StreamingState,
 )
 from resource_server_async.endpoints.first_v2 import (
@@ -233,3 +234,98 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
             f"{CONTENT_BODY}\n{USAGE_BODY}", status_code=None
         )
         request_log.emit_metrics.assert_awaited_once_with(USAGE_TOKENS)
+
+
+class StreamingUsageOptInTests(SimpleTestCase):
+    def make_direct_endpoint(self) -> DirectAPIEndpoint:
+        endpoint = object.__new__(DirectAPIEndpoint)
+        config = DirectAPIEndpointConfig(
+            api_url="https://api.example/v1",
+            api_key_env_name="TEST_API_KEY",
+            trust_env=False,
+        )
+        setattr(endpoint, "_DirectAPIEndpoint__config", config)
+        setattr(
+            endpoint,
+            "_DirectAPIEndpoint__httpx_client",
+            SimpleNamespace(
+                headers={"Content-Type": "application/json"}, post=AsyncMock()
+            ),
+        )
+        setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
+        setattr(endpoint, "_BaseEndpoint__model", "model")
+        return endpoint
+
+    async def sent_streaming_body(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Consume the lazy SSE response and return the body posted upstream."""
+        endpoint = self.make_direct_endpoint()
+        sent: list[dict[str, Any]] = []
+
+        async def record_chunks(
+            url: str, body: dict[str, Any], headers: dict[str, str]
+        ) -> AsyncGenerator[str, None]:
+            sent.append(body)
+            for chunk in []:
+                yield chunk
+
+        with (
+            patch.object(
+                endpoint, "_DirectAPIEndpoint__get_stream_chunks", record_chunks
+            ),
+            # Fail the context lookup so no streaming-log task is scheduled.
+            patch.object(direct_api, "get_request_context", side_effect=LookupError),
+        ):
+            result = await endpoint._submit_streaming_task_with_headers(data)
+            self.assertEqual([chunk async for chunk in result.response], [])
+
+        return sent[0]
+
+    async def test_direct_api_opts_into_streaming_usage(self) -> None:
+        body = await self.sent_streaming_body(
+            {"model": "model", "openai_endpoint": "chat/completions"}
+        )
+
+        self.assertEqual(body["stream_options"], {"include_usage": True})
+
+    async def test_caller_stream_options_are_preserved(self) -> None:
+        stream_options = {"continuous_usage_stats": True}
+
+        body = await self.sent_streaming_body(
+            {
+                "model": "model",
+                "openai_endpoint": "chat/completions",
+                "stream_options": stream_options,
+            }
+        )
+
+        self.assertEqual(
+            body["stream_options"],
+            {"continuous_usage_stats": True, "include_usage": True},
+        )
+        self.assertEqual(stream_options, {"continuous_usage_stats": True})
+
+    def test_unsupported_endpoints_get_no_stream_options(self) -> None:
+        for endpoint in ("responses", "messages"):
+            with self.subTest(endpoint=endpoint):
+                body = {"model": "model"}
+
+                DirectAPIEndpoint._include_streaming_usage(body, endpoint)
+
+                self.assertNotIn("stream_options", body)
+
+    def test_first_v2_opts_in_only_when_streaming(self) -> None:
+        endpoint = object.__new__(FirstV2Endpoint)
+        endpoint._cfg = FirstV2EndpointConfig(
+            model_urls=["https://v2.example"], backend_model_name="backend-model"
+        )
+        model_params = {"model": "alias", "openai_endpoint": "chat/completions"}
+        data = {"model_params": model_params}
+
+        _, streamed_body = endpoint._build_request(data, stream=True)
+        _, plain_body = endpoint._build_request(data, stream=False)
+
+        self.assertEqual(streamed_body["stream_options"], {"include_usage": True})
+        self.assertNotIn("stream_options", plain_body)
+        self.assertEqual(
+            model_params, {"model": "alias", "openai_endpoint": "chat/completions"}
+        )
