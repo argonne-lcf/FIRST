@@ -680,8 +680,11 @@ async def update_streaming_log_async(
                 response_status = extract_status_code_from_error(streaming_error)
 
         if complete_response and not streaming_error:
-            usage.total_tokens = complete_response.get("usage", {}).get(
-                "total_tokens", 0
+            usage_info = complete_response.get("usage") or {}
+            usage = UsageTokens(
+                prompt_tokens=usage_info.get("prompt_tokens"),
+                completion_tokens=usage_info.get("completion_tokens"),
+                total_tokens=usage_info.get("total_tokens"),
             )
             result = json.dumps(complete_response)
 

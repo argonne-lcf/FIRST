@@ -68,6 +68,7 @@ def initialize_access_log(request: HttpRequest) -> AccessLogPydantic:
 def write_logs(
     context: RequestContext, response: HttpResponse | StreamingHttpResponse
 ) -> None:
+    _request_context.set(context)
     context.access_log.emit(context.user, response)
 
     if context.request_log:

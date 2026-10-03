@@ -134,6 +134,12 @@ class FirstV2Endpoint(DirectAPIEndpoint):
     async def submit_streaming_task(
         self, data: dict[str, Any]
     ) -> SubmitStreamingTaskResponse:
+        """Proxy the backend stream.
+
+        Unlike DirectAPIEndpoint, this path never assembles the stream, so no
+        request_metrics row is emitted and the request_log keeps the in-progress
+        marker written by the middleware.
+        """
         url, body = self._build_request(data, stream=True)
         log.info(f"Making First V2 API call for model {self.model} (stream=True)")
 

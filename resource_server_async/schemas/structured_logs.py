@@ -122,7 +122,8 @@ class RequestLogPydantic(BaseModel):
         Large prompt/result payloads exceeding MAX_LEN will be written to the
         filesystem.
         """
-        self.status_code = status_code
+        if status_code is not None:
+            self.status_code = status_code
         self.result = response_body
 
         if self.timestamp_compute_response is None:

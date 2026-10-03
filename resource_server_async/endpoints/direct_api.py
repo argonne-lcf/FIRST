@@ -366,6 +366,7 @@ class DirectAPIEndpoint(BaseEndpoint):
 
             if context.request_log:
                 context.request_log.emit(result, status_code=None)
+                await context.request_log.emit_metrics()
 
         # Log error if something went wrong
         except Exception as e:
