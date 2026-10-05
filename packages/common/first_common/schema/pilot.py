@@ -171,11 +171,11 @@ class PilotRuntimeConfig(BaseSettings):
     # Scheduler walltime; the server certificate must outlive it.
     walltime_min: int = Field(ge=1)
 
-    # Name of the IPv4 network interface (e.g. "hsn0") whose address the pilot
-    # should advertise as its externally-reachable endpoint. When None, the IP
-    # is discovered by the default UDP-route trick, which on some clusters
-    # picks a slow management interface instead of the high-speed network.
-    network_interface: str | None = None
+    # IPv4 network interfaces (e.g. ["hsn0", "hsn1"]) NGINX listens on, in
+    # preference order. Interfaces that are missing, down, or have no IPv4
+    # address are skipped; at least one must resolve. The first resolved address
+    # is advertised.
+    network_interfaces: list[str] = Field(min_length=1)
 
     @property
     def nginx_base_dir(self) -> Path:

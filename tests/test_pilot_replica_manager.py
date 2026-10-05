@@ -409,13 +409,13 @@ def test_runtime_config_loads_public_fields_from_environment(
                 "ip_allowlist": ["0.0.0.0/0"],
                 "workdir": "/stale/workdir",
                 "node_file_env": "STALE_NODEFILE",
-                "network_interface": "hsn0",
+                "network_interfaces": ["hsn0", "hsn1"],
             }
         )
     )
     monkeypatch.setenv("PILOT_CONFIG_FILE", str(config_path))
     monkeypatch.setenv("PILOT_CA_CRT", "environment-must-not-replace-static-secret")
-    monkeypatch.setenv("PILOT_NETWORK_INTERFACE", "eth0")
+    monkeypatch.setenv("PILOT_NETWORK_INTERFACES", '["eth0"]')
     monkeypatch.setenv("PILOT_JOB_NAME", "test-pilot")
     monkeypatch.setenv("PILOT_EXTERNAL_PORT", "19443")
     monkeypatch.setenv("PILOT_NGINX_PATH", "/opt/test/nginx")
@@ -445,4 +445,4 @@ def test_runtime_config_loads_public_fields_from_environment(
     assert config.num_nodes == 2
     assert config.gpus_per_node == 4
     assert config.walltime_min == 90
-    assert config.network_interface == "hsn0"
+    assert config.network_interfaces == ["hsn0", "hsn1"]

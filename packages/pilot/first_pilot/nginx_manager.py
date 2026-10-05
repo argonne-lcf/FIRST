@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 import re
@@ -82,7 +83,10 @@ _conf_template_str = """
         {% endfor %}
 
         server {
-            listen {{config.external_port}} ssl;
+            # Bind only the configured interfaces, never the wildcard address.
+            {% for ip in listen_ips -%}
+            listen {{ip}}:{{config.external_port}} ssl;
+            {% endfor -%}
             ssl_protocols TLSv1.3;
             server_name _;
             ssl_certificate {{server_crt_path}};
@@ -172,8 +176,14 @@ class ReplicaUpstream(NamedTuple):
 class NginxManager:
     control_path = "/control/"
 
-    def __init__(self, config: PilotRuntimeConfig, tmpdir: str | Path) -> None:
+    def __init__(
+        self, config: PilotRuntimeConfig, tmpdir: str | Path, interface_ips: list[str]
+    ) -> None:
         self.pilot_config = config
+        self.listen_ips = [
+            str(ipaddress.IPv4Address(ip))
+            for ip in dict.fromkeys(["127.0.0.1", *interface_ips])
+        ]
         self.tmpdir = Path(tmpdir).resolve()
         self.tmpdir.mkdir(parents=True, exist_ok=True)
 
@@ -207,6 +217,7 @@ class NginxManager:
 
         return conf_template.render(
             config=self.pilot_config,
+            listen_ips=self.listen_ips,
             nginx_tmpdir=self.tmpdir.as_posix().rstrip("/"),
             replicas=replicas,
             control_path=self.control_path,

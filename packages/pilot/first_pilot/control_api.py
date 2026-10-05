@@ -1,12 +1,11 @@
-import fcntl
 import logging
 import socket
-import struct
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, AsyncGenerator, cast
 
+import psutil
 import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -26,13 +25,44 @@ from .replica_manager import ReplicaManager
 logger = logging.getLogger(__name__)
 
 
+def resolve_interface_ips(interfaces: list[str]) -> list[str]:
+    """
+    IPv4 address of each configured interface, in configured order. Interfaces
+    that are missing, down, or lack an IPv4 address are skipped so a faulty NIC
+    (e.g. hsn0) does not stop the pilot from serving on the others.
+    """
+    addrs = psutil.net_if_addrs()
+    stats = psutil.net_if_stats()
+    ips: list[str] = []
+    for ifname in interfaces:
+        ipv4 = [a.address for a in addrs.get(ifname, []) if a.family == socket.AF_INET]
+        if ifname not in stats or not stats[ifname].isup or not ipv4:
+            logger.warning("Skipping network interface %r: down or no IPv4", ifname)
+            continue
+        logger.info("Network interface %r has IP %s", ifname, ipv4[0])
+        ips.append(ipv4[0])
+    if not ips:
+        raise RuntimeError(
+            f"None of the configured network_interfaces {interfaces} has an "
+            "IPv4 address and is up"
+        )
+    return ips
+
+
 class _PilotManager:
     def __init__(self, config: PilotRuntimeConfig, nginx_tmpdir: Path) -> None:
         self.config = config
         check_server_cert_expiry(config.server_crt, config.walltime_min)
-        self.nginx = NginxManager(self.config, nginx_tmpdir)
+        interface_ips = resolve_interface_ips(config.network_interfaces)
+        self.nginx = NginxManager(self.config, nginx_tmpdir, interface_ips)
         self.replica_manager = ReplicaManager(self.config)
-        self._endpoint = self.discover_service_endpoint()
+        self._endpoint = AddressInfo(
+            hostname=socket.gethostname(),
+            ip=interface_ips[0],
+            external_port=self.config.external_port,
+            control_path=self.nginx.control_path,
+        )
+        logger.info("Advertising pilot endpoint %s", self._endpoint.base_url)
 
     def start(self, readyfile: Path) -> None:
         self.nginx.start()
@@ -44,43 +74,6 @@ class _PilotManager:
     def stop(self) -> None:
         self.nginx.stop()
         self.replica_manager.stop_all()
-
-    def discover_service_endpoint(self) -> AddressInfo:
-        if self.config.network_interface:
-            ip = self._interface_ip(self.config.network_interface)
-            logger.info(
-                f"Discovered IP {ip!r} from interface {self.config.network_interface!r}"
-            )
-        else:
-            # UDP "connect" to a public IP — no traffic is sent, but the OS
-            # picks the interface it *would* route through, giving us the
-            # externally-reachable source address.
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                ip = s.getsockname()[0]
-            logger.info(
-                f"config.network_interface=None: auto-detected external IP {ip!r}"
-            )
-
-        return AddressInfo(
-            hostname=socket.gethostname(),
-            ip=ip,
-            external_port=self.config.external_port,
-            control_path=self.nginx.control_path,
-        )
-
-    @staticmethod
-    def _interface_ip(ifname: str) -> str:
-        # SIOCGIFADDR: read the IPv4 address bound to a specific interface,
-        # bypassing the routing table so we advertise (e.g.) the high-speed
-        # network instead of the default management interface.
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            packed = fcntl.ioctl(
-                s.fileno(),
-                0x8915,  # SIOCGIFADDR
-                struct.pack("256s", ifname.encode("utf-8")[:15]),
-            )
-        return socket.inet_ntoa(packed[20:24])
 
     def _reload_nginx(self) -> None:
         upstreams = [

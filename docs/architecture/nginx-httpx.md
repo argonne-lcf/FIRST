@@ -78,7 +78,7 @@ a genuine assumption to verify.
 
 1. **The reachability assumption is load-bearing.** Gateway-as-client requires a network
    path from the gateway to each compute node's NGINX. The pilot's
-   `discover_service_endpoint()` finds an externally-routable IP via the UDP-connect trick —
+   advertised IP comes from the first configured `network_interfaces` entry —
    which *assumes such an IP exists and is reachable from where the gateway runs*. On many
    HPC sites, compute nodes are only reachable from a login node. If direct
    gateway→compute-node TCP isn't available in production, the answer is still not a custom

@@ -192,8 +192,7 @@ def _control_client(pilot_pki: PilotPKI, base_url: str) -> httpx.AsyncClient:
 
 
 def _control_base_url(addr: AddressInfo) -> str:
-    # The advertised IP may be the host's externally-routable interface, but
-    # nginx binds 0.0.0.0; 127.0.0.1 is always reachable in tests.
+    # nginx always binds loopback alongside the configured interfaces.
     return f"https://127.0.0.1:{addr.external_port}{addr.control_path.rstrip('/')}"
 
 

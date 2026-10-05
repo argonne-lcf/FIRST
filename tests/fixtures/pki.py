@@ -8,6 +8,7 @@ import ssl
 from dataclasses import dataclass
 from pathlib import Path
 
+import psutil
 import pytest
 
 from first_common.schema.pilot import PILOT_SERVER_CN, PilotClientRole
@@ -33,12 +34,13 @@ class PilotPKI:
     clients: dict[PilotClientRole, Identity]
     unknown_client: Identity
 
-    def runtime_config(self) -> dict[str, str]:
-        """The cert fields of a pre-staged PilotRuntimeConfig."""
+    def runtime_config(self) -> dict[str, str | list[str]]:
+        """The file-only fields of a pre-staged PilotRuntimeConfig."""
         return {
             "ca_crt": self.ca_crt.read_text(),
             "server_crt": self.server.crt.read_text(),
             "server_key": self.server.key.read_text(),
+            "network_interfaces": [loopback_interface()],
         }
 
     def client_context(self, identity: Identity) -> ssl.SSLContext:
@@ -47,6 +49,14 @@ class PilotPKI:
         ctx.check_hostname = False  # pilots are reached by IP
         ctx.load_cert_chain(identity.crt, identity.key)
         return ctx
+
+
+def loopback_interface() -> str:
+    """The loopback interface name: "lo" on Linux, "lo0" on macOS."""
+    for ifname, addrs in psutil.net_if_addrs().items():
+        if any(a.address == "127.0.0.1" for a in addrs):
+            return ifname
+    raise RuntimeError("no interface holds 127.0.0.1")
 
 
 @pytest.fixture(scope="session")

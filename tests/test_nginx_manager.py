@@ -47,10 +47,9 @@ def _self_signed(not_after: datetime) -> tuple[str, str]:
     return cert_pem, key_pem
 
 
-@pytest.fixture
-def manager(tmp_path: Path) -> NginxManager:
+def _runtime_config(tmp_path: Path) -> PilotRuntimeConfig:
     crt, key = _self_signed(datetime.now(timezone.utc) + timedelta(days=1))
-    config = PilotRuntimeConfig(
+    return PilotRuntimeConfig(
         ca_crt=crt,
         server_crt=crt,
         server_key=key,
@@ -63,8 +62,39 @@ def manager(tmp_path: Path) -> NginxManager:
         gpus_per_node=1,
         job_name="test-pilot",
         walltime_min=60,
+        network_interfaces=["hsn0", "hsn1"],
     )
-    return NginxManager(config, tmp_path / "nginx")
+
+
+@pytest.fixture
+def manager(tmp_path: Path) -> NginxManager:
+    return NginxManager(
+        _runtime_config(tmp_path), tmp_path / "nginx", ["192.0.2.1", "192.0.2.2"]
+    )
+
+
+def test_rendered_config_listens_on_loopback_and_interfaces_only(
+    manager: NginxManager,
+) -> None:
+    rendered = manager.render_config([])
+    assert re.findall(r"^\s*(listen .*)$", rendered, re.MULTILINE) == [
+        "listen 127.0.0.1:18443 ssl;",
+        "listen 192.0.2.1:18443 ssl;",
+        "listen 192.0.2.2:18443 ssl;",
+    ]
+
+
+def test_loopback_interface_is_not_listened_twice(tmp_path: Path) -> None:
+    manager = NginxManager(
+        _runtime_config(tmp_path), tmp_path / "nginx", ["192.0.2.1", "127.0.0.1"]
+    )
+    assert manager.listen_ips == ["127.0.0.1", "192.0.2.1"]
+
+
+@pytest.mark.parametrize("ip", ["0.0.0.0 ssl; listen 80", "hsn0", "::1", ""])
+def test_unsafe_listen_address_is_refused(tmp_path: Path, ip: str) -> None:
+    with pytest.raises(ValueError):
+        NginxManager(_runtime_config(tmp_path), tmp_path / "nginx", [ip])
 
 
 def _block(rendered: str, header: str) -> str:
@@ -105,7 +135,9 @@ def test_rendered_config_authorizes_by_client_role(manager: NginxManager) -> Non
 
 
 @pytest.mark.skipif(shutil.which("nginx") is None, reason="nginx not installed")
-def test_rendered_config_passes_nginx_syntax_check(manager: NginxManager) -> None:
+def test_rendered_config_passes_nginx_syntax_check(tmp_path: Path) -> None:
+    # `nginx -t` binds each listen address, so it must be local.
+    manager = NginxManager(_runtime_config(tmp_path), tmp_path / "nginx", [])
     conf = manager.tmpdir / "check.conf"
     conf.write_text(
         manager.render_config([ReplicaUpstream(name="m", uds="/tmp/m.sock")])
@@ -152,6 +184,15 @@ def test_replica_start_request_rejects_unsafe_name(name: str) -> None:
     with pytest.raises(ValidationError) as exc_info:
         ReplicaStartRequest.model_validate({"name": name})
     assert ("name",) in [e["loc"] for e in exc_info.value.errors()]
+
+
+def test_runtime_config_requires_a_network_interface(tmp_path: Path) -> None:
+    fields = _runtime_config(tmp_path).model_dump(exclude={"network_interfaces"})
+    missing: dict[str, list[str]]
+    for missing in ({}, {"network_interfaces": list[str]()}):
+        with pytest.raises(ValidationError) as exc_info:
+            PilotRuntimeConfig.model_validate({**fields, **missing})
+        assert ("network_interfaces",) in [e["loc"] for e in exc_info.value.errors()]
 
 
 def test_replica_start_request_accepts_generated_name() -> None:

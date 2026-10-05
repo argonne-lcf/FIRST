@@ -105,17 +105,18 @@ server_crt: |
 server_key: |
   -----BEGIN PRIVATE KEY-----
   ...
+network_interfaces: [hsn0]
 ```
 
-These three are the only fields the file must carry. The submitter supplies
+These four are the only fields the file must carry. The submitter supplies
 every other required field per job as `PILOT_*` environment overrides, taken
 from the cluster's `PilotConfig` and the job (`PILOT_JOB_NAME`,
 `PILOT_EXTERNAL_PORT`, `PILOT_NGINX_PATH`, `PILOT_IP_ALLOWLIST`,
 `PILOT_WORKDIR`, `PILOT_NODE_FILE_ENV`, `PILOT_GPU_DISCOVERY`,
 `PILOT_NUM_NODES`, `PILOT_GPUS_PER_NODE`, `PILOT_WALLTIME_MIN`); those override
-any value in the file. The optional `network_interface` is not overridable and
-can only be set in the file. Make the file readable only by the pilot service
-account (`chmod 600`).
+any value in the file. `network_interfaces` (see the [pilot docs](pilot.md)) is
+not overridable and can only be set in the file. Make the file readable only by
+the pilot service account (`chmod 600`).
 
 
 ## Renewal
