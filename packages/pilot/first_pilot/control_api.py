@@ -77,7 +77,7 @@ class _PilotManager:
 
     def _reload_nginx(self) -> None:
         upstreams = [
-            ReplicaUpstream(name=r.name, uds=r.uds)
+            ReplicaUpstream(name=r.name, uds=r.uds, paths=r.proxy_paths)
             for r in self.replica_manager.get_replicas()
         ]
         try:

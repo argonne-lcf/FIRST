@@ -17,6 +17,7 @@ from first_common.errors import (
 )
 from first_common.schema.endpoints.base import BasePayload
 from first_common.schema.structured_logs import InferenceLog, InferenceOutcome
+from first_common.schema.types import upstream_endpoint_path
 
 from ..database.redis.admission import AdmissionController
 from ..database.redis.router_config import (
@@ -333,7 +334,9 @@ class InferenceService:
         t0 = time.perf_counter()
         try:
             response = await client.post(
-                f"/v1/{payload.endpoint}", json=upstream_payload, timeout=UNARY_TIMEOUT
+                upstream_endpoint_path(payload.endpoint),
+                json=upstream_payload,
+                timeout=UNARY_TIMEOUT,
             )
         except httpx.RequestError as exc:
             logger.warning(
@@ -389,7 +392,7 @@ class InferenceService:
 
         request = client.build_request(
             "POST",
-            f"/v1/{payload.endpoint}",
+            upstream_endpoint_path(payload.endpoint),
             json=upstream_payload,
         )
 

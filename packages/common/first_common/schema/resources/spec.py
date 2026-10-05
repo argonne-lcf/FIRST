@@ -25,6 +25,7 @@ from ..types import (
     ScriptTemplateContext,
     SecretRef,
     UsagePolicy,
+    normalize_proxy_path,
     render_script,
 )
 
@@ -90,7 +91,7 @@ class ModelSpec(ResourceSpec):
     @field_validator("supported_endpoints")
     @classmethod
     def normalize_endpoints(cls, v: list[str]) -> list[str]:
-        return [e.strip().strip("/") for e in v]
+        return [normalize_proxy_path(e) for e in v]
 
 
 class ClusterSpec(ResourceSpec):
@@ -295,7 +296,7 @@ class PilotDeploymentSpec(ResourceSpec):
     router_params: RouterParams = RouterParams()
 
     # Pilot NGINX admits the metrics identity only on GET /replicas/.../metrics,
-    # so pilot deployments must expose Prometheus metrics at /metrics.
+    # so pilot deployments must expose Prometheus metrics at /metrics
     prometheus_metrics_path: str | None = "/metrics"
     prometheus_scrape_interval_sec: int = 15
 

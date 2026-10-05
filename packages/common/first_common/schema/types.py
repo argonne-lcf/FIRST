@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 from enum import Enum
 from http import HTTPMethod
@@ -27,6 +28,31 @@ ResourceName = NewType("ResourceName", str)
 # them). Names are interpolated into URL paths and the pilot NGINX config, so
 # this must stay free of whitespace and NGINX metacharacters ({ } ; " ' $ \ #).
 RESOURCE_NAME_PATTERN = r"^[a-zA-Z0-9._\-/]+$"
+
+# A path proxied to a model backend (e.g. "chat/completions", "metrics")
+_PROXY_PATH = re.compile(r"[a-zA-Z0-9._\-]+(/[a-zA-Z0-9._\-]+)*")
+
+
+def normalize_proxy_path(path: str) -> str:
+    """
+    Strip surrounding whitespace and slashes; reject anything that is not a
+    plain, already-normalized relative path.
+    """
+    normalized = path.strip().strip("/")
+    segments = normalized.split("/")
+    if _PROXY_PATH.fullmatch(normalized) is None or any(
+        set(segment) == {"."} for segment in segments
+    ):
+        raise ValueError(f"invalid proxied path {path!r}")
+    return normalized
+
+
+def upstream_endpoint_path(endpoint: str) -> str:
+    """
+    Backend path serving a Model's `supported_endpoints` entry. Shared by the
+    gateway router (which calls it) and the pilot NGINX (which exposes it).
+    """
+    return f"/v1/{endpoint}"
 
 
 class HealthCheckParams(BaseModel):

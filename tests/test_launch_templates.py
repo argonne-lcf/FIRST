@@ -380,6 +380,7 @@ async def test_launcher_sends_resolved_spec_to_pilot(
         await controller.client._client.aclose()
 
     [request] = seen
+    assert request.proxy_paths == ["/v1/chat"]  # no metrics path set
     resolved = request.launch_spec
     assert resolved.parameters == {
         "weights_path": "/weights/model's name",

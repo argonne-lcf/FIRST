@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import Self
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, computed_field
+from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 from .types import (
@@ -22,6 +22,8 @@ from .types import (
     ReplicaState,
     ResolvedLaunchSpec,
     SSHDiscovery,
+    normalize_proxy_path,
+    upstream_endpoint_path,
 )
 
 PILOT_SERVER_CN = "first-pilot"
@@ -61,12 +63,35 @@ class ReplicaStartRequest(BaseModel):
 
     `name` is interpolated into the pilot NGINX config as a location path, so
     it is restricted to the same character set as resource names.
+
+    `supported_endpoints` (from the Model) and `prometheus_metrics_path` (from
+    the deployment) are the only replica paths the pilot NGINX will proxy.
     """
 
     name: str = Field(min_length=1, max_length=320, pattern=RESOURCE_NAME_PATTERN)
     deployment_name: str
     launch_spec: ResolvedLaunchSpec
     gpu_indices: list[tuple[int, int]]
+    supported_endpoints: list[str]
+    prometheus_metrics_path: str | None
+
+    @field_validator("supported_endpoints")
+    @classmethod
+    def normalize_endpoints(cls, v: list[str]) -> list[str]:
+        return [normalize_proxy_path(e) for e in v]
+
+    @field_validator("prometheus_metrics_path")
+    @classmethod
+    def normalize_metrics_path(cls, v: str | None) -> str | None:
+        return f"/{normalize_proxy_path(v)}" if v else None
+
+    @property
+    def proxy_paths(self) -> list[str]:
+        """Replica paths (leading slash) to expose, de-duplicated in order."""
+        paths = [upstream_endpoint_path(e) for e in self.supported_endpoints]
+        if self.prometheus_metrics_path:
+            paths.append(self.prometheus_metrics_path)
+        return list(dict.fromkeys(paths))
 
 
 class ReplicaInfo(BaseModel):

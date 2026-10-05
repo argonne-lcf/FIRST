@@ -15,7 +15,7 @@ from cryptography import x509
 from jinja2 import Template
 
 from first_common.schema.pilot import PilotClientRole, PilotRuntimeConfig
-from first_common.schema.types import RESOURCE_NAME_PATTERN
+from first_common.schema.types import RESOURCE_NAME_PATTERN, normalize_proxy_path
 
 logger = logging.getLogger(__name__)
 
@@ -136,14 +136,24 @@ _conf_template_str = """
                 proxy_read_timeout 185s;
             }
 
+            # Anything not pinned by an exact-match location below does not exist.
+            location / {
+                return 404;
+            }
+
+            # One exact-match location per path the replica's model declares
+            # (plus its metrics path). proxy_pass names the full upstream path,
+            # so no client-supplied remainder is ever forwarded.
             {% for replica in replicas %}
-            location /replicas/{{replica.name}}/ {
+            {% set upstream = loop.index %}
+            {% for path in replica.paths %}
+            location = /replicas/{{replica.name}}{{path}} {
                 {% for ip in config.ip_allowlist -%}
                 allow {{ip}};
                 {% endfor -%}
                 allow 127.0.0.1;
                 deny all;
-                proxy_pass http://replica_{{loop.index}}/;
+                proxy_pass http://replica_{{upstream}}{{path}};
 
                 # Upstream keepalive prerequisites
                 proxy_http_version 1.1;
@@ -161,6 +171,7 @@ _conf_template_str = """
                 proxy_socket_keepalive on;
                 proxy_next_upstream off;
             }
+            {% endfor %}
             {% endfor %}
         }
     }
@@ -190,6 +201,8 @@ def check_server_cert_expiry(
 class ReplicaUpstream(NamedTuple):
     name: str
     uds: str
+    # Upstream paths (leading slash) to expose; see ReplicaStartRequest.proxy_paths.
+    paths: tuple[str, ...]
 
 
 class NginxManager:
@@ -230,15 +243,21 @@ class NginxManager:
         return path
 
     def render_config(self, replicas: list[ReplicaUpstream]) -> str:
-        # replica.name is interpolated verbatim into a `location` directive.
-        # ReplicaStartRequest already enforces this pattern; re-check here so
-        # the template can never render a name that escapes its directive.
+        # replica.name and replica.paths are interpolated verbatim into
+        # `location` directives. ReplicaStartRequest already enforces these
+        # patterns; re-check here so the template can never render a value
+        # that escapes its directive.
         for replica in replicas:
             if _SAFE_REPLICA_NAME.fullmatch(replica.name) is None:
                 raise ValueError(
                     f"refusing to render NGINX config: unsafe replica name "
                     f"{replica.name!r}"
                 )
+            for path in replica.paths:
+                if path != f"/{normalize_proxy_path(path)}":
+                    raise ValueError(
+                        f"refusing to render NGINX config: unsafe replica path {path!r}"
+                    )
 
         return conf_template.render(
             config=self.pilot_config,

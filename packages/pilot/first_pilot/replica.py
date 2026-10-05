@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 from urllib.parse import urlparse
 
 from httpx import Client, HTTPTransport
@@ -194,8 +195,10 @@ class Replica:
         resources: list[GpuClaim],
         launch_spec: ResolvedLaunchSpec,
         workdir: Path,
+        proxy_paths: Sequence[str] = (),
     ) -> None:
         self.name = name
+        self.proxy_paths = tuple(proxy_paths)
         self.uds = uds
         self.resources = resources
         self.launch_spec = launch_spec

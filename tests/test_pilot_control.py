@@ -31,10 +31,14 @@ def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() ->
         server_key_path="/tmp/server.key",
         access_log_path="/tmp/audit/alpha.access.log",
         audit_log_path="/tmp/audit/alpha.control-access.jsonl",
-        replicas=[ReplicaUpstream(name="model", uds="/tmp/model.sock")],
+        replicas=[
+            ReplicaUpstream("model", "/tmp/model.sock", ("/v1/chat/completions",))
+        ],
     )
     control = rendered.split("location /control/ {", 1)[1].split("}", 1)[0]
-    model = rendered.split("location /replicas/model/ {", 1)[1].split("}", 1)[0]
+    model = rendered.split("location = /replicas/model/v1/chat/completions {", 1)[
+        1
+    ].split("}", 1)[0]
     control_timeout = re.findall(r"proxy_read_timeout\s+(\d+)s;", control)
     assert control_timeout == ["185"]
     assert STOP_TIMEOUT.read is not None and 162 < STOP_TIMEOUT.read < 185

@@ -572,6 +572,7 @@ class ReplicaManager:
                 resources=resources,
                 launch_spec=replica.launch_spec,
                 workdir=workdir,
+                proxy_paths=replica.proxy_paths,
             )
         except Exception as e:
             logger.exception(

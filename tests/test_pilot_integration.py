@@ -289,6 +289,8 @@ async def _start_mock_replica(client: httpx.AsyncClient, name: str) -> None:
             health_check=HealthCheckParams(url="http://localhost/health"),
         ).model_dump(mode="json"),
         "gpu_indices": [(0, 0)],
+        "supported_endpoints": ["chat/completions"],
+        "prometheus_metrics_path": "/metrics",
     }
     r = await client.post("/start-replica", json=start_req)
     assert r.status_code == 200, r.text
@@ -359,6 +361,7 @@ async def test_replica_lifecycle(
 DENIED = "denied: NGINX 403"
 CONTROL_API = "reached the pilot control API"
 REPLICA = "reached the replica"
+NOT_EXPOSED = "not exposed: NGINX 404"
 
 
 def _outcome(resp: httpx.Response) -> str:
@@ -368,6 +371,8 @@ def _outcome(resp: httpx.Response) -> str:
         return CONTROL_API  # NGINX's own responses are HTML
     if resp.status_code == 403:
         return DENIED
+    if resp.status_code == 404:
+        return NOT_EXPOSED
     return f"unexpected: {resp.status_code} {resp.text[:200]!r}"
 
 
@@ -387,6 +392,14 @@ _AUTHZ_MATRIX = [
     ("control", "POST", "/replicas/%2e%2e/control/start-replica", CONTROL_API),
     ("router", "POST", "/replicas/r0/v1/chat/completions", REPLICA),
     ("router", "GET", "/replicas/r0/metrics", REPLICA),
+    # Authorized for /replicas/, but only the paths the mock replica's model
+    # declares (chat/completions) and its metrics path are proxied.
+    ("router", "POST", "/replicas/r0/v1/messages", NOT_EXPOSED),
+    ("router", "GET", "/replicas/r0/health", NOT_EXPOSED),
+    ("router", "GET", "/replicas/r0/v1/chat/completions/x", NOT_EXPOSED),
+    ("router", "GET", "/replicas/r0/", NOT_EXPOSED),
+    ("router", "GET", "/replicas/r0/metrics/../openapi.json", NOT_EXPOSED),
+    ("control", "GET", "/replicas/r0/openapi.json", NOT_EXPOSED),
     ("router", "GET", "/control/logs/r0", CONTROL_API),
     ("router", "POST", "/control/start-replica", DENIED),
     ("router", "POST", "/control/stop-replica/r0", DENIED),

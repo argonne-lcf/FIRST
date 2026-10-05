@@ -106,6 +106,8 @@ class ReplicaLauncher(Controller):
                 deployment_name=deploy.name,
                 launch_spec=deploy.resolve_launch_spec(),
                 gpu_indices=list(replica.claimed_gpu_ids),
+                supported_endpoints=list(deploy.model.supported_endpoints),
+                prometheus_metrics_path=deploy.prometheus_metrics_path,
             )
 
         resp = await self.client.start_replica(manager_url, request)
