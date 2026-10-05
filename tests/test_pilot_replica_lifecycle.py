@@ -70,6 +70,38 @@ def _replica(tmp_path: Path, spec: ResolvedLaunchSpec) -> Replica:
     )
 
 
+def test_rendered_scripts_persist_in_the_replica_workdir(tmp_path: Path) -> None:
+    spec = _launch_spec(
+        pre_stop_script_template="echo quiesce",
+        post_stop_script_template="echo verify",
+    )
+    replica = _replica(tmp_path, spec)
+    replica.stop()
+
+    assert "sleep 0.1" in (replica.workdir / "serve.sh").read_text()
+    assert "echo quiesce" in (replica.workdir / "pre-stop.sh").read_text()
+    assert "echo verify" in (replica.workdir / "post-stop.sh").read_text()
+
+
+def test_reusing_a_replica_name_keeps_the_earlier_script(tmp_path: Path) -> None:
+    workdir = tmp_path / "replica"
+    workdir.mkdir()
+    (workdir / "serve.sh").write_text("echo earlier\n")
+
+    replica = Replica(
+        name="deployment/replica/one",
+        uds=str(tmp_path / "replica.sock"),
+        resources=[GpuClaim(hostname="node-a", gpu_ids=["0", "1"])],
+        launch_spec=_launch_spec(),
+        workdir=workdir,
+    )
+    replica.stop()
+
+    assert "sleep 0.1" in (workdir / "serve.sh").read_text()
+    [earlier] = workdir.glob("serve.sh.*")
+    assert earlier.read_text() == "echo earlier\n"
+
+
 def _teardown_complete(replica: Replica) -> bool:
     """Read without narrowing the mutable attribute across a stop() call."""
     return replica._teardown_complete
