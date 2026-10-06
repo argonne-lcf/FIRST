@@ -52,7 +52,7 @@ pilot-certmanager standard --dir pki-prod/ --ca-name "FIRST Pilot CA (prod)"
 
 The command creates `ca.{key,crt}` only if the directory has no `ca.crt`, then
 (re)issues `first-pilot`, `first-control`, `first-router` and `first-metrics`,
-each as `<cn>.{crt,key}` (`--days`, default 730, sets leaf validity). For local development, `make pki` runs it into the
+each as `<cn>.{crt,key}` (`--days`, default 365, sets leaf validity). For local development, `make pki` runs it into the
 repo's `.gitignore`d `pki/`, which is all the Compose stack and the tests need.
 
 The lower-level `ca`, `server <cn>` and `client <cn>` commands remain for

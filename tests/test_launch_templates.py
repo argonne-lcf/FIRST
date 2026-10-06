@@ -210,15 +210,34 @@ def test_good_templates_accepted(template: str) -> None:
     _template(serve_script_template=template)
 
 
-def test_deployment_spec_requires_template_name() -> None:
-    values = {
+def _deployment_values() -> dict[str, Any]:
+    return {
         "cluster_name": "tara",
         "model_name": "inkling",
+        "launch_template_name": "vllm",
         "launch_spec": _launch().model_dump(),
     }
+
+
+def test_deployment_spec_requires_template_name() -> None:
+    values = _deployment_values()
+    del values["launch_template_name"]
     with pytest.raises(ValidationError, match="launch_template_name"):
         PilotDeploymentSpec.model_validate(values)
     PilotDeploymentSpec.model_validate({**values, "launch_template_name": "vllm"})
+
+
+@pytest.mark.parametrize("path", ["/metrics", "metrics/", "/vllm/metrics", None])
+def test_deployment_spec_accepts_metrics_path(path: str | None) -> None:
+    values = _deployment_values() | {"prometheus_metrics_path": path}
+    PilotDeploymentSpec.model_validate(values)
+
+
+@pytest.mark.parametrize("path", ["/stats", "/metrics/extra", "/vllm_metrics"])
+def test_deployment_spec_rejects_unscrapable_metrics_path(path: str) -> None:
+    values = _deployment_values() | {"prometheus_metrics_path": path}
+    with pytest.raises(ValidationError, match="must end in '/metrics'"):
+        PilotDeploymentSpec.model_validate(values)
 
 
 def test_pilot_renders_runtime_and_parameters() -> None:

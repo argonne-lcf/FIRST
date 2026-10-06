@@ -98,8 +98,9 @@ requirement (`ssl_verify_client on`), and per-role authorization. A `map` on
 | `first-metrics` | metrics | `GET /replicas/…/metrics` only |
 | anything else | none | Nothing (403) |
 
-Matching uses the normalized `$uri`. Replicas must expose Prometheus metrics
-at `/metrics` for the metrics role to scrape them. See the
+Matching uses the normalized `$uri`. The metrics role can only scrape a path
+ending in `/metrics`, so `PilotDeploymentSpec` rejects any other
+`prometheus_metrics_path`. See the
 [F-01 response](../security/control-plane-mtls-response.md) for rationale.
 
 ### Replica manager — `replica_manager.py`

@@ -296,7 +296,7 @@ class PilotDeploymentSpec(ResourceSpec):
     router_params: RouterParams = RouterParams()
 
     # Pilot NGINX admits the metrics identity only on GET /replicas/.../metrics,
-    # so pilot deployments must expose Prometheus metrics at /metrics
+    # so the path must end in /metrics (validated below).
     prometheus_metrics_path: str | None = "/metrics"
     prometheus_scrape_interval_sec: int = 15
 
@@ -307,3 +307,13 @@ class PilotDeploymentSpec(ResourceSpec):
     launch_template_name: ResourceName
     launch_spec: LaunchSpec
     max_consecutive_launch_failures: int = 3
+
+    @field_validator("prometheus_metrics_path")
+    @classmethod
+    def metrics_path_ends_in_metrics(cls, v: str | None) -> str | None:
+        if v and not f"/{normalize_proxy_path(v)}".endswith("/metrics"):
+            raise ValueError(
+                f"prometheus_metrics_path {v!r} must end in '/metrics': pilot "
+                "NGINX admits the metrics identity on no other path"
+            )
+        return v
