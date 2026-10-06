@@ -1,0 +1,45 @@
+---
+# VM2: ClickHouse, the landing table for the Vector log pipeline.
+# See docs/architecture/structured-logging-clickhouse.md.
+name: first-analytics-clickhouse
+
+services:
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.8.6.5}
+    container_name: first-analytics-clickhouse
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-analytics}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+    ports:
+      # Vector writes here over TLS. Publish on VM2's private address only;
+      # the design doc requires 8443 to be reachable just from VM1.
+      - "${BIND_ADDRESS:-127.0.0.1}:${CLICKHOUSE_HTTPS_PORT:-8443}:8443"
+      # Pinned to loopback: Grafana uses the container network and a local
+      # client uses this.
+      - "127.0.0.1:${CLICKHOUSE_SECURE_NATIVE_PORT:-9440}:9440"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ${CLICKHOUSE_DATA_DIR:-/srv/clickhouse/data}:/var/lib/clickhouse
+      - ${CLICKHOUSE_LOGS_DIR:-/srv/clickhouse/logs}:/var/log/clickhouse-server
+      - ./certs:/etc/clickhouse-server/certs:ro
+      - ./tls.xml:/etc/clickhouse-server/config.d/tls.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - analytics
+
+networks:
+  analytics:
+    name: ${ANALYTICS_NETWORK:-first-analytics}

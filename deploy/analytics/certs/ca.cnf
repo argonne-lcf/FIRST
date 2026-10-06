@@ -1,0 +1,16 @@
+# Sample CA configuration for the analytics tier.
+#
+# Used by certs/generate.sh. A real deployment should use the site CA
+# instead: the design doc (docs/architecture/structured-logging-clickhouse.md)
+# specifies https://vm2:8443 but no PKI story.
+[req]
+distinguished_name = dn
+prompt = no
+x509_extensions = v3_ca
+
+[dn]
+CN = first-analytics-local-ca
+
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
