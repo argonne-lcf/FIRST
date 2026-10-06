@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 
 # Streaming server endpoints (integrated into Django)
-@router.post("/api/streaming/data/", auth=None, throttle=[])
+@router.post("/api/streaming/data/", auth=None, throttle=[], include_in_schema=False)
 async def receive_streaming_data(request: HttpRequest) -> JsonResponse:
     """Receive streaming data from vLLM function - INTERNAL ONLY
 
@@ -73,7 +73,7 @@ async def receive_streaming_data(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Internal server error"}, status=500)
 
 
-@router.post("/api/streaming/error/", auth=None, throttle=[])
+@router.post("/api/streaming/error/", auth=None, throttle=[], include_in_schema=False)
 async def receive_streaming_error(request: HttpRequest) -> JsonResponse:
     """Receive error from vLLM function - INTERNAL ONLY - P0 OPTIMIZED
 
@@ -121,7 +121,7 @@ async def receive_streaming_error(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Internal server error"}, status=500)
 
 
-@router.post("/api/streaming/done/", auth=None, throttle=[])
+@router.post("/api/streaming/done/", auth=None, throttle=[], include_in_schema=False)
 async def receive_streaming_done(request: HttpRequest) -> JsonResponse:
     """Receive completion signal from vLLM function - INTERNAL ONLY - P0 OPTIMIZED
 
