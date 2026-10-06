@@ -7,12 +7,13 @@ import threading
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 
-from first_common.errors import NotFound, ReplicaTeardownError
+from first_common.errors import BadPilotRequest, NotFound, ReplicaTeardownError
 from first_common.schema.types import GpuClaim
 from first_pilot.replica import Replica
 from first_pilot.replica_manager import ReplicaManager
@@ -248,3 +249,14 @@ print("bounded stop returned")
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "bounded stop returned"
+
+
+@pytest.mark.parametrize("name", ["../x", "m/../../x", "/abs/x"])
+def test_start_request_rejects_name_escaping_replica_base_dir(
+    tmp_path: Path, name: str
+) -> None:
+    manager = _manager()
+    manager.config = SimpleNamespace(replica_base_dir=tmp_path)  # type: ignore[assignment]
+
+    with pytest.raises(BadPilotRequest, match="escapes the replica workdir"):
+        manager._validate_request(name, [(0, 0)])

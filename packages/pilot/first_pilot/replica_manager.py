@@ -419,6 +419,10 @@ class ReplicaManager:
         Validate the parts of a start request that depend ONLY on immutable
         state (inventory + the request itself). Lock-free.
         """
+        base_dir = self.config.replica_base_dir.resolve()
+        if not (base_dir / name).resolve().is_relative_to(base_dir):
+            raise BadPilotRequest(f"replica name {name!r} escapes the replica workdir")
+
         if not gpu_indices:
             raise BadPilotRequest("replica must request at least one GPU")
 

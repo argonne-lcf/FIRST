@@ -270,6 +270,14 @@ UNSAFE_REPLICA_NAMES = [
     'm"',
     "m#",
     "m\\",
+    "../m",
+    "m/../../x",
+    "m/./x",
+    "/abs/m",
+    "m/",
+    "m//x",
+    ".hidden",
+    "-m",
 ]
 
 

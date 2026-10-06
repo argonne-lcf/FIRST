@@ -27,7 +27,10 @@ ResourceName = NewType("ResourceName", str)
 # Allowed characters in resource names (and the replica names generated from
 # them). Names are interpolated into URL paths and the pilot NGINX config, so
 # this must stay free of whitespace and NGINX metacharacters ({ } ; " ' $ \ #).
-RESOURCE_NAME_PATTERN = r"^[a-zA-Z0-9._\-/]+$"
+# Names also become filesystem paths, so every "/"-separated segment must be
+# non-empty and start with an alphanumeric: no "..", "." or absolute paths.
+_NAME_SEGMENT = r"[a-zA-Z0-9][a-zA-Z0-9._\-]*"
+RESOURCE_NAME_PATTERN = rf"^{_NAME_SEGMENT}(/{_NAME_SEGMENT})*$"
 
 # A path proxied to a model backend (e.g. "chat/completions", "metrics")
 _PROXY_PATH = re.compile(r"[a-zA-Z0-9._\-]+(/[a-zA-Z0-9._\-]+)*")
