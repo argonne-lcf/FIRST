@@ -1,21 +1,27 @@
 """Isolated endpoint adapter for V2-managed (pilot) backends."""
 
-import json
+import asyncio
 import logging
 import random
-import time
 from typing import Any, AsyncGenerator
 
 import httpx
 from django.http import StreamingHttpResponse
 from pydantic import BaseModel
 
-from resource_server_async.endpoints.direct_api import DirectAPIEndpoint
+from resource_server_async.endpoints.direct_api import (
+    DirectAPIEndpoint,
+    new_streaming_state,
+)
 from resource_server_async.endpoints.endpoint import BaseEndpoint
 from resource_server_async.httpx_client import create_ssl_context
-from resource_server_async.streaming import create_streaming_response_headers
+from resource_server_async.streaming import (
+    create_streaming_response_headers,
+    include_streaming_usage,
+)
 
 from ..errors import EndpointError
+from ..logging import get_request_context
 from ..schemas.endpoints import (
     SubmitStreamingTaskResponse,
     SubmitTaskResult,
@@ -104,6 +110,8 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         )
         # Backends expect their own model name, not the alias.
         body["model"] = self._cfg.backend_model_name
+        if stream:
+            include_streaming_usage(body, openai_endpoint)
         url = f"{self._pick_url().rstrip('/')}/v1/{openai_endpoint}"
         return url, body
 
@@ -137,37 +145,35 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         url, body = self._build_request(data, stream=True)
         log.info(f"Making First V2 API call for model {self.model} (stream=True)")
 
+        streaming_state = new_streaming_state()
+
         async def sse_generator() -> AsyncGenerator[str, None]:
             try:
                 async with self._client.stream("POST", url, json=body) as response:
                     if response.status_code != 200:
                         error_text = await response.aread()
                         raise ValueError(
-                            f"Upstream endpoint returned {response.status_code}: "
+                            f"Upstream endpoint returned an error "
+                            f"(status code: {response.status_code}): "
                             f"{error_text.decode(errors='replace').strip()[:256]}"
                         )
                     async for chunk in response.aiter_text():
                         if chunk:
+                            streaming_state["total_chunks"] += 1
+                            self._collect_streaming_chunk(streaming_state, chunk)
                             yield chunk
             except Exception as e:
-                error_chunk = {
-                    "id": "chatcmpl-api-error",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": self.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant",
-                                "content": f"\n\n[ERROR] {e}",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(error_chunk)}\n\n"
+                streaming_state["error"] = str(e)
+                yield self._sse_error_chunk(self.model, str(e))
                 yield "data: [DONE]\n\n"
+            finally:
+                self._finalize_stream(streaming_state)
+
+        try:
+            context = get_request_context()
+            asyncio.create_task(self._update_streaming_log(context, streaming_state))
+        except LookupError:
+            pass
 
         response = StreamingHttpResponse(
             streaming_content=sse_generator(), content_type="text/event-stream"

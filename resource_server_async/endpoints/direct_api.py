@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, TypedDict
 
 import httpx
@@ -13,7 +14,14 @@ from resource_server_async.endpoints.endpoint import (
     BaseEndpoint,
 )
 from resource_server_async.httpx_client import AsyncHttpClient, create_ssl_context
-from resource_server_async.streaming import create_streaming_response_headers
+from resource_server_async.streaming import (
+    create_streaming_response_headers,
+    delta_content,
+    estimate_usage,
+    extract_status_code_from_error,
+    include_streaming_usage,
+    merge_usage,
+)
 
 from ..errors import EndpointError
 from ..logging import RequestContext, get_request_context
@@ -21,6 +29,7 @@ from ..schemas.endpoints import (
     SubmitStreamingTaskResponse,
     SubmitTaskResult,
 )
+from ..schemas.structured_logs import UsageTokens, extract_usage
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +62,15 @@ def _merge_forwarded_request_headers(
     return forwarded
 
 
+def _decoded_prompt(prompt: str) -> str | list[str | dict[str, Any]]:
+    """Decode the JSON prompt stored on the request log."""
+    try:
+        decoded = json.loads(prompt)
+    except json.JSONDecodeError:
+        return prompt
+    return decoded if isinstance(decoded, (str, list)) else prompt
+
+
 class DirectAPIEndpointConfig(BaseModel):
     api_url: str
     api_key_env_name: str
@@ -70,6 +88,22 @@ class StreamingState(TypedDict):
     completed: bool
     error: str | None
     start_time: float
+    usage: UsageTokens | None
+    content: str
+    pending: str
+
+
+def new_streaming_state() -> StreamingState:
+    return {
+        "chunks": [],
+        "total_chunks": 0,
+        "completed": False,
+        "error": None,
+        "start_time": time.time(),
+        "usage": None,
+        "content": "",
+        "pending": "",
+    }
 
 
 # DirectAPI endpoint implementation of a BaseEndpoint
@@ -186,6 +220,55 @@ class DirectAPIEndpoint(BaseEndpoint):
         request_data = self._prepare_request_body(data, stream=True)
         return await self._submit_streaming_task_with_headers(request_data)
 
+    @staticmethod
+    def _collect_streaming_chunk(state: StreamingState, chunk: str) -> None:
+        """Keep token usage and a bounded sample of chunks for the final log."""
+        text = state["pending"] + chunk.replace("\r\n", "\n").replace("\r", "\n")
+        lines = text.split("\n")
+        state["pending"] = lines.pop()
+
+        for line in lines:
+            if not line.startswith("data:"):
+                continue
+
+            body = line[5:].strip()
+            if not body or body == "[DONE]":
+                continue
+
+            usage = extract_usage(body)
+            if usage.total_tokens is not None:
+                state["usage"] = merge_usage(state["usage"], usage)
+
+            state["content"] += delta_content(body)
+            if len(state["chunks"]) < 100:
+                state["chunks"].append(line)
+
+    @staticmethod
+    def _finalize_stream(state: StreamingState) -> None:
+        DirectAPIEndpoint._collect_streaming_chunk(state, "\n")
+        state["completed"] = True
+
+    @staticmethod
+    def _sse_error_chunk(model: str, message: str) -> str:
+        """Return an OpenAI-compatible SSE error frame."""
+        chunk = {
+            "id": "chatcmpl-api-error",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": f"\n\n[ERROR] {message}",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        return f"data: {json.dumps(chunk)}\n\n"
+
     async def _submit_streaming_task_with_headers(
         self,
         data: dict[str, Any],
@@ -197,19 +280,13 @@ class DirectAPIEndpoint(BaseEndpoint):
         # generator. Endpoint adapters and HTTP clients are shared objects.
         request_data = dict(data)
         endpoint = request_data.pop("openai_endpoint", "chat/completions").strip("/")
+        include_streaming_usage(request_data, endpoint)
         url = f"{self.config.api_url.rstrip('/')}/{endpoint}"
         captured_headers = _merge_forwarded_request_headers(
             request_headers, self.httpx_client.headers
         )
 
-        # Shared state for tracking streaming (optimized - minimal memory)
-        streaming_state: StreamingState = {
-            "chunks": [],  # Limited to 100 chunks
-            "total_chunks": 0,
-            "completed": False,
-            "error": None,
-            "start_time": time.time(),
-        }
+        streaming_state = new_streaming_state()
 
         # SSE generator
         async def sse_generator() -> AsyncGenerator[str, None]:
@@ -223,47 +300,21 @@ class DirectAPIEndpoint(BaseEndpoint):
                     if chunk:
                         # Send chunk
                         streaming_state["total_chunks"] += 1
+                        self._collect_streaming_chunk(streaming_state, chunk)
                         yield chunk  # Pass through SSE format
-
-                        # Collect limited chunks for logging (optimize memory)
-                        if chunk.startswith("data: ") and not chunk.startswith(
-                            "data: [DONE]"
-                        ):
-                            if len(streaming_state["chunks"]) < 100:
-                                try:
-                                    streaming_state["chunks"].append(chunk[6:].strip())
-                                except:
-                                    pass
-
-                streaming_state["completed"] = True
 
             # Send error as OpenAI streaming chunk format (compatible with OpenAI clients)
             except Exception as e:
                 error_str = str(e)
                 streaming_state["error"] = error_str
-                streaming_state["completed"] = True
-                error_chunk = {
-                    "id": "chatcmpl-api-error",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": self.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant",
-                                "content": f"\n\n[ERROR] {error_str}",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(error_chunk)}\n\n"
+                yield self._sse_error_chunk(self.model, error_str)
                 yield "data: [DONE]\n\n"
+            finally:
+                self._finalize_stream(streaming_state)
 
         try:
             context = get_request_context()
-            asyncio.create_task(self.__update_streaming_log(context, streaming_state))
+            asyncio.create_task(self._update_streaming_log(context, streaming_state))
         except LookupError:
             pass
 
@@ -310,7 +361,9 @@ class DirectAPIEndpoint(BaseEndpoint):
                     if response.status_code != 200:
                         error_text = await response.aread()
                         raise ValueError(
-                            f"Error: Could not send stream API call to {url}: {error_text.decode().strip()}"
+                            f"Error: Could not send stream API call to {url} "
+                            f"(status code: {response.status_code}): "
+                            f"{error_text.decode(errors='replace').strip()}"
                         )
 
                     # Stream the response
@@ -329,7 +382,7 @@ class DirectAPIEndpoint(BaseEndpoint):
             raise ValueError(f"Error: Unexpected error calling stream API: {e}")
 
     # Update streaming log
-    async def __update_streaming_log(
+    async def _update_streaming_log(
         self, context: RequestContext, streaming_state: StreamingState
     ) -> None:
         """Background task to log after streaming completes."""
@@ -349,6 +402,7 @@ class DirectAPIEndpoint(BaseEndpoint):
             # Log error if something went wrong
             if streaming_state["error"]:
                 result = f"error: {streaming_state['error']}"
+                status_code = extract_status_code_from_error(streaming_state["error"])
                 log.error(
                     f"API streaming failed for {self.endpoint_slug}: {streaming_state['error']}"
                 )
@@ -360,12 +414,37 @@ class DirectAPIEndpoint(BaseEndpoint):
                     if streaming_state["chunks"]
                     else "streaming_completed"
                 )
+                status_code = 200
                 log.info(
-                    f"Metis streaming completed for {self.endpoint_slug}: {total_chunks} chunks in {duration:.2f}s"
+                    f"Streaming completed for {self.endpoint_slug}: {total_chunks} chunks in {duration:.2f}s"
                 )
 
             if context.request_log:
-                context.request_log.emit(result, status_code=None)
+                usage = streaming_state["usage"]
+                if (
+                    (
+                        usage is None
+                        or usage.prompt_tokens is None
+                        or usage.completion_tokens is None
+                    )
+                    and streaming_state["content"]
+                    and not streaming_state["error"]
+                ):
+                    usage = estimate_usage(
+                        streaming_state["content"],
+                        _decoded_prompt(context.request_log.prompt),
+                        context.request_log.id,
+                    )
+                context.request_log.timestamp_compute_response = datetime.now(
+                    timezone.utc
+                )
+                context.request_log.emit(result, status_code=status_code)
+                await context.request_log.emit_metrics(usage)
+
+                if context.access_log.status_code != status_code:
+                    context.access_log.emit_final(
+                        status_code, user=context.user, error=streaming_state["error"]
+                    )
 
         # Log error if something went wrong
         except Exception as e:
