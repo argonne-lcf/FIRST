@@ -178,9 +178,7 @@ class GlobusComputeEndpoint(BaseEndpoint):
         # This is to prevent submitting requests to an endpoint that is not ready yet
         if check_managers:
             # Extract whether managers are deployed on the online endpoint
-            resources_ready = (
-                int(endpoint_status.get("details", {}).get("managers", 0)) > 0
-            )
+            resources_ready = not globus_utils.has_no_managers(endpoint_status)
 
             # If the compute resource is not ready (if node not acquired, worker_init not completed, or lost managers) ...
             if not resources_ready:

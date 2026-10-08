@@ -394,12 +394,15 @@ async def check_sophia_models() -> list[HealthRecord]:
             continue
 
         endpoint_state = (status_payload or {}).get("status", "unknown")
-        managers = 0
+        # Globus Compute v4 manager endpoints report no details (workers live in
+        # spawned user endpoints), so a missing count is not treated as zero
+        managers: int | None = None
         details = (status_payload or {}).get("details", {}) or {}
-        try:
-            managers = int(details.get("managers", 0))
-        except (TypeError, ValueError):
-            managers = 0
+        if "managers" in details:
+            try:
+                managers = int(details["managers"])
+            except (TypeError, ValueError):
+                managers = 0
 
         last_result_raw = details.get("last_result")
         last_result = {}
@@ -435,7 +438,7 @@ async def check_sophia_models() -> list[HealthRecord]:
             )
             continue
 
-        if managers <= 0:
+        if managers is not None and managers <= 0:
             records.append(
                 HealthRecord(
                     component=model_name,
