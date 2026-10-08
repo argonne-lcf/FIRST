@@ -190,6 +190,20 @@ def get_endpoint_status(
         return result
 
 
+def has_no_managers(endpoint_status: dict[str, Any]) -> bool:
+    """
+    Return True if the endpoint status reports zero connected managers.
+
+    Globus Compute v4 manager endpoints only report {"status": "online"}: the
+    workers live in spawned user endpoints, so there is no manager count to
+    check and the endpoint is assumed able to receive tasks.
+    """
+    details = endpoint_status.get("details") or {}
+    if "managers" not in details:
+        return False
+    return int(details["managers"]) == 0
+
+
 # Submit function and wait for result
 async def submit_and_get_result(
     gce: Executor,

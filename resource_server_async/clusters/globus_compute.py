@@ -120,9 +120,8 @@ class GlobusComputeCluster(BaseCluster):
                         client=gcc,
                         endpoint_slug=endpoint_slug,
                     )
-                    if (
-                        not endpoint_status
-                        or int(endpoint_status["details"].get("managers", 0)) == 0
+                    if not endpoint_status or globus_utils.has_no_managers(
+                        endpoint_status
                     ):
                         result["running"][i]["Model Status"] = "disconnected"
 
