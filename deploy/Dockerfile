@@ -29,12 +29,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Copy project files
 COPY packages packages
+RUN chmod -R a+rX packages
 
 # Sync project
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --package first-gateway --frozen --no-dev
 
-RUN useradd -m app
+# Match the host service account that owns the secrets under pki/:
+# Compose bind-mounts file secrets with their host uid and mode unchanged.
+ARG APP_UID=900
+RUN useradd -m -u ${APP_UID} app
 USER app
 EXPOSE 7000
 CMD [".venv/bin/gunicorn", \
