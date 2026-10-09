@@ -137,6 +137,7 @@ class EndpointInfo:
     """Minimal metadata required to run a health check."""
 
     model: str
+    framework: str
     endpoint_uuid: str
     function_uuid: str
     api_port: int
@@ -253,6 +254,7 @@ async def gather_endpoints(cluster: str) -> dict[str, EndpointInfo]:
         else:
             info = EndpointInfo(
                 model=endpoint.model,
+                framework=endpoint.framework,
                 endpoint_uuid=endpoint_uuid,
                 function_uuid=function_uuid,
                 api_port=api_port,
@@ -264,6 +266,26 @@ async def gather_endpoints(cluster: str) -> dict[str, EndpointInfo]:
             result[normalize_model_name(info.model)] = info
 
     return result
+
+
+def resolve_running_entry(
+    info: EndpointInfo, running_models: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return the qstat entry for an endpoint and the key it matched.
+
+    qstat reports one running entry per Globus Compute endpoint.  Model
+    endpoints name that entry after their model, while service endpoints
+    (for example the GenSLM-ESM service, framework ``genslm-multi``) report a
+    single service name that equals the framework instead.
+    """
+
+    if info.model in running_models:
+        return running_models[info.model], info.model
+
+    if info.framework in running_models:
+        return running_models[info.framework], info.framework
+
+    return None, None
 
 
 async def fetch_qstat_running_models(
@@ -378,9 +400,13 @@ async def check_sophia_models() -> list[HealthRecord]:
         endpoint_status_cache[info.endpoint_slug] = (status, err)
         return status, err
 
+    matched_running: set[str] = set()
+
     for model_name, info in endpoints.items():
         status_payload, status_error = get_endpoint_status_cached(info)
-        running_entry = running_models.get(model_name)
+        running_entry, matched_key = resolve_running_entry(info, running_models)
+        if matched_key is not None:
+            matched_running.add(matched_key)
 
         if status_error:
             records.append(
@@ -533,15 +559,21 @@ async def check_sophia_models() -> list[HealthRecord]:
 
     # Handle running models that do not map to known endpoints
     for model_name in running_models.keys():
-        if model_name not in endpoints:
-            records.append(
-                HealthRecord(
-                    component=model_name,
-                    cluster="sophia",
-                    status=HealthStatus.FAILED,
-                    detail="Running job has no matching endpoint configuration",
-                )
+        if model_name in matched_running or model_name in endpoints:
+            continue
+
+        log.warning(
+            "Running model=%s has no matching endpoint configuration",
+            model_name,
+        )
+        records.append(
+            HealthRecord(
+                component=model_name,
+                cluster="sophia",
+                status=HealthStatus.FAILED,
+                detail="Running job has no matching endpoint configuration",
             )
+        )
 
     return records
 
