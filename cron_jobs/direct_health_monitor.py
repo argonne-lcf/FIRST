@@ -128,6 +128,7 @@ GATEWAY_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GATEWAY_TIMEOUT", 5))
 GLOBUS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GLOBUS_TIMEOUT", 30))
 METIS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_METIS_TIMEOUT", 15))
 MINERVA_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_MINERVA_TIMEOUT", 15))
+MINERVA_REPORT_NONLIVE = os.getenv("HEALTH_MONITOR_MINERVA_REPORT_NONLIVE", "1") == "1"
 
 FULL_REPORT_FREQUENCY_HOURS = int(os.getenv("HEALTH_MONITOR_FULL_REPORT_HOURS", 24))
 
@@ -706,13 +707,20 @@ async def check_metis_models() -> list[HealthRecord]:
     return records
 
 
-async def extract_minerva_models() -> list[str]:
-    """Flatten Minerva status structure into a list of live model names."""
+async def extract_minerva_models() -> tuple[list[str], list[str]]:
+    """Return the Minerva models that are live and those that are not."""
 
     minerva = await MinervaCluster.load_adapter("minerva")
     jobs = await minerva.get_jobs(None)
 
-    return [model.strip() for j in jobs.running for model in j.Models.split(",")]
+    live = [model.strip() for j in jobs.running for model in j.Models.split(",")]
+    not_running = [
+        model.strip()
+        for job in [*jobs.stopped, *jobs.queued]
+        for model in job.Models.split(",")
+    ]
+
+    return live, not_running
 
 
 async def check_minerva_models() -> list[HealthRecord]:
@@ -721,7 +729,7 @@ async def check_minerva_models() -> list[HealthRecord]:
     records: list[HealthRecord] = []
 
     try:
-        models = await extract_minerva_models()
+        models, not_running = await extract_minerva_models()
     except Exception as e:
         records.append(
             HealthRecord(
@@ -732,6 +740,22 @@ async def check_minerva_models() -> list[HealthRecord]:
             )
         )
         return records
+
+    # Models the cluster still knows about but is not running.  They used to be
+    # dropped silently, so a model that went down left no record at all.
+    if MINERVA_REPORT_NONLIVE:
+        for model_name in dict.fromkeys(not_running):
+            if model_name in models:
+                continue
+            log.info("Minerva model not running: %s", model_name)
+            records.append(
+                HealthRecord(
+                    component=model_name,
+                    cluster="minerva",
+                    status=HealthStatus.OFFLINE,
+                    detail="not running on Minerva (no live route)",
+                )
+            )
 
     if not models:
         records.append(
