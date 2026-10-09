@@ -17,6 +17,10 @@ from first_common.schema.types import (
     PilotDeploymentState,
     ReplicaState,
 )
+from first_gateway.controllers.workers.health_alerter.quarantine import (
+    quarantine_observations,
+    verify_quarantine_history,
+)
 from first_gateway.controllers.workers.health_alerter.types import Observation
 from first_gateway.controllers.workers.replica_placement import AT_CAPACITY
 from first_gateway.database.models import (
@@ -27,6 +31,7 @@ from first_gateway.database.models import (
     StaticDeployment,
 )
 from first_gateway.platforms.schedulers import build_scheduler
+from first_gateway.platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from first_gateway.settings import ClientState
 
 logger = logging.getLogger(__name__)
@@ -172,6 +177,37 @@ async def check_schedulers(client_state: ClientState) -> list[Observation]:
         if obs := await _check_scheduler(pilot_config, client_state, key, c.name):
             observations.append(obs)
 
+    return observations
+
+
+async def check_tara_quarantine(client_state: ClientState) -> list[Observation]:
+    """Use the existing scheduler/health path, without a second network service."""
+    async with client_state.db_sessionmaker() as sess:
+        clusters = (await sess.scalars(sa.select(Cluster))).all()
+    observations: list[Observation] = []
+    for cluster in clusters:
+        if cluster.pilot_system is None:
+            continue
+        config = PilotConfig.model_validate(cluster.pilot_system)
+        if config.scheduler_config.get("quarantine_environment") is None:
+            continue
+        adapter = await build_scheduler(config, client_state)
+        if (
+            not isinstance(adapter, GraphQLPBSAdapter)
+            or adapter.quarantine_environment is None
+        ):
+            raise RuntimeError("Tara quarantine requires the GraphQL PBS adapter")
+        async with asyncio.timeout(_SCHEDULER_CHECK_TIMEOUT_S):
+            jobs = await adapter.get_job_statuses()
+        observations.extend(
+            quarantine_observations(
+                jobs,
+                adapter.quarantine_environment,
+                int(datetime.now(timezone.utc).timestamp()),
+            )
+        )
+    state = await client_state.redis_repo.get_health_alert_state()
+    verify_quarantine_history(state, observations)
     return observations
 
 
@@ -507,6 +543,7 @@ async def check_pilot_client_cert(client_state: ClientState) -> list[Observation
 CHECK_REGISTRY = [
     Check(check_cluster_health, "Clusters"),
     Check(check_schedulers, "Clusters"),
+    Check(check_tara_quarantine, "Clusters"),
     Check(check_static_deployment, "Deployments"),
     Check(check_pilot_deployment, "Deployments"),
     Check(check_pilot_job, "Pilot Jobs"),

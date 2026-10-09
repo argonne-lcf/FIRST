@@ -42,6 +42,12 @@ SLACK_POST_URL = "https://slack.com/api/chat.postMessage"
 logger = logging.getLogger(__name__)
 
 
+def _is_realtime(transition: StagedTransition) -> bool:
+    # Isolation confirmation and deliberate repair release are operational
+    # events, not routine offline/idle info states. Do not broaden other checks.
+    return transition.severity != "info" or transition.owner == "check_tara_quarantine"
+
+
 async def _count(sess: Any, model: Any, *, soft_deletable: bool = False) -> int:
     """Count rows for daily digest"""
     stmt = sa.select(sa.func.count()).select_from(model)
@@ -291,8 +297,8 @@ class HealthAlerter(Worker):
         # 3. Flush matured transitions. info-level transitions (offline, idle)
         # are digest-only: they are committed so the daily digest reflects them,
         # but never posted in real time. Only warn/crit transitions ping Slack.
-        visible_degradations = [d for d in plan.degradations if d.severity != "info"]
-        visible_recoveries = [r for r in plan.recoveries if r.severity != "info"]
+        visible_degradations = [d for d in plan.degradations if _is_realtime(d)]
+        visible_recoveries = [r for r in plan.recoveries if _is_realtime(r)]
         if visible_degradations or visible_recoveries:
             blocks = build_alert_blocks(visible_degradations, visible_recoveries, [])
             ts = await self._post_message(blocks, text=self._header_text(blocks))
