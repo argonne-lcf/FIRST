@@ -131,6 +131,12 @@ MINERVA_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_MINERVA_TIMEOUT", 15))
 
 FULL_REPORT_FREQUENCY_HOURS = int(os.getenv("HEALTH_MONITOR_FULL_REPORT_HOURS", 24))
 
+# Frameworks whose Globus Compute functions do not implement the
+# OpenAI-style {"model_params": {"openai_endpoint": "health"}} probe.
+# Those endpoints are reported from the Globus Compute endpoint state and the
+# PBS job state instead of a task submission.
+FRAMEWORKS_WITHOUT_TASK_PROBE = frozenset({"sam3service"})
+
 
 @dataclass
 class EndpointInfo:
@@ -358,6 +364,28 @@ def parse_health_payload(result: Any) -> tuple[float | None, str | None]:
     return None, None
 
 
+def endpoint_state_record(
+    info: EndpointInfo, model_name: str, running_entry: dict[str, Any]
+) -> HealthRecord:
+    """Report an endpoint whose framework has no task-level health probe.
+
+    Such an endpoint only proves that its Globus Compute endpoint is online and
+    that the PBS job reports the model as running.
+    """
+
+    model_status = running_entry.get("Model Status") or "unknown"
+
+    return HealthRecord(
+        component=model_name,
+        cluster="sophia",
+        status=HealthStatus.HEALTHY if model_status == "running" else HealthStatus.SLOW,
+        detail=(
+            f"Endpoint online, job status={model_status} "
+            f"(task probe skipped for framework={info.framework})"
+        ),
+    )
+
+
 async def check_sophia_models() -> list[HealthRecord]:
     """Run health checks against running Sophia models."""
 
@@ -473,6 +501,15 @@ async def check_sophia_models() -> list[HealthRecord]:
                     detail="Endpoint online but no active managers",
                 )
             )
+            continue
+
+        if info.framework in FRAMEWORKS_WITHOUT_TASK_PROBE:
+            log.info(
+                "Skipping task probe for model=%s framework=%s",
+                model_name,
+                info.framework,
+            )
+            records.append(endpoint_state_record(info, model_name, running_entry))
             continue
 
         params = {
