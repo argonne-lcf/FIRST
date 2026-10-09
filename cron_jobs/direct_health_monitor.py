@@ -128,8 +128,15 @@ GATEWAY_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GATEWAY_TIMEOUT", 5))
 GLOBUS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GLOBUS_TIMEOUT", 30))
 METIS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_METIS_TIMEOUT", 15))
 MINERVA_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_MINERVA_TIMEOUT", 15))
+MINERVA_REPORT_NONLIVE = os.getenv("HEALTH_MONITOR_MINERVA_REPORT_NONLIVE", "1") == "1"
 
 FULL_REPORT_FREQUENCY_HOURS = int(os.getenv("HEALTH_MONITOR_FULL_REPORT_HOURS", 24))
+
+# Frameworks whose Globus Compute functions do not implement the
+# OpenAI-style {"model_params": {"openai_endpoint": "health"}} probe.
+# Those endpoints are reported from the Globus Compute endpoint state and the
+# PBS job state instead of a task submission.
+FRAMEWORKS_WITHOUT_TASK_PROBE = frozenset({"sam3service"})
 
 
 @dataclass
@@ -137,6 +144,7 @@ class EndpointInfo:
     """Minimal metadata required to run a health check."""
 
     model: str
+    framework: str
     endpoint_uuid: str
     function_uuid: str
     api_port: int
@@ -253,6 +261,7 @@ async def gather_endpoints(cluster: str) -> dict[str, EndpointInfo]:
         else:
             info = EndpointInfo(
                 model=endpoint.model,
+                framework=endpoint.framework,
                 endpoint_uuid=endpoint_uuid,
                 function_uuid=function_uuid,
                 api_port=api_port,
@@ -264,6 +273,26 @@ async def gather_endpoints(cluster: str) -> dict[str, EndpointInfo]:
             result[normalize_model_name(info.model)] = info
 
     return result
+
+
+def resolve_running_entry(
+    info: EndpointInfo, running_models: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return the qstat entry for an endpoint and the key it matched.
+
+    qstat reports one running entry per Globus Compute endpoint.  Model
+    endpoints name that entry after their model, while service endpoints
+    (for example the GenSLM-ESM service, framework ``genslm-multi``) report a
+    single service name that equals the framework instead.
+    """
+
+    if info.model in running_models:
+        return running_models[info.model], info.model
+
+    if info.framework in running_models:
+        return running_models[info.framework], info.framework
+
+    return None, None
 
 
 async def fetch_qstat_running_models(
@@ -336,6 +365,28 @@ def parse_health_payload(result: Any) -> tuple[float | None, str | None]:
     return None, None
 
 
+def endpoint_state_record(
+    info: EndpointInfo, model_name: str, running_entry: dict[str, Any]
+) -> HealthRecord:
+    """Report an endpoint whose framework has no task-level health probe.
+
+    Such an endpoint only proves that its Globus Compute endpoint is online and
+    that the PBS job reports the model as running.
+    """
+
+    model_status = running_entry.get("Model Status") or "unknown"
+
+    return HealthRecord(
+        component=model_name,
+        cluster="sophia",
+        status=HealthStatus.HEALTHY if model_status == "running" else HealthStatus.SLOW,
+        detail=(
+            f"Endpoint online, job status={model_status} "
+            f"(task probe skipped for framework={info.framework})"
+        ),
+    )
+
+
 async def check_sophia_models() -> list[HealthRecord]:
     """Run health checks against running Sophia models."""
 
@@ -378,9 +429,13 @@ async def check_sophia_models() -> list[HealthRecord]:
         endpoint_status_cache[info.endpoint_slug] = (status, err)
         return status, err
 
+    matched_running: set[str] = set()
+
     for model_name, info in endpoints.items():
         status_payload, status_error = get_endpoint_status_cached(info)
-        running_entry = running_models.get(model_name)
+        running_entry, matched_key = resolve_running_entry(info, running_models)
+        if matched_key is not None:
+            matched_running.add(matched_key)
 
         if status_error:
             records.append(
@@ -447,6 +502,15 @@ async def check_sophia_models() -> list[HealthRecord]:
                     detail="Endpoint online but no active managers",
                 )
             )
+            continue
+
+        if info.framework in FRAMEWORKS_WITHOUT_TASK_PROBE:
+            log.info(
+                "Skipping task probe for model=%s framework=%s",
+                model_name,
+                info.framework,
+            )
+            records.append(endpoint_state_record(info, model_name, running_entry))
             continue
 
         params = {
@@ -533,15 +597,21 @@ async def check_sophia_models() -> list[HealthRecord]:
 
     # Handle running models that do not map to known endpoints
     for model_name in running_models.keys():
-        if model_name not in endpoints:
-            records.append(
-                HealthRecord(
-                    component=model_name,
-                    cluster="sophia",
-                    status=HealthStatus.FAILED,
-                    detail="Running job has no matching endpoint configuration",
-                )
+        if model_name in matched_running or model_name in endpoints:
+            continue
+
+        log.warning(
+            "Running model=%s has no matching endpoint configuration",
+            model_name,
+        )
+        records.append(
+            HealthRecord(
+                component=model_name,
+                cluster="sophia",
+                status=HealthStatus.FAILED,
+                detail="Running job has no matching endpoint configuration",
             )
+        )
 
     return records
 
@@ -637,13 +707,20 @@ async def check_metis_models() -> list[HealthRecord]:
     return records
 
 
-async def extract_minerva_models() -> list[str]:
-    """Flatten Minerva status structure into a list of live model names."""
+async def extract_minerva_models() -> tuple[list[str], list[str]]:
+    """Return the Minerva models that are live and those that are not."""
 
     minerva = await MinervaCluster.load_adapter("minerva")
     jobs = await minerva.get_jobs(None)
 
-    return [model.strip() for j in jobs.running for model in j.Models.split(",")]
+    live = [model.strip() for j in jobs.running for model in j.Models.split(",")]
+    not_running = [
+        model.strip()
+        for job in [*jobs.stopped, *jobs.queued]
+        for model in job.Models.split(",")
+    ]
+
+    return live, not_running
 
 
 async def check_minerva_models() -> list[HealthRecord]:
@@ -652,7 +729,7 @@ async def check_minerva_models() -> list[HealthRecord]:
     records: list[HealthRecord] = []
 
     try:
-        models = await extract_minerva_models()
+        models, not_running = await extract_minerva_models()
     except Exception as e:
         records.append(
             HealthRecord(
@@ -663,6 +740,22 @@ async def check_minerva_models() -> list[HealthRecord]:
             )
         )
         return records
+
+    # Models the cluster still knows about but is not running.  They used to be
+    # dropped silently, so a model that went down left no record at all.
+    if MINERVA_REPORT_NONLIVE:
+        for model_name in dict.fromkeys(not_running):
+            if model_name in models:
+                continue
+            log.info("Minerva model not running: %s", model_name)
+            records.append(
+                HealthRecord(
+                    component=model_name,
+                    cluster="minerva",
+                    status=HealthStatus.OFFLINE,
+                    detail="not running on Minerva (no live route)",
+                )
+            )
 
     if not models:
         records.append(
