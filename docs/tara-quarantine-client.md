@@ -123,6 +123,15 @@ service owner, user hold, `VERSION=2`, `KIND=status`, `INSTANCE` and
 }
 ```
 
+The live bridge returns PBS owners as `username@submission-host`; FIRST
+normalizes this only after validating both the username and hostname. It also
+returns `Job.holdType=null` even for user-held native jobs. FIRST therefore
+reads the native `Hold_Types` and `job_state` from `Job.extension`, requiring
+consistency with the GraphQL state. A held state alone is not proof of a user
+hold. Missing evidence and contradictory typed/native holds fail closed. Raw
+extensions, which can contain private submission arguments, are not retained
+or logged. The same owner normalization is used for cancellation verification.
+
 The encoded status is at most 32 KiB; the newest heartbeat is at most 180
 seconds old. FIRST selects the newest generation, not the first PBS listing
 entry. All visible status jobs must belong to one instance with unique

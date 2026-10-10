@@ -609,6 +609,146 @@ def test_status_parser_never_copies_unrelated_native_environment() -> None:
     assert _job_status_from_node(node).coordination_env == TAGS
 
 
+@pytest.mark.parametrize(
+    "owner",
+    [
+        OWNER,
+        OWNER + "@north-asn-01.head.north.tara.alcf.anl.gov",
+        OWNER + "@north-asn-01",
+    ],
+)
+def test_status_parser_normalizes_verified_native_owner_username(owner: str) -> None:
+    assert _job_status_from_node(_node(owner=owner)).owner == OWNER
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "",
+        "openinference_svc@",
+        "@host",
+        "openinference_svc@@host",
+        "openinference_svc@host@other",
+        "openinference_svc@host/other",
+        "openinference_svc@host\n",
+        "openinference_svc@-host",
+        "openinference_svc@host-",
+        "openinference_svc@host..example",
+        "openinference_svc@" + "a" * 64,
+        {"owner": OWNER},
+    ],
+)
+def test_malformed_native_owner_never_becomes_service_identity(owner: Any) -> None:
+    with pytest.raises(RuntimeError, match="owner"):
+        _job_status_from_node(_node(owner=owner))
+
+
+async def test_native_user_at_submit_host_owner_preserves_cancellation_verification() -> (
+    None
+):
+    source = _node(owner=OWNER + "@north-asn-01.head.north.tara.alcf.anl.gov")
+    request = _cancel(source)
+    requests = await _termination_requests(source, [request])
+    assert len(requests) == 2
+    assert all("mutation" not in request["query"] for request in requests)
+
+
+def test_null_hold_type_is_unverified_not_inferred_from_held_status() -> None:
+    registry = _registry(_snapshot())
+    registry.hold_type = None
+    with pytest.raises(RuntimeError, match="user hold"):
+        validated_quarantine_snapshot([registry], 1700000101)
+
+
+def test_live_bridge_native_owner_and_hold_extension_shape_is_verified() -> None:
+    registry = _registry(_snapshot())
+    parsed = _job_status_from_node(
+        _node(
+            jobId=registry.id,
+            name=registry.name,
+            owner=OWNER + "@north-asn-01.head.north.tara.alcf.anl.gov",
+            status={"state": 3},
+            holdType=None,
+            env=[
+                {"name": name, "value": value}
+                for name, value in registry.coordination_env.items()
+            ],
+            extension={
+                "job_state": "H",
+                "Hold_Types": "u",
+                "Checkpoint": "u",
+                "Submit_arguments": "must-not-retain-this-private-submission-data",
+            },
+        )
+    )
+    assert parsed.owner == OWNER and parsed.hold_type == "u"
+    assert validated_quarantine_snapshot([parsed], 1700000101).generation == 1
+    assert "must-not-retain" not in str(vars(parsed))
+
+
+@pytest.mark.parametrize(
+    "typed,extension,state",
+    [
+        ("u", {"Hold_Types": "n", "job_state": "H"}, 3),
+        ("n", {"Hold_Types": "u", "job_state": "H"}, 3),
+        (None, {"Hold_Types": "u", "job_state": "R"}, 3),
+        (None, {"Hold_Types": "u", "job_state": "Q"}, 0),
+        (None, {"Hold_Types": "u"}, 3),
+        (None, {"Hold_Types": ["u"], "job_state": "H"}, 3),
+        (None, {"Hold_Types": "uu", "job_state": "H"}, 3),
+        (None, {"Hold_Types": "user", "job_state": "H"}, 3),
+        (None, {"Hold_Types": "u", "job_state": ["H"]}, 3),
+        (None, {"Hold_Types": "u", "job_state": "UNKNOWN"}, 3),
+        ("u", {"job_state": "R"}, 3),
+    ],
+)
+def test_native_hold_fallback_rejects_contradictory_or_malformed_proof(
+    typed: Any, extension: dict[str, Any], state: int
+) -> None:
+    with pytest.raises(RuntimeError, match="hold"):
+        _job_status_from_node(
+            _node(holdType=typed, extension=extension, status={"state": state})
+        )
+
+
+@pytest.mark.parametrize("extension", [None, {}, {"job_state": "H"}])
+def test_native_held_state_without_hold_types_never_implies_user_hold(
+    extension: Any,
+) -> None:
+    parsed = _job_status_from_node(
+        _node(holdType=None, extension=extension, status={"state": 3})
+    )
+    assert parsed.hold_type is None
+
+
+@pytest.mark.parametrize("hold", ["o", "s", "us"])
+def test_native_other_or_combined_holds_are_not_user_only_snapshot_proof(
+    hold: str,
+) -> None:
+    parsed = _job_status_from_node(
+        _node(
+            holdType=None,
+            extension={"Hold_Types": hold, "job_state": "H"},
+            status={"state": 3},
+        )
+    )
+    registry = _registry(_snapshot())
+    registry.hold_type = parsed.hold_type
+    with pytest.raises(RuntimeError, match="user hold"):
+        validated_quarantine_snapshot([registry], 1700000101)
+
+
+def test_native_running_user_hold_race_does_not_hide_running_allocation() -> None:
+    parsed = _job_status_from_node(
+        _node(
+            holdType=None,
+            extension={"Hold_Types": "u", "job_state": "R"},
+            status={"state": 7},
+        )
+    )
+    assert parsed.state.value == "running" and parsed.hold_type == "u"
+
+
 def test_omitting_unresolved_records_is_not_recovery_but_released_can_be_archived() -> (
     None
 ):

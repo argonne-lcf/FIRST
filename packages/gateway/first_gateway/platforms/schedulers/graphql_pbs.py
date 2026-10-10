@@ -53,6 +53,20 @@ _QUARANTINE_SOURCE_ID = re.compile(
     r"(?P<number>[1-9][0-9]{0,19})(?:\.[A-Za-z0-9][A-Za-z0-9._-]{0,100})?"
 )
 _PBS_OUTPUT_PATH = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,254}:)?/[^\x00-\x1f]+")
+_PBS_USERNAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}")
+_DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_PBS_HOLDS = re.compile(r"n|[uos]{1,3}")
+_NATIVE_STATE_CODES = {
+    "Q": {0, 14},
+    "W": {1},
+    "H": {2, 3},
+    "B": {5},
+    "R": {7},
+    "S": {8},
+    "E": {6, 9},
+    "F": {4, 10, 11, 12},
+    "M": {13},
+}
 _EXEC_VNODE_PART = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,254})"
     r"(?::[A-Za-z_][A-Za-z0-9_.-]*=[^():+\s=]+)+"
@@ -113,6 +127,68 @@ def _head_node_ip(head: dict[str, Any]) -> str | None:
     return None
 
 
+def _pbs_owner_username(raw: Any, job_id: str) -> str | None:
+    """Normalize PBS's user@submission-host form, without discarding ambiguity."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise RuntimeError(f"invalid PBS owner identity for job {job_id!r}")
+    parts = raw.split("@")
+    if _PBS_USERNAME.fullmatch(parts[0]) is None or len(parts) > 2:
+        raise RuntimeError(f"invalid PBS owner identity for job {job_id!r}")
+    if len(parts) == 2:
+        host = parts[1]
+        if not 0 < len(host) <= 253 or any(
+            _DNS_LABEL.fullmatch(label) is None for label in host.split(".")
+        ):
+            raise RuntimeError(f"invalid PBS owner submit host for job {job_id!r}")
+    return parts[0]
+
+
+def _pbs_hold_type(node: dict[str, Any], job_id: str) -> str | None:
+    """Read native hold evidence; a Held state alone never implies a user hold.
+
+    Tara's bridge returns null for Job.holdType but supplies the native PBS
+    Hold_Types and job_state through Job.extension. Contradictory representations
+    fail closed. Nothing from the raw extension (which can include submission
+    environment) is logged or retained.
+    """
+    typed = node.get("holdType")
+    extension = node.get("extension")
+    native = (
+        extension.get("Hold_Types")
+        if isinstance(extension, dict) and "Hold_Types" in extension
+        else None
+    )
+    native_state = extension.get("job_state") if isinstance(extension, dict) else None
+    for hold in (typed, native):
+        if hold is not None and (
+            not isinstance(hold, str)
+            or _PBS_HOLDS.fullmatch(hold) is None
+            or len(set(hold)) != len(hold)
+        ):
+            raise RuntimeError(f"invalid PBS hold identity for job {job_id!r}")
+    if typed is not None and native is not None and typed != native:
+        raise RuntimeError(f"PBS hold representations disagree for job {job_id!r}")
+    if native is not None or native_state is not None:
+        state_code = (node.get("status") or {}).get("state")
+        if (
+            not isinstance(native_state, str)
+            or native_state not in _NATIVE_STATE_CODES
+            or state_code not in _NATIVE_STATE_CODES[native_state]
+        ):
+            raise RuntimeError(
+                f"native PBS hold/state proof is unverified for job {job_id!r}"
+            )
+    selected = typed if typed is not None else native
+    state_code = (node.get("status") or {}).get("state")
+    if selected == "u" and state_code in {0, 1, 14}:
+        raise RuntimeError(
+            f"PBS user hold is inconsistent with queued state for job {job_id!r}"
+        )
+    return selected
+
+
 def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
     job_id = (node.get("jobId") or "").strip()
     if not job_id:
@@ -157,8 +233,8 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
         walltime_minutes=walltime_sec // 60,
         head_node_ip_address=head_ip,
         head_node_hostname=head_hostname,
-        owner=node.get("owner"),
-        hold_type=node.get("holdType"),
+        owner=_pbs_owner_username(node.get("owner"), job_id),
+        hold_type=_pbs_hold_type(node, job_id),
         queue=(node.get("queue") or {}).get("name"),
         account=node.get("accountingId"),
         output_path=node.get("outputPath"),
