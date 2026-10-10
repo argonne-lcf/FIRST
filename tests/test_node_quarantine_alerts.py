@@ -1,11 +1,15 @@
 """Durable transition notifications and exact consumed screen outcomes."""
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql.base import PGDialect
+from sqlalchemy.engine.interfaces import Dialect
 
 from first_common.schema.quarantine import QuarantineReport, QuarantineScreenPayload
 from first_common.schema.quarantine_read import NodeQuarantineSummary
@@ -14,7 +18,7 @@ from first_gateway.controllers.workers.health_alerter.checks import (
     check_node_quarantine,
 )
 from first_gateway.controllers.workers.health_alerter.worker import advance
-from first_gateway.database.models import Cluster, QuarantineReportInbox
+from first_gateway.database.models import Cluster, NodeQuarantine, QuarantineReportInbox
 from first_gateway.services.quarantine import transition
 
 from .test_node_quarantine import (
@@ -326,6 +330,33 @@ async def test_same_nonce_cas_conflict_only_accepts_exact_duplicate_winner(
     assert "screen_result IS NULL" in str(session.execute.await_args.args[0].compile())
     assert live.screen_result == winner.model_dump(mode="json")
     adapter.acknowledge_quarantine_screen_request.assert_not_awaited()
+
+
+async def test_first_screen_cas_accepts_postgresql_json_null_as_well_as_sql_null() -> (
+    None
+):
+    payload = negative_screen()
+    node = row(
+        screen_nonce=OPERATION,
+        screen_requested_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    service, session, adapter = mock_service(node)
+    session.scalar.return_value = node
+    report = QuarantineReport("screen.pbs", "screen", SOURCE.ctime, payload, "1" * 64)
+    await service._worker_report(Cluster(uid=1, name="tara"), pilot(), adapter, report)
+    statement = session.execute.await_args.args[0]
+    # This installed SQLAlchemy dialect constructor lacks annotations. Its
+    # no-argument signature is verified locally; keep the real PG implementation.
+    dialect = cast(Callable[[], Dialect], PGDialect)()
+    compiled = statement.compile(dialect=dialect)
+    assert "screen_result IS NULL OR" in str(compiled)
+    assert "screen_result = %(screen_result_1)s::JSONB" in str(compiled)
+    assert compiled.params["screen_result_1"] is sa.JSON.NULL
+    # The real mapping's default none_as_null=False binds Python None to JSON
+    # null, which the old SQL-NULL-only predicate could never match.
+    processor = NodeQuarantine.screen_result.type.bind_processor(dialect)
+    assert processor is not None
+    assert processor(None) == "null" and processor(sa.JSON.NULL) == "null"
 
 
 async def test_screen_timeout_alert_is_reporting_only_and_does_not_resubmit() -> None:

@@ -739,7 +739,12 @@ class QuarantineService:
                 .values(**values)
             )
             if isinstance(payload, QuarantineScreenPayload):
-                statement = statement.where(NodeQuarantine.screen_result.is_(None))
+                statement = statement.where(
+                    sa.or_(
+                        NodeQuarantine.screen_result.is_(None),
+                        NodeQuarantine.screen_result == sa.JSON.NULL,
+                    )
+                )
             result = await sess.execute(statement)
             if isinstance(payload, QuarantineScreenPayload):
                 affected = cast(CursorResult[Any], result).rowcount
