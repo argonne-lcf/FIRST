@@ -8,7 +8,8 @@ published bundles and running jobs are not modified by this source change.
 ## Activation and rollout
 
 Set `pilot_system.scheduler_config.quarantine_environment` to `dev` or `prod`
-only after the shared coordinator and its version-1 protocol have been tested.
+only after the shared coordinator, model/control protocol 1 and immutable
+status protocol 2 have been tested.
 The adapter requires PBS owner `openinference_svc` and the matching native job
 prefix `first_dev_tara_v2_` or `first_prod_tara_v2_`. Without that setting,
 ordinary submissions retain their previous behavior. Tara ordinary cleanup
@@ -75,22 +76,32 @@ node-fault budget limits these replacements. Unattributed model OOM, auth,
 configuration and distributed failures keep the existing launch-failure counter
 behavior. Intentional shutdown still cleans up normally through the coordinator.
 
-The coordinator must publish the pending registry state before deleting the
+The coordinator must publish the pending immutable status before deleting the
 originating allocation. This ordering is a qualification requirement, not proof
 supplied by the mock tests.
 
 ## Health alerts
 
-The coordinator mirrors bounded status in one always user-held PBS job named
-`first_tara_quarantine_registry`. FIRST reads it through the existing GraphQL
-scheduler and sends observations through its existing health-alert mechanism.
-It requires the exact owner/name, user hold and `VERSION=1`, `KIND=registry`
-tags. `FIRST_QUARANTINE_STATUS` is padded URL-safe base64 containing:
+The coordinator publishes a new, always user-held PBS job for each status
+change or heartbeat. No job environment is modified after submission, avoiding
+the site's `pbs_alterjob` error 15109. Names have the form
+`first_tara_quarantine_s<32-hex-coordinator-instance>_<generation>`.
+The coordinator retains the newest two committed snapshots; a third may exist
+briefly during publication and pruning. These CPU-only jobs never execute.
+
+FIRST reads snapshots through the existing GraphQL scheduler and sends
+observations through its existing health-alert mechanism. It requires the
+service owner, user hold, `VERSION=2`, `KIND=status`, `INSTANCE` and
+`GENERATION` tags. Names, tags and decoded payload must agree.
+`FIRST_QUARANTINE_STATUS` is padded URL-safe base64 containing:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "generation": 1,
+  "parent_generation": 0,
+  "previous_job_id": null,
   "updated_unix": 1700000000,
   "notification_environment": "dev",
   "gate_closed": true,
@@ -112,16 +123,25 @@ tags. `FIRST_QUARANTINE_STATUS` is padded URL-safe base64 containing:
 }
 ```
 
-The encoded status is at most 32 KiB; the heartbeat is at most 180 seconds old.
+The encoded status is at most 32 KiB; the newest heartbeat is at most 180
+seconds old. FIRST selects the newest generation, not the first PBS listing
+entry. All visible status jobs must belong to one instance with unique
+generations and PBS IDs. The newest snapshot must identify its retained
+predecessor by generation and job ID; payload and native submission timestamps
+must not decrease. Initial generation 1 alone is allowed; any later singleton
+fails closed. An older predecessor may have been pruned deliberately. A legacy
+mutable registry, malformed status job, competing instance, invalid lineage,
+excessive snapshots or a future/stale heartbeat remains an error, not recovery.
+
 Statuses are `pending`, `isolated`, `failed`, `lost`, and explicitly `released`.
 The same node key deduplicates repeat observations; a status change creates a
 new transition. Confirmed isolation includes quarantine job ID and expiration.
 Only `notification_environment` emits the shared node transitions, avoiding
-normal duplicate Dev/Prod notifications. Failure to read or validate a registry
+normal duplicate Dev/Prod notifications. Failure to read or validate a snapshot
 remains a check failure, not an empty healthy result. Omitting a previously
 alerted unresolved node also fails, rather than falsely reporting recovery.
 
-The shared files remain authoritative after registry deletion or restart.
+The shared files remain authoritative after snapshot deletion or restart.
 Notification-owner changes require a deliberate alert-state handoff; do not
 switch the owner to silence outstanding alerts. These are port/status tests,
 not proof of Operations' inbound filters or GPU repair.
@@ -130,7 +150,8 @@ not proof of Operations' inbound filters or GPU repair.
 
 - Mock regression tests cover held model submission, unchanged resource
   translation, cancellation identity/idempotence, namespace protection,
-  status transitions, stale/invalid registries and unresolved-record loss.
+  status transitions, immutable status lineage/order, stale/invalid snapshots
+  and unresolved-record loss.
 - Before live activation, demonstrate the existing bridge maps `env` to native
   `Variable_List`, honors atomic user-held submission, and returns exact owner,
   queue, account, holds and submission time matching native PBS identity.

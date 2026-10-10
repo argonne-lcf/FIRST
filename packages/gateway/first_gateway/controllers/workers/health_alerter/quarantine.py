@@ -1,4 +1,4 @@
-"""Read the Tara coordinator's held PBS registry through the existing adapter.
+"""Read immutable, user-held Tara status jobs through the existing adapter.
 
 PBS carries a bounded read-only status mirror, not the authoritative state.
 Missing or invalid mirrors never imply repair. No raw PBS environment is logged.
@@ -7,6 +7,7 @@ Missing or invalid mirrors never imply repair. No raw PBS environment is logged.
 import base64
 import binascii
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +18,17 @@ from first_common.schema.resources.runtime import HealthAlertState, Severity
 from .types import Observation
 
 REGISTRY_NAME = "first_tara_quarantine_registry"
+_STATUS_PREFIX = "first_tara_quarantine_s"
+_STATUS_NAME = re.compile(r"first_tara_quarantine_s([0-9a-f]{32})_([1-9][0-9]{0,6})")
+_STATUS_TAGS = frozenset(
+    {
+        "FIRST_QUARANTINE_VERSION",
+        "FIRST_QUARANTINE_KIND",
+        "FIRST_QUARANTINE_INSTANCE",
+        "FIRST_QUARANTINE_GENERATION",
+        "FIRST_QUARANTINE_STATUS",
+    }
+)
 _MAX_STATUS_BYTES = 32768
 _MAX_AGE_S = 180
 
@@ -48,8 +60,11 @@ class QuarantineRecord(BaseModel):
 class QuarantineSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schema_version: Literal[1]
-    generation: int = Field(ge=0)
+    schema_version: Literal[2]
+    instance: str = Field(pattern=r"^[0-9a-f]{32}$")
+    generation: int = Field(ge=1, le=9999999)
+    parent_generation: int = Field(ge=0, le=9999999)
+    previous_job_id: str | None = Field(default=None, min_length=1, max_length=128)
     updated_unix: int = Field(gt=0)
     notification_environment: Literal["dev", "prod"]
     gate_closed: bool
@@ -70,49 +85,71 @@ def verify_quarantine_history(
             and key not in observed_keys
         ):
             raise RuntimeError(
-                "Tara quarantine registry omitted an unresolved node; no recovery inferred"
+                "Tara quarantine status omitted an unresolved node; no recovery inferred"
             )
 
 
 def validated_quarantine_snapshot(
     jobs: list[JobStatusInfo], now: int
 ) -> QuarantineSnapshot:
-    """Validate the shared protocol mirror independently of its alert owner."""
-    registries = [job for job in jobs if job.name == REGISTRY_NAME]
-    if len(registries) != 1:
+    """Select one verified latest generation, never an ambiguous/older mirror.
+
+    The coordinator retains the latest two committed jobs and may temporarily
+    have a third during publication. The newest job must identify its retained
+    predecessor; older predecessors may have been deliberately pruned. Missing
+    jobs are not evidence that nodes recovered. PBS holds are not authentication
+    against a malicious service account; native ownership is the trust boundary.
+    """
+    registries = [
+        job
+        for job in jobs
+        if job.name == REGISTRY_NAME
+        or job.name.startswith(_STATUS_PREFIX)
+        or job.coordination_env.get("FIRST_QUARANTINE_KIND") == "status"
+    ]
+    if not 1 <= len(registries) <= 3:
         raise RuntimeError(
-            "Tara quarantine registry missing or duplicated; isolation unverified"
+            "Tara quarantine status missing or excessive; isolation unverified"
         )
-    registry = registries[0]
+    decoded = [_validated_status_job(job) for job in registries]
+    instances = {snapshot.instance for _, snapshot in decoded}
+    generations = {snapshot.generation for _, snapshot in decoded}
+    ids = {job.id for job, _ in decoded}
     if (
-        registry.owner != "openinference_svc"
-        or registry.state != SchedulerJobState.queued
-        or registry.hold_type != "u"
-        or registry.coordination_env.get("FIRST_QUARANTINE_VERSION") != "1"
-        or registry.coordination_env.get("FIRST_QUARANTINE_KIND") != "registry"
+        len(instances) != 1
+        or len(generations) != len(decoded)
+        or len(ids) != len(decoded)
     ):
-        raise RuntimeError(
-            "Tara quarantine registry identity or user hold is unverified"
-        )
-    raw = registry.coordination_env.get("FIRST_QUARANTINE_STATUS", "")
-    if not raw or len(raw) > _MAX_STATUS_BYTES:
-        raise RuntimeError("Tara quarantine registry status is missing or oversized")
-    try:
-        decoded = base64.b64decode(raw, altchars=b"-_", validate=True)
-        if len(decoded) > _MAX_STATUS_BYTES:
-            raise ValueError("oversized decoded status")
-        snapshot = QuarantineSnapshot.model_validate(
-            json.loads(decoded, object_pairs_hook=_unique_json_object)
-        )
-    except (ValueError, binascii.Error) as exc:
-        raise RuntimeError("Tara quarantine registry status is invalid") from exc
+        raise RuntimeError("Tara quarantine status lineage is ambiguous")
+    decoded.sort(key=lambda item: item[1].generation)
+    for index, (job, snapshot) in enumerate(decoded):
+        if snapshot.generation == 1:
+            if snapshot.parent_generation != 0 or snapshot.previous_job_id is not None:
+                raise RuntimeError("Tara quarantine initial status lineage is invalid")
+        elif not (
+            0 < snapshot.parent_generation < snapshot.generation
+            and snapshot.previous_job_id
+            and snapshot.previous_job_id != job.id
+        ):
+            raise RuntimeError("Tara quarantine status predecessor is invalid")
+        if index:
+            previous_job, previous = decoded[index - 1]
+            if (
+                snapshot.parent_generation != previous.generation
+                or snapshot.previous_job_id != previous_job.id
+                or snapshot.updated_unix < previous.updated_unix
+                or job.submit_time_epoch_s is None
+                or previous_job.submit_time_epoch_s is None
+                or job.submit_time_epoch_s < previous_job.submit_time_epoch_s
+            ):
+                raise RuntimeError("Tara quarantine status lineage/order is unverified")
+    if len(decoded) == 1 and decoded[0][1].generation != 1:
+        raise RuntimeError("Tara quarantine latest status predecessor is missing")
+    snapshot = decoded[-1][1]
     if not 0 <= now - snapshot.updated_unix <= _MAX_AGE_S:
         raise RuntimeError(
-            "Tara quarantine registry heartbeat stale; isolation unverified"
+            "Tara quarantine status heartbeat stale; isolation unverified"
         )
-    hosts = [record.host for record in snapshot.records]
-    if len(hosts) != len(set(hosts)):
-        raise RuntimeError("Tara quarantine registry contains duplicate physical hosts")
     for record in snapshot.records:
         if record.status == "isolated" and (
             not record.quarantine_job_id
@@ -123,6 +160,47 @@ def validated_quarantine_snapshot(
                 f"Tara quarantine expiration/identity unverified for {record.host}"
             )
     return snapshot
+
+
+def _validated_status_job(
+    registry: JobStatusInfo,
+) -> tuple[JobStatusInfo, QuarantineSnapshot]:
+    name = _STATUS_NAME.fullmatch(registry.name)
+    if (
+        name is None
+        or registry.owner != "openinference_svc"
+        or registry.state != SchedulerJobState.queued
+        or registry.hold_type != "u"
+        or registry.submit_time_epoch_s is None
+        or registry.coordination_env.keys() != _STATUS_TAGS
+        or registry.coordination_env.get("FIRST_QUARANTINE_VERSION") != "2"
+        or registry.coordination_env.get("FIRST_QUARANTINE_KIND") != "status"
+    ):
+        raise RuntimeError("Tara quarantine status identity or user hold is unverified")
+    raw = registry.coordination_env.get("FIRST_QUARANTINE_STATUS", "")
+    if not raw or len(raw) > _MAX_STATUS_BYTES:
+        raise RuntimeError("Tara quarantine status is missing or oversized")
+    try:
+        decoded = base64.b64decode(raw, altchars=b"-_", validate=True)
+        if len(decoded) > _MAX_STATUS_BYTES:
+            raise ValueError("oversized decoded status")
+        snapshot = QuarantineSnapshot.model_validate(
+            json.loads(decoded, object_pairs_hook=_unique_json_object)
+        )
+    except (ValueError, binascii.Error) as exc:
+        raise RuntimeError("Tara quarantine status is invalid") from exc
+    if (
+        registry.coordination_env.get("FIRST_QUARANTINE_INSTANCE") != snapshot.instance
+        or registry.coordination_env.get("FIRST_QUARANTINE_GENERATION")
+        != str(snapshot.generation)
+        or name[1] != snapshot.instance
+        or int(name[2]) != snapshot.generation
+    ):
+        raise RuntimeError("Tara quarantine status name/tags/payload disagree")
+    hosts = [record.host for record in snapshot.records]
+    if len(hosts) != len(set(hosts)):
+        raise RuntimeError("Tara quarantine status contains duplicate physical hosts")
+    return registry, snapshot
 
 
 def quarantine_job_disposition(

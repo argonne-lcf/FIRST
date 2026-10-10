@@ -29,6 +29,7 @@ from first_gateway.platforms.schedulers.graphql_pbs import (
 )
 
 OWNER = "openinference_svc"
+INSTANCE = "a" * 32
 TAGS = {
     "FIRST_QUARANTINE_VERSION": "1",
     "FIRST_QUARANTINE_KIND": "model",
@@ -324,8 +325,11 @@ async def test_ordinary_cleanup_cannot_delete_quarantine(
 
 def _snapshot(status: str = "pending") -> dict[str, Any]:
     return {
-        "schema_version": 1,
-        "generation": 10,
+        "schema_version": 2,
+        "instance": INSTANCE,
+        "generation": 1,
+        "parent_generation": 0,
+        "previous_job_id": None,
         "updated_unix": 1700000100,
         "notification_environment": "dev",
         "gate_closed": status in {"pending", "failed", "lost"},
@@ -345,16 +349,24 @@ def _snapshot(status: str = "pending") -> dict[str, Any]:
     }
 
 
-def _registry(snapshot: dict[str, Any]) -> Any:
+def _registry(
+    snapshot: dict[str, Any], job_id: str = "8126.tara", submit_time: int = 1700000100
+) -> Any:
     return _job_status_from_node(
         _node(
-            jobId="8126.tara",
-            name="first_tara_quarantine_registry",
+            jobId=job_id,
+            submitTime=submit_time * 1_000_000,
+            name=f"first_tara_quarantine_s{snapshot['instance']}_{snapshot['generation']}",
             status={"state": 3},
             holdType="u",
             env=[
-                {"name": "FIRST_QUARANTINE_VERSION", "value": "1"},
-                {"name": "FIRST_QUARANTINE_KIND", "value": "registry"},
+                {"name": "FIRST_QUARANTINE_VERSION", "value": "2"},
+                {"name": "FIRST_QUARANTINE_KIND", "value": "status"},
+                {"name": "FIRST_QUARANTINE_INSTANCE", "value": snapshot["instance"]},
+                {
+                    "name": "FIRST_QUARANTINE_GENERATION",
+                    "value": str(snapshot["generation"]),
+                },
                 {
                     "name": "FIRST_QUARANTINE_STATUS",
                     "value": base64.urlsafe_b64encode(
@@ -404,6 +416,161 @@ def test_registry_missing_duplicate_stale_or_invalid_never_reports_recovery() ->
     registry.coordination_env["FIRST_QUARANTINE_STATUS"] = "not-json"
     with pytest.raises(RuntimeError, match="invalid"):
         quarantine_observations([registry], "dev", 1700000101)
+
+
+def _next_status(
+    previous: dict[str, Any],
+    previous_id: str,
+    status: str,
+    generation: int | None = None,
+) -> dict[str, Any]:
+    snapshot = _snapshot(status)
+    snapshot.update(
+        generation=generation or previous["generation"] + 1,
+        parent_generation=previous["generation"],
+        previous_job_id=previous_id,
+        updated_unix=previous["updated_unix"] + 1,
+    )
+    return snapshot
+
+
+def test_immutable_status_selects_newest_not_listing_order_and_allows_publish_overlap() -> (
+    None
+):
+    first = _snapshot("pending")
+    second = _next_status(first, "8126.tara", "isolated")
+    third = _next_status(second, "8127.tara", "lost")
+    jobs = [
+        _registry(third, "8128.tara", 1700000102),
+        _registry(first),
+        _registry(second, "8127.tara", 1700000101),
+    ]
+    assert validated_quarantine_snapshot(jobs, 1700000103).generation == 3
+    assert quarantine_observations(jobs, "dev", 1700000103)[0].status == "lost"
+    # Deliberately pruned old predecessors do not require all history in PBS.
+    assert validated_quarantine_snapshot([jobs[0], jobs[2]], 1700000103).generation == 3
+
+
+def test_explicitly_recovered_publish_gap_keeps_verified_predecessor() -> None:
+    first = _snapshot()
+    recovered = _next_status(first, "8126.tara", "isolated", generation=3)
+    jobs = [_registry(first), _registry(recovered, "8128.tara", 1700000101)]
+    assert validated_quarantine_snapshot(jobs, 1700000102).generation == 3
+
+
+def test_status_recovery_pair_keeps_deleted_durable_predecessor_lineage() -> None:
+    removed = _snapshot("failed")
+    removed.update(generation=8, parent_generation=7, previous_job_id="8110.tara")
+    first = _next_status(removed, "8126.tara", "failed")
+    second = _next_status(first, "8127.tara", "failed")
+    jobs = [
+        _registry(first, "8127.tara", 1700000101),
+        _registry(second, "8128.tara", 1700000102),
+    ]
+    snapshot = validated_quarantine_snapshot(jobs, 1700000103)
+    assert snapshot.generation == 10 and snapshot.gate_closed
+    assert snapshot.records[0].status == "failed"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"instance": "b" * 32},
+        {"parent_generation": 0},
+        {"previous_job_id": "9999.tara"},
+        {"updated_unix": 1700000099},
+    ],
+)
+def test_status_lineage_ambiguity_and_timestamp_rollback_fail_closed(
+    change: dict[str, Any],
+) -> None:
+    first = _snapshot()
+    second = _next_status(first, "8126.tara", "isolated")
+    second.update(change)
+    with pytest.raises(RuntimeError):
+        validated_quarantine_snapshot(
+            [_registry(first), _registry(second, "8127.tara", 1700000101)], 1700000102
+        )
+
+
+def test_missing_latest_predecessor_duplicate_generation_and_native_order_fail_closed() -> (
+    None
+):
+    first = _snapshot()
+    second = _next_status(first, "8126.tara", "isolated")
+    for jobs in [
+        [_registry(second)],
+        [_registry(first), _registry(first, "8127.tara")],
+        [_registry(first), _registry(second, "8127.tara", 1700000099)],
+    ]:
+        with pytest.raises(RuntimeError):
+            validated_quarantine_snapshot(jobs, 1700000102)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"owner": "other"},
+        {"state": "running"},
+        {"hold_type": "n"},
+        {"submit_time_epoch_s": None},
+        {"name": "first_tara_quarantine_registry"},
+        {"name": f"first_tara_quarantine_s{INSTANCE}_2"},
+    ],
+)
+def test_invalid_status_jobs_are_not_ignored_beside_valid_latest(
+    change: dict[str, Any],
+) -> None:
+    bad = _registry(_snapshot(), "8127.tara")
+    for field, value in change.items():
+        setattr(bad, field, value)
+    with pytest.raises(RuntimeError):
+        validated_quarantine_snapshot([_registry(_snapshot()), bad], 1700000101)
+
+
+def test_status_tags_payload_and_name_must_agree() -> None:
+    for tag, value in [
+        ("FIRST_QUARANTINE_VERSION", "1"),
+        ("FIRST_QUARANTINE_INSTANCE", "b" * 32),
+        ("FIRST_QUARANTINE_GENERATION", "2"),
+        ("FIRST_QUARANTINE_KIND", "registry"),
+    ]:
+        registry = _registry(_snapshot())
+        registry.coordination_env[tag] = value
+        with pytest.raises(RuntimeError):
+            validated_quarantine_snapshot([registry], 1700000101)
+
+
+def test_unknown_status_name_with_status_tag_is_not_silently_ignored() -> None:
+    registry = _registry(_snapshot())
+    registry.name = "unknown-held-status"
+    with pytest.raises(RuntimeError):
+        validated_quarantine_snapshot([registry], 1700000101)
+
+
+def test_unknown_snapshot_tags_are_a_protocol_error_not_ignored_metadata() -> None:
+    registry = _registry(_snapshot())
+    registry.coordination_env["FIRST_QUARANTINE_UNKNOWN"] = "unexpected"
+    with pytest.raises(RuntimeError, match="identity"):
+        validated_quarantine_snapshot([registry], 1700000101)
+
+
+def test_stale_predecessor_is_allowed_but_latest_heartbeat_must_be_fresh() -> None:
+    first = _snapshot()
+    second = _next_status(first, "8126.tara", "lost")
+    second["updated_unix"] = 1700000400
+    jobs = [_registry(first), _registry(second, "8127.tara", 1700000400)]
+    assert validated_quarantine_snapshot(jobs, 1700000401).generation == 2
+
+
+def test_duplicate_host_in_retained_old_snapshot_is_not_ignored() -> None:
+    first = _snapshot()
+    second = _next_status(first, "8126.tara", "isolated")
+    first["records"] *= 2
+    with pytest.raises(RuntimeError, match="duplicate physical"):
+        validated_quarantine_snapshot(
+            [_registry(first), _registry(second, "8127.tara", 1700000101)], 1700000102
+        )
 
 
 @pytest.mark.parametrize(
