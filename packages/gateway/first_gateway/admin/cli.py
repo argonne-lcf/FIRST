@@ -33,6 +33,46 @@ logger = logging.getLogger(__name__)
 console = Console(stderr=True)
 
 cli = Typer(no_args_is_help=True)
+quarantine_cli = Typer(
+    no_args_is_help=True,
+    help="Inspect isolation and explicitly return repaired nodes to service.",
+)
+cli.add_typer(quarantine_cli, name="node-quarantine")
+
+
+@quarantine_cli.command("list")
+def quarantine_list(ctx: typer.Context) -> None:
+    client: AdminClient = ctx.obj
+    for row in client.list_node_quarantines():
+        Console().print(Pretty(row.model_dump(mode="json")))
+
+
+@quarantine_cli.command("screen")
+def quarantine_screen(ctx: typer.Context, uid: int, reference: str) -> None:
+    """After Operations confirms repair, request a fresh screen while isolated."""
+    client: AdminClient = ctx.obj
+    client.node_quarantine_action(uid, "screen", reference)
+    Console().print("Fresh screen requested; quarantine remains allocated.")
+
+
+@quarantine_cli.command("release")
+def quarantine_release(ctx: typer.Context, uid: int, reference: str) -> None:
+    """Explicitly release only after the matching fresh screen passes."""
+    client: AdminClient = ctx.obj
+    client.node_quarantine_action(uid, "release", reference)
+    Console().print(
+        "Release requested; durable history remains until verified completion."
+    )
+
+
+@quarantine_cli.command("reestablish")
+def quarantine_reestablish(ctx: typer.Context, uid: int, reference: str) -> None:
+    """Recover lost isolation without resetting the bounded submission budget."""
+    client: AdminClient = ctx.obj
+    client.node_quarantine_action(uid, "reestablish", reference)
+    Console().print(
+        "Bounded isolation recovery requested; ordinary models are not paused."
+    )
 
 
 @cli.callback()

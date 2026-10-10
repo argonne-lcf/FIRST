@@ -55,6 +55,14 @@ class PilotSubmitter:
             "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
             "PILOT_WALLTIME_MIN": str(pilot_job.walltime_min),
         }
+        if pc.quarantine is not None:
+            # Reporting-only metadata; models remain ordinary unheld jobs.
+            runtime_env.update(
+                FIRST_QUARANTINE_VERSION="3",
+                FIRST_QUARANTINE_KIND="model",
+                FIRST_QUARANTINE_ENV=pc.quarantine.environment,
+                FIRST_QUARANTINE_CLUSTER=pilot_job.cluster_name,
+            )
         assignments = " ".join(f"{k}={quote(v)}" for k, v in runtime_env.items())
         return (
             f"{pc.submit_script_preamble}\n"

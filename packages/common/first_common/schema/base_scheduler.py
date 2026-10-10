@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -77,15 +77,15 @@ class JobStatusInfo:
     walltime_minutes: int
     head_node_ip_address: str | None = None
     head_node_hostname: str | None = None
-    # Optional scheduler evidence. Adapters without these fields retain their
-    # previous behavior; Tara's coordinator requires the native values.
+    # Optional scheduler identity evidence. Missing fields are not proof of
+    # ownership; adapters without them preserve their normal model behavior.
     owner: str | None = None
     hold_type: str | None = None
     queue: str | None = None
     account: str | None = None
     output_path: str | None = None
     submit_time_epoch_s: int | None = None
-    coordination_env: dict[str, str] = field(default_factory=dict)
+    is_auxiliary: bool = False
 
     @property
     def deadline(self) -> datetime | None:

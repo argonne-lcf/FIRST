@@ -21,6 +21,7 @@ from pydantic_core import core_schema
 
 from .auth import UserAuthEvent
 from .base_scheduler import SchedulerAdapter
+from .quarantine import NodeQuarantinePolicy
 
 ResourceName = NewType("ResourceName", str)
 
@@ -267,6 +268,7 @@ class PilotConfig(BaseModel):
 
     scheduler_adapter: ImportString[type[SchedulerAdapter]]
     scheduler_config: dict[str, Any] = {}
+    quarantine: NodeQuarantinePolicy | None = None
 
     job_walltime_min: int
     pilot_max_idle_time_min: int = 60

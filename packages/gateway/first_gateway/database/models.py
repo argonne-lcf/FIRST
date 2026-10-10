@@ -659,6 +659,73 @@ class PilotReplica(ResourceRow, SoftDeletable):
         return self.scheduled_deletion or self.state == ReplicaState.terminating
 
 
+class NodeQuarantine(ResourceRow):
+    """Durable local record; scheduler isolation never gates model scheduling."""
+
+    __tablename__ = "node_quarantine"
+    __table_args__ = (
+        sa.UniqueConstraint("cluster_name", "host"),
+        sa.CheckConstraint("environment IN ('dev', 'prod')"),
+        sa.CheckConstraint(
+            "state IN ('pending', 'isolated', 'failed', 'lost', 'released')"
+        ),
+        sa.CheckConstraint("submission_attempts BETWEEN 0 AND 3"),
+    )
+
+    cluster_name: Mapped[str] = mapped_column(
+        sa.ForeignKey("cluster.name", ondelete="RESTRICT"), index=True
+    )
+    host: Mapped[str]
+    environment: Mapped[str]
+    operation: Mapped[str]
+    origin: Mapped[DictJsonb] = mapped_column(JSONB)
+    fault: Mapped[DictJsonb] = mapped_column(JSONB)
+    evidence: Mapped[DictJsonb] = mapped_column(JSONB)
+    state: Mapped[str] = mapped_column(default="pending")
+    state_message: Mapped[str] = mapped_column(
+        default="Node fault recorded; isolation pending."
+    )
+    faulted_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    transitioned_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    submission_attempts: Mapped[int] = mapped_column(default=0)
+    submission_started_at: Mapped[DateTimeOrNone]
+    submission_uncertain: Mapped[bool] = mapped_column(default=False)
+    job_identity: Mapped[DictJsonbOrNone] = mapped_column(JSONB)
+    runtime_policy: Mapped[DictJsonbOrNone] = mapped_column(JSONB)
+    activation: Mapped[DictJsonbOrNone] = mapped_column(JSONB)
+    expires_at: Mapped[DateTimeOrNone]
+    repair_reference: Mapped[str | None]
+    screen_nonce: Mapped[str | None]
+    screen_requested_at: Mapped[DateTimeOrNone]
+    screen_submission_started_at: Mapped[DateTimeOrNone]
+    screen_result: Mapped[DictJsonbOrNone] = mapped_column(JSONB)
+    release_requested_at: Mapped[DateTimeOrNone]
+    deletion_started_at: Mapped[DateTimeOrNone]
+    deletion_acknowledged_at: Mapped[DateTimeOrNone]
+
+
+class QuarantineReportInbox(ResourceRow):
+    """Accepted/rejected envelope receipts and bounded acknowledgement retries."""
+
+    __tablename__ = "quarantine_report_inbox"
+    __table_args__ = (sa.UniqueConstraint("report_job_id"),)
+
+    cluster_name: Mapped[str] = mapped_column(
+        sa.ForeignKey("cluster.name", ondelete="RESTRICT"), index=True
+    )
+    environment: Mapped[str]
+    report_job_id: Mapped[str]
+    fingerprint: Mapped[str]
+    payload: Mapped[DictJsonb] = mapped_column(JSONB)
+    validation_error: Mapped[str | None]
+    processed_at: Mapped[DateTimeOrNone]
+    acknowledged_at: Mapped[DateTimeOrNone]
+
+
 _RECONCILE_CASCADES: dict[str, list[tuple[type[ResourceRow], str]]] = {
     "Cluster": [(PilotJob, "cluster_name")],
     "PilotDeployment": [(PilotReplica, "pilot_deployment_name")],

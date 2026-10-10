@@ -1,11 +1,16 @@
 import logging
 import os
+from typing import Literal
 
 from dotenv import load_dotenv
 from httpx import Client, Timeout
 
 from alcf_ai._http import raise_for_status
 from alcf_ai.client import AutoGlobusAuth
+from first_common.schema.quarantine_read import (
+    NodeQuarantineSummary,
+    QuarantineOperatorAction,
+)
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
@@ -31,6 +36,24 @@ class AdminClient(Client):
             base_url=base_url,
             timeout=Timeout(10.0),
         )
+
+    def list_node_quarantines(self) -> list[NodeQuarantineSummary]:
+        resp = self.get("/control/v1/node-quarantines")
+        raise_for_status(resp)
+        return [NodeQuarantineSummary.model_validate(row) for row in resp.json()]
+
+    def node_quarantine_action(
+        self,
+        uid: int,
+        action: Literal["screen", "release", "reestablish"],
+        reference: str,
+    ) -> None:
+        body = QuarantineOperatorAction(reference=reference)
+        resp = self.post(
+            f"/control/v1/node-quarantines/{uid}/{action}",
+            json=body.model_dump(mode="json"),
+        )
+        raise_for_status(resp)
 
     def plan(self, resources: list[ResourceManifest]) -> ResourceChangePlan:
         resp = self.post(

@@ -1,9 +1,8 @@
 import asyncio
 import logging
 from collections.abc import Awaitable
-from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Literal, TypeVar
+from typing import TypeVar
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,16 +13,11 @@ from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaSta
 from ...database.models import Cluster, PilotDeployment, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
 from ...platforms.schedulers import build_scheduler
-from ...platforms.schedulers.graphql_pbs import GraphQLPBSAdapter
 from ...services.pilot_control import PilotControlClient
 from ...services.pilot_submitter import PilotSubmitter
 from ...settings import ClientState
 from ..wakeup import WakeupDispatcher
 from ..worker import Worker
-from .health_alerter.quarantine import (
-    quarantine_job_disposition,
-    validated_quarantine_snapshot,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -187,24 +181,7 @@ class PilotJobObserver(Worker):
                 )
             ).all()
 
-        quarantine = None
-        if (
-            isinstance(submitter.adapter, GraphQLPBSAdapter)
-            and submitter.adapter.quarantine_environment is not None
-        ):
-            all_statuses = await self._rpc(submitter.adapter.get_job_statuses())
-            quarantine = validated_quarantine_snapshot(
-                all_statuses,
-                int(datetime.now(timezone.utc).timestamp()),
-            )
-            prefix = submitter.pilot_config.job_name_prefix
-            statuses = {
-                status.id: replace(status, name=status.name.removeprefix(prefix))
-                for status in all_statuses
-                if status.name.startswith(prefix)
-            }
-        else:
-            statuses = {s.id: s for s in await self._rpc(submitter.get_statuses())}
+        statuses = {s.id: s for s in await self._rpc(submitter.get_statuses())}
 
         for job in db_jobs:
             assert job.scheduler_job_id is not None
@@ -217,13 +194,7 @@ class PilotJobObserver(Worker):
                 status = await self._rpc(
                     submitter.adapter.get_exact_job_status(job.scheduler_job_id)
                 )
-            await self._update_job(
-                job,
-                status,
-                quarantine_disposition=quarantine_job_disposition(
-                    quarantine, job.scheduler_job_id
-                ),
-            )
+            await self._update_job(job, status)
 
         now = datetime.now(timezone.utc)
         queued_steady = set(
@@ -249,13 +220,7 @@ class PilotJobObserver(Worker):
 
         await self._discover_endpoints(submitter, cluster_name)
 
-    async def _update_job(
-        self,
-        db_job: PilotJob,
-        status: JobStatusInfo | None,
-        *,
-        quarantine_disposition: Literal["ordinary", "blocked", "isolated"] = "ordinary",
-    ) -> None:
+    async def _update_job(self, db_job: PilotJob, status: JobStatusInfo | None) -> None:
         async with self.client_state.db_sessionmaker.begin() as sess:
             # Serialize competing observations and intentional job retirement;
             # the first terminal transition and its charge commit together.
@@ -286,27 +251,11 @@ class PilotJobObserver(Worker):
             if prev_state == target_state and current.time_started == new_started:
                 return
 
-            if (
-                target_state in _TERMINAL_STATES
-                and prev_state not in _TERMINAL_STATES
-                and current.manager_url is None
-                and current.scheduled_deletion_at is None
-                and quarantine_disposition == "blocked"
-            ):
-                # Keep accounting/capacity until the shared coordinator proves
-                # every attributed host isolated. Do not reopen replacements.
-                logger.warning(
-                    "PilotJob %s: node isolation pending/failed/lost; terminal accounting deferred",
-                    current.name,
-                )
-                return
-
             charge = (
                 target_state in _TERMINAL_STATES
                 and prev_state not in _TERMINAL_STATES
                 and current.manager_url is None
                 and current.scheduled_deletion_at is None
-                and quarantine_disposition != "isolated"
             )
 
             current.scheduler_state = target_state

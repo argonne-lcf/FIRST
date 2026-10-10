@@ -13,7 +13,14 @@ async def build_scheduler(
     Construct a SchedulerAdapter from a PilotConfig and the process's shared
     client resources.
     """
-    return await pilot.scheduler_adapter.build(client_state, pilot.scheduler_config)
+    config = dict(pilot.scheduler_config)
+    if "quarantine_environment" in config or "_quarantine_environment" in config:
+        raise ValueError(
+            "configure node quarantine through pilot_system.quarantine, not legacy scheduler flags"
+        )
+    if pilot.quarantine is not None:
+        config["_quarantine_environment"] = pilot.quarantine.environment
+    return await pilot.scheduler_adapter.build(client_state, config)
 
 
 __all__ = ["build_scheduler", "GlobusComputePBSAdapter", "GraphQLPBSAdapter"]

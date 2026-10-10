@@ -15,6 +15,7 @@ from .workers.autoscaler import PilotAutoscaler
 from .workers.health_alerter import HealthAlerter
 from .workers.health_observer import HealthObserver
 from .workers.inflight_observer import InflightObserver
+from .workers.node_quarantine import NodeQuarantineController
 from .workers.pilot_job_controller import PilotJobController
 from .workers.pilot_job_observer import PilotJobObserver
 from .workers.pilot_replica_observer import PilotReplicaObserver
@@ -40,6 +41,9 @@ class ControllerManager:
             HealthObserver("health-observer", self.client_state, self.dispatcher),
             InflightObserver("inflight-observer", self.client_state, self.dispatcher),
             PilotJobObserver("pilot-job-observer", self.client_state, self.dispatcher),
+            NodeQuarantineController(
+                "node-quarantine", self.client_state, self.dispatcher
+            ),
             PilotJobController(
                 "pilot-job-controller", self.client_state, self.dispatcher
             ),

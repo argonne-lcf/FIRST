@@ -1,6 +1,12 @@
-from fastapi import APIRouter, Body
+import logging
+
+from fastapi import APIRouter, Body, HTTPException
 
 from first_common.errors import InvalidSpecError
+from first_common.schema.quarantine_read import (
+    NodeQuarantineSummary,
+    QuarantineOperatorAction,
+)
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
@@ -14,13 +20,54 @@ from first_common.schema.resources.read import (
 from ...database import models as db
 from ...database.redis.pubsub import Channel
 from ...services.plan_apply import apply_plan, create_plan
+from ...services.quarantine import QuarantineService
 from ..dependencies import (
     AdminUser,
+    AppState,
     DbSession,
     RedisPubSub,
 )
 
 admin_router = APIRouter(prefix="/control/v1")
+logger = logging.getLogger(__name__)
+
+
+@admin_router.get("/node-quarantines", response_model=list[NodeQuarantineSummary])
+async def list_node_quarantines(sess: DbSession) -> list[db.NodeQuarantine]:
+    """Durable fault/isolation history, including other-environment observers."""
+    return await db.NodeQuarantine.list(sess)
+
+
+@admin_router.post("/node-quarantines/{uid}/{action}")
+async def node_quarantine_action(
+    uid: int,
+    action: str,
+    body: QuarantineOperatorAction,
+    state: AppState,
+    admin: AdminUser,
+) -> dict[str, str]:
+    """Explicit operator screen/release/reestablish, protected by admin routing."""
+    service = QuarantineService(state)
+    actions = {
+        "screen": service.request_screen,
+        "release": service.request_release,
+        "reestablish": service.request_reestablish,
+    }
+    operation = actions.get(action)
+    if operation is None:
+        raise HTTPException(status_code=404, detail="Unknown quarantine action")
+    try:
+        await operation(uid, body.reference)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    logger.info(
+        "Node quarantine uid=%d action=%s requested by identity=%s reference=%s",
+        uid,
+        action,
+        admin.id,
+        body.reference,
+    )
+    return {"status": "requested", "action": action}
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)

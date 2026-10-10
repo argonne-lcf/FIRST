@@ -14,8 +14,10 @@ from first_common.schema.base_scheduler import (
     SchedulerAdapter,
     SchedulerJobState,
 )
+from first_common.schema.quarantine import AUXILIARY_PREFIXES
 from first_gateway.settings import ClientState
 
+from .graphql_pbs_quarantine import GraphQLQuarantineMixin
 from .graphql_pbs_resources import TaskResourceConfig, requested_resources
 
 logger = logging.getLogger(__name__)
@@ -47,12 +49,6 @@ _HSN_RESOURCE_NAME = "hsn_ips"
 _PBS_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _STATUS_PAGE_SIZE = 500
 _STATUS_MAX_PAGES = 10
-_QUARANTINE_PREFIX = "first_tara_quarantine_"
-_QUARANTINE_ENV_PREFIX = "FIRST_QUARANTINE_"
-_QUARANTINE_SOURCE_ID = re.compile(
-    r"(?P<number>[1-9][0-9]{0,19})(?:\.[A-Za-z0-9][A-Za-z0-9._-]{0,100})?"
-)
-_PBS_OUTPUT_PATH = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,254}:)?/[^\x00-\x1f]+")
 _PBS_USERNAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}")
 _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _PBS_HOLDS = re.compile(r"n|[uos]{1,3}")
@@ -214,14 +210,6 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
         elif machines:
             logger.warning("Cannot resolve execution head for PBS job %s", job_id)
 
-    coordination_env: dict[str, str] = {}
-    for pair in node.get("env") or []:
-        name = pair.get("name")
-        if isinstance(name, str) and name.startswith(_QUARANTINE_ENV_PREFIX):
-            value = pair.get("value")
-            if not isinstance(value, str) or name in coordination_env:
-                raise RuntimeError(f"invalid quarantine metadata for job {job_id!r}")
-            coordination_env[name] = value
     submit_time = node.get("submitTime")
     return JobStatusInfo(
         id=job_id,
@@ -243,11 +231,33 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
             if type(submit_time) is int and submit_time > 0
             else None
         ),
-        coordination_env=coordination_env,
+        is_auxiliary=_auxiliary_node(node),
     )
 
 
-class GraphQLPBSAdapter(SchedulerAdapter):
+def _auxiliary_node(node: dict[str, Any]) -> bool:
+    if str(node.get("name", "")).startswith(AUXILIARY_PREFIXES):
+        return True
+    return any(
+        isinstance(pair, dict)
+        and pair.get("name") == "FIRST_QUARANTINE_KIND"
+        and isinstance(pair.get("value"), str)
+        and pair.get("value")
+        in {
+            "quarantine",
+            "fault",
+            "activation",
+            "screen",
+            "screen_request",
+            "status",
+            "registry",
+            "cancel",
+        }
+        for pair in node.get("env") or []
+    )
+
+
+class GraphQLPBSAdapter(SchedulerAdapter, GraphQLQuarantineMixin):
     def __init__(
         self,
         client: AsyncClient,
@@ -261,8 +271,6 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         self.url = url
         if quarantine_environment not in (None, "dev", "prod"):
             raise ValueError("quarantine_environment must be dev or prod")
-        if quarantine_environment is not None and owner != "openinference_svc":
-            raise ValueError("Tara quarantine requires the service PBS owner")
         self.quarantine_environment = quarantine_environment
         self.task_resources = TaskResourceConfig(
             task_resources={} if task_resources is None else task_resources
@@ -288,7 +296,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
             owner=owner,
             url=graphql_url,
             task_resources=options.task_resources,
-            quarantine_environment=config.get("quarantine_environment"),
+            quarantine_environment=config.get("_quarantine_environment"),
         )
 
     async def _post(
@@ -331,24 +339,6 @@ class GraphQLPBSAdapter(SchedulerAdapter):
             "outputPath": str(job.log_path),
             "joinFiles": True,
         }
-        if self.quarantine_environment is not None:
-            prefix = f"first_{self.quarantine_environment}_tara_v2_"
-            if not job.name.startswith(prefix) or job.name == prefix:
-                raise ValueError(
-                    "coordinated model job has the wrong environment prefix"
-                )
-            job_input.update(
-                submitAsHold=True,
-                holdType="u",
-                env=[
-                    {"name": "FIRST_QUARANTINE_VERSION", "value": "1"},
-                    {"name": "FIRST_QUARANTINE_KIND", "value": "model"},
-                    {
-                        "name": "FIRST_QUARANTINE_ENV",
-                        "value": self.quarantine_environment,
-                    },
-                ],
-            )
         data = await self._post(query, {"input": job_input})
         payload = data["createJob"]
         if payload.get("error"):
@@ -422,6 +412,8 @@ class GraphQLPBSAdapter(SchedulerAdapter):
                 if edge.get("error"):
                     raise RuntimeError(f"GraphQL jobs edge failed:\n{edge['error']}")
                 node: dict[str, Any] = edge["node"]
+                if _auxiliary_node(node):
+                    continue  # Infrastructure metadata must not gate model polling.
                 status = _job_status_from_node(node)
                 if status.id not in seen_ids:
                     seen_ids.add(status.id)
@@ -452,12 +444,11 @@ class GraphQLPBSAdapter(SchedulerAdapter):
 
         # A quarantine/control job is never a model orphan. Query its identity
         # even in legacy mode before allowing ordinary lifecycle deletion.
-        if self.quarantine_environment is not None:
-            await self._request_coordinated_cancellation(job_id)
-            return
         if self.owner == "openinference_svc":
             protected = await self.get_exact_job_status(job_id)
-            if protected is not None and protected.name.startswith(_QUARANTINE_PREFIX):
+            if protected is not None and (
+                protected.is_auxiliary or protected.name.startswith(AUXILIARY_PREFIXES)
+            ):
                 raise RuntimeError(
                     "ordinary model cleanup cannot delete quarantine jobs"
                 )
@@ -567,123 +558,6 @@ class GraphQLPBSAdapter(SchedulerAdapter):
     async def _get_exact_job_state(self, job_id: str) -> SchedulerJobState | None:
         status = await self.get_exact_job_status(job_id)
         return None if status is None else status.state
-
-    async def _request_coordinated_cancellation(self, job_id: str) -> None:
-        """Publish an initially held request; the Tara coordinator alone qdels.
-
-        A lost create response is not retried here. The next reconcile lists
-        the deterministic request name and adopts exactly one matching request.
-        Native PBS ownership/ctime checks and serialization remain mandatory.
-        """
-        source = await self.get_exact_job_status(job_id)
-        if source is None:
-            return
-        if source.name.startswith(_QUARANTINE_PREFIX):
-            raise RuntimeError("ordinary model cleanup cannot delete quarantine jobs")
-        environment = self.quarantine_environment
-        if environment is None:
-            raise RuntimeError("coordinated cancellation is not configured")
-        prefix = f"first_{environment}_tara_v2_"
-        match = _QUARANTINE_SOURCE_ID.fullmatch(job_id)
-        if (
-            match is None
-            or source.owner != self.owner
-            or not source.name.startswith(prefix)
-            or source.name == prefix
-        ):
-            raise RuntimeError("cannot verify coordinated model cancellation identity")
-        if source.state == SchedulerJobState.gone:
-            return
-        if not source.coordination_env:
-            # An old immutable admission wrapper cannot publish protocol-1
-            # fault intents. Preserve normal stop for its already-running
-            # allocation during activation, never for queued legacy launches.
-            if source.state != SchedulerJobState.running:
-                raise RuntimeError(
-                    "legacy queued jobs require coordinator reconciliation"
-                )
-            await self._legacy_delete_job(job_id)
-            return
-        expected_tags = {
-            "FIRST_QUARANTINE_VERSION": "1",
-            "FIRST_QUARANTINE_KIND": "model",
-            "FIRST_QUARANTINE_ENV": environment,
-        }
-        if (
-            any(source.coordination_env.get(k) != v for k, v in expected_tags.items())
-            or source.submit_time_epoch_s is None
-            or not source.queue
-            or not source.account
-            or not source.output_path
-            or _PBS_OUTPUT_PATH.fullmatch(source.output_path) is None
-        ):
-            raise RuntimeError("cannot verify coordinated model cancellation identity")
-        name = f"{_QUARANTINE_PREFIX}c{match['number']}"
-        cancel_tags = {
-            "FIRST_QUARANTINE_VERSION": "1",
-            "FIRST_QUARANTINE_KIND": "cancel",
-            "FIRST_QUARANTINE_ENV": environment,
-            "FIRST_QUARANTINE_SOURCE_ID": job_id,
-            "FIRST_QUARANTINE_SOURCE_NAME": source.name,
-            "FIRST_QUARANTINE_SOURCE_CTIME": str(source.submit_time_epoch_s),
-        }
-        existing = [s for s in await self.get_job_statuses() if s.name == name]
-        if existing:
-            if (
-                len(existing) != 1
-                or existing[0].owner != self.owner
-                or existing[0].state != SchedulerJobState.queued
-                or existing[0].hold_type != "u"
-                or existing[0].queue != source.queue
-                or existing[0].account != source.account
-                or existing[0].coordination_env != cancel_tags
-            ):
-                raise RuntimeError(
-                    "ambiguous or unverified quarantine cancellation request"
-                )
-            return
-        query = """
-        mutation SubmitCancellation($input: JobInput!) {
-            createJob(input: $input) {
-                node { jobId }
-                error { errorCode errorMessage }
-            }
-        }
-        """
-        data = await self._post(
-            query,
-            {
-                "input": {
-                    "name": name,
-                    "scriptContent": base64.urlsafe_b64encode(
-                        b"#!/bin/sh\nexit 64\n"
-                    ).decode(),
-                    "submitAsHold": True,
-                    "holdType": "u",
-                    "env": [{"name": k, "value": v} for k, v in cancel_tags.items()],
-                    "queue": {"name": source.queue},
-                    "accountingId": source.account,
-                    "outputPath": source.output_path + ".quarantine-cancel.log",
-                    "errorPath": source.output_path + ".quarantine-cancel.log",
-                    "joinFiles": True,
-                    "resourcesRequested": {
-                        "jobResources": {"index": "", "wallClockTime": 60},
-                        "taskCount": {"min": 1, "max": 1},
-                        "tasksResources": [{"index": "0", "slots": 1, "gpus": 0}],
-                    },
-                }
-            },
-        )
-        payload = data["createJob"]
-        if payload.get("error"):
-            raise RuntimeError(
-                f"GraphQL cancellation request failed: {payload['error']}"
-            )
-        request_id = ((payload.get("node") or {}).get("jobId") or "").strip()
-        if _PBS_JOB_ID.fullmatch(request_id) is None:
-            raise RuntimeError(
-                "GraphQL cancellation request returned invalid job identity"
-            )
 
     async def put_file(self, content: str, path: Path, mode: int) -> None:
         raise NotImplementedError

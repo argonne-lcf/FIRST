@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 def _is_realtime(transition: StagedTransition) -> bool:
     # Isolation confirmation and deliberate repair release are operational
     # events, not routine offline/idle info states. Do not broaden other checks.
-    return transition.severity != "info" or transition.owner == "check_tara_quarantine"
+    return transition.severity != "info" or transition.owner == "check_node_quarantine"
 
 
 async def _count(sess: Any, model: Any, *, soft_deletable: bool = False) -> int:
