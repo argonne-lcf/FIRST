@@ -21,11 +21,13 @@ from .test_node_quarantine import (
     COMMIT,
     HOST,
     IDENTITY,
+    NOW_NS,
     OPERATION,
     POLICY_JSON,
     POLICY_SHA,
     SOURCE,
     mock_service,
+    native_sample,
     pilot,
     row,
     status,
@@ -233,17 +235,97 @@ async def test_late_screen_cannot_overwrite_a_new_explicit_nonce() -> None:
     async def guarded_update(statement: Any) -> Any:
         parameters = statement.compile().params
         assert parameters["screen_nonce_1"] == OPERATION
+        assert "screen_result IS NULL" in str(statement.compile())
         if live.screen_nonce == parameters["screen_nonce_1"]:
             live.screen_result = parameters["screen_result"]
         return MagicMock(rowcount=0)
 
     adapter.get_quarantine_status.side_effect = concurrent_new_screen
     session.execute.side_effect = guarded_update
+    session.scalar.side_effect = [snapshot, live]
     report = QuarantineReport(
         "screen.pbs", "screen", SOURCE.ctime, negative_screen(), "1" * 64
     )
-    await service._worker_report(Cluster(uid=1, name="tara"), pilot(), adapter, report)
+    with pytest.raises(ValueError, match="nonce/result identity race"):
+        await service._worker_report(
+            Cluster(uid=1, name="tara"), pilot(), adapter, report
+        )
     assert live.screen_nonce == "f" * 32 and live.screen_result is None
+
+
+async def test_exact_duplicate_screen_result_is_idempotent_without_rpc_or_write() -> (
+    None
+):
+    payload = negative_screen()
+    node = row(
+        screen_nonce=OPERATION,
+        screen_requested_at=datetime.now(timezone.utc),
+        screen_result=payload.model_dump(mode="json"),
+    )
+    service, session, adapter = mock_service(node)
+    session.scalar.return_value = node
+    report = QuarantineReport("screen.pbs", "screen", SOURCE.ctime, payload, "1" * 64)
+    await service._worker_report(Cluster(uid=1, name="tara"), pilot(), adapter, report)
+    session.execute.assert_not_awaited()
+    adapter.get_quarantine_status.assert_not_awaited()
+
+
+async def test_same_nonce_pass_cannot_overwrite_previously_persisted_fail() -> None:
+    failed = negative_screen()
+    payload = negative_screen(
+        outcome="PASS",
+        observed_unix_ns=NOW_NS,
+        error=None,
+        master_hsn="10.0.0.1",
+        reports=[native_sample(faulty=False)],
+        confirmation=[native_sample(faulty=False, collected=NOW_NS - 2_000_000_000)],
+    )
+    node = row(
+        screen_nonce=OPERATION,
+        screen_requested_at=datetime.now(timezone.utc),
+        screen_result=failed.model_dump(mode="json"),
+    )
+    service, session, adapter = mock_service(node)
+    session.scalar.return_value = node
+    report = QuarantineReport("screen.pbs", "screen", SOURCE.ctime, payload, "1" * 64)
+    with pytest.raises(ValueError, match="different immutable result"):
+        await service._worker_report(
+            Cluster(uid=1, name="tara"), pilot(), adapter, report
+        )
+    assert node.screen_result == failed.model_dump(mode="json")
+    session.execute.assert_not_awaited()
+    adapter.get_quarantine_status.assert_not_awaited()
+
+
+@pytest.mark.parametrize("identical", [True, False])
+async def test_same_nonce_cas_conflict_only_accepts_exact_duplicate_winner(
+    identical: bool,
+) -> None:
+    payload = negative_screen()
+    requested = datetime.now(timezone.utc) - timedelta(seconds=1)
+    snapshot = row(screen_nonce=OPERATION, screen_requested_at=requested)
+    winner = payload if identical else negative_screen(error="OSError")
+    live = row(
+        screen_nonce=OPERATION,
+        screen_requested_at=requested,
+        screen_result=winner.model_dump(mode="json"),
+    )
+    service, session, adapter = mock_service(snapshot)
+    session.scalar.side_effect = [snapshot, live]
+    session.execute.return_value = MagicMock(rowcount=0)
+    report = QuarantineReport("screen.pbs", "screen", SOURCE.ctime, payload, "1" * 64)
+    if identical:
+        await service._worker_report(
+            Cluster(uid=1, name="tara"), pilot(), adapter, report
+        )
+    else:
+        with pytest.raises(ValueError, match="nonce/result identity race"):
+            await service._worker_report(
+                Cluster(uid=1, name="tara"), pilot(), adapter, report
+            )
+    assert "screen_result IS NULL" in str(session.execute.await_args.args[0].compile())
+    assert live.screen_result == winner.model_dump(mode="json")
+    adapter.acknowledge_quarantine_screen_request.assert_not_awaited()
 
 
 async def test_screen_timeout_alert_is_reporting_only_and_does_not_resubmit() -> None:

@@ -267,6 +267,7 @@ def row(**overrides: Any) -> NodeQuarantine:
 def mock_service(node: NodeQuarantine) -> tuple[QuarantineService, Any, Any]:
     session = AsyncMock()
     session.get.return_value = node
+    session.execute.return_value = MagicMock(rowcount=1)
     session.scalar.return_value = Cluster(
         uid=1, name="tara", pilot_system=pilot().model_dump(mode="json")
     )

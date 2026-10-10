@@ -5,10 +5,11 @@ import hashlib
 import secrets
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import CursorResult
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.quarantine import (
@@ -641,6 +642,15 @@ class QuarantineService:
             raise ValueError(
                 "worker envelope does not match the current quarantine operation"
             )
+        if isinstance(payload, QuarantineScreenPayload):
+            if row.screen_nonce != payload.nonce or row.screen_requested_at is None:
+                raise ValueError("screen envelope nonce was not explicitly requested")
+            if row.screen_result is not None:
+                if row.screen_result == payload.model_dump(mode="json"):
+                    return  # Exact duplicate of an already validated, persisted result.
+                raise ValueError(
+                    "screen nonce already has a different immutable result"
+                )
         status = await asyncio.wait_for(
             adapter.get_quarantine_status(identity.job_id), RPC_TIMEOUT
         )
@@ -716,7 +726,7 @@ class QuarantineService:
                 )
             values = {"screen_result": payload.model_dump(mode="json")}
         async with self.clients.db_sessionmaker.begin() as sess:
-            await sess.execute(
+            statement = (
                 sa.update(NodeQuarantine)
                 .where(
                     NodeQuarantine.uid == row.uid,
@@ -728,6 +738,32 @@ class QuarantineService:
                 )
                 .values(**values)
             )
+            if isinstance(payload, QuarantineScreenPayload):
+                statement = statement.where(NodeQuarantine.screen_result.is_(None))
+            result = await sess.execute(statement)
+            if isinstance(payload, QuarantineScreenPayload):
+                affected = cast(CursorResult[Any], result).rowcount
+                if affected == 0:
+                    current = await sess.scalar(
+                        sa.select(NodeQuarantine)
+                        .where(NodeQuarantine.uid == row.uid)
+                        .with_for_update()
+                    )
+                    if (
+                        current is not None
+                        and current.operation == row.operation
+                        and current.job_identity == row.job_identity
+                        and current.screen_nonce == payload.nonce
+                        and current.screen_result == values["screen_result"]
+                    ):
+                        return  # Another writer persisted the exact same validated result.
+                    raise ValueError(
+                        "screen result persistence lost its nonce/result identity race"
+                    )
+                if type(affected) is not int or affected != 1:
+                    raise ValueError(
+                        "screen result persistence acknowledgement is unverified"
+                    )
 
     async def reconcile(self, uid: int) -> None:
         async with self.clients.db_sessionmaker() as sess:
