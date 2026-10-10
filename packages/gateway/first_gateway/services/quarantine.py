@@ -30,7 +30,14 @@ from first_common.schema.types import PilotConfig
 from ..database.models import Cluster, NodeQuarantine, PilotJob, QuarantineReportInbox
 from ..platforms.schedulers import build_scheduler
 from ..settings import ClientState
-from .quarantine_evidence import activation_proof, cleanup_proof, paired, publication
+from .quarantine_evidence import (
+    activation_proof,
+    cleanup_proof,
+    fault_report_time,
+    paired,
+    pinned_policy,
+    publication,
+)
 
 RPC_TIMEOUT = 30.0
 INBOX_RETENTION = timedelta(days=30)
@@ -51,6 +58,18 @@ def now() -> datetime:
 def transition(row: NodeQuarantine, state: str, message: str) -> None:
     if row.state != state:
         row.transitioned_at = now()
+        if state in {"failed", "lost"}:
+            events = dict(row.evidence.get("alert_events") or {})
+            events[state] = {
+                "id": row.operation,
+                "at": row.transitioned_at.isoformat(),
+                "message": message[:300],
+                "origin": row.origin,
+                "fault": row.fault,
+                "path": row.evidence["path"],
+                "job_identity": row.job_identity,
+            }
+            row.evidence = {**row.evidence, "alert_events": events}
     row.state = state
     row.state_message = message[:300]
 
@@ -254,6 +273,8 @@ class QuarantineService:
                             "job_identity",
                             NodeQuarantine.job_identity,
                         ),
+                        "alert_events",
+                        NodeQuarantine.evidence["alert_events"],
                     )
                 )
                 await sess.execute(
@@ -437,6 +458,13 @@ class QuarantineService:
             and (retry_at is None or retry_at <= now())
         ):
             try:
+                if isinstance(
+                    report.payload, QuarantineScreenPayload
+                ) and receipt_error in (None, ACK_FAILURE):
+                    await asyncio.wait_for(
+                        adapter.acknowledge_quarantine_screen_request(report),
+                        RPC_TIMEOUT,
+                    )
                 await asyncio.wait_for(
                     adapter.acknowledge_quarantine_report(report), RPC_TIMEOUT
                 )
@@ -498,7 +526,12 @@ class QuarantineService:
             )
         if pilot.quarantine.worker_path is not None:
             publication(payload, pilot.quarantine.worker_path)
-        fault = paired(payload, pilot.quarantine.policy_sha256, pilot.gpus_per_node)
+        fault = paired(
+            payload,
+            pilot.quarantine.policy_sha256,
+            pilot.gpus_per_node,
+            now_ns=fault_report_time(payload, report.ctime),
+        )
         assert fault is not None
         if payload.source == "lifecycle_post_cleanup":
             cleanup_proof(payload.cleanup_proof or "", payload.allocation_hosts)
@@ -544,6 +577,19 @@ class QuarantineService:
                 deletion_started_at=None,
                 deletion_acknowledged_at=None,
             )
+            events = dict(
+                (row.evidence if row is not None else {}).get("alert_events") or {}
+            )
+            events["fault_detected"] = {
+                "id": report.job_id,
+                "at": values["faulted_at"].isoformat(),
+                "message": "Fault detected; isolation initially pending.",
+                "origin": values["origin"],
+                "fault": fault,
+                "path": payload.evidence_path,
+                "job_identity": None,
+            }
+            values["evidence"]["alert_events"] = events
             if row is None:
                 sess.add(
                     NodeQuarantine(
@@ -622,6 +668,10 @@ class QuarantineService:
             values = {"activation": payload.model_dump(mode="json")}
         else:
             assert pilot.quarantine is not None
+            if not isolated(status, row.activation):
+                raise ReportPending(
+                    "screen envelope awaits verified active quarantine isolation"
+                )
             if row.screen_nonce != payload.nonce or row.screen_requested_at is None:
                 raise ValueError("screen envelope nonce was not explicitly requested")
             if payload.observed_unix_ns < int(
@@ -638,8 +688,20 @@ class QuarantineService:
             ).get("worker_path")
             if isinstance(worker_path, str):
                 publication(payload, worker_path)
-            fault = paired(payload, expected_sha, pilot.gpus_per_node)
-            if payload.outcome != "PASS" or fault is not None:
+            pinned_policy(payload, expected_sha)
+            if payload.outcome == "FAIL":
+                if (
+                    not payload.error
+                    or not payload.error.strip()
+                    or any(ord(character) < 32 for character in payload.error)
+                    or not -5_000_000_000
+                    <= int(now().timestamp() * 1e9) - payload.observed_unix_ns
+                    <= 120_000_000_000
+                ):
+                    raise ValueError(
+                        "negative native screen lacks bounded, fresh request-bound error evidence"
+                    )
+            elif paired(payload, expected_sha, pilot.gpus_per_node) is not None:
                 raise ValueError(
                     "fresh native screening did not pass; node remains quarantined"
                 )
@@ -651,6 +713,9 @@ class QuarantineService:
                     NodeQuarantine.uid == row.uid,
                     NodeQuarantine.operation == row.operation,
                     NodeQuarantine.job_identity == row.job_identity,
+                    NodeQuarantine.screen_nonce == payload.nonce
+                    if isinstance(payload, QuarantineScreenPayload)
+                    else sa.true(),
                 )
                 .values(**values)
             )
@@ -894,10 +959,13 @@ class QuarantineService:
                     .where(NodeQuarantine.uid == row.uid)
                     .values(
                         submission_uncertain=True,
-                        state="failed",
-                        state_message="Quarantine submit acknowledgement uncertain; exact-operation adoption required.",
                     )
                 )
+            await self._state(
+                row.uid,
+                "failed",
+                "Quarantine submit acknowledgement uncertain; exact-operation adoption required.",
+            )
             raise
         status = await asyncio.wait_for(
             adapter.get_quarantine_status(result.scheduler_id), RPC_TIMEOUT
@@ -1018,6 +1086,13 @@ class QuarantineService:
                     "matching explicit repair reference and completed screen are required"
                 )
             await self._require_local(sess, row)
+            if (
+                QuarantineScreenPayload.model_validate(row.screen_result).outcome
+                != "PASS"
+            ):
+                raise ValueError(
+                    "a matching completed PASS screen is required; negative screening retains isolation"
+                )
             row.release_requested_at = now()
             row.reconcile_retry_at = None
 

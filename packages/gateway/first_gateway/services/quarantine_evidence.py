@@ -64,6 +64,38 @@ def publication(
         )
 
 
+def fault_report_time(
+    payload: QuarantineFaultPayload,
+    carrier_ctime: int,
+    *,
+    receipt_ns: int | None = None,
+) -> int:
+    """Validate a historical fault against its immutable PBS creation time.
+
+    A restart may delay receipt, not the native observation-to-publication
+    window. Repair screens intentionally retain current-clock freshness.
+    """
+    receipt_ns = time.time_ns() if receipt_ns is None else receipt_ns
+    observed = payload.observed_unix_ns
+    source_ns = payload.origin.ctime * 1_000_000_000
+    if type(carrier_ctime) is not int or carrier_ctime <= 0:
+        raise ValueError("fault carrier creation time is unverified")
+    carrier_ns = carrier_ctime * 1_000_000_000
+    if (
+        carrier_ns > receipt_ns + 5_000_000_000
+        or observed > receipt_ns + 5_000_000_000
+        or not -5_000_000_000 <= carrier_ns - observed <= 120_000_000_000
+        or source_ns > carrier_ns
+        or source_ns > observed
+    ):
+        raise ValueError("fault report publication/source temporal identity differs")
+    for sample in (*payload.reports, *payload.confirmation):
+        collected = sample.get("collected_unix_ns")
+        if type(collected) is not int or collected < source_ns:
+            raise ValueError("fault sample predates its native source allocation")
+    return observed
+
+
 def native_epoch(value: Any) -> int:
     if type(value) is int and value > 0:
         return value

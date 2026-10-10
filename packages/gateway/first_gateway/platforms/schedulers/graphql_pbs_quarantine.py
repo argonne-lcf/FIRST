@@ -19,6 +19,7 @@ from first_common.schema.quarantine import (
     QuarantineJobStatus,
     QuarantineReport,
     QuarantineReportRejected,
+    QuarantineScreenPayload,
     QuarantineScreenRequest,
     QuarantineSource,
     QuarantineSubmissionRejected,
@@ -739,3 +740,102 @@ class GraphQLQuarantineMixin(SchedulerQuarantineAdapter):
                 },
             }
         )
+
+    def _screen_request_receipt(
+        self, row: dict[str, Any], identity: QuarantineJobIdentity, nonce: str
+    ) -> tuple[str, int, str]:
+        value = tags(row)
+        fail(
+            owner(row) == self.owner == "openinference_svc"
+            and (row.get("status") or {}).get("state") == 3
+            and (row.get("extension") or {}).get("Hold_Types") == "u"
+            and row.get("startTime") in (None, 0)
+            and not (row.get("extension") or {}).get("exec_vnode")
+            and not (row.get("extension") or {}).get("exec_host")
+            and not row.get("allocatedMachines"),
+            "screen request is not an owned, held, never-executed carrier",
+        )
+        raw = value.get(TAG + "REQUEST", "")
+        fail(0 < len(raw.encode()) <= 16384, "screen request payload exceeds its bound")
+        decoded = base64.b64decode(raw, altchars=b"-_", validate=True)
+        request = QuarantineScreenRequest.model_validate(
+            json.loads(decoded, object_pairs_hook=unique)
+        )
+        fail(
+            row.get("name")
+            == f"first_qrequest_{identity.environment}_screen_{nonce[:8]}"
+            and request.operation == identity.operation
+            and request.host == identity.host
+            and request.quarantine_job_id == identity.job_id
+            and request.nonce == nonce
+            and value
+            == {
+                **common_tags(
+                    identity.environment,
+                    identity.cluster,
+                    identity.host,
+                    identity.operation,
+                    identity.source,
+                    "screen_request",
+                ),
+                TAG + "REQUEST": raw,
+            },
+            "screen request full identity or nonce differs",
+        )
+        return row["jobId"], created(row), hashlib.sha256(raw.encode()).hexdigest()
+
+    async def acknowledge_quarantine_screen_request(
+        self, report: QuarantineReport
+    ) -> None:
+        """Consume only the exact request whose result FIRST already persisted."""
+        self._local(report.environment)
+        payload = report.payload
+        fail(
+            isinstance(payload, QuarantineScreenPayload),
+            "only a screen result may consume a request",
+        )
+        assert isinstance(payload, QuarantineScreenPayload)
+        carriers = await self._quarantine_rows(ids=[report.job_id], history=True)
+        fail(
+            len(carriers) == 1 and self._report(carriers[0]) == report,
+            "screen result carrier identity changed before request acknowledgement",
+        )
+        waiting = await self._quarantine_rows(
+            ids=[payload.quarantine_job_id], history=True
+        )
+        fail(
+            len(waiting) == 1,
+            "screen-result waiting allocation identity is unavailable",
+        )
+        identity = self._identity(waiting[0])
+        fail(
+            identity.environment == payload.environment
+            and identity.cluster == payload.cluster
+            and identity.host == payload.host
+            and identity.operation == payload.operation
+            and identity.source == payload.origin,
+            "screen result differs from its exact waiting allocation",
+        )
+        name = f"first_qrequest_{payload.environment}_screen_{payload.nonce[:8]}"
+        requests = []
+        for row in await self._quarantine_rows():
+            if row.get("name") != name:
+                continue
+            if owner(row) != self.owner:
+                continue
+            requests.append(row)
+        if not requests:
+            return  # Independent absence after a possibly lost qdel ACK, not node recovery.
+        fail(
+            len(requests) == 1,
+            "duplicate screen request requires operator reconciliation",
+        )
+        receipt = self._screen_request_receipt(requests[0], identity, payload.nonce)
+        current = await self._quarantine_rows(ids=[receipt[0]], history=True)
+        fail(
+            len(current) == 1
+            and self._screen_request_receipt(current[0], identity, payload.nonce)
+            == receipt,
+            "screen request identity changed before acknowledgement",
+        )
+        await self._delete_auxiliary(receipt[0])

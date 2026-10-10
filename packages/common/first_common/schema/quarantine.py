@@ -305,3 +305,8 @@ class SchedulerQuarantineAdapter(ABC):
 
     @abstractmethod
     async def acknowledge_quarantine_report(self, report: QuarantineReport) -> None: ...
+
+    @abstractmethod
+    async def acknowledge_quarantine_screen_request(
+        self, report: QuarantineReport
+    ) -> None: ...

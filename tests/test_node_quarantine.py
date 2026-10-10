@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -49,6 +49,7 @@ from first_gateway.services.quarantine import QuarantineService, isolated
 from first_gateway.services.quarantine_evidence import (
     activation_proof,
     cleanup_proof,
+    fault_report_time,
     gpu_fault,
     paired,
     publication,
@@ -287,6 +288,108 @@ def mock_service(node: NodeQuarantine) -> tuple[QuarantineService, Any, Any]:
 def test_persistent_fault_in_real_allocation_context(host: str) -> None:
     fault = paired(fault_payload(host), POLICY_SHA, 4, now_ns=NOW_NS)
     assert fault is not None and fault["code"] == "unexplained_gpu_memory_loss"
+
+
+def test_immutable_fault_survives_delayed_receipt_without_reusing_stale_samples() -> (
+    None
+):
+    payload = fault_payload()
+    receipt = NOW_NS + 600_000_000_000
+    historical = fault_report_time(
+        payload, NOW_NS // 1_000_000_000 + 2, receipt_ns=receipt
+    )
+    assert historical == payload.observed_unix_ns
+    assert paired(payload, POLICY_SHA, 4, now_ns=historical) is not None
+    with pytest.raises(ValueError, match="freshness"):
+        paired(payload, POLICY_SHA, 4, now_ns=receipt)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "future-carrier",
+        "future-observation",
+        "delayed-publication",
+        "copied-observation",
+        "source-after-report",
+        "sample-before-source",
+    ],
+)
+def test_fault_time_binding_rejects_future_copied_or_pre_source_evidence(
+    mutation: str,
+) -> None:
+    payload = fault_payload()
+    carrier = NOW_NS // 1_000_000_000 + 2
+    receipt = NOW_NS + 600_000_000_000
+    if mutation == "future-carrier":
+        carrier = receipt // 1_000_000_000 + 10
+    elif mutation == "future-observation":
+        payload.observed_unix_ns = receipt + 10_000_000_000
+    elif mutation == "delayed-publication":
+        carrier = NOW_NS // 1_000_000_000 + 121
+    elif mutation == "copied-observation":
+        payload.observed_unix_ns = receipt
+    elif mutation == "source-after-report":
+        payload.origin = SOURCE.model_copy(update={"ctime": carrier + 1})
+    else:
+        payload.origin = SOURCE.model_copy(
+            update={"ctime": NOW_NS // 1_000_000_000 - 3}
+        )
+    with pytest.raises(ValueError):
+        historical = fault_report_time(payload, carrier, receipt_ns=receipt)
+        paired(payload, POLICY_SHA, 4, now_ns=historical)
+
+
+async def test_actual_fault_ingestion_records_after_restart_delay_without_model_rpc() -> (
+    None
+):
+    service, session, adapter = mock_service(row())
+    session.scalar.side_effect = [
+        PilotJob(name="source", scheduler_job_id=SOURCE.id),
+        None,
+    ]
+    session.add = MagicMock()
+    adapter.get_source_allocation.return_value = (HOST, PEER)
+    report = QuarantineReport(
+        "3.pbs", "fault", NOW_NS // 1_000_000_000 + 2, fault_payload(), "1" * 64
+    )
+    with patch(
+        "first_gateway.services.quarantine_evidence.time.time_ns",
+        return_value=NOW_NS + 600_000_000_000,
+    ):
+        await service._fault(Cluster(uid=1, name="tara"), pilot(), adapter, report)
+    session.add.assert_called_once()
+    recorded = session.add.call_args.args[0]
+    assert recorded.host == HOST and recorded.state == "pending"
+    assert recorded.fault["code"] == "unexplained_gpu_memory_loss"
+    adapter.submit_job.assert_not_awaited()
+    adapter.terminate_job.assert_not_awaited()
+
+
+def test_deliberate_repair_screen_retains_current_clock_freshness_limit() -> None:
+    payload = QuarantineScreenPayload(
+        schema_version=3,
+        event="screen_result",
+        environment="dev",
+        cluster="tara",
+        operation=OPERATION,
+        origin=SOURCE,
+        host=HOST,
+        observed_unix_ns=NOW_NS,
+        quarantine_job_id=IDENTITY.job_id,
+        nonce=OPERATION,
+        outcome="PASS",
+        reports=[native_sample(faulty=False)],
+        confirmation=[native_sample(faulty=False, collected=NOW_NS - 2_000_000_000)],
+        master_hsn="10.0.0.1",
+        bundle_commit=COMMIT,
+        policy_sha256=POLICY_SHA,
+        policy_json=POLICY_JSON,
+        error=None,
+    )
+    assert paired(payload, POLICY_SHA, 4, now_ns=NOW_NS) is None
+    with pytest.raises(ValueError, match="freshness"):
+        paired(payload, POLICY_SHA, 4, now_ns=NOW_NS + 600_000_000_000)
 
 
 @pytest.mark.parametrize(

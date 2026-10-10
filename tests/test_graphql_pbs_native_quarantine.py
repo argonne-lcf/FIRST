@@ -14,6 +14,8 @@ from first_common.schema.quarantine import (
     NodeQuarantinePolicy,
     QuarantineJobSpec,
     QuarantineReportRejected,
+    QuarantineScreenPayload,
+    QuarantineScreenRequest,
     QuarantineSource,
     QuarantineSubmissionRejected,
 )
@@ -115,6 +117,19 @@ def payload(env: str = "dev", event: str = "node_fault") -> dict[str, Any]:
             native_job={"job_state": "R"},
             native_nodes={HOST: {"state": "job-exclusive"}},
         )
+    elif event == "screen_result":
+        result.update(
+            quarantine_job_id=JOB,
+            nonce="d" * 32,
+            outcome="PASS",
+            reports=[{"host": HOST}],
+            confirmation=[{"host": HOST}],
+            master_hsn="10.124.164.33",
+            bundle_commit="c" * 40,
+            policy_sha256=hashlib.sha256(b"{}").hexdigest(),
+            policy_json="{}",
+            error=None,
+        )
     else:
         result.update(
             source="pre_pilot_admission",
@@ -135,7 +150,12 @@ def payload(env: str = "dev", event: str = "node_fault") -> dict[str, Any]:
 def report(env: str = "dev", event: str = "node_fault") -> dict[str, Any]:
     body = payload(env, event)
     source = QuarantineSource.model_validate(body["origin"])
-    kind = "activation" if event == "activated" else "fault"
+    kind = {
+        "activated": "activation",
+        "screen_result": "screen",
+        "node_fault": "fault",
+    }[event]
+    suffix = body["nonce"][:8] if event == "screen_result" else OP[:8]
     encoded = base64.urlsafe_b64encode(json.dumps(body).encode()).decode()
     metadata = {
         **common_tags(env, "tara", HOST, OP, source, kind),
@@ -143,7 +163,32 @@ def report(env: str = "dev", event: str = "node_fault") -> dict[str, Any]:
     }
     return {
         "jobId": "9001.tara-north-pbs-01.lab.alcf.anl.gov",
-        "name": f"first_qreport_{env}_{kind}_{OP[:8]}",
+        "name": f"first_qreport_{env}_{kind}_{suffix}",
+        "owner": "openinference_svc@host",
+        "submitTime": 400_000_000,
+        "status": {"state": 3},
+        "extension": {"Hold_Types": "u", "job_state": "H"},
+        "env": [{"name": key, "value": value} for key, value in metadata.items()],
+    }
+
+
+def screen_request() -> dict[str, Any]:
+    body = QuarantineScreenRequest(
+        schema_version=3,
+        operation=OP,
+        host=HOST,
+        quarantine_job_id=JOB,
+        nonce="d" * 32,
+        requested_unix=400,
+    )
+    encoded = base64.urlsafe_b64encode(body.model_dump_json().encode()).decode()
+    metadata = {
+        **common_tags("dev", "tara", HOST, OP, SOURCE, "screen_request"),
+        "FIRST_QUARANTINE_REQUEST": encoded,
+    }
+    return {
+        "jobId": "9004.tara-north-pbs-01.lab.alcf.anl.gov",
+        "name": "first_qrequest_dev_screen_dddddddd",
         "owner": "openinference_svc@host",
         "submitTime": 400_000_000,
         "status": {"state": 3},
@@ -447,6 +492,92 @@ class NativeQuarantineAdapterTests(unittest.IsolatedAsyncioTestCase):
                 policy_sha256="a" * 64,
                 worker_path="/opt/site/worker",
             )
+
+    async def test_screen_request_consumed_only_after_full_identity_recheck(
+        self,
+    ) -> None:
+        carrier, request = report(event="screen_result"), screen_request()
+        parsed = self.adapter._report(carrier)
+        self.mock(
+            connection([carrier]),
+            connection([waiting(state=0)]),
+            connection([request]),
+            connection([request]),
+            {"deleteJob": {"node": {"jobId": request["jobId"]}, "error": None}},
+        )
+        await self.adapter.acknowledge_quarantine_screen_request(parsed)
+        self.assertEqual(self.rpc.await_count, 5)
+        assert self.rpc.await_args is not None
+        self.assertEqual(self.rpc.await_args.args[1], {"jobId": request["jobId"]})
+
+    async def test_screen_request_absence_after_lost_delete_ack_is_not_resubmitted(
+        self,
+    ) -> None:
+        carrier = report(event="screen_result")
+        self.mock(connection([carrier]), connection([waiting(state=0)]), connection([]))
+        await self.adapter.acknowledge_quarantine_screen_request(
+            self.adapter._report(carrier)
+        )
+        self.assertEqual(self.rpc.await_count, 3)
+
+    async def test_screen_request_ack_never_mutates_foreign_or_non_screen_reports(
+        self,
+    ) -> None:
+        for parsed in (
+            self.adapter._report(report("prod", "screen_result")),
+            self.adapter._report(report()),
+        ):
+            self.mock()
+            with self.assertRaises(RuntimeError):
+                await self.adapter.acknowledge_quarantine_screen_request(parsed)
+            self.rpc.assert_not_awaited()
+
+    async def test_wrong_nonce_executed_or_duplicate_request_is_not_deleted(
+        self,
+    ) -> None:
+        carrier = report(event="screen_result")
+        parsed = self.adapter._report(carrier)
+        assert isinstance(parsed.payload, QuarantineScreenPayload)
+        for mutation in ("nonce", "executed", "duplicate", "operation"):
+            request = screen_request()
+            rows = [request]
+            if mutation == "nonce":
+                pair = request["env"][-1]
+                decoded = json.loads(base64.urlsafe_b64decode(pair["value"]))
+                decoded["nonce"] = "d" * 8 + "e" * 24
+                pair["value"] = base64.urlsafe_b64encode(
+                    json.dumps(decoded).encode()
+                ).decode()
+            elif mutation == "executed":
+                request["startTime"] = 450_000_000
+            elif mutation == "operation":
+                request["env"][5]["value"] = "e" * 32
+            else:
+                duplicate = copy.deepcopy(request)
+                duplicate["jobId"] = "9005.tara-north-pbs-01.lab.alcf.anl.gov"
+                rows.append(duplicate)
+            self.mock(
+                connection([carrier]), connection([waiting(state=0)]), connection(rows)
+            )
+            with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
+                await self.adapter.acknowledge_quarantine_screen_request(parsed)
+            self.assertEqual(self.rpc.await_count, 3)
+
+    async def test_screen_request_birth_change_before_delete_is_rejected(self) -> None:
+        carrier, request = report(event="screen_result"), screen_request()
+        changed = copy.deepcopy(request)
+        changed["submitTime"] += 1_000_000
+        self.mock(
+            connection([carrier]),
+            connection([waiting(state=0)]),
+            connection([request]),
+            connection([changed]),
+        )
+        with self.assertRaises(RuntimeError):
+            await self.adapter.acknowledge_quarantine_screen_request(
+                self.adapter._report(carrier)
+            )
+        self.assertEqual(self.rpc.await_count, 4)
 
 
 if __name__ == "__main__":

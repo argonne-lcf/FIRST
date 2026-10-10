@@ -253,7 +253,21 @@ class HealthAlerter(Worker):
             # outcome is the JSON body's `ok` field.
             body = resp.json()
             if body.get("ok"):
-                return str(body["ts"])
+                ts = str(body["ts"])
+                if (
+                    len(ts) <= 40
+                    and len(ts.split(".")) == 2
+                    and all(part.isdecimal() for part in ts.split("."))
+                ):
+                    # Retain the actual API acknowledgement, not message
+                    # content, channel identity or credentials. Read-back may
+                    # be unavailable with a deliberately write-only bot.
+                    logger.info(
+                        "Slack health delivery acknowledged: ts=%s threaded=%s",
+                        ts,
+                        thread_ts is not None,
+                    )
+                return ts
             logger.warning("Slack chat.postMessage failed: %s", body.get("error", body))
             return None
         except Exception:

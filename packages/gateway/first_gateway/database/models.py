@@ -1,5 +1,5 @@
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Self
 
@@ -706,6 +706,28 @@ class NodeQuarantine(ResourceRow):
     release_requested_at: Mapped[DateTimeOrNone]
     deletion_started_at: Mapped[DateTimeOrNone]
     deletion_acknowledged_at: Mapped[DateTimeOrNone]
+
+    @property
+    def screen_outcome(self) -> str | None:
+        outcome = (
+            None if self.screen_result is None else self.screen_result.get("outcome")
+        )
+        return (
+            outcome
+            if isinstance(outcome, str) and outcome in {"PASS", "FAIL"}
+            else None
+        )
+
+    @property
+    def screened_at(self) -> datetime | None:
+        if self.screen_result is None:
+            return None
+        observed = self.screen_result.get("observed_unix_ns")
+        return (
+            None
+            if type(observed) is not int
+            else datetime.fromtimestamp(observed / 1e9, timezone.utc)
+        )
 
 
 class QuarantineReportInbox(ResourceRow):

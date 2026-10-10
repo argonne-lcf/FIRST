@@ -24,6 +24,8 @@ class NodeQuarantineSummary(BaseModel):
     repair_reference: str | None
     screen_nonce: str | None
     screen_requested_at: datetime | None
+    screen_outcome: Literal["PASS", "FAIL"] | None = None
+    screened_at: datetime | None = None
     release_requested_at: datetime | None
     submission_attempts: int
     submission_uncertain: bool

@@ -189,8 +189,70 @@ async def check_node_quarantine(client_state: ClientState) -> list[Observation]:
             )
         ).all()
     observations: list[Observation] = []
+    current_time = datetime.now(timezone.utc)
     for row in rows:
         identity = row.job_identity or {}
+        screen_timeout = (
+            row.screen_submission_started_at is not None
+            and row.screen_result is None
+            and (current_time - row.screen_submission_started_at).total_seconds() > 150
+        )
+        if row.screen_outcome == "FAIL" or screen_timeout:
+            observations.append(
+                Observation(
+                    key=f"node-quarantine/screen/{row.cluster_name}/{row.host}",
+                    status=f"{'negative' if row.screen_outcome == 'FAIL' else 'timeout'}:{row.screen_nonce}",
+                    summary=f"{row.environment} node {row.host}: "
+                    + (
+                        "fresh screen returned FAIL; isolation retained."
+                        if row.screen_outcome == "FAIL"
+                        else "no verified screen response after 150s; infrastructure timeout, isolation retained."
+                    ),
+                    severity="warn" if row.screen_outcome == "FAIL" else "crit",
+                    display_name=f"Quarantine screen reporting status for {row.host}",
+                    recovery_hint="screen reporting issue only; independent isolation and explicit repair-release rules still apply",
+                    debounce_s=1,
+                    detail=f"Origin: {row.origin['id']}\nQuarantine: {identity.get('job_id', 'pending')}\n"
+                    f"Request nonce: {row.screen_nonce}\nEvidence: {row.evidence['path']}\n"
+                    "No automatic resubmission or model scheduling gate. A reporting change is not node repair or return to service.",
+                )
+            )
+        events = dict(row.evidence.get("alert_events") or {})
+        if "fault_detected" not in events and row.evidence.get("report_id"):
+            # Existing durable records also carry the original fault receipt.
+            events["fault_detected"] = {
+                "id": row.evidence["report_id"],
+                "at": row.faulted_at.isoformat(),
+                "message": "Fault detected; isolation initially pending.",
+                "origin": row.origin,
+                "fault": row.fault,
+                "path": row.evidence["path"],
+                "job_identity": None,
+            }
+        for kind in ("fault_detected", "failed", "lost"):
+            event = events.get(kind)
+            if event is None:
+                continue
+            synthetic = (
+                "SYNTHETIC DEV QUALIFICATION; "
+                if "DEV-QUAL-SYNTHETIC-" in event["path"]
+                else ""
+            )
+            observations.append(
+                Observation(
+                    key=f"node-quarantine/event/{kind}/{row.cluster_name}/{row.host}",
+                    status=f"{kind}:{event['id']}",
+                    summary=f"{row.environment} {row.cluster_name} node {row.host}: {synthetic}"
+                    f"recorded {kind.replace('_', ' ')} at {event['at']}; current state {row.state}.",
+                    severity="warn" if kind == "fault_detected" else "crit",
+                    display_name=f"Recorded {kind.replace('_', ' ')} event for {row.host}",
+                    debounce_s=1,
+                    detail=f"Historical event: {event['message']}\nOrigin: {event['origin']['id']}\n"
+                    f"Fault: {event['fault']['reason']}\nEvidence: {event['path']}\n"
+                    f"Quarantine at event: {(event['job_identity'] or {}).get('job_id', 'pending')}\n"
+                    "This event is not current-state or recovery evidence; use the separate node isolation status.",
+                )
+            )
         reconcile_error = bool(row.reconcile_failures and row.reconcile_last_error)
         severity: Severity = (
             "crit"
