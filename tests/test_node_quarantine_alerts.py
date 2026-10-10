@@ -3,6 +3,7 @@
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -357,6 +358,48 @@ async def test_first_screen_cas_accepts_postgresql_json_null_as_well_as_sql_null
     processor = NodeQuarantine.screen_result.type.bind_processor(dialect)
     assert processor is not None
     assert processor(None) == "null" and processor(sa.JSON.NULL) == "null"
+
+
+async def test_uncertain_submit_adoption_accepts_json_null_identity_without_resubmit() -> (
+    None
+):
+    node = row(
+        job_identity=None,
+        submission_uncertain=True,
+        submission_attempts=1,
+        submission_started_at=datetime.now(timezone.utc),
+    )
+    service, session, adapter = mock_service(node)
+    await service.reconcile(node.uid)
+    dialect = cast(Callable[[], Dialect], PGDialect)()
+    statement = session.execute.await_args.args[0]
+    compiled = statement.compile(dialect=dialect)
+    assert "job_identity IS NULL OR" in str(compiled)
+    assert "job_identity = %(job_identity_1)s::JSONB" in str(compiled)
+    assert compiled.params["job_identity_1"] is sa.JSON.NULL
+    processor = NodeQuarantine.job_identity.type.bind_processor(dialect)
+    assert processor is not None
+    assert processor(None) == "null" and processor(sa.JSON.NULL) == "null"
+    adapter.submit_quarantine.assert_not_awaited()
+    adapter.terminate_job.assert_not_awaited()
+
+
+async def test_active_quarantine_budget_excludes_sql_and_json_null_identities() -> None:
+    node = row(job_identity=None, state="pending")
+    service, session, adapter = mock_service(node)
+    session.scalar.side_effect = [0, 0]
+    adapter.submit_quarantine.return_value = SimpleNamespace(
+        scheduler_id=IDENTITY.job_id
+    )
+    await service._submit(node, pilot(), adapter)
+    dialect = cast(Callable[[], Dialect], PGDialect)()
+    compiled = session.scalar.await_args_list[1].args[0].compile(dialect=dialect)
+    assert "submission_attempts >" in str(compiled)
+    assert "job_identity IS NOT NULL AND" in str(compiled)
+    assert "job_identity != %(job_identity_1)s::JSONB" in str(compiled)
+    assert compiled.params["job_identity_1"] is sa.JSON.NULL
+    adapter.submit_quarantine.assert_awaited_once()
+    adapter.terminate_job.assert_not_awaited()
 
 
 async def test_screen_timeout_alert_is_reporting_only_and_does_not_resubmit() -> None:

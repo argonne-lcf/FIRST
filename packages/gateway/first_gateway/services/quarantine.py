@@ -828,7 +828,11 @@ class QuarantineService:
                 await sess.execute(
                     sa.update(NodeQuarantine)
                     .where(
-                        NodeQuarantine.uid == uid, NodeQuarantine.job_identity.is_(None)
+                        NodeQuarantine.uid == uid,
+                        sa.or_(
+                            NodeQuarantine.job_identity.is_(None),
+                            NodeQuarantine.job_identity == sa.JSON.NULL,
+                        ),
                     )
                     .values(
                         job_identity=job.identity.model_dump(mode="json"),
@@ -955,7 +959,10 @@ class QuarantineService:
                     NodeQuarantine.uid != row.uid,
                     sa.or_(
                         NodeQuarantine.submission_attempts > 0,
-                        NodeQuarantine.job_identity.is_not(None),
+                        sa.and_(
+                            NodeQuarantine.job_identity.is_not(None),
+                            NodeQuarantine.job_identity != sa.JSON.NULL,
+                        ),
                     ),
                 )
             )
