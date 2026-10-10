@@ -67,7 +67,7 @@ def quarantine_release(ctx: typer.Context, uid: int, reference: str) -> None:
 
 @quarantine_cli.command("reestablish")
 def quarantine_reestablish(ctx: typer.Context, uid: int, reference: str) -> None:
-    """Recover lost isolation without resetting the bounded submission budget."""
+    """Explicitly recover lost isolation with a new bounded operation budget."""
     client: AdminClient = ctx.obj
     client.node_quarantine_action(uid, "reestablish", reference)
     Console().print(

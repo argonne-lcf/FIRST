@@ -1,170 +1,150 @@
-# Tara quarantine coordination: FIRST client
+# FIRST-native Tara node quarantine
 
-This is an opt-in client for the shared Tara-local PBS quarantine coordinator.
-It does not change the GraphQL bridge server, add a network service, take nodes
-offline, or classify ordinary model failures as faulty hardware. Existing
-published bundles and running jobs are not modified by this source change.
+FIRST isolates confirmed faulty nodes with lightweight, exact-host PBS jobs;
+each VM's controller owns records, reconciliation and alerts. No Tara coordinator,
+mutable registry, snapshot manager or global launch gate is used. Model jobs are
+never held; normal scheduling, cancellation and model retry limits are unchanged.
 
-## Activation and rollout
+Quarantine replaces bad-node exclusions and generated good-node placement, not
+screening or security. Allowed-node/source ownership, same-rack placement, HSN
+routing, GPU/process checks, TCP confinement and verified cleanup remain required.
+Model OOM, auth/configuration errors and unexplained distributed failures do not diagnose bad nodes.
 
-Set `pilot_system.scheduler_config.quarantine_environment` to `dev` or `prod`
-only after the shared coordinator, model/control protocol 1 and immutable
-status protocol 2 have been tested.
-The adapter requires PBS owner `openinference_svc` and the matching native job
-prefix `first_dev_tara_v2_` or `first_prod_tara_v2_`. Without that setting,
-ordinary submissions retain their previous behavior. Tara ordinary cleanup
-still refuses the separate `first_tara_quarantine_` namespace.
+## What happens when a fault is found
 
-Dev-only tests do not prove cross-environment fencing while Prod still submits
-unheld jobs. After review and merge, activation on both controllers must be
-coordinated with the shared coordinator. Healthy running models stay running.
-No database migration is required. Do not activate this by publishing a new
-bundle or changing Prod fixtures before the remaining deployment review.
+1. Admission or post-cleanup screening confirms two native samples from a specific
+   host in the originating allocation. A held, nonexecuting report preserves its
+   source job ID/name/ctime, environment, reason, evidence and pinned policy bytes.
+2. FIRST verifies the registered source and independent PBS allocation membership,
+   recomputes the diagnosis, and commits a durable per-node submission intent.
+   A pre-manager source retains its allocation for at most 120 seconds awaiting a request, then exits.
+3. FIRST submits an exact-host, exclusive, long-walltime waiting job and verifies
+   its accepted identity before the source exits. Normal replacement submission
+   proceeds immediately while quarantine is queued; it does not wait for step 4.
+   The waiter loads no model/GPU. Queued means **isolation pending**.
+4. Isolation requires the job running on the intended host, independent full-host
+   resource/all-owner census, valid worker activation and an unexpired allocation.
+   The site-normalized `scatter:excl:group=tier0` is accepted only with proof that
+   the physical host has one vnode and is exclusively owned by the waiting job.
+5. Existing records/jobs are reconciled after restart. Lost isolation or conflicting
+   duplicates alerts operators. Neither implies repair or automatic unbounded
+   quarantine resubmission; ordinary model retries continue.
 
-## Submission and cancellation
+Already-queued jobs can win scheduling before quarantine runs. Managed admission
+rejects an intersecting active quarantine before model initialization; unrelated
+models can still launch/retry. The bridge lacks atomic cross-VM create-if-absent:
+discovery/adoption and duplicate detection are bounded safeguards, not PBS fencing.
+Failed/ambiguous guard lookups reject startup as infrastructure/admission errors,
+never hardware diagnoses. If isolation is lost, FIRST still submits/retries models
+and ordinary screening remains required.
 
-Managed model submissions use existing `JobInput.submitAsHold=true` and
-`holdType=u`, with native environment tags:
+## Configure the optional capability
 
-```text
-FIRST_QUARANTINE_VERSION=1
-FIRST_QUARANTINE_KIND=model
-FIRST_QUARANTINE_ENV=dev  # or prod
+Use `pilot_system.quarantine`, **not** `pilot_system.scheduler_config.quarantine_environment`.
+The factory derives adapter mutation authority from this policy. Replace every
+placeholder with the reviewed immutable commit/published SHA-256; YAML does not expand variables.
+
+```yaml
+pilot_system:
+  quarantine:
+    environment: dev                  # prod only on the separately approved Prod VM
+    worker_path: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-pilot-admission/<bundle-commit>/quarantine_wait.py
+    worker_sha256: <worker-sha256>
+    admission_path: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-pilot-admission/<bundle-commit>/allocation_admission.py
+    admission_sha256: <admission-sha256>
+    policy_path: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-pilot-admission/<bundle-commit>/tara-node-admission.json
+    policy_sha256: <policy-sha256>
+    walltime_min: 10080
+    max_submission_attempts: 3
+    max_new_nodes_15min: 2
+    max_active_nodes: 32
 ```
 
-Only the shared native coordinator releases these user holds. Model resource
-validation, rack constraints and all admission/security checks remain intact.
+Keep source admission, waiter and policy pins consistent; missing/changed assets fail closed.
+Other schedulers need not fake PBS assets/proof. Queue/account/workdir use existing pilot config.
+Never edit published bundles, relax headroom thresholds or reintroduce a bypass.
+Budgets are local, not cluster-wide; review Dev/Prod rollout and available capacity.
 
-FIRST does **not** send `deleteJob` for a coordinated model. It queries the exact
-source identity and submits a harmless, initially user-held CPU-only control
-job named `first_tara_quarantine_c<PBS-job-number>`. This carries the version and
-environment plus `FIRST_QUARANTINE_KIND=cancel`, `FIRST_QUARANTINE_SOURCE_ID`,
-`FIRST_QUARANTINE_SOURCE_NAME` and `FIRST_QUARANTINE_SOURCE_CTIME`. Queue and
-account are copied from the verified source job. The source ctime is derived
-from GraphQL submit-time microseconds; qualification must establish that this
-matches native PBS `ctime` before activation.
+## VM update and database checkpoint
 
-An acknowledgement means **cancellation requested**, not that the allocation
-was released or the faulty host isolated. The existing observer continues
-checking the source until PBS proves it gone. The coordinator verifies native
-owner/name/ctime/environment and processes fault fencing before deleting the
-source allocation. The control job never runs or initializes a GPU.
+Use the existing checkout, project, volumes and overlays; never create a second stack
+or restore old overlays/print secrets. Preserve the Dockerfile permissions workaround.
 
-Rolling activation preserves normal stopping of existing, already-running
-legacy jobs. This exception requires the exact service owner and matching
-Dev/Prod model-job prefix, with **no** `FIRST_QUARANTINE_*` tags. Older immutable
-admission wrappers cannot publish protocol-1 quarantine intents. FIRST uses
-normal, non-forced PBS deletion for those running allocations only. Untagged
-queued jobs must be reconciled/held by the coordinator before activation;
-partial, malformed or wrong-protocol tags never select this fallback. All new
-client submissions remain atomically held and tagged.
+Migration `b21f0e4a7c10` adds `first.node_quarantine` and `first.quarantine_report_inbox`, not a replacement DB/model schema.
+It is required before this controller starts unless already applied (Dev has it); check the target DB.
+These are **Dev-only** examples, run as webportal in its existing checkout.
+Review the approved revision/Dockerfile checkpoint; stop on unexpected changes. Not a Prod context:
 
-Before creating a cancellation request, FIRST adopts exactly one verified
-matching request already in PBS. Duplicate, mismatched or unheld requests fail
-closed. A lost create response is not retried within the operation; a later
-reconcile must query and adopt the existing request. The shared coordinator is
-the authority that serializes PBS mutations; FIRST's namespace is not a PBS
-uniqueness constraint.
-
-For a pre-manager failure, FIRST reads the registry and model statuses from the
-same scheduler listing. Typed faults on the originating allocation defer its
-first terminal transition while isolation is pending, failed or lost, keeping
-submission capacity occupied. Once every attributed host is proven isolated
-with current, unexpired evidence, FIRST allows the normal terminal transition
-without charging a model-launch failure. The coordinator's separate bounded
-node-fault budget limits these replacements. Unattributed model OOM, auth,
-configuration and distributed failures keep the existing launch-failure counter
-behavior. Intentional shutdown still cleans up normally through the coordinator.
-
-The coordinator must publish the pending immutable status before deleting the
-originating allocation. This ordering is a qualification requirement, not proof
-supplied by the mock tests.
-
-## Health alerts
-
-The coordinator publishes a new, always user-held PBS job for each status
-change or heartbeat. No job environment is modified after submission, avoiding
-the site's `pbs_alterjob` error 15109. Names have the form
-`first_tara_quarantine_s<32-hex-coordinator-instance>_<generation>`.
-The coordinator retains the newest two committed snapshots; a third may exist
-briefly during publication and pruning. These CPU-only jobs never execute.
-
-FIRST reads snapshots through the existing GraphQL scheduler and sends
-observations through its existing health-alert mechanism. It requires the
-service owner, user hold, `VERSION=2`, `KIND=status`, `INSTANCE` and
-`GENERATION` tags. Names, tags and decoded payload must agree.
-`FIRST_QUARANTINE_STATUS` is padded URL-safe base64 containing:
-
-```json
-{
-  "schema_version": 2,
-  "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "generation": 1,
-  "parent_generation": 0,
-  "previous_job_id": null,
-  "updated_unix": 1700000000,
-  "notification_environment": "dev",
-  "gate_closed": true,
-  "gate_error": null,
-  "records": [
-    {
-      "host": "x4820c0s0b0n0",
-      "origin_job": "8123.tara",
-      "environment": "dev",
-      "code": "missing_gpu",
-      "reason": "missing_gpu",
-      "evidence": "/service/evidence/node.json",
-      "quarantine_job_id": null,
-      "expires_unix": null,
-      "status": "pending",
-      "last_transition_unix": 1700000000
-    }
-  ]
-}
+```bash
+cd /home/webportal/FIRSTv2
+export COMPOSE_PROJECT_NAME=first
+export COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml
+git rev-parse HEAD
+git status --short
+sha256sum deploy/Dockerfile
+docker compose ls
+docker compose ps
+docker compose exec -T controller-manager .venv/bin/alembic \
+  -c packages/gateway/first_gateway/database/alembic.ini current
+docker compose build controller-manager inference-gateway
+# Only if missing, after backup and the separately coordinated idle update:
+docker compose run --rm --no-deps inference-gateway .venv/bin/alembic \
+  -c packages/gateway/first_gateway/database/alembic.ini upgrade b21f0e4a7c10
+docker compose up -d --no-deps --no-build controller-manager inference-gateway
 ```
 
-The live bridge returns PBS owners as `username@submission-host`; FIRST
-normalizes this only after validating both the username and hostname. It also
-returns `Job.holdType=null` even for user-held native jobs. FIRST therefore
-reads the native `Hold_Types` and `job_state` from `Job.extension`, requiring
-consistency with the GraphQL state. A held state alone is not proof of a user
-hold. Missing evidence and contradictory typed/native holds fail closed. Raw
-extensions, which can contain private submission arguments, are not retained
-or logged. The same owner normalization is used for cancellation verification.
+Skip migration when current already reports b21f0e4a7c10. Reuse existing tunnels
+and separate CA roots. Production activation/restarts are separately coordinated.
 
-The encoded status is at most 32 KiB; the newest heartbeat is at most 180
-seconds old. FIRST selects the newest generation, not the first PBS listing
-entry. All visible status jobs must belong to one instance with unique
-generations and PBS IDs. The newest snapshot must identify its retained
-predecessor by generation and job ID; payload and native submission timestamps
-must not decrease. Initial generation 1 alone is allowed; any later singleton
-fails closed. An older predecessor may have been pruned deliberately. A legacy
-mutable registry, malformed status job, competing instance, invalid lineage,
-excessive snapshots or a future/stale heartbeat remains an error, not recovery.
+## Operator commands: repair and return to service
 
-Statuses are `pending`, `isolated`, `failed`, `lost`, and explicitly `released`.
-The same node key deduplicates repeat observations; a status change creates a
-new transition. Confirmed isolation includes quarantine job ID and expiration.
-Only `notification_environment` emits the shared node transitions, avoiding
-normal duplicate Dev/Prod notifications. Failure to read or validate a snapshot
-remains a check failure, not an empty healthy result. Omitting a previously
-alerted unresolved node also fails, rather than falsely reporting recovery.
+Use normal auth and the selected VM's control API. These examples target Dev; get `uid`, environment, job ID and expiration from `list`:
 
-The shared files remain authoritative after snapshot deletion or restart.
-Notification-owner changes require a deliberate alert-state handoff; do not
-switch the owner to silence outstanding alerts. These are port/status tests,
-not proof of Operations' inbound filters or GPU repair.
+```bash
+alcf-ai auth login
+first-admin --base-url http://127.0.0.1:9100 node-quarantine list
+# After Operations confirms remediation; replace 1 and OPS-123 with real values:
+first-admin --base-url http://127.0.0.1:9100 node-quarantine screen 1 OPS-123
+first-admin --base-url http://127.0.0.1:9100 node-quarantine list
+# Only while isolated and after the same reference's fresh screen_outcome=PASS:
+first-admin --base-url http://127.0.0.1:9100 node-quarantine release 1 OPS-123
+first-admin --base-url http://127.0.0.1:9100 node-quarantine list
+# For lost/failed isolation, after reconciling any existing exact-host jobs:
+first-admin --base-url http://127.0.0.1:9100 node-quarantine reestablish 1 OPS-456
+```
 
-## Qualification gates
+A screen request does not release the node. A valid negative result is recorded
+and its consumed carrier cleaned, but release is denied. Each nonce is write-once:
+identical repeats are idempotent; conflicting results cannot overwrite a FAIL.
+A PASS must remain fresh (120-second evidence window) when release is executed;
+request a new screen if it expires. Release completes only after deliberate
+deletion is acknowledged **and** an exact subsequent lookup proves the job gone.
+Expiration/deletion/disappearance alone produces `lost`, not `released`.
+Explicit reestablish creates a new bounded three-attempt operation, preserving
+previous count/history. No automatic renewal/reset, GPU reset or unchecked group signaling is used.
 
-- Mock regression tests cover held model submission, unchanged resource
-  translation, cancellation identity/idempotence, namespace protection,
-  status transitions, immutable status lineage/order, stale/invalid snapshots
-  and unresolved-record loss.
-- Before live activation, demonstrate the existing bridge maps `env` to native
-  `Variable_List`, honors atomic user-held submission, and returns exact owner,
-  queue, account, holds and submission time matching native PBS identity.
-- Controlled native tests must demonstrate queued-job fencing, exact-host
-  effective exclusivity, reconciliation and guarded return to service.
-- No healthy production jobs, system-wide settings or published artifacts are
-  changed by the mock tests.
+## Protocol, ownership and alerts
+
+Protocol 3 uses `FIRST_QUARANTINE_VERSION/KIND/ENV/CLUSTER/HOST/OPERATION` and
+`SOURCE_ID/SOURCE_NAME/SOURCE_CTIME`. Waiting jobs are
+`first_quar_<env>_<host>_<op8>`. Event reports are held
+`first_qreport_<env>_<fault|activation>_<op8>` or
+`first_qreport_<env>_screen_<nonce8>`; screen requests are held
+`first_qrequest_<env>_screen_<nonce8>`. Only reports/requests are held, never models.
+Report JSON is URL-safe base64, bounded to 64 KiB decoded/96 KiB encoded.
+
+Both environments discover jobs; foreign jobs/activation are observer-only.
+Only the matching environment may mutate/ack its carriers. Identity binds owner,
+PBS ID/ctime, full operation, host/source/metadata. Normal cleanup protects all auxiliary
+namespaces, including the legacy namespace during transition. Activation remains
+available while the waiter lives; consumed reports/requests are cleaned only
+after verified persistence. Ambiguous submissions are adopted by exact identity,
+never blindly repeated.
+
+The VM database holds durable records/receipts. JSONB emptiness may be SQL NULL or JSON null;
+adoption, screen CAS and budgets handle both without migrations/manual resets.
+Malformed reports retain an infrastructure notice, not a node diagnosis. Existing health
+alerts report fault/pending, confirmed isolation/job/expiry, failed/lost isolation,
+screen failures/timeouts and explicit return. Brief transitions remain latched
+and deduplicated; each VM uses its configured alert destination. Configure tokens
+only through approved secret files. Never post credentials in logs or chat.
