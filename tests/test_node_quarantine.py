@@ -44,10 +44,10 @@ from first_gateway.database.models import (
     PilotJob,
     QuarantineReportInbox,
 )
+from first_gateway.platforms.schedulers.graphql_pbs_quarantine import activation_proof
 from first_gateway.services.pilot_submitter import PilotSubmitter
-from first_gateway.services.quarantine import QuarantineService, isolated
+from first_gateway.services.quarantine import QuarantineService, ReportPending, isolated
 from first_gateway.services.quarantine_evidence import (
-    activation_proof,
     cleanup_proof,
     fault_report_time,
     gpu_fault,
@@ -502,6 +502,82 @@ def test_native_activation_requires_whole_physical_host(change: str) -> None:
         activation_proof(QuarantineActivationPayload.model_validate(proof), status())
 
 
+def test_measured_tier0_group_activation_requires_one_physical_vnode() -> None:
+    proof = activation().model_dump(mode="json")
+    proof["native_job"]["Resource_List"]["place"] = "scatter:excl:group=tier0"
+    activation_proof(QuarantineActivationPayload.model_validate(proof), status())
+    proof["native_nodes"][HOST + "-vnode"] = copy.deepcopy(proof["native_nodes"][HOST])
+    with pytest.raises(ValueError, match="whole-host"):
+        activation_proof(QuarantineActivationPayload.model_validate(proof), status())
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        f"1:host={HOST}:host={HOST}:ncpus=288",
+        f"1:host={HOST}:host={PEER}:ncpus=288",
+        f"2:host={HOST}:ncpus=288",
+        f"1:host={HOST}:ncpus=288+1:host={PEER}:ncpus=288",
+        "1:host=x4820*:ncpus=288",
+    ],
+)
+def test_native_activation_requires_one_exact_nonduplicated_selector(
+    selector: str,
+) -> None:
+    proof = activation().model_dump(mode="json")
+    proof["native_job"]["Resource_List"]["select"] = selector
+    with pytest.raises(ValueError, match="exact-host"):
+        activation_proof(QuarantineActivationPayload.model_validate(proof), status())
+
+
+def test_unknown_placement_group_and_missing_pbs_evidence_are_rejected() -> None:
+    proof = activation().model_dump(mode="json")
+    proof["native_job"]["Resource_List"]["place"] = "scatter:excl:group=unknown"
+    with pytest.raises(ValueError, match="exact-host"):
+        activation_proof(QuarantineActivationPayload.model_validate(proof), status())
+    # Common protocol does not force future scheduler adapters to fake PBS.
+    proof.pop("native_job")
+    proof.pop("native_nodes")
+    generic = QuarantineActivationPayload.model_validate(proof)
+    assert generic.native_job is None and generic.native_nodes is None
+    with pytest.raises(ValueError, match="PBS activation requires"):
+        activation_proof(generic, status())
+
+
+async def test_activation_verification_is_delegated_to_optional_adapter() -> None:
+    service, session, adapter = mock_service(row())
+    session.scalar.return_value = row()
+    current = status()
+    adapter.get_quarantine_status.return_value = current
+    proof = activation().model_copy(update={"expires_unix": current.expires_unix})
+    report = QuarantineReport(
+        "activation.pbs", "activation", SOURCE.ctime, proof, "1" * 64
+    )
+    await service._worker_report(Cluster(uid=1, name="tara"), pilot(), adapter, report)
+    adapter.verify_quarantine_activation.assert_awaited_once_with(proof, current)
+    adapter.submit_job.assert_not_awaited()
+    adapter.terminate_job.assert_not_awaited()
+
+
+async def test_unverified_live_isolation_defers_activation_without_rejecting_carrier() -> (
+    None
+):
+    service, session, adapter = mock_service(row())
+    session.scalar.return_value = row()
+    current = replace(status(), exclusive=False)
+    adapter.get_quarantine_status.return_value = current
+    proof = activation().model_copy(update={"expires_unix": current.expires_unix})
+    report = QuarantineReport(
+        "activation.pbs", "activation", SOURCE.ctime, proof, "1" * 64
+    )
+    with pytest.raises(ReportPending, match="independent exact-host"):
+        await service._worker_report(
+            Cluster(uid=1, name="tara"), pilot(), adapter, report
+        )
+    adapter.verify_quarantine_activation.assert_not_awaited()
+    session.execute.assert_not_awaited()
+
+
 def test_native_activation_and_all_node_cleanup() -> None:
     activation_proof(activation(), status())
     markers = [
@@ -767,17 +843,36 @@ async def test_report_acknowledgement_retries_are_bounded_without_model_mutation
     adapter.terminate_job.assert_not_awaited()
 
 
-async def test_explicit_reestablish_uses_new_operation_without_budget_reset() -> None:
-    node = row(state="lost", submission_attempts=1)
+async def test_explicit_reestablish_gets_new_operation_budget_and_records_old_count() -> (
+    None
+):
+    node = row(state="lost", submission_attempts=3)
     service, _, adapter = mock_service(node)
     adapter.list_quarantine_jobs.return_value = []
     await service.request_reestablish(1, "OPS-REESTABLISH")
     assert node.operation != OPERATION and len(node.operation) == 32
-    assert node.submission_attempts == 1 and node.state == "pending"
+    assert node.submission_attempts == 0 and node.state == "pending"
     assert node.job_identity is None and node.activation is None
     assert node.evidence["isolation_history"][-1]["operation"] == OPERATION
+    assert node.evidence["isolation_history"][-1]["submission_attempts"] == 3
     adapter.submit_job.assert_not_awaited()
     adapter.delete_quarantine.assert_not_awaited()
+
+
+async def test_automatic_lost_isolation_never_resets_operation_or_retry_budget() -> (
+    None
+):
+    node = row(submission_attempts=3)
+    service, _, adapter = mock_service(node)
+    adapter.list_quarantine_jobs.return_value = []
+    adapter.get_quarantine_status.return_value = None
+    with patch.object(service, "_state", QuarantineService._state.__get__(service)):
+        await service.reconcile(node.uid)
+    assert node.state == "lost"
+    assert node.operation == OPERATION and node.submission_attempts == 3
+    adapter.submit_quarantine.assert_not_awaited()
+    adapter.submit_job.assert_not_awaited()
+    adapter.terminate_job.assert_not_awaited()
 
 
 async def test_stale_activation_cannot_confirm_reestablished_operation() -> None:

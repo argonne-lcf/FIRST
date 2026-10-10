@@ -7,6 +7,7 @@ import re
 import shlex
 import time
 from abc import abstractmethod
+from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
 from first_common.schema.base_scheduler import JobSubmitResult, SchedulerJobState
@@ -14,6 +15,7 @@ from first_common.schema.quarantine import (
     MAX_ENCODED_REPORT_BYTES,
     MAX_REPORT_BYTES,
     QUARANTINE_PAYLOAD,
+    QuarantineActivationPayload,
     QuarantineJobIdentity,
     QuarantineJobSpec,
     QuarantineJobStatus,
@@ -148,6 +150,111 @@ def allocation(row: dict[str, Any], *, required: bool = True) -> tuple[str, ...]
     return tuple(result)
 
 
+def native_epoch(value: Any) -> int:
+    if type(value) is int and value > 0:
+        return value
+    if isinstance(value, str):
+        for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return int(
+                    datetime.strptime(value, fmt)
+                    .replace(tzinfo=timezone.utc)
+                    .timestamp()
+                )
+            except ValueError:
+                continue
+    raise ValueError("native allocation timestamp is unverified")
+
+
+def exact_native_host_selector(value: Any, host: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    parts = value.split(":")
+    if parts[0] != "1":
+        return False
+    resources: dict[str, str] = {}
+    for part in parts[1:]:
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_.-]+)", part)
+        if match is None or match[1] in resources:
+            return False
+        resources[match[1]] = match[2]
+    return resources.get("host") == host
+
+
+def activation_proof(
+    payload: QuarantineActivationPayload, status: QuarantineJobStatus
+) -> None:
+    """PBS-specific native proof, additional to independent bridge live census."""
+    identity = status.identity
+    job, nodes = payload.native_job, payload.native_nodes
+    if not isinstance(job, dict) or not isinstance(nodes, dict):
+        raise ValueError(
+            "PBS activation requires native job and physical-vnode evidence"
+        )
+    resources = job.get("Resource_List")
+    job_owner = job.get("Job_Owner")
+    if (
+        job.get("Job_Name") != identity.job_name
+        or job.get("job_state") != "R"
+        or native_epoch(job.get("ctime")) != identity.ctime
+        or not isinstance(job_owner, str)
+        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9.-]+", job_owner) is None
+        or not isinstance(resources, dict)
+        or not exact_native_host_selector(resources.get("select"), identity.host)
+        or resources.get("place")
+        not in {
+            "exclhost",
+            "scatter:exclhost",
+            "pack:exclhost",
+            "excl",
+            "scatter:excl",
+            "scatter:excl:group=tier0",
+        }
+        or not nodes
+    ):
+        raise ValueError(
+            "native activation exact-host/exclusivity identity is unverified"
+        )
+    if (
+        resources["place"] in {"excl", "scatter:excl", "scatter:excl:group=tier0"}
+        and len(nodes) != 1
+    ):
+        raise ValueError(
+            "native vnode-exclusive request does not prove whole-host isolation"
+        )
+    raw_vnodes = job.get("exec_vnode")
+    if (
+        not isinstance(raw_vnodes, str)
+        or not raw_vnodes.startswith("(")
+        or not raw_vnodes.endswith(")")
+    ):
+        raise ValueError("native activation allocation is unavailable")
+    used = set(re.findall(r"(?:^|[+(])([^():+]+):", raw_vnodes))
+    if not used or not used.issubset(nodes):
+        raise ValueError(
+            "native activation allocation differs from physical vnode census"
+        )
+    for row in nodes.values():
+        available = row.get("resources_available")
+        occupants = row.get("jobs")
+        if isinstance(occupants, str):
+            occupants = [part.strip() for part in occupants.split(",") if part.strip()]
+        if (
+            not isinstance(available, dict)
+            or available.get("host", "").split(".")[0] != identity.host
+            or not isinstance(occupants, list)
+            or not occupants
+            or any(
+                not isinstance(item, str) or item.split("/", 1)[0] != identity.job_id
+                for item in occupants
+            )
+            or "job-exclusive" not in str(row.get("state", "")).split(",")
+        ):
+            raise ValueError(
+                "native physical-vnode census does not prove exclusive waiting-job ownership"
+            )
+
+
 class GraphQLQuarantineMixin(SchedulerQuarantineAdapter):
     owner: str
     quarantine_environment: Literal["dev", "prod"] | None
@@ -163,6 +270,11 @@ class GraphQLQuarantineMixin(SchedulerQuarantineAdapter):
             and environment == self.quarantine_environment,
             "only the matching environment may mutate node-isolation jobs",
         )
+
+    async def verify_quarantine_activation(
+        self, payload: QuarantineActivationPayload, status: QuarantineJobStatus
+    ) -> None:
+        activation_proof(payload, status)
 
     async def _quarantine_rows(
         self,

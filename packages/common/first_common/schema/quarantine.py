@@ -146,8 +146,10 @@ class QuarantineActivationPayload(ReportBase):
     worker_identity: WorkerIdentity
     gpu_initialized: Literal[False]
     expires_unix: int = Field(gt=0)
-    native_job: dict[str, Any]
-    native_nodes: dict[str, dict[str, Any]] = Field(min_length=1, max_length=16)
+    native_job: dict[str, Any] | None = None
+    native_nodes: dict[str, dict[str, Any]] | None = Field(
+        default=None, min_length=1, max_length=16
+    )
 
 
 class QuarantineScreenPayload(ReportBase):
@@ -294,6 +296,11 @@ class SchedulerQuarantineAdapter(ABC):
     async def get_source_allocation(
         self, source: QuarantineSource
     ) -> tuple[str, ...]: ...
+
+    @abstractmethod
+    async def verify_quarantine_activation(
+        self, payload: QuarantineActivationPayload, status: QuarantineJobStatus
+    ) -> None: ...
 
     @abstractmethod
     async def delete_quarantine(self, identity: QuarantineJobIdentity) -> None: ...

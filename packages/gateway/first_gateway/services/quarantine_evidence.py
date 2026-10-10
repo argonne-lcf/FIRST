@@ -6,14 +6,11 @@ import ipaddress
 import json
 import re
 import time
-from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
 from first_common.schema.quarantine import (
-    QuarantineActivationPayload,
     QuarantineFaultPayload,
-    QuarantineJobStatus,
     QuarantineScreenPayload,
 )
 
@@ -94,86 +91,6 @@ def fault_report_time(
         if type(collected) is not int or collected < source_ns:
             raise ValueError("fault sample predates its native source allocation")
     return observed
-
-
-def native_epoch(value: Any) -> int:
-    if type(value) is int and value > 0:
-        return value
-    if isinstance(value, str):
-        for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%dT%H:%M:%S"):
-            try:
-                return int(
-                    datetime.strptime(value, fmt)
-                    .replace(tzinfo=timezone.utc)
-                    .timestamp()
-                )
-            except ValueError:
-                continue
-    raise ValueError("native allocation timestamp is unverified")
-
-
-def activation_proof(
-    payload: QuarantineActivationPayload, status: QuarantineJobStatus
-) -> None:
-    """Require native physical-vnode evidence in addition to bridge live census."""
-    identity = status.identity
-    job, nodes = payload.native_job, payload.native_nodes
-    resources = job.get("Resource_List")
-    owner = job.get("Job_Owner")
-    if (
-        job.get("Job_Name") != identity.job_name
-        or job.get("job_state") != "R"
-        or native_epoch(job.get("ctime")) != identity.ctime
-        or not isinstance(owner, str)
-        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9.-]+", owner) is None
-        or not isinstance(resources, dict)
-        or re.fullmatch(
-            r"1:(?:[^:+]+:)*host=" + re.escape(identity.host) + r"(?::[^:+]+)*",
-            str(resources.get("select", "")),
-        )
-        is None
-        or resources.get("place")
-        not in {"exclhost", "scatter:exclhost", "pack:exclhost", "excl", "scatter:excl"}
-        or not nodes
-    ):
-        raise ValueError(
-            "native activation exact-host/exclusivity identity is unverified"
-        )
-    if resources["place"] in {"excl", "scatter:excl"} and len(nodes) != 1:
-        raise ValueError(
-            "native vnode-exclusive request does not prove whole-host isolation"
-        )
-    raw_vnodes = job.get("exec_vnode")
-    if (
-        not isinstance(raw_vnodes, str)
-        or not raw_vnodes.startswith("(")
-        or not raw_vnodes.endswith(")")
-    ):
-        raise ValueError("native activation allocation is unavailable")
-    used = set(re.findall(r"(?:^|[+(])([^():+]+):", raw_vnodes))
-    if not used or not used.issubset(nodes):
-        raise ValueError(
-            "native activation allocation differs from physical vnode census"
-        )
-    for row in nodes.values():
-        available = row.get("resources_available")
-        occupants = row.get("jobs")
-        if isinstance(occupants, str):
-            occupants = [part.strip() for part in occupants.split(",") if part.strip()]
-        if (
-            not isinstance(available, dict)
-            or available.get("host", "").split(".")[0] != identity.host
-            or not isinstance(occupants, list)
-            or not occupants
-            or any(
-                not isinstance(item, str) or item.split("/", 1)[0] != identity.job_id
-                for item in occupants
-            )
-            or "job-exclusive" not in str(row.get("state", "")).split(",")
-        ):
-            raise ValueError(
-                "native physical-vnode census does not prove exclusive waiting-job ownership"
-            )
 
 
 def allocation_context(hosts: list[str], policy: dict[str, Any]) -> None:

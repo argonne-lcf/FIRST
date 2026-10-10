@@ -31,7 +31,6 @@ from ..database.models import Cluster, NodeQuarantine, PilotJob, QuarantineRepor
 from ..platforms.schedulers import build_scheduler
 from ..settings import ClientState
 from .quarantine_evidence import (
-    activation_proof,
     cleanup_proof,
     fault_report_time,
     paired,
@@ -664,7 +663,17 @@ class QuarantineService:
                 raise ValueError(
                     "waiting worker expiration differs from scheduler evidence"
                 )
-            activation_proof(payload, status)
+            if (
+                not status.exclusive
+                or not status.request_verified
+                or status.allocated_hosts != (identity.host,)
+            ):
+                raise ReportPending(
+                    "worker activation awaits independent exact-host isolation proof"
+                )
+            await asyncio.wait_for(
+                adapter.verify_quarantine_activation(payload, status), RPC_TIMEOUT
+            )
             values = {"activation": payload.model_dump(mode="json")}
         else:
             assert pilot.quarantine is not None
@@ -1148,6 +1157,7 @@ class QuarantineService:
                         "operation": current.operation,
                         "job_identity": current.job_identity,
                         "state": current.state,
+                        "submission_attempts": current.submission_attempts,
                         "operator_reference": reference,
                     },
                 ],
@@ -1157,6 +1167,7 @@ class QuarantineService:
             current.activation = None
             current.submission_started_at = None
             current.submission_uncertain = False
+            current.submission_attempts = 0
             current.repair_reference = reference
             current.screen_nonce = None
             current.screen_requested_at = None
@@ -1166,8 +1177,9 @@ class QuarantineService:
             current.deletion_started_at = None
             current.deletion_acknowledged_at = None
             current.reconcile_retry_at = None
-            # Preserve lifetime submit count and fault evidence; explicit recovery
-            # is not an unlimited retry budget or proof of node remediation.
+            # This explicit new operation gets its own bounded submit budget.
+            # Automatic lost/failed reconciliation never resets attempts, and
+            # the previous operation's count remains in bounded audit history.
             transition(
                 current,
                 "pending",
