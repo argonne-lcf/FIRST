@@ -48,11 +48,23 @@ def quarantine_list(ctx: typer.Context) -> None:
 
 
 @quarantine_cli.command("screen")
-def quarantine_screen(ctx: typer.Context, uid: int, reference: str) -> None:
+def quarantine_screen(
+    ctx: typer.Context,
+    uid: int,
+    reference: str,
+    wait: bool = typer.Option(False, "--wait", help="Wait for this exact fresh PASS."),
+    timeout: int = typer.Option(
+        180, "--timeout", min=1, max=600, help="Polling timeout in seconds with --wait."
+    ),
+) -> None:
     """After Operations confirms repair, request a fresh screen while isolated."""
     client: AdminClient = ctx.obj
-    client.node_quarantine_action(uid, "screen", reference)
-    Console().print("Fresh screen requested; quarantine remains allocated.")
+    receipt = client.screen_node_quarantine(uid, reference, wait=wait, timeout=timeout)
+    Console().print(
+        f"{'Fresh PASS confirmed' if wait else 'Fresh screen requested'} "
+        f"(uid={receipt.uid}, operation={receipt.operation}, nonce={receipt.nonce}); "
+        "quarantine remains allocated."
+    )
 
 
 @quarantine_cli.command("release")

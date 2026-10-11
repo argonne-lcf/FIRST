@@ -95,6 +95,8 @@ docker compose up -d --no-deps --no-build controller-manager inference-gateway
 
 Skip migration when current already reports b21f0e4a7c10. Reuse existing tunnels
 and separate CA roots. Production activation/restarts are separately coordinated.
+`--wait` requires matching updated client/controller receipt and evidence-expiry APIs;
+older APIs fail closed. It adds no database migration; b21f0e4a7c10 is unchanged.
 
 ## Operator commands: repair and return to service
 
@@ -104,17 +106,32 @@ Use normal auth and the selected VM's control API. These examples target Dev; ge
 alcf-ai auth login
 first-admin --base-url http://127.0.0.1:9100 node-quarantine list
 # After Operations confirms remediation; replace 1 and OPS-123 with real values:
-first-admin --base-url http://127.0.0.1:9100 node-quarantine screen 1 OPS-123
-first-admin --base-url http://127.0.0.1:9100 node-quarantine list
-# Only while isolated and after the same reference's fresh screen_outcome=PASS:
-first-admin --base-url http://127.0.0.1:9100 node-quarantine release 1 OPS-123
+first-admin --base-url http://127.0.0.1:9100 node-quarantine screen 1 OPS-123 --wait --timeout 180 &&
+  first-admin --base-url http://127.0.0.1:9100 node-quarantine release 1 OPS-123
 first-admin --base-url http://127.0.0.1:9100 node-quarantine list
 # For lost/failed isolation, after reconciling any existing exact-host jobs:
 first-admin --base-url http://127.0.0.1:9100 node-quarantine reestablish 1 OPS-456
 ```
 
-A screen request does not release the node. A valid negative result is recorded
-and its consumed carrier cleaned, but release is denied. Each nonce is write-once:
+Without `--wait`, screen remains asynchronous: acceptance is not completion.
+`--wait` exits zero only for a fresh PASS matching the accepted UID, operation,
+nonce, request timestamp and reference. Negative/stale results, timeout, a
+superseding request, authentication or lookup failure exit nonzero. It never
+auto-releases; the `&& release` above is the operator's separate explicit action.
+`--timeout` is an integer 1–600 seconds (default 180), starting **after** the
+authenticated screen POST is accepted. Polling HTTP timeouts are capped at 10
+seconds or the remaining budget; a PASS arriving after the deadline is rejected.
+Freshness also checks the oldest native sample's expiry, not just the PASS timestamp.
+Polls reuse that POST's Authorization; a 401 stops the wait, with no interactive
+authentication recovery. Initial authentication in `--wait` mode is also
+noninteractive: an invalid session fails before submission; log in separately.
+Authentication/POST precede the polling budget. Asynchronous mode keeps its
+existing authentication behavior.
+The controller still independently checks ownership, reference, nonce, native
+paired evidence and freshness before release; CLI waiting is not a security boundary.
+
+A valid negative result is recorded and its consumed carrier cleaned, but release
+is denied. Each nonce is write-once:
 identical repeats are idempotent; conflicting results cannot overwrite a FAIL.
 A PASS must remain fresh (120-second evidence window) when release is executed;
 request a new screen if it expires. Release completes only after deliberate

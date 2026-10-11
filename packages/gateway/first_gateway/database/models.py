@@ -1,5 +1,5 @@
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Self
 
@@ -728,6 +728,37 @@ class NodeQuarantine(ResourceRow):
             if type(observed) is not int
             else datetime.fromtimestamp(observed / 1e9, timezone.utc)
         )
+
+    @property
+    def screen_expires_at(self) -> datetime | None:
+        """Expose the oldest native sample's existing 120-second validity bound."""
+        result = self.screen_result
+        if (
+            result is None
+            or result.get("outcome") != "PASS"
+            or result.get("operation") != self.operation
+            or result.get("nonce") != self.screen_nonce
+        ):
+            return None
+        collected = []
+        for field in ("reports", "confirmation"):
+            samples = result.get(field)
+            if (
+                not isinstance(samples, list)
+                or len(samples) != 1
+                or not isinstance(samples[0], dict)
+            ):
+                return None
+            timestamp = samples[0].get("collected_unix_ns")
+            if type(timestamp) is not int or timestamp <= 0:
+                return None
+            collected.append(timestamp)
+        try:
+            return datetime.fromtimestamp(
+                min(collected) / 1e9, timezone.utc
+            ) + timedelta(seconds=120)
+        except (ValueError, OverflowError, OSError):
+            return None
 
 
 class QuarantineReportInbox(ResourceRow):

@@ -3,7 +3,9 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+from .quarantine import Operation
 
 
 class NodeQuarantineSummary(BaseModel):
@@ -26,9 +28,23 @@ class NodeQuarantineSummary(BaseModel):
     screen_requested_at: datetime | None
     screen_outcome: Literal["PASS", "FAIL"] | None = None
     screened_at: datetime | None = None
+    screen_expires_at: datetime | None = None
     release_requested_at: datetime | None
     submission_attempts: int
     submission_uncertain: bool
+
+
+class QuarantineScreenReceipt(BaseModel):
+    """Identity captured under the screen request's existing row lock."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["requested"] = "requested"
+    action: Literal["screen"] = "screen"
+    uid: int = Field(gt=0)
+    operation: Operation
+    nonce: Operation
+    requested_at: AwareDatetime
 
 
 class QuarantineOperatorAction(BaseModel):

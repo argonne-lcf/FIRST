@@ -26,6 +26,7 @@ from first_common.schema.quarantine import (
     QuarantineSubmissionRejected,
     SchedulerQuarantineAdapter,
 )
+from first_common.schema.quarantine_read import QuarantineScreenReceipt
 from first_common.schema.types import PilotConfig
 
 from ..database.models import Cluster, NodeQuarantine, PilotJob, QuarantineReportInbox
@@ -1114,7 +1115,7 @@ class QuarantineService:
             if row is not None:
                 transition(row, state, message)
 
-    async def request_screen(self, uid: int, reference: str) -> None:
+    async def request_screen(self, uid: int, reference: str) -> QuarantineScreenReceipt:
         async with self.clients.db_sessionmaker.begin() as sess:
             row = await sess.get(NodeQuarantine, uid, with_for_update=True)
             if row is None or row.state != "isolated" or row.job_identity is None:
@@ -1129,6 +1130,15 @@ class QuarantineService:
             row.deletion_started_at = None
             row.deletion_acknowledged_at = None
             row.reconcile_retry_at = None
+            receipt = QuarantineScreenReceipt(
+                uid=row.uid,
+                operation=row.operation,
+                nonce=row.screen_nonce,
+                requested_at=row.screen_requested_at,
+            )
+        # Return the committed request, not a refetch that may already reflect
+        # a concurrent operator's newer screen.
+        return receipt
 
     async def request_release(self, uid: int, reference: str) -> None:
         async with self.clients.db_sessionmaker.begin() as sess:

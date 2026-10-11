@@ -6,6 +6,7 @@ from first_common.errors import InvalidSpecError
 from first_common.schema.quarantine_read import (
     NodeQuarantineSummary,
     QuarantineOperatorAction,
+    QuarantineScreenReceipt,
 )
 from first_common.schema.resources import (
     ConfigVersion,
@@ -45,7 +46,7 @@ async def node_quarantine_action(
     body: QuarantineOperatorAction,
     state: AppState,
     admin: AdminUser,
-) -> dict[str, str]:
+) -> QuarantineScreenReceipt | dict[str, str]:
     """Explicit operator screen/release/reestablish, protected by admin routing."""
     service = QuarantineService(state)
     actions = {
@@ -57,7 +58,7 @@ async def node_quarantine_action(
     if operation is None:
         raise HTTPException(status_code=404, detail="Unknown quarantine action")
     try:
-        await operation(uid, body.reference)
+        receipt = await operation(uid, body.reference)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     logger.info(
@@ -67,7 +68,7 @@ async def node_quarantine_action(
         admin.id,
         body.reference,
     )
-    return {"status": "requested", "action": action}
+    return receipt if receipt is not None else {"status": "requested", "action": action}
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)
