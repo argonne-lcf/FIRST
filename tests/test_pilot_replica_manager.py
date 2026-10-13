@@ -14,13 +14,9 @@ from first_common.schema.pilot import (
     PilotRuntimeConfig,
 )
 from first_common.schema.types import PalsDiscovery, SSHDiscovery
-from first_pilot.replica_manager import (
-    ReplicaManager,
-    discover_hosts,
-    query_gpus_local,
-    query_gpus_pals,
-    query_gpus_ssh,
-)
+from first_pilot.replica_manager import ReplicaManager, discover_hosts, query_gpus
+
+PALS = PalsDiscovery(launcher_path=Path("/opt/test/mpiexec"))
 
 
 def _gpu_rows(hostname: str, rank: int, indices: tuple[int, ...]) -> str:
@@ -46,7 +42,7 @@ def test_scheduler_nodefile_inventory_does_not_resolve_dns(
         getfqdn.assert_not_called()
 
 
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_single_host_inventory_runs_nvidia_smi_locally(
     run: MagicMock,
 ) -> None:
@@ -57,7 +53,7 @@ def test_single_host_inventory_runs_nvidia_smi_locally(
         stderr="",
     )
 
-    resources = query_gpus_local("head.example.test", 4)
+    [resources] = query_gpus(["head.example.test"], SSHDiscovery(), 4)
 
     assert [gpu.index for gpu in resources.gpus] == ["0", "1", "2", "3"]
     command = run.call_args.args[0]
@@ -66,7 +62,7 @@ def test_single_host_inventory_runs_nvidia_smi_locally(
     assert run.call_args.kwargs["timeout"] == 5.0
 
 
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_ssh_inventory_queries_every_host_and_preserves_scheduler_order(
     run: MagicMock,
 ) -> None:
@@ -80,7 +76,7 @@ def test_ssh_inventory_queries_every_host_and_preserves_scheduler_order(
     run.side_effect = response
     hostnames = ["worker-b.example.test", "worker-a.example.test"]
 
-    resources = query_gpus_ssh(hostnames, expected_gpus=2, timeout_sec=7.0)
+    resources = query_gpus(hostnames, SSHDiscovery(timeout_sec=7.0), 2)
 
     assert [host.hostname for host in resources] == hostnames
     assert [[gpu.index for gpu in host.gpus] for host in resources] == [
@@ -93,14 +89,14 @@ def test_ssh_inventory_queries_every_host_and_preserves_scheduler_order(
 
 
 @patch(
-    "first_pilot.replica_manager.shutil.which",
+    "first_pilot.host_commands.shutil.which",
     return_value="/usr/bin/nvidia-smi",
 )
 @patch(
-    "first_pilot.replica_manager._require_executable",
+    "first_pilot.host_commands._require_executable",
     return_value="/opt/test/mpiexec",
 )
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_pals_inventory_validates_and_preserves_rank_order(
     run: MagicMock, _executable: MagicMock, which: MagicMock
 ) -> None:
@@ -113,11 +109,7 @@ def test_pals_inventory_validates_and_preserves_rank_order(
         stderr="",
     )
 
-    resources = query_gpus_pals(
-        ["head.example.test", "worker.example.test"],
-        Path("/opt/test/mpiexec"),
-        4,
-    )
+    resources = query_gpus(["head.example.test", "worker.example.test"], PALS, 4)
 
     assert [host.hostname for host in resources] == [
         "head.example.test",
@@ -139,18 +131,18 @@ def test_pals_inventory_validates_and_preserves_rank_order(
 
 
 @patch(
-    "first_pilot.replica_manager._require_executable",
+    "first_pilot.host_commands._require_executable",
     return_value="/opt/test/mpiexec",
 )
-@patch("first_pilot.replica_manager.subprocess.run")
-@patch("first_pilot.replica_manager.shutil.which", return_value=None)
+@patch("first_pilot.host_commands.subprocess.run")
+@patch("first_pilot.host_commands.shutil.which", return_value=None)
 def test_pals_inventory_reports_missing_nvidia_smi(
     _which: MagicMock, run: MagicMock, _executable: MagicMock
 ) -> None:
     with pytest.raises(
         RuntimeError, match="nvidia-smi is unavailable on the pilot PATH"
     ):
-        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
+        query_gpus(["head", "worker"], PALS, 4)
 
     run.assert_not_called()
 
@@ -174,14 +166,14 @@ def test_pals_inventory_reports_missing_nvidia_smi(
     ],
 )
 @patch(
-    "first_pilot.replica_manager.shutil.which",
+    "first_pilot.host_commands.shutil.which",
     return_value="/usr/bin/nvidia-smi",
 )
 @patch(
-    "first_pilot.replica_manager._require_executable",
+    "first_pilot.host_commands._require_executable",
     return_value="/opt/test/mpiexec",
 )
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_pals_inventory_rejects_malformed_host_and_rank_rows(
     run: MagicMock,
     _executable: MagicMock,
@@ -192,18 +184,18 @@ def test_pals_inventory_rejects_malformed_host_and_rank_rows(
     run.return_value = CompletedProcess([], 0, stdout=output, stderr="")
 
     with pytest.raises(RuntimeError, match=message):
-        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
+        query_gpus(["head", "worker"], PALS, 4)
 
 
 @patch(
-    "first_pilot.replica_manager.shutil.which",
+    "first_pilot.host_commands.shutil.which",
     return_value="/usr/bin/nvidia-smi",
 )
 @patch(
-    "first_pilot.replica_manager._require_executable",
+    "first_pilot.host_commands._require_executable",
     return_value="/opt/test/mpiexec",
 )
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_pals_inventory_rejects_incomplete_rank(
     run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
@@ -211,19 +203,19 @@ def test_pals_inventory_rejects_incomplete_rank(
         [], 0, stdout=_gpu_rows("head", 0, (0, 1, 2, 3)), stderr=""
     )
 
-    with pytest.raises(RuntimeError, match=r"incomplete; missing ranks \[1\]"):
-        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
+    with pytest.raises(RuntimeError, match=r"host 'worker' reported indices \[\]"):
+        query_gpus(["head", "worker"], PALS, 4)
 
 
 @patch(
-    "first_pilot.replica_manager.shutil.which",
+    "first_pilot.host_commands.shutil.which",
     return_value="/usr/bin/nvidia-smi",
 )
 @patch(
-    "first_pilot.replica_manager._require_executable",
+    "first_pilot.host_commands._require_executable",
     return_value="/opt/test/mpiexec",
 )
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_pals_inventory_rejects_duplicate_gpu(
     run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
@@ -237,18 +229,18 @@ def test_pals_inventory_rejects_duplicate_gpu(
     )
 
     with pytest.raises(RuntimeError, match="duplicated an index on host 'head'"):
-        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
+        query_gpus(["head", "worker"], PALS, 4)
 
 
 @patch(
-    "first_pilot.replica_manager.shutil.which",
+    "first_pilot.host_commands.shutil.which",
     return_value="/usr/bin/nvidia-smi",
 )
 @patch(
-    "first_pilot.replica_manager._require_executable",
+    "first_pilot.host_commands._require_executable",
     return_value="/opt/test/mpiexec",
 )
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_pals_inventory_reports_launcher_failure(
     run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
@@ -257,25 +249,25 @@ def test_pals_inventory_reports_launcher_failure(
     )
 
     with pytest.raises(RuntimeError, match="exited 127: launcher unavailable"):
-        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
+        query_gpus(["head", "worker"], PALS, 4)
 
 
 @patch(
-    "first_pilot.replica_manager.shutil.which",
+    "first_pilot.host_commands.shutil.which",
     return_value="/usr/bin/nvidia-smi",
 )
 @patch(
-    "first_pilot.replica_manager._require_executable",
+    "first_pilot.host_commands._require_executable",
     return_value="/opt/test/mpiexec",
 )
-@patch("first_pilot.replica_manager.subprocess.run")
+@patch("first_pilot.host_commands.subprocess.run")
 def test_pals_inventory_reports_launcher_timeout(
     run: MagicMock, _executable: MagicMock, _which: MagicMock
 ) -> None:
     run.side_effect = subprocess.TimeoutExpired("mpiexec", 35)
 
     with pytest.raises(RuntimeError, match="timed out after 35s"):
-        query_gpus_pals(["head", "worker"], Path("/opt/test/mpiexec"), 4)
+        query_gpus(["head", "worker"], PALS, 4)
 
 
 @patch("first_pilot.replica_manager.discover_hosts")
@@ -351,28 +343,7 @@ def _host_resources(hostnames: list[str], gpu_count: int) -> list[HostGpus]:
     ]
 
 
-def test_replica_manager_dispatches_multi_node_ssh_discovery() -> None:
-    hostnames = ["head", "worker"]
-    config = SimpleNamespace(
-        node_file_env="TEST_NODEFILE",
-        gpu_discovery=SSHDiscovery(timeout_sec=7.0),
-        num_nodes=2,
-        gpus_per_node=2,
-    )
-    with (
-        patch("first_pilot.replica_manager.discover_hosts", return_value=hostnames),
-        patch(
-            "first_pilot.replica_manager.query_gpus_ssh",
-            return_value=_host_resources(hostnames, 2),
-        ) as query_ssh,
-    ):
-        manager = ReplicaManager(config)  # type: ignore[arg-type]
-
-    query_ssh.assert_called_once_with(hostnames, 2, 7.0)
-    manager._socket_dir.cleanup()
-
-
-def test_replica_manager_dispatches_multi_node_pals_discovery() -> None:
+def test_replica_manager_inventories_hosts_with_configured_discovery() -> None:
     hostnames = ["head", "worker"]
     discovery = PalsDiscovery(launcher_path=Path("/opt/test/mpiexec"), timeout_sec=41.0)
     config = SimpleNamespace(
@@ -384,13 +355,13 @@ def test_replica_manager_dispatches_multi_node_pals_discovery() -> None:
     with (
         patch("first_pilot.replica_manager.discover_hosts", return_value=hostnames),
         patch(
-            "first_pilot.replica_manager.query_gpus_pals",
+            "first_pilot.replica_manager.query_gpus",
             return_value=_host_resources(hostnames, 2),
-        ) as query_pals,
+        ) as query,
     ):
         manager = ReplicaManager(config)  # type: ignore[arg-type]
 
-    query_pals.assert_called_once_with(hostnames, discovery.launcher_path, 2, 41.0)
+    query.assert_called_once_with(hostnames, discovery, 2)
     manager._socket_dir.cleanup()
 
 

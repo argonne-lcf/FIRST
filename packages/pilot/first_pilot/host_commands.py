@@ -1,25 +1,31 @@
-"""Run one command on every node of the pilot's allocation."""
+"""
+Run one command on every node of the pilot's allocation.
 
+This is the pilot's only way of reaching its nodes: GPU inventory and startup
+node checks both go through `run_on_hosts`.
+"""
+
+import os
+import re
 import shlex
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from first_common.schema.pilot import PilotRuntimeConfig
-from first_common.schema.types import SSHDiscovery
+from first_common.schema.types import GpuDiscovery, SSHDiscovery
 
-from .replica_manager import _PALS_LABEL, _host_matches, _require_executable
+_PALS_LABEL = re.compile(r"^(?P<host>\S+)\s+(?P<rank>\d+):\s?(?P<row>.*)$")
 
 
 def run_on_hosts(
-    command: list[str], hostnames: list[str], config: PilotRuntimeConfig
+    command: list[str], hostnames: list[str], discovery: GpuDiscovery
 ) -> dict[str, str]:
     """
-    Return each host's stdout, reaching the hosts the same way GPU discovery
-    does. Raises RuntimeError if the command cannot be run on every host.
+    Return each host's stdout. A single-node pilot runs the command locally;
+    otherwise `discovery` selects SSH or the PALS launcher. Raises RuntimeError
+    if the command cannot be run on every host.
     """
-    discovery = config.gpu_discovery
     timeout_sec = discovery.timeout_sec
 
     if len(hostnames) == 1:
@@ -54,9 +60,10 @@ def _run(command: list[str], timeout_sec: float) -> str:
 def _run_pals(
     command: list[str], hostnames: list[str], launcher_path: Path, timeout_sec: float
 ) -> dict[str, str]:
-    """Launch one labeled rank per host and split the output by host label."""
+    """Launch one labeled rank per host and split the output by rank."""
     pals = _require_executable(launcher_path, label="PALS launcher")
-    # PALS does not reliably search PATH for the launched application.
+    # PALS does not reliably search PATH for the launched application. Resolve
+    # it on the allocation head and give every rank a canonical absolute path.
     executable = shutil.which(command[0])
     if executable is None:
         raise RuntimeError(f"required {command[0]} is unavailable on the pilot PATH")
@@ -71,7 +78,8 @@ def _run_pals(
             "--label",
             "--abort-on-failure",
             "--timeout",
-            # Let the launcher report and exit before our own deadline.
+            # Leave time for the launcher to report and exit before our outer
+            # subprocess deadline expires.
             str(max(1, int(timeout_sec) - 5)),
             "-n",
             str(len(hostnames)),
@@ -84,15 +92,52 @@ def _run_pals(
         timeout_sec,
     )
 
-    lines: dict[str, list[str]] = {host: [] for host in hostnames}
+    rows: dict[str, list[str]] = {host: [] for host in hostnames}
     for line in stdout.splitlines():
         if not line.strip():
             continue
         match = _PALS_LABEL.fullmatch(line)
-        host = match and next(
-            (h for h in hostnames if _host_matches(match.group("host"), h)), None
-        )
-        if not match or not host:
-            raise RuntimeError(f"PALS returned a row from an unknown host: {line!r}")
-        lines[host].append(match.group("row"))
-    return {host: "\n".join(rows) for host, rows in lines.items()}
+        if match is None:
+            raise RuntimeError(f"PALS returned an unlabeled row: {line!r}")
+        rank = int(match.group("rank"))
+        if rank >= len(hostnames):
+            raise RuntimeError(f"PALS returned unexpected rank {rank}")
+        # Rank order must equal scheduler host order: replica launches rely on it.
+        if not host_matches(match.group("host"), hostnames[rank]):
+            raise RuntimeError(
+                f"PALS rank {rank} reported host {match.group('host')!r}; "
+                f"expected {hostnames[rank]!r}"
+            )
+        rows[hostnames[rank]].append(match.group("row"))
+    return {host: "\n".join(lines) for host, lines in rows.items()}
+
+
+def _require_executable(path: Path, *, label: str) -> str:
+    """Return a configured executable path or fail with a useful error."""
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError(f"required {label} is unavailable: {path}")
+    return str(path)
+
+
+def host_identity(hostname: str) -> str:
+    """The short, lowercase hostname: how two spellings of a host are compared."""
+    return hostname.strip().rstrip(".").lower().split(".", maxsplit=1)[0]
+
+
+def host_matches(label: str, expected: str) -> bool:
+    return bool(host_identity(label)) and host_identity(label) == host_identity(
+        expected
+    )
+
+
+def deduplicate_hosts(hostnames: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for hostname in hostnames:
+        identity = host_identity(hostname)
+        if not identity:
+            raise RuntimeError("scheduler node inventory contains an empty hostname")
+        if identity not in seen:
+            seen.add(identity)
+            result.append(hostname)
+    return result

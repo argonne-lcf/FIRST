@@ -63,7 +63,7 @@ def run_node_checks(
     for check in (CHECKS[name] for name in names):
         if check.command not in outputs:
             outputs[check.command] = run_on_hosts(
-                list(check.command), hostnames, config
+                list(check.command), hostnames, config.gpu_discovery
             )
         for host in hostnames:
             reason = check.evaluate(outputs[check.command][host], config)

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from first_common.schema.pilot import PilotRuntimeConfig
+from first_common.schema.types import PalsDiscovery, SSHDiscovery
 from first_pilot.admission import ACTIONS, NodeChecksFailed, admit_nodes, pbs_quarantine
 from first_pilot.host_commands import run_on_hosts
 from first_pilot.node_checks import (
@@ -116,7 +117,7 @@ def test_run_on_hosts_runs_locally_on_a_single_node(
 ) -> None:
     run.return_value = CompletedProcess([], 0, stdout="out\n", stderr="")
 
-    assert run_on_hosts(["uname", "-r"], ["n1"], _config(tmp_path)) == {"n1": "out\n"}
+    assert run_on_hosts(["uname", "-r"], ["n1"], SSHDiscovery()) == {"n1": "out\n"}
     assert run.call_args.args[0] == ["uname", "-r"]
 
 
@@ -128,7 +129,7 @@ def test_run_on_hosts_uses_ssh_for_ssh_discovery(
         command, 0, stdout=f"from {command[1]}\n", stderr=""
     )
 
-    outputs = run_on_hosts(["uname", "-r"], ["n1", "n2"], _config(tmp_path))
+    outputs = run_on_hosts(["uname", "-r"], ["n1", "n2"], SSHDiscovery())
 
     assert outputs == {"n1": "from n1\n", "n2": "from n2\n"}
     assert run.call_args.args[0][0] == "ssh"
@@ -138,17 +139,15 @@ def test_run_on_hosts_uses_ssh_for_ssh_discovery(
 @patch("first_pilot.host_commands.shutil.which", return_value="/usr/bin/uname")
 @patch("first_pilot.host_commands._require_executable", return_value="/opt/mpiexec")
 @patch("first_pilot.host_commands.subprocess.run")
-def test_run_on_hosts_splits_pals_output_by_host_label(
-    run: MagicMock, _require: MagicMock, _which: MagicMock, tmp_path: Path
+def test_run_on_hosts_splits_pals_output_by_rank(
+    run: MagicMock, _require: MagicMock, _which: MagicMock
 ) -> None:
     run.return_value = CompletedProcess(
         [], 0, stdout="n2 1: second\nn1 0: first\nn1 0: more\n", stderr=""
     )
-    config = _config(
-        tmp_path, gpu_discovery={"method": "pals", "launcher_path": "/opt/mpiexec"}
-    )
+    discovery = PalsDiscovery(launcher_path=Path("/opt/mpiexec"))
 
-    outputs = run_on_hosts(["uname", "-r"], ["n1", "n2"], config)
+    outputs = run_on_hosts(["uname", "-r"], ["n1", "n2"], discovery)
 
     assert outputs == {"n1": "first\nmore", "n2": "second"}
     assert run.call_args.args[0][0] == "/opt/mpiexec"
@@ -161,7 +160,7 @@ def test_run_on_hosts_raises_when_the_command_fails(
     run.return_value = CompletedProcess([], 9, stdout="", stderr="broken")
 
     with pytest.raises(RuntimeError, match="exited 9: broken"):
-        run_on_hosts(["uname", "-r"], ["n1"], _config(tmp_path))
+        run_on_hosts(["uname", "-r"], ["n1"], SSHDiscovery())
 
 
 # ---------------------------------------------------------------------------

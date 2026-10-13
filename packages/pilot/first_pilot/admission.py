@@ -17,8 +17,9 @@ from typing import Callable
 from first_common.schema.pilot import PilotRuntimeConfig
 from first_common.schema.types import QUARANTINE_JOB_PREFIX
 
+from .host_commands import deduplicate_hosts, host_identity
 from .node_checks import run_node_checks
-from .replica_manager import _deduplicate_hosts, _host_identity, discover_hosts
+from .replica_manager import discover_hosts
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def admit_nodes(config: PilotRuntimeConfig) -> None:
     if not admission.checks:
         return
 
-    hostnames = _deduplicate_hosts(discover_hosts(config.node_file_env))
+    hostnames = deduplicate_hosts(discover_hosts(config.node_file_env))
     failures = run_node_checks(admission.checks, hostnames, config)
     if not failures:
         logger.info("all %d nodes passed %s", len(hostnames), admission.checks)
@@ -66,7 +67,7 @@ def pbs_quarantine(hostname: str, config: PilotRuntimeConfig) -> None:
     if not config.queue or not config.account:
         raise ValueError("pbs_quarantine requires the pilot's queue and account")
 
-    host = _host_identity(hostname)
+    host = host_identity(hostname)
     job_name = QUARANTINE_JOB_PREFIX + host
     quarantined = _quarantine_job_names()
     if job_name in quarantined:
