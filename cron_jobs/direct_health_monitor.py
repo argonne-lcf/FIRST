@@ -617,13 +617,18 @@ async def check_sophia_models() -> list[HealthRecord]:
     return records
 
 
-async def extract_metis_models() -> list[str]:
+async def extract_metis_models() -> tuple[list[str], list[str]]:
     """Flatten Metis status structure into a list of live model names"""
 
     metis = await MetisCluster.load_adapter("metis")
     jobs = await metis.get_jobs(None)
 
-    return [model.strip() for j in jobs.running for model in j.Models.split(",")]
+    live = [model.strip() for j in jobs.running for model in j.Models.split(",")]
+
+    configured = await gather_endpoints("metis")
+    live_keys = {name.lower() for name in live}
+
+    return live, [name for name in configured if name.lower() not in live_keys]
 
 
 async def check_metis_models() -> list[HealthRecord]:
@@ -632,7 +637,7 @@ async def check_metis_models() -> list[HealthRecord]:
     records: list[HealthRecord] = []
 
     try:
-        models = await extract_metis_models()
+        models, not_running = await extract_metis_models()
     except Exception as e:
         records.append(
             HealthRecord(
@@ -643,6 +648,17 @@ async def check_metis_models() -> list[HealthRecord]:
             )
         )
         return records
+
+    for model_name in not_running:
+        log.info("Metis model not running: %s", model_name)
+        records.append(
+            HealthRecord(
+                component=model_name,
+                cluster="metis",
+                status=HealthStatus.OFFLINE,
+                detail="not running on Metis (no live route)",
+            )
+        )
 
     if not models:
         records.append(
