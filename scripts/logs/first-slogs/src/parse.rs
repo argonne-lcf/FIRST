@@ -617,26 +617,25 @@ fn usage_of(result: &str) -> Usage {
 /// rest have their counts inline or nowhere. The key is the request id, so
 /// the lookup is exact.
 fn pull_payload_usage(large_requests: &Path, ids: &[String]) -> anyhow::Result<DataFrame> {
-    let mut request_ids = Vec::new();
-    let mut prompt_tokens = Vec::new();
-    let mut completion_tokens = Vec::new();
-    let mut total_tokens = Vec::new();
+    // ids are independent files, read across the pool; the columns are
+    // zipped from the results afterwards
+    let counted: Vec<(&String, Usage)> = ids
+        .par_iter()
+        .filter_map(|id| {
+            let payload = large_requests.join(id).with_extension("json");
+            // no payload was written for this request
+            let payload = fs::read_to_string(&payload).ok()?;
+            let value = sonic_rs::get(&payload, &["result"]);
+            let usage = usage_of(value.as_str().unwrap_or(""));
+            // a payload that reports no counts heals nothing
+            usage.is_known().then_some((id, usage))
+        })
+        .collect();
 
-    for id in ids {
-        let payload = large_requests.join(id).with_extension("json");
-        let Ok(payload) = fs::read_to_string(&payload) else {
-            continue; // no payload was written for this request
-        };
-        let value = sonic_rs::get(&payload, &["result"]);
-        let usage = usage_of(value.as_str().unwrap_or(""));
-        if !usage.is_known() {
-            continue; // a payload that reports no counts heals nothing
-        }
-        request_ids.push(id.to_string());
-        prompt_tokens.push(usage.prompt_tokens);
-        completion_tokens.push(usage.completion_tokens);
-        total_tokens.push(usage.total_tokens);
-    }
+    let request_ids: Vec<&str> = counted.iter().map(|(id, _)| id.as_str()).collect();
+    let prompt_tokens: Vec<_> = counted.iter().map(|(_, usage)| usage.prompt_tokens).collect();
+    let completion_tokens: Vec<_> = counted.iter().map(|(_, usage)| usage.completion_tokens).collect();
+    let total_tokens: Vec<_> = counted.iter().map(|(_, usage)| usage.total_tokens).collect();
 
     Ok(df!(
         "request_id" => request_ids,
@@ -954,7 +953,7 @@ pub fn source_request_ids(large_requests: &Path) -> anyhow::Result<Vec<String>> 
             ids.push(id.to_string());
         }
     }
-    ids.sort();
+    ids.par_sort();
     Ok(ids)
 }
 

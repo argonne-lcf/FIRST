@@ -88,40 +88,46 @@ pub fn validate_bundled_requests(
     large_requests: &Path,
 ) -> anyhow::Result<usize> {
     let mut problems = Vec::new();
-    let mut verified = 0;
-    let mut buf = vec![0u8; 64 * 1024];
     let ids = request_log_ids(request_log)?;
     let ids = ids.column("id")?.str()?;
-    for id in ids.no_null_iter() {
-        if sources
-            .binary_search_by(|source| source.as_str().cmp(id))
-            .is_err()
-        {
-            continue; // never bundled by `bundle_requests` either
-        }
 
-        let json = large_requests.join(id).with_extension("json");
+    // every id names an independent source file, so the hashing happens across the
+    // pool and each one reports a line only when its copy is missing or differs
+    let wanted: Vec<&str> = ids
+        .no_null_iter()
+        .filter(|id| sources.binary_search_by(|source| source.as_str().cmp(id)).is_ok())
+        .collect();
+    let checked: Vec<anyhow::Result<Option<String>>> = wanted
+        .par_iter()
+        .map(|id| {
+            let json = large_requests.join(*id).with_extension("json");
 
-        let Some(&checksum) = bundled.get(id) else {
-            problems.push(format!("{id} is missing from the squashfs"));
-            continue;
-        };
+            let Some(&checksum) = bundled.get(*id) else {
+                return Ok(Some(format!("{id} is missing from the squashfs")));
+            };
 
-        // the source file is hashed as it streams in
-        let mut file = File::open(&json)?;
-        let mut hasher = blake3::Hasher::new();
-        loop {
-            let n = file.read(&mut buf)?;
-            if n == 0 {
-                break;
+            // the source file is hashed as it streams in
+            let mut file = File::open(&json)?;
+            let mut hasher = blake3::Hasher::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
             }
-            hasher.update(&buf[..n]);
-        }
 
-        if hasher.finalize() != checksum {
-            problems.push(format!("{id} differs from the bundled copy"));
-        } else {
-            verified += 1;
+            Ok((hasher.finalize() != checksum)
+                .then(|| format!("{id} differs from the bundled copy")))
+        })
+        .collect();
+
+    let mut verified = 0;
+    for checked in checked {
+        match checked? {
+            Some(problem) => problems.push(problem),
+            None => verified += 1,
         }
     }
 
