@@ -51,6 +51,11 @@ class PilotSubmitter:
             "PILOT_GPU_DISCOVERY": json.dumps(
                 pc.gpu_discovery.model_dump(mode="json"), separators=(",", ":")
             ),
+            "PILOT_NODE_ADMISSION": json.dumps(
+                pc.node_admission.model_dump(mode="json"), separators=(",", ":")
+            ),
+            "PILOT_QUEUE": pc.queue,
+            "PILOT_ACCOUNT": pc.account,
             "PILOT_NUM_NODES": str(pilot_job.num_nodes),
             "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
             "PILOT_WALLTIME_MIN": str(pilot_job.walltime_min),

@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
 from first_common.schema.pilot import PilotClientRole
 from first_common.schema.resources.runtime import (
     CommittedAlert,
@@ -38,6 +39,7 @@ from first_gateway.controllers.workers.health_alerter.checks import (
     check_pilot_deployment,
     check_pilot_job,
     check_pilot_replica,
+    check_quarantined_nodes,
     check_static_deployment,
 )
 from first_gateway.controllers.workers.health_alerter.slack import (
@@ -738,6 +740,62 @@ async def test_check_cluster_health(
 
     obs = await check_cluster_health(alerter.client_state)
     assert [o for o in obs if o.status == "unhealthy"]
+
+
+async def test_check_quarantined_nodes(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    alerter = _make_alerter(db, redis)
+    pilot_system = {
+        "scheduler_adapter": "first_gateway.platforms.schedulers.GraphQLPBSAdapter",
+        "job_walltime_min": 60,
+        "queue": "prod",
+        "account": "TestAcct",
+        "max_num_nodes": 10,
+        "gpus_per_node": 4,
+        "workdir": "/opt/test/workdir",
+        "external_port": 8443,
+        "nginx_path": "/usr/sbin/nginx",
+        "ip_allowlist": [],
+        "node_file_env": "PBS_NODEFILE",
+        "node_admission": {"checks": ["gpu_count"], "on_failure": "pbs_quarantine"},
+        "submit_script_preamble": "#!/bin/bash",
+        "pilot_path": "/test/first-pilot",
+        "pilot_config_path": "/opt/test/pilot-config.yaml",
+    }
+    async with db.begin() as sess:
+        sess.add(
+            Cluster(
+                name="cl-pilot",
+                health_check={"url": "", "debounce": 2},
+                pilot_system=pilot_system,
+            )
+        )
+
+    def job(name: str) -> JobStatusInfo:
+        return JobStatusInfo(
+            id=f"{name}.pbs",
+            name=name,
+            state=SchedulerJobState.running,
+            created_at=datetime.now(timezone.utc),
+            started_at=None,
+            walltime_minutes=60,
+        )
+
+    adapter = MagicMock()
+    adapter.get_job_statuses = AsyncMock(
+        return_value=[job("first_quar_x4820c7s3b1n0"), job("__FIRST_PILOT_job-1")]
+    )
+    with patch(
+        "first_gateway.controllers.workers.health_alerter.checks.build_scheduler",
+        AsyncMock(return_value=adapter),
+    ):
+        obs = await check_quarantined_nodes(alerter.client_state)
+
+    assert [o.display_name for o in obs] == [
+        "Cluster cl-pilot node x4820c7s3b1n0 quarantine"
+    ]
+    assert obs[0].severity == "warn"
 
 
 async def test_check_static_deployment(
