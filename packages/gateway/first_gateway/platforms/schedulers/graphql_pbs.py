@@ -1,12 +1,19 @@
 import base64
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Self
 
 from httpx import AsyncClient
 
+from first_common.pbs_quarantine import (
+    QuarantineRequest,
+    execution_vnodes,
+    positive_int,
+    validate_quarantine,
+)
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
     JobSubmitPayload,
@@ -51,6 +58,165 @@ _EXEC_VNODE_PART = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,254})"
     r"(?::[A-Za-z_][A-Za-z0-9_.-]*=[^():+\s=]+)+"
 )
+
+
+@dataclass(frozen=True)
+class QuarantineStatus:
+    request: QuarantineRequest
+    isolated: bool
+    expires_at: datetime | None
+
+
+def _quarantine_hint(row: dict[str, Any]) -> bool:
+    """Names aid discovery; metadata also protects renamed/truncated jobs."""
+    name = row.get("name")
+    if not isinstance(name, str):
+        raise RuntimeError("PBS job name is unavailable")
+    env = row.get("env")
+    if env is not None and not isinstance(env, list):
+        raise RuntimeError("PBS job metadata is malformed")
+    return name.startswith(("first_quar_", "first_tara_quarantine_")) or any(
+        isinstance(pair, dict)
+        and isinstance(pair.get("name"), str)
+        and pair["name"].startswith(("FIRST_QUAR_", "FIRST_QUARANTINE_"))
+        for pair in env or []
+    )
+
+
+def _native_quarantine(row: dict[str, Any]) -> dict[str, Any]:
+    """Translate the bridge's accepted request, not its display name."""
+    env: dict[str, str] = {}
+    for pair in row.get("env") or []:
+        if not isinstance(pair, dict) or not isinstance(pair.get("name"), str):
+            raise RuntimeError("PBS quarantine metadata is malformed")
+        name, value = pair["name"], pair.get("value")
+        if not name.startswith("FIRST_QUAR_"):
+            continue
+        if name == "FIRST_QUAR_VERSION" and type(value) is int:
+            value = str(value)
+        if not isinstance(value, str) or name in env:
+            raise RuntimeError("PBS quarantine metadata is duplicated or malformed")
+        env[name] = value
+    resources = row.get("resourcesRequested") or {}
+    tasks = resources.get("tasksResources") or []
+    count = resources.get("taskCount") or {}
+    if (
+        type(count.get("min")) is not int
+        or count.get("min") not in (0, 1)
+        or type(count.get("max")) is not int
+        or count.get("max") != 1
+        or len(tasks) != 1
+        or tasks[0].get("index") != "0"
+        or type(resources.get("jobPlacementSharing")) is not int
+        or resources.get("jobPlacementSharing") not in (1, 2)
+    ):
+        raise RuntimeError(
+            "PBS quarantine exact-host exclusivity request is unverified"
+        )
+    task = tasks[0]
+    host, slots, gpus = (
+        task.get("candidateMachineName"),
+        task.get("slots"),
+        task.get("gpus"),
+    )
+    if not isinstance(host, str) or type(slots) is not int or type(gpus) is not int:
+        raise RuntimeError("PBS quarantine requested host/resources are unverified")
+    code = (row.get("status") or {}).get("state")
+    states = {
+        0: "Q",
+        1: "W",
+        2: "H",
+        3: "H",
+        4: "F",
+        5: "B",
+        6: "E",
+        7: "R",
+        8: "S",
+        9: "E",
+        10: "F",
+        11: "F",
+        12: "X",
+        13: "X",
+        14: "Q",
+    }
+    if type(code) is not int or code not in states:
+        raise RuntimeError("PBS quarantine state is unverified")
+    walltime = (resources.get("jobResources") or {}).get("wallClockTime")
+    if type(walltime) is not int or walltime <= 0:
+        raise RuntimeError("PBS quarantine walltime is unverified")
+    owner = row.get("owner")
+    if (
+        not isinstance(owner, str)
+        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*(?:@[A-Za-z0-9.-]+)?", owner) is None
+    ):
+        raise RuntimeError("PBS quarantine ownership is unavailable")
+    return {
+        "Job_Name": row["name"],
+        # GraphQL reports the username alone; native qstat includes @host.
+        "Job_Owner": owner if "@" in owner else f"{owner}@bridge",
+        "job_state": states[code],
+        "Variable_List": env,
+        "Resource_List": {
+            "select": f"1:ncpus={slots}:ngpus={gpus}:host={host}",
+            "place": "exclhost"
+            if resources["jobPlacementSharing"] == 2
+            else "scatter:excl:group=tier0",
+            "walltime": f"{walltime // 3600}:{walltime // 60 % 60:02}:{walltime % 60:02}",
+        },
+    }
+
+
+def _allocated_hosts(row: dict[str, Any]) -> set[str]:
+    return {
+        host
+        for host, _ in execution_vnodes((row.get("extension") or {}).get("exec_vnode"))
+    }
+
+
+def _bridge_isolation(
+    row: dict[str, Any], request: QuarantineRequest, all_jobs: list[dict[str, Any]]
+) -> bool:
+    if request.state != "R":
+        return False
+    vnodes = execution_vnodes((row.get("extension") or {}).get("exec_vnode"))
+    if len(vnodes) != 1 or vnodes[0][0] != request.host:
+        return False
+    if any(
+        positive_int(vnodes[0][1].get(key)) != expected
+        for key, expected in (("ncpus", request.ncpus), ("ngpus", request.ngpus))
+    ):
+        return False
+    machines = row.get("allocatedMachines") or []
+    if len(machines) != 1 or machines[0].get("name") != request.host:
+        return False
+    available = machines[0].get("resourcesAvail") or {}
+    assigned = machines[0].get("resourcesAssigned") or {}
+    physical_hosts = [
+        pair.get("value")
+        for pair in available.get("customResources") or []
+        if pair.get("name") == "host"
+    ]
+    if (
+        physical_hosts != [request.host]
+        or any(
+            type(resources.get(key)) is not int
+            for resources in (available, assigned)
+            for key in ("slots", "gpus")
+        )
+        or available.get("slots") != request.ncpus
+        or available.get("gpus") != request.ngpus
+        or assigned.get("slots") != request.ncpus
+        or assigned.get("gpus") != request.ngpus
+    ):
+        return False
+    occupants = []
+    for other in all_jobs:
+        code = (other.get("status") or {}).get("state")
+        if type(code) is not int or code not in _STATE_MAP:
+            raise RuntimeError("PBS all-owner allocation census has an unknown state")
+        if code in _ACTIVE_STATES and request.host in _allocated_hosts(other):
+            occupants.append(other["jobId"])
+    return occupants == [request.job_id]
 
 
 def _parse_epoch_micros(raw: int | None) -> datetime | None:
@@ -321,6 +487,18 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         if _PBS_JOB_ID.fullmatch(job_id) is None:
             raise ValueError(f"invalid PBS scheduler job ID: {job_id!r}")
 
+        # Ordinary lifecycle/orphan cleanup must never cancel either
+        # environment's isolation jobs, including malformed renamed jobs.
+        rows = await self._quarantine_rows(ids=[job_id], history=True)
+        if not rows:
+            logger.info("ordinary cleanup job %s is absent from owned PBS jobs", job_id)
+            return
+        if _quarantine_hint(rows[0]):
+            raise RuntimeError("ordinary model cleanup cannot delete a quarantine job")
+        owner = rows[0].get("owner")
+        if not isinstance(owner, str) or owner.split("@", 1)[0] != self.owner:
+            raise RuntimeError("ordinary model cleanup PBS ownership is unverified")
+
         # Ordinary lifecycle disposal must allow the scheduler's normal
         # termination/cleanup path. Never silently escalate a failed request
         # to forced deletion, which can discard scheduler-side job state.
@@ -416,6 +594,110 @@ class GraphQLPBSAdapter(SchedulerAdapter):
     async def _get_exact_job_state(self, job_id: str) -> SchedulerJobState | None:
         status = await self.get_exact_job_status(job_id)
         return None if status is None else status.state
+
+    async def _quarantine_rows(
+        self,
+        *,
+        ids: list[str] | None = None,
+        all_owners: bool = False,
+        history: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Bounded read-only census; Machine.runningJobs is not reliable on Tara."""
+        query = """
+        query QuarantineJobs($owner: String, $ids: [String!], $history: Boolean!, $cursor: Cursor) {
+          jobs(filter: {owner: $owner, jobIds: $ids, withHistoryJobs: $history}, count: 500, from: $cursor) {
+            edges { node {
+              jobId name owner env { name value } extension startTime
+              status { state }
+              resourcesRequested {
+                jobPlacementSharing taskCount { min max }
+                tasksResources { index candidateMachineName slots gpus }
+                jobResources { wallClockTime }
+              }
+              allocatedMachines {
+                name resourcesAvail { slots gpus customResources { name value } }
+                resourcesAssigned { slots gpus }
+              }
+            } error { errorCode errorMessage } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cursors: set[str] = set()
+        cursor = None
+        for _ in range(_STATUS_MAX_PAGES):
+            data = await self._post(
+                query,
+                {
+                    "owner": None if all_owners else self.owner,
+                    "ids": ids,
+                    "history": history,
+                    "cursor": cursor,
+                },
+            )
+            connection = data["jobs"]
+            for edge in connection["edges"]:
+                row = edge.get("node")
+                if edge.get("error") or not isinstance(row, dict):
+                    raise RuntimeError("PBS quarantine inventory edge is unverified")
+                job_id = row.get("jobId")
+                if (
+                    not isinstance(job_id, str)
+                    or _PBS_JOB_ID.fullmatch(job_id) is None
+                    or job_id in seen
+                ):
+                    raise RuntimeError(
+                        "PBS quarantine inventory identity is duplicated or unverified"
+                    )
+                if ids is not None and job_id not in ids:
+                    raise RuntimeError(
+                        "PBS exact quarantine lookup returned a different job"
+                    )
+                seen.add(job_id)
+                rows.append(row)
+            page = connection["pageInfo"]
+            if not page["hasNextPage"]:
+                return rows
+            cursor = page.get("endCursor")
+            if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                raise RuntimeError("PBS quarantine inventory cursor did not advance")
+            cursors.add(cursor)
+        raise RuntimeError("PBS quarantine inventory exceeded bounded pagination")
+
+    async def get_quarantine_statuses(self) -> list[QuarantineStatus]:
+        """Validate pending requests and independently prove running isolation."""
+        rows = await self._quarantine_rows()
+        candidates: list[tuple[dict[str, Any], QuarantineRequest]] = []
+        for row in rows:
+            if not _quarantine_hint(row):
+                continue
+            owner = row.get("owner")
+            if isinstance(owner, str) and owner.split("@", 1)[0] != self.owner:
+                continue
+            request = validate_quarantine(
+                row["jobId"], _native_quarantine(row), self.owner
+            )
+            candidates.append((row, request))
+        all_jobs = (
+            await self._quarantine_rows(all_owners=True)
+            if any(request.state == "R" for _, request in candidates)
+            else []
+        )
+        result: list[QuarantineStatus] = []
+        for row, request in candidates:
+            started = row.get("startTime")
+            expires = None
+            if type(started) is int and started > 0:
+                expires = datetime.fromtimestamp(
+                    started / 1_000_000 + request.walltime_seconds, tz=timezone.utc
+                )
+            isolated = _bridge_isolation(row, request, all_jobs)
+            if expires is None or expires <= datetime.now(timezone.utc):
+                isolated = False
+            result.append(QuarantineStatus(request, isolated, expires))
+        return result
 
     async def put_file(self, content: str, path: Path, mode: int) -> None:
         raise NotImplementedError

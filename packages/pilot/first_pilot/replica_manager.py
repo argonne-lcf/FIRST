@@ -356,6 +356,12 @@ class ReplicaManager:
                 os.close(dir_fd)
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
+        # Reused pilots must not bypass the pending/held quarantine guard. This
+        # applies only to this new attempt; existing healthy replicas keep running.
+        # Local import avoids admission/discover_hosts' module dependency cycle.
+        from .admission import guard_quarantined_nodes
+
+        guard_quarantined_nodes(self.config, self.node_hostnames)
         requested = self._validate_request(replica.name, replica.gpu_indices)
 
         host_gpus: dict[str, list[str]] = defaultdict(list)
