@@ -19,6 +19,7 @@ from .types import (
     RESOURCE_NAME_PATTERN,
     GpuClaim,
     GpuDiscovery,
+    NodeAdmission,
     ReplicaState,
     ResolvedLaunchSpec,
     SSHDiscovery,
@@ -50,6 +51,9 @@ _JOB_ENV_OVERRIDE_FIELDS = frozenset(
         "workdir",
         "node_file_env",
         "gpu_discovery",
+        "node_admission",
+        "queue",
+        "account",
         "num_nodes",
         "gpus_per_node",
         "walltime_min",
@@ -190,6 +194,10 @@ class PilotRuntimeConfig(BaseSettings):
     workdir: Path
     node_file_env: str
     gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)
+    node_admission: NodeAdmission = Field(default_factory=NodeAdmission)
+    # The pilot job's own queue and account, reused for quarantine jobs.
+    queue: str | None = None
+    account: str | None = None
     num_nodes: int = Field(ge=1)
     gpus_per_node: int = Field(ge=1)
     job_name: str

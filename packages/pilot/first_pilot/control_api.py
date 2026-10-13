@@ -19,6 +19,7 @@ from first_common.schema.pilot import (
     ReplicaStartRequest,
 )
 
+from .admission import admit_nodes
 from .nginx_manager import NginxManager, ReplicaUpstream, check_server_cert_expiry
 from .replica_manager import ReplicaManager
 
@@ -130,6 +131,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         level="INFO",
         format="%(asctime)s %(levelname)-8s %(name)s:%(lineno)d %(message)s",
     )
+
+    admit_nodes(config)
 
     with TemporaryDirectory(
         dir=config.nginx_base_dir,

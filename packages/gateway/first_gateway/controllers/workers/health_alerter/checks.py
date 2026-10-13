@@ -12,6 +12,7 @@ from sqlalchemy.orm import load_only, selectinload
 
 from first_common.schema.resources.runtime import AlertGroup, Severity
 from first_common.schema.types import (
+    QUARANTINE_JOB_PREFIX,
     HealthCheckResult,
     PilotConfig,
     PilotDeploymentState,
@@ -171,6 +172,48 @@ async def check_schedulers(client_state: ClientState) -> list[Observation]:
         pilot_config = PilotConfig.model_validate(c.pilot_system)
         if obs := await _check_scheduler(pilot_config, client_state, key, c.name):
             observations.append(obs)
+
+    return observations
+
+
+async def check_quarantined_nodes(client_state: ClientState) -> list[Observation]:
+    """
+    Report the nodes that pilots have quarantined (see first_pilot.admission).
+    The quarantine jobs in the scheduler are the only record of them.
+    """
+    observations: list[Observation] = []
+    async with client_state.db_sessionmaker() as sess:
+        q = sa.select(Cluster.uid, Cluster.name, Cluster.pilot_system).where(
+            Cluster.pilot_system.is_not(None),
+            Cluster.pilot_system != sa.JSON.NULL,
+        )
+        clusters = (await sess.execute(q)).all()
+
+    for c in clusters:
+        assert c.pilot_system is not None
+        pilot_config = PilotConfig.model_validate(c.pilot_system)
+        if pilot_config.node_admission.on_failure != "pbs_quarantine":
+            continue
+        adapter = await build_scheduler(pilot_config, client_state)
+        async with asyncio.timeout(_SCHEDULER_CHECK_TIMEOUT_S):
+            jobs = await adapter.get_job_statuses()
+        for job in jobs:
+            if not job.name.startswith(QUARANTINE_JOB_PREFIX):
+                continue
+            host = job.name.removeprefix(QUARANTINE_JOB_PREFIX)
+            observations.append(
+                Observation(
+                    key=f"cluster/{c.uid}/quarantine/{host}",
+                    status="quarantined",
+                    summary=(
+                        f"Cluster {c.name}: node {host} failed pilot startup "
+                        f"checks and is quarantined by scheduler job {job.id} "
+                        f"({job.state.value})"
+                    ),
+                    display_name=f"Cluster {c.name} node {host} quarantine",
+                    severity="warn",
+                )
+            )
 
     return observations
 
@@ -507,6 +550,7 @@ async def check_pilot_client_cert(client_state: ClientState) -> list[Observation
 CHECK_REGISTRY = [
     Check(check_cluster_health, "Clusters"),
     Check(check_schedulers, "Clusters"),
+    Check(check_quarantined_nodes, "Clusters"),
     Check(check_static_deployment, "Deployments"),
     Check(check_pilot_deployment, "Deployments"),
     Check(check_pilot_job, "Pilot Jobs"),

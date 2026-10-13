@@ -4,7 +4,16 @@ import shlex
 from enum import Enum
 from http import HTTPMethod
 from pathlib import Path
-from typing import Annotated, Any, Callable, ClassVar, Literal, NewType, TypedDict
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    ClassVar,
+    Literal,
+    NewType,
+    Self,
+    TypedDict,
+)
 
 from dotenv import dotenv_values
 from jinja2 import Environment, StrictUndefined, TemplateError, TemplateSyntaxError
@@ -16,6 +25,7 @@ from pydantic import (
     PrivateAttr,
     SecretStr,
     field_validator,
+    model_validator,
 )
 from pydantic_core import core_schema
 
@@ -258,6 +268,30 @@ GpuDiscovery = Annotated[
 ]
 
 
+# Scheduler job name of a quarantine job: this prefix plus the short hostname.
+QUARANTINE_JOB_PREFIX = "first_quar_"
+
+
+class NodeAdmission(BaseModel):
+    """
+    Node screening the pilot performs at startup, before serving anything.
+
+    `checks` names entries in `first_pilot.node_checks`. If any node fails a
+    check, the pilot applies `on_failure` to each failing node and exits, so
+    the gateway's ordinary retry submits a replacement job.
+
+    - `exit`: do nothing more; the scheduler may hand the node out again.
+    - `pbs_quarantine`: first park a sleep job on the node so it cannot.
+    """
+
+    checks: list[str] = []
+    on_failure: Literal["exit", "pbs_quarantine"] = "exit"
+    quarantine_walltime_min: int = Field(7 * 24 * 60, ge=1)
+    # Stop quarantining beyond this many nodes: a bad check or system image
+    # must not be able to take the whole cluster out of service.
+    max_quarantined_nodes: int = Field(8, ge=1)
+
+
 class PilotConfig(BaseModel):
     """
     HPC Cluster-wide configuration for the pilot system.
@@ -283,6 +317,7 @@ class PilotConfig(BaseModel):
     ip_allowlist: list[str]
     node_file_env: str
     gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)
+    node_admission: NodeAdmission = Field(default_factory=NodeAdmission)
     submit_script_preamble: str
     pilot_path: Path
     job_name_prefix: str = Field("__FIRST_PILOT_", pattern=r"[a-zA-Z0-9_]+")
@@ -291,6 +326,16 @@ class PilotConfig(BaseModel):
     # holding the CA and pilot server cert. The submitter specializes it per
     # job with PILOT_* environment overrides.
     pilot_config_path: Path
+
+    @model_validator(mode="after")
+    def quarantine_jobs_are_not_pilot_jobs(self) -> Self:
+        # The orphan reaper terminates unknown jobs carrying job_name_prefix.
+        if QUARANTINE_JOB_PREFIX.startswith(self.job_name_prefix):
+            raise ValueError(
+                f"job_name_prefix {self.job_name_prefix!r} would claim quarantine "
+                f"jobs ({QUARANTINE_JOB_PREFIX}*) as pilot jobs"
+            )
+        return self
 
 
 class DemandSignalConfig(BaseModel):

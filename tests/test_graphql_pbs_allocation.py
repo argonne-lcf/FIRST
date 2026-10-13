@@ -140,6 +140,11 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
         "PILOT_GPU_DISCOVERY": json.dumps(
             config.gpu_discovery.model_dump(mode="json"), separators=(",", ":")
         ),
+        "PILOT_NODE_ADMISSION": json.dumps(
+            config.node_admission.model_dump(mode="json"), separators=(",", ":")
+        ),
+        "PILOT_QUEUE": config.queue,
+        "PILOT_ACCOUNT": config.account,
         "PILOT_NUM_NODES": str(pilot_job.num_nodes),
         "PILOT_GPUS_PER_NODE": str(pilot_job.gpus_per_node),
         "PILOT_WALLTIME_MIN": str(pilot_job.walltime_min),

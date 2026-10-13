@@ -426,6 +426,12 @@ def test_runtime_config_loads_public_fields_from_environment(
         "PILOT_GPU_DISCOVERY",
         '{"method":"pals","launcher_path":"/opt/test/mpiexec"}',
     )
+    monkeypatch.setenv(
+        "PILOT_NODE_ADMISSION",
+        '{"checks":["gpu_count"],"on_failure":"pbs_quarantine"}',
+    )
+    monkeypatch.setenv("PILOT_QUEUE", "prod")
+    monkeypatch.setenv("PILOT_ACCOUNT", "TestAcct")
     monkeypatch.setenv("PILOT_NUM_NODES", "2")
     monkeypatch.setenv("PILOT_GPUS_PER_NODE", "4")
     monkeypatch.setenv("PILOT_WALLTIME_MIN", "90")
@@ -442,6 +448,9 @@ def test_runtime_config_loads_public_fields_from_environment(
     assert config.gpu_discovery == PalsDiscovery(
         launcher_path=Path("/opt/test/mpiexec")
     )
+    assert config.node_admission.checks == ["gpu_count"]
+    assert config.node_admission.on_failure == "pbs_quarantine"
+    assert (config.queue, config.account) == ("prod", "TestAcct")
     assert config.num_nodes == 2
     assert config.gpus_per_node == 4
     assert config.walltime_min == 90

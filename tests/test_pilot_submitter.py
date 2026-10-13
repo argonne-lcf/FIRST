@@ -360,3 +360,11 @@ async def test_get_endpoint_roundtrips_address_info(
     assert got.ip == addr.ip
     assert got.external_port == addr.external_port
     assert got.control_path == addr.control_path
+
+
+def test_job_name_prefix_must_not_claim_quarantine_jobs(
+    pilot_config: PilotConfig,
+) -> None:
+    values = pilot_config.model_dump(mode="json")
+    with pytest.raises(ValidationError, match="quarantine"):
+        PilotConfig.model_validate({**values, "job_name_prefix": "first_"})
