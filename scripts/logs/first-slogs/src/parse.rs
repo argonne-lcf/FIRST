@@ -25,7 +25,7 @@ use polars::{
     },
 };
 use regex::regex;
-use sonic_rs::{JsonValueTrait, to_object_iter};
+use sonic_rs::{JsonContainerTrait, JsonValueTrait, to_object_iter};
 
 use crate::{
     artifacts, files,
@@ -645,6 +645,128 @@ fn pull_payload_usage(large_requests: &Path, ids: &[String]) -> anyhow::Result<D
     )?)
 }
 
+/// The chars the row's own truncation marker says the emitter cut.
+fn dropped_chars(result: &str) -> i64 {
+    let Some(rest) = result.split("<truncated ").nth(1) else {
+        return 0;
+    };
+    let Some(chars) = rest.split(" chars>").next() else {
+        return 0;
+    };
+    chars.parse().unwrap_or(0)
+}
+
+/// The text a streamed chunk carries, if it carries any.
+fn delta_content(body: &str) -> String {
+    let Ok(data) = sonic_rs::from_str::<sonic_rs::Value>(body) else {
+        return String::new();
+    };
+    if let Some(delta) = data.get("delta").and_then(|delta| delta.as_str()) {
+        return delta.to_string();
+    }
+    if let Some(text) = data.get("delta").and_then(|delta| delta.get("text")).and_then(|t| t.as_str()) {
+        return text.to_string();
+    }
+    data.get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.iter().next())
+        .and_then(|choice| choice.get("delta"))
+        .and_then(|delta| delta.get("content"))
+        .and_then(|content| content.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The response's text: the deltas of a stream's chunks, or the message of
+/// a single response.
+fn completion_text(result: &str) -> String {
+    if !result.trim_start().starts_with("data:") {
+        let content = sonic_rs::from_str::<sonic_rs::Value>(result)
+            .ok()
+            .and_then(|data| data.get("choices").and_then(|c| c.as_array()).and_then(|c| c.iter().next().cloned()))
+            .and_then(|choice| {
+                choice
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(|content| content.as_str())
+                    .map(str::to_string)
+            });
+        return content.unwrap_or_else(|| result.to_string());
+    }
+
+    result
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(delta_content)
+        .collect()
+}
+
+/// The request's text, as the gateway's estimator reads it: its messages' content.
+fn prompt_text(prompt: &str) -> String {
+    let Ok(parsed) = sonic_rs::from_str::<sonic_rs::Value>(prompt) else {
+        return prompt.to_string();
+    };
+    let Some(messages) = parsed.as_array() else {
+        return String::new();
+    };
+    messages
+        .iter()
+        .filter_map(|message| message.get("content").and_then(|content| content.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The gateway's estimate: the same arithmetic on the same text. The
+/// truncation marker says how many chars were cut, so the char count reads
+/// the original length.
+fn estimated_counts(prompt: &str, result: &str) -> (i64, i64) {
+    let content = completion_text(result);
+    let chars = content.chars().count() as f64 + dropped_chars(result) as f64;
+    let completion = 1.max((((chars / 4.0) + (content.split_whitespace().count() as f64 * 1.3)) / 2.0) as i64);
+
+    let text = prompt_text(prompt);
+    let prompt_tokens = if text.is_empty() {
+        50
+    } else {
+        let chars = text.chars().count() as f64;
+        10.max((((chars / 4.0) + (text.split_whitespace().count() as f64 * 1.3)) / 2.0) as i64)
+    };
+
+    (prompt_tokens, completion)
+}
+
+/// The counts for the requests whose payload reports none: the row's own text, read the way
+/// the gateway's estimator reads it.
+fn pull_text_estimates(requests: &DataFrame) -> anyhow::Result<DataFrame> {
+    let ids = requests.column("id")?.str()?;
+    let prompts = requests.column("prompt")?.str()?;
+    let results = requests.column("result")?.str()?;
+
+    let estimated: Vec<(String, i64, i64, i64)> = ids
+        .iter()
+        .zip(prompts.iter())
+        .zip(results.iter())
+        .filter_map(|((id, prompt), result)| {
+            let id = id?;
+            let (prompt_tokens, completion_tokens) =
+                estimated_counts(prompt.unwrap_or_default(), result.unwrap_or_default());
+            Some((
+                id.to_string(),
+                prompt_tokens,
+                completion_tokens,
+                prompt_tokens + completion_tokens,
+            ))
+        })
+        .collect();
+
+    Ok(df!(
+        "request_id" => estimated.iter().map(|(id, ..)| id.as_str()).collect::<Vec<_>>(),
+        "est_prompt_tokens" => estimated.iter().map(|(_, prompt, ..)| *prompt).collect::<Vec<_>>(),
+        "est_completion_tokens" => estimated.iter().map(|(_, _, completion, _)| *completion).collect::<Vec<_>>(),
+        "est_total_tokens" => estimated.iter().map(|(.., total)| *total).collect::<Vec<_>>(),
+    )?)
+}
+
 /// Fill the token counts a request's metrics row has none, and add the row a
 /// request never got.
 ///
@@ -694,6 +816,10 @@ fn heal_request_metrics(
     // arrive beside the row's and only fill the blanks
     let usage = pull_payload_usage(large_requests, &ids)?.lazy();
 
+    // the counts the rows themselves carry, for the requests no payload reports: the same
+    // arithmetic the gateway estimates with, on the same text
+    let estimates = pull_text_estimates(&requests.clone().collect()?)?.lazy();
+
     // the rows the payloads fill: the counts the metrics stream left blank
     let healed = metrics
         .clone()
@@ -706,6 +832,17 @@ fn heal_request_metrics(
             col("prompt_tokens").fill_null(col("prompt_tokens_right")),
             col("completion_tokens").fill_null(col("completion_tokens_right")),
             col("total_tokens").fill_null(col("total_tokens_right")),
+        ])
+        // whatever the payloads left blank, the row's own text estimates
+        .join_builder()
+        .with(estimates.clone())
+        .how(JoinType::Left)
+        .on([col("request_id")])
+        .finish()
+        .with_columns([
+            col("prompt_tokens").fill_null(col("est_prompt_tokens")),
+            col("completion_tokens").fill_null(col("est_completion_tokens")),
+            col("total_tokens").fill_null(col("est_total_tokens")),
         ])
         .select([
             col("request_id"),
@@ -743,6 +880,18 @@ fn heal_request_metrics(
         .right_on([col("request_id")])
         .how(JoinType::Left)
         .finish()
+        // whatever the payloads left blank, the row's own text estimates
+        .join_builder()
+        .with(estimates)
+        .left_on([col("id")])
+        .right_on([col("request_id")])
+        .how(JoinType::Left)
+        .finish()
+        .with_columns([
+            col("prompt_tokens").fill_null(col("est_prompt_tokens")),
+            col("completion_tokens").fill_null(col("est_completion_tokens")),
+            col("total_tokens").fill_null(col("est_total_tokens")),
+        ])
         .select([
             col("id").alias("request_id"),
             col("cluster"),
