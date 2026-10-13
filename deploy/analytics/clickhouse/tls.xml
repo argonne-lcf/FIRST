@@ -1,0 +1,14 @@
+<!-- Sample ClickHouse TLS config. Mounted at /etc/clickhouse-server/config.d/tls.xml. -->
+<clickhouse>
+    <https_port>8443</https_port>
+    <tcp_port_secure>9440</tcp_port_secure>
+
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/certs/server.crt</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/certs/server.key</privateKeyFile>
+            <caConfig>/etc/clickhouse-server/certs/ca.crt</caConfig>
+            <verificationMode>relaxed</verificationMode>
+        </server>
+    </openSSL>
+</clickhouse>

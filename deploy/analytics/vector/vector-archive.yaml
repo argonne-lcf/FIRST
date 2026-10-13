@@ -1,0 +1,35 @@
+# Optional second Vector config: the raw log archive, the design's system of
+# record for "what was logged". Enable it by adding
+#   "--config", "/etc/vector/vector-archive.yaml"
+# to the command in compose.yaml.
+#
+# It takes the *unfiltered* docker_logs stream, so every stdout line is
+# archived, structured or not. Requires an S3-compatible bucket with Object
+# Lock and a credential limited to PutObject on raw/.
+
+sinks:
+  s3_raw_archive:
+    type: aws_s3
+    inputs: [inference]
+    endpoint: ${S3_ENDPOINT}
+    bucket: ${S3_BUCKET}
+    region: ${S3_REGION}
+    auth:
+      access_key_id: ${S3_ACCESS_KEY_ID}
+      secret_access_key: ${S3_SECRET_ACCESS_KEY}
+    key_prefix: "raw/year=%Y/month=%m/day=%d/"
+    filename_time_format: "%H%M%S"
+    filename_append_uuid: true
+    filename_extension: json.zst
+    encoding:
+      codec: json
+    compression: zstd
+    batch:
+      max_bytes: 268435456  # 256 MiB
+      timeout_secs: 300
+    buffer:
+      type: disk
+      max_size: 8589934592  # 8 GiB
+      when_full: block
+    request:
+      retry_attempts: unlimited
