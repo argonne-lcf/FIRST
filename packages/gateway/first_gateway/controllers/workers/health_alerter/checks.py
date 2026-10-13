@@ -12,7 +12,6 @@ from sqlalchemy.orm import load_only, selectinload
 
 from first_common.schema.resources.runtime import AlertGroup, Severity
 from first_common.schema.types import (
-    QUARANTINE_JOB_PREFIX,
     HealthCheckResult,
     PilotConfig,
     PilotDeploymentState,
@@ -195,23 +194,54 @@ async def check_quarantined_nodes(client_state: ClientState) -> list[Observation
         if pilot_config.node_admission.on_failure != "pbs_quarantine":
             continue
         adapter = await build_scheduler(pilot_config, client_state)
+        inspect = getattr(adapter, "get_quarantine_statuses", None)
+        if inspect is None:
+            raise RuntimeError("scheduler cannot validate PBS quarantine requests")
         async with asyncio.timeout(_SCHEDULER_CHECK_TIMEOUT_S):
-            jobs = await adapter.get_job_statuses()
+            jobs = await inspect()
+        by_host: dict[str, list[Any]] = {}
         for job in jobs:
-            if not job.name.startswith(QUARANTINE_JOB_PREFIX):
-                continue
-            host = job.name.removeprefix(QUARANTINE_JOB_PREFIX)
+            by_host.setdefault(job.request.host, []).append(job)
+        for host, requests in by_host.items():
+            active = [
+                entry for entry in requests if entry.request.state not in {"F", "X"}
+            ]
+            job = (active or requests)[0]
+            request = job.request
+            severity: Severity
+            if len(active) > 1:
+                status, severity = "duplicate_requests", "crit"
+                description = "multiple valid isolation requests; administrators must resolve duplicates"
+            elif job.isolated:
+                status, severity = "isolated", "warn"
+                description = "running with independently verified whole-host isolation"
+            elif request.state in {"Q", "H", "W", "T", "B"}:
+                status, severity = "isolation_pending", "warn"
+                description = (
+                    "isolation pending; physical exclusion is not yet guaranteed"
+                )
+            elif request.state in {"F", "X"}:
+                status, severity = "isolation_lost", "crit"
+                description = "isolation request ended or failed; node health is unverified and physical exclusion is not guaranteed"
+            else:
+                status, severity = "isolation_unverified", "crit"
+                description = (
+                    "isolation is unverified; physical exclusion is not guaranteed"
+                )
+            context = "; ".join(
+                f"job {entry.request.job_id} ({entry.request.state}, "
+                f"{entry.request.environment}, source {entry.request.source}, "
+                f"reason {entry.request.reason}, evidence {entry.request.evidence}, "
+                f"expires {entry.expires_at.isoformat() if entry.expires_at else 'not started'})"
+                for entry in requests
+            )
             observations.append(
                 Observation(
                     key=f"cluster/{c.uid}/quarantine/{host}",
-                    status="quarantined",
-                    summary=(
-                        f"Cluster {c.name}: node {host} failed pilot startup "
-                        f"checks and is quarantined by scheduler job {job.id} "
-                        f"({job.state.value})"
-                    ),
+                    status=status,
+                    summary=f"Cluster {c.name}: node {host}: {description}; {context}",
                     display_name=f"Cluster {c.name} node {host} quarantine",
-                    severity="warn",
+                    severity=severity,
                 )
             )
 

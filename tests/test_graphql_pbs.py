@@ -197,12 +197,27 @@ def _assert_normal_delete_request(body: dict[str, Any]) -> None:
     assert "force: true" not in body["query"]
 
 
+def _normal_cleanup_identity(body: dict[str, Any]) -> dict[str, object]:
+    assert body["variables"] == {
+        "owner": "svc",
+        "ids": ["101.tara"],
+        "history": True,
+        "cursor": None,
+    }
+    assert "query QuarantineJobs" in body["query"]
+    node = _job_node("101.tara", 7)
+    node.update(owner="svc", env=[])
+    return _jobs_payload([{"node": node, "error": None}])
+
+
 async def test_graphql_delete_returns_after_scheduler_acknowledgement() -> None:
     requests: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         requests.append(body)
+        if "query QuarantineJobs" in body["query"]:
+            return httpx.Response(200, json=_normal_cleanup_identity(body))
         return httpx.Response(
             200,
             json={
@@ -220,10 +235,10 @@ async def test_graphql_delete_returns_after_scheduler_acknowledgement() -> None:
             "101.tara"
         )
 
-    assert len(requests) == 1
-    assert requests[0]["variables"]["jobId"] == "101.tara"
-    assert "mutation DeleteJob" in requests[0]["query"]
-    _assert_normal_delete_request(requests[0])
+    assert len(requests) == 2
+    assert requests[1]["variables"]["jobId"] == "101.tara"
+    assert "mutation DeleteJob" in requests[1]["query"]
+    _assert_normal_delete_request(requests[1])
 
 
 @pytest.mark.parametrize("terminal_state", [None, 10, 11, 12])
@@ -236,6 +251,8 @@ async def test_graphql_delete_accepts_explicit_absence_after_lost_ack(
         nonlocal calls
         calls += 1
         body = json.loads(request.content)
+        if "query QuarantineJobs" in body["query"]:
+            return httpx.Response(200, json=_normal_cleanup_identity(body))
         if "mutation DeleteJob" in body["query"]:
             _assert_normal_delete_request(body)
             return httpx.Response(
@@ -265,7 +282,7 @@ async def test_graphql_delete_accepts_explicit_absence_after_lost_ack(
         await GraphQLPBSAdapter(client, "svc", "https://bridge").terminate_job(
             "101.tara"
         )
-    assert calls == 2
+    assert calls == 3
 
 
 @pytest.mark.parametrize("live_state", [7, 9])
@@ -277,6 +294,8 @@ async def test_graphql_delete_error_with_live_job_remains_failure(
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         calls.append(body)
+        if "query QuarantineJobs" in body["query"]:
+            return httpx.Response(200, json=_normal_cleanup_identity(body))
         if "mutation DeleteJob" in body["query"]:
             _assert_normal_delete_request(body)
             return httpx.Response(
@@ -302,10 +321,10 @@ async def test_graphql_delete_error_with_live_job_remains_failure(
             await GraphQLPBSAdapter(client, "svc", "https://bridge").terminate_job(
                 "101.tara"
             )
-    # One normal delete and one exact status check; no forced retry.
-    assert len(calls) == 2
-    assert calls[1]["variables"] == {"jobId": "101.tara"}
-    assert "withHistoryJobs: true" in calls[1]["query"]
+    # Identity lookup, one normal delete and exact status check; no forced retry.
+    assert len(calls) == 3
+    assert calls[2]["variables"] == {"jobId": "101.tara"}
+    assert "withHistoryJobs: true" in calls[2]["query"]
 
 
 async def test_graphql_delete_mismatched_and_malformed_ids_fail_closed() -> None:
@@ -314,7 +333,10 @@ async def test_graphql_delete_mismatched_and_malformed_ids_fail_closed() -> None
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        _assert_normal_delete_request(json.loads(request.content))
+        body = json.loads(request.content)
+        if "query QuarantineJobs" in body["query"]:
+            return httpx.Response(200, json=_normal_cleanup_identity(body))
+        _assert_normal_delete_request(body)
         payload: dict[str, Any] = {
             "data": {
                 "deleteJob": {

@@ -45,6 +45,7 @@ class PilotClientRole(StrEnum):
 _JOB_ENV_OVERRIDE_FIELDS = frozenset(
     {
         "job_name",
+        "job_name_prefix",
         "external_port",
         "nginx_path",
         "ip_allowlist",
@@ -201,6 +202,7 @@ class PilotRuntimeConfig(BaseSettings):
     num_nodes: int = Field(ge=1)
     gpus_per_node: int = Field(ge=1)
     job_name: str
+    job_name_prefix: str = "__FIRST_PILOT_"
     # Scheduler walltime; the server certificate must outlive it.
     walltime_min: int = Field(ge=1)
 
