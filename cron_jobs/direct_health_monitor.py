@@ -128,7 +128,6 @@ GATEWAY_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GATEWAY_TIMEOUT", 5))
 GLOBUS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GLOBUS_TIMEOUT", 30))
 METIS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_METIS_TIMEOUT", 15))
 MINERVA_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_MINERVA_TIMEOUT", 15))
-MINERVA_REPORT_NONLIVE = os.getenv("HEALTH_MONITOR_MINERVA_REPORT_NONLIVE", "1") == "1"
 
 FULL_REPORT_FREQUENCY_HOURS = int(os.getenv("HEALTH_MONITOR_FULL_REPORT_HOURS", 24))
 
@@ -252,7 +251,7 @@ async def gather_endpoints(cluster: str) -> dict[str, EndpointInfo]:
         # Skip if not in production
         if (
             "removed" in endpoint.model
-            or "aaaaaaaa" in endpoint_uuid
+            or "aaaaaaaa" in (endpoint_uuid or "")
             or "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in endpoint.allowed_globus_groups
         ):
             continue
@@ -421,6 +420,8 @@ async def check_sophia_models() -> list[HealthRecord]:
         cached = endpoint_status_cache.get(info.endpoint_slug)
         if cached is not None:
             return cached
+        if not info.endpoint_uuid:
+            return None, "Endpoint configuration has no endpoint_uuid"
         status, err = globus_utils.get_endpoint_status(
             endpoint_uuid=info.endpoint_uuid,
             client=gcc,
@@ -714,13 +715,11 @@ async def extract_minerva_models() -> tuple[list[str], list[str]]:
     jobs = await minerva.get_jobs(None)
 
     live = [model.strip() for j in jobs.running for model in j.Models.split(",")]
-    not_running = [
-        model.strip()
-        for job in [*jobs.stopped, *jobs.queued]
-        for model in job.Models.split(",")
-    ]
 
-    return live, not_running
+    configured = await gather_endpoints("minerva")
+    live_keys = {name.lower() for name in live}
+
+    return live, [name for name in configured if name.lower() not in live_keys]
 
 
 async def check_minerva_models() -> list[HealthRecord]:
@@ -743,19 +742,16 @@ async def check_minerva_models() -> list[HealthRecord]:
 
     # Models the cluster still knows about but is not running.  They used to be
     # dropped silently, so a model that went down left no record at all.
-    if MINERVA_REPORT_NONLIVE:
-        for model_name in dict.fromkeys(not_running):
-            if model_name in models:
-                continue
-            log.info("Minerva model not running: %s", model_name)
-            records.append(
-                HealthRecord(
-                    component=model_name,
-                    cluster="minerva",
-                    status=HealthStatus.OFFLINE,
-                    detail="not running on Minerva (no live route)",
-                )
+    for model_name in not_running:
+        log.info("Minerva model not running: %s", model_name)
+        records.append(
+            HealthRecord(
+                component=model_name,
+                cluster="minerva",
+                status=HealthStatus.OFFLINE,
+                detail="not running on Minerva (no live route)",
             )
+        )
 
     if not models:
         records.append(
