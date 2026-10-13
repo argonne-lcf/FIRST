@@ -1,14 +1,11 @@
 import logging
 import os
 import re
-import shutil
 import socket
 import stat
-import subprocess
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -30,12 +27,9 @@ from first_common.schema.pilot import (
     PilotRuntimeConfig,
     ReplicaStartRequest,
 )
-from first_common.schema.types import (
-    GpuClaim,
-    PalsDiscovery,
-    SSHDiscovery,
-)
+from first_common.schema.types import GpuClaim, GpuDiscovery
 
+from .host_commands import deduplicate_hosts, run_on_hosts
 from .replica import Replica
 
 logger = logging.getLogger(__name__)
@@ -53,15 +47,7 @@ _NVIDIA_SMI_ARGS = [
     "--query-gpu=index,name,memory.total,memory.used",
     "--format=csv,noheader,nounits",
 ]
-_PALS_LABEL = re.compile(r"^(?P<host>\S+)\s+(?P<rank>\d+):\s?(?P<row>.*)$")
 _REPLICA_UDS_NAME = re.compile(r"^replica-(?:0|[1-9][0-9]*)\.sock$")
-
-
-def _require_executable(path: Path, *, label: str) -> str:
-    """Return a configured executable path or fail with a useful error."""
-    if not path.is_file() or not os.access(path, os.X_OK):
-        raise RuntimeError(f"required {label} is unavailable: {path}")
-    return str(path)
 
 
 def _parse_gpu_row(line: str) -> GpuInfo:
@@ -88,9 +74,15 @@ def _parse_gpu_row(line: str) -> GpuInfo:
     )
 
 
-def _validated_host_gpus(
-    hostname: str, gpus: list[GpuInfo], expected_gpus: int
-) -> HostGpus:
+def _host_gpus(hostname: str, output: str, expected_gpus: int) -> HostGpus:
+    """Parse and validate one host's nvidia-smi inventory."""
+    try:
+        gpus = [_parse_gpu_row(line) for line in output.splitlines() if line]
+    except ValueError as exc:
+        raise RuntimeError(
+            f"GPU inventory for host {hostname!r} was malformed: {exc}"
+        ) from exc
+
     indices = [gpu.index for gpu in gpus]
     if len(indices) != len(set(indices)):
         raise RuntimeError(f"GPU inventory duplicated an index on host {hostname!r}")
@@ -107,189 +99,12 @@ def _validated_host_gpus(
     )
 
 
-def _query_gpus_command(
-    hostname: str,
-    command: list[str],
-    expected_gpus: int,
-    timeout_sec: float,
-    *,
-    label: str,
-) -> HostGpus:
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"{label} GPU inventory timed out after {timeout_sec:g}s"
-        ) from exc
-
-    if result.returncode != 0:
-        diagnostics = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"{label} GPU inventory exited {result.returncode}: {diagnostics[-2000:]}"
-        )
-
-    try:
-        gpus = [_parse_gpu_row(line) for line in result.stdout.splitlines() if line]
-    except ValueError as exc:
-        raise RuntimeError(f"{label} GPU inventory was malformed: {exc}") from exc
-    return _validated_host_gpus(hostname, gpus, expected_gpus)
-
-
-def query_gpus_local(
-    hostname: str, expected_gpus: int, timeout_sec: float = 5.0
-) -> HostGpus:
-    """Inventory a single-node pilot locally; never use a remote shell."""
-    return _query_gpus_command(
-        hostname,
-        ["nvidia-smi", *_NVIDIA_SMI_ARGS],
-        expected_gpus,
-        timeout_sec,
-        label="local",
-    )
-
-
-def query_gpus_ssh(
-    hostnames: list[str], expected_gpus: int, timeout_sec: float = 5.0
+def query_gpus(
+    hostnames: list[str], discovery: GpuDiscovery, expected_gpus: int
 ) -> list[HostGpus]:
-    """Query every scheduler host concurrently and retain scheduler order."""
-
-    def query_host(hostname: str) -> HostGpus:
-        return _query_gpus_command(
-            hostname,
-            ["ssh", hostname, "nvidia-smi", *_NVIDIA_SMI_ARGS],
-            expected_gpus,
-            timeout_sec,
-            label=f"SSH host {hostname!r}",
-        )
-
-    with ThreadPoolExecutor(max_workers=len(hostnames)) as pool:
-        return list(pool.map(query_host, hostnames))
-
-
-def _normalized_hostname(hostname: str) -> str:
-    return hostname.strip().rstrip(".").lower()
-
-
-def _host_identity(hostname: str) -> str:
-    return _normalized_hostname(hostname).split(".", maxsplit=1)[0]
-
-
-def _host_matches(label: str, expected: str) -> bool:
-    label_identity = _host_identity(label)
-    expected_identity = _host_identity(expected)
-    return bool(label_identity) and label_identity == expected_identity
-
-
-def _deduplicate_hosts(hostnames: list[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for hostname in hostnames:
-        identity = _host_identity(hostname)
-        if not identity:
-            raise RuntimeError("scheduler node inventory contains an empty hostname")
-        if identity not in seen:
-            seen.add(identity)
-            result.append(hostname)
-    return result
-
-
-def query_gpus_pals(
-    hostnames: list[str],
-    launcher_path: Path,
-    expected_gpus: int,
-    timeout_sec: float = 35.0,
-) -> list[HostGpus]:
-    """Run one labeled inventory rank per host through the site PALS launcher."""
-    pals = _require_executable(launcher_path, label="PALS launcher")
-    nvidia_smi_path = shutil.which("nvidia-smi")
-    if nvidia_smi_path is None:
-        raise RuntimeError("required nvidia-smi is unavailable on the pilot PATH")
-    # PALS does not reliably search PATH for the launched application. Resolve
-    # it on the allocation head and give every rank a canonical absolute path.
-    nvidia_smi = str(Path(nvidia_smi_path).resolve())
-
-    command = [
-        pals,
-        "--pmi=pmix",
-        "--genvnone",
-        "--no-transfer",
-        "--line-buffer",
-        "--label",
-        "--abort-on-failure",
-        "--timeout",
-        # Leave time for the launcher to report and exit before our outer
-        # subprocess deadline expires.
-        str(max(1, int(timeout_sec) - 5)),
-        "-n",
-        str(len(hostnames)),
-        "--ppn",
-        "1",
-        "--cpu-bind=none",
-        nvidia_smi,
-        *_NVIDIA_SMI_ARGS,
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"PALS GPU inventory timed out after {timeout_sec:g}s"
-        ) from exc
-
-    if result.returncode != 0:
-        diagnostics = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"PALS GPU inventory exited {result.returncode}: {diagnostics[-2000:]}"
-        )
-
-    gpus_by_rank: dict[int, list[GpuInfo]] = {
-        rank: [] for rank in range(len(hostnames))
-    }
-    seen_ranks: set[int] = set()
-    for line in result.stdout.splitlines():
-        if not line.strip():
-            continue
-        match = _PALS_LABEL.fullmatch(line)
-        if match is None:
-            raise RuntimeError(
-                f"PALS GPU inventory returned an unlabeled row: {line!r}"
-            )
-
-        rank = int(match.group("rank"))
-        if rank not in gpus_by_rank:
-            raise RuntimeError(f"PALS GPU inventory returned unexpected rank {rank}")
-        expected_host = hostnames[rank]
-        reported_host = match.group("host")
-        if not _host_matches(reported_host, expected_host):
-            raise RuntimeError(
-                f"PALS GPU inventory rank {rank} reported host {reported_host!r}; "
-                f"expected {expected_host!r}"
-            )
-        try:
-            gpu = _parse_gpu_row(match.group("row"))
-        except ValueError as exc:
-            raise RuntimeError(f"PALS GPU inventory was malformed: {exc}") from exc
-        gpus_by_rank[rank].append(gpu)
-        seen_ranks.add(rank)
-
-    expected_ranks = set(range(len(hostnames)))
-    if seen_ranks != expected_ranks:
-        missing = sorted(expected_ranks - seen_ranks)
-        raise RuntimeError(f"PALS GPU inventory is incomplete; missing ranks {missing}")
-
-    return [
-        _validated_host_gpus(hostname, gpus_by_rank[rank], expected_gpus)
-        for rank, hostname in enumerate(hostnames)
-    ]
+    """Inventory every scheduler host's GPUs, in scheduler order."""
+    outputs = run_on_hosts(["nvidia-smi", *_NVIDIA_SMI_ARGS], hostnames, discovery)
+    return [_host_gpus(host, outputs[host], expected_gpus) for host in hostnames]
 
 
 def discover_hosts(node_file_env: str) -> list[str]:
@@ -343,7 +158,7 @@ class ReplicaManager:
         # PBS nodefiles may repeat a hostname once per assigned resource.  Keep
         # the scheduler's first-occurrence order because it is also the PALS
         # rank order used by gpus_by_host in the replica launch context.
-        self.node_hostnames = _deduplicate_hosts(
+        self.node_hostnames = deduplicate_hosts(
             discover_hosts(self.config.node_file_env)
         )
         if len(self.node_hostnames) != self.config.num_nodes:
@@ -380,31 +195,13 @@ class ReplicaManager:
     @ttl_cache(ttl=60)
     def query_resources(self) -> PilotResources:
         """Discover and validate the exact scheduler-requested inventory."""
-        discovery = self.config.gpu_discovery
-        if len(self.node_hostnames) == 1:
-            host_gpus = [
-                query_gpus_local(
-                    self.node_hostnames[0],
-                    self.config.gpus_per_node,
-                )
-            ]
-        elif isinstance(discovery, SSHDiscovery):
-            host_gpus = query_gpus_ssh(
+        return PilotResources(
+            hosts=query_gpus(
                 self.node_hostnames,
+                self.config.gpu_discovery,
                 self.config.gpus_per_node,
-                discovery.timeout_sec,
             )
-        elif isinstance(discovery, PalsDiscovery):
-            host_gpus = query_gpus_pals(
-                self.node_hostnames,
-                discovery.launcher_path,
-                self.config.gpus_per_node,
-                discovery.timeout_sec,
-            )
-        else:
-            raise AssertionError(f"unsupported GPU discovery method: {discovery!r}")
-
-        return PilotResources(hosts=host_gpus)
+        )
 
     @staticmethod
     def _flatten(resources: list[GpuClaim]) -> list[tuple[str, str]]:
