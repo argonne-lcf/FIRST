@@ -6,6 +6,7 @@ use std::{
 };
 
 use backhand::{FilesystemReader, InnerNode};
+use rayon::prelude::*;
 
 use crate::parse::request_log_ids;
 
@@ -14,45 +15,63 @@ use crate::parse::request_log_ids;
 ///
 /// `bundle_requests` stores requests as `<uuid[0..2]>/<uuid[2..4]>/<uuid>.json`,
 /// so the file stem is the uuid.
+/// The image's nodes are split across the rayon pool: the reader borrows the
+/// filesystem, so it cannot be shared between threads and each shard opens its own.
+/// A shard walks the whole node list and keeps every nth node, which keeps the
+/// shards disjoint and still covers the image.
 pub fn large_request_checksums(squashfs: &Path) -> anyhow::Result<HashMap<String, blake3::Hash>> {
-    let image = FilesystemReader::from_reader(BufReader::new(File::open(squashfs)?))?;
+    // each shard holds its own reader over the image, so memory scales with
+    // the shard count rather than the cores
+    let shards = rayon::current_num_threads().min(8);
 
-    let mut checksums = HashMap::new();
-    let mut buf = vec![0u8; 64 * 1024];
-    for node in image.files() {
-        let InnerNode::File(file) = &node.inner else {
-            continue; // the root and the two levels of uuid prefix dirs
-        };
-        let Some(uuid) = node.fullpath.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
+    let checksums: Vec<HashMap<String, blake3::Hash>> = (0..shards)
+        .into_par_iter()
+        .map(|shard| {
+            let image = FilesystemReader::from_reader(BufReader::new(File::open(squashfs)?))?;
 
-        // payloads are hashed as they stream out of the image
-        let mut reader = image.file(file).reader();
-        let mut hasher = blake3::Hasher::new();
-        let mut read = 0;
-        loop {
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
-                break;
+            let mut checksums = HashMap::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            for (index, node) in image.files().enumerate() {
+                if index % shards != shard {
+                    continue;
+                }
+                let InnerNode::File(file) = &node.inner else {
+                    continue; // the root and the two levels of uuid prefix dirs
+                };
+                let Some(uuid) = node.fullpath.file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+
+                // payloads are hashed as they stream out of the image
+                let mut reader = image.file(file).reader();
+                let mut hasher = blake3::Hasher::new();
+                let mut read = 0;
+                loop {
+                    let n = reader.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..n]);
+                    read += n;
+                }
+
+                // a truncated payload would otherwise silently checksum as empty
+                anyhow::ensure!(
+                    read == file.file_len(),
+                    "short read of {}: {} of {} bytes",
+                    node.fullpath.display(),
+                    read,
+                    file.file_len()
+                );
+
+                checksums.insert(uuid.to_string(), hasher.finalize());
             }
-            hasher.update(&buf[..n]);
-            read += n;
-        }
 
-        // a truncated payload would otherwise silently checksum as empty
-        anyhow::ensure!(
-            read == file.file_len(),
-            "short read of {}: {} of {} bytes",
-            node.fullpath.display(),
-            read,
-            file.file_len(),
-        );
+            Ok(checksums)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
-        checksums.insert(uuid.to_string(), hasher.finalize());
-    }
-
-    Ok(checksums)
+    Ok(checksums.into_iter().flatten().collect())
 }
 
 /// Verify that the large requests `bundle_requests` bundles from
