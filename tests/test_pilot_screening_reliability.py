@@ -14,6 +14,7 @@ from first_pilot.host_commands import run_on_hosts
 from first_pilot.node_checks import (
     CHECKS,
     GPU_QUERY,
+    gpu_memory_free,
     gpu_rows,
     node_check,
     run_node_checks,
@@ -127,6 +128,52 @@ def test_verified_unexplained_low_memory_twice_uses_established_threshold(
         "requires 93234 of 97871 MiB in both observations with no GPU clients" in reason
         for reason in reasons
     )
+
+
+@pytest.mark.parametrize("total", [60, 10000, 10020, 81559, 97871, 141312])
+def test_default_memory_threshold_keeps_exact_rounding_and_reserve(
+    total: int, tmp_path: Path
+) -> None:
+    minimum = (total * 95 + 99) // 100 + 256
+    # Small synthetic GPUs cannot satisfy a reserve larger than their memory;
+    # this remains a configured-policy failure rather than silently weakening it.
+    if minimum > total:
+        reason = gpu_memory_free(
+            GPU0.replace("97871, 97800", f"{total}, {total}"), config(tmp_path)
+        )
+        assert reason and f"requires {minimum} of {total} MiB" in reason
+        return
+    passing = GPU0.replace("97871, 97800", f"{total}, {minimum}")
+    failing = GPU0.replace("97871, 97800", f"{total}, {minimum - 1}")
+    assert gpu_memory_free(passing, config(tmp_path)) is None
+    assert f"requires {minimum} of {total} MiB" in str(
+        gpu_memory_free(failing, config(tmp_path))
+    )
+
+
+@patch("first_pilot.node_checks.time.sleep")
+@patch("first_pilot.node_checks.run_on_hosts")
+def test_configured_memory_policy_is_used_in_faults_and_evidence(
+    run: MagicMock, _sleep: MagicMock, tmp_path: Path
+) -> None:
+    runtime = config(tmp_path)
+    runtime.node_admission.minimum_free_memory_fraction = 0.8
+    runtime.node_admission.memory_reserve_mib = 17
+    # ceil(97871 * .8) + 17 == 78314; still confirm any suspected fault.
+    low = HEALTHY.replace("97800", "78313")
+    run.side_effect = [{"n1": low}, {"n1": ""}, {"n1": low}, {"n1": ""}]
+    evidence: dict[str, object] = {}
+    reasons = run_node_checks(["gpu_memory_free"], ["n1"], runtime, evidence=evidence)[
+        "n1"
+    ]
+    assert len(reasons) == 2
+    assert all(
+        "requires 78314 of 97871 MiB in both observations" in reason
+        for reason in reasons
+    )
+    assert evidence["n1"]["minimum_free_fraction"] == 0.8  # type: ignore[index]
+    assert evidence["n1"]["reserve_mib"] == 17  # type: ignore[index]
+    assert len(evidence["n1"]["samples"]) == 2  # type: ignore[index]
 
 
 @patch("first_pilot.node_checks.time.sleep")

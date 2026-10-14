@@ -1,4 +1,15 @@
-"""Pilot admission with bounded native PBS requests; normal retries are unchanged."""
+"""Screen an allocation before the pilot initializes or serves models.
+
+Check known quarantine requests first, then obtain complete node observations.
+Command/transport failures and ambiguous observations are infrastructure errors:
+they stop startup without diagnosing a bad node. Only confirmed node faults
+reach the configured action. Apply that action before exiting the failed attempt;
+FIRST's ordinary submissions and retries continue without waiting for isolation.
+
+The small ACTIONS map keeps the two policies explicit: exit without scheduling
+anything, or request a bounded native PBS quarantine. Both receive the recorded
+fault context; the PBS action also reuses verified source-allocation membership.
+"""
 
 import json
 import logging
@@ -8,7 +19,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from first_common.pbs_quarantine import (
     TAG,
@@ -82,6 +93,14 @@ class _Allocation:
 def _allocation(
     config: PilotRuntimeConfig, hosts: list[str], deadline: float
 ) -> _Allocation:
+    """Verify the owned running job against the allocation's node file.
+
+    Native quarantine currently supports one physical-host vnode per node, with
+    positive CPU/GPU quantities. Unlike the GraphQL adapter, native qstat does
+    not supply allocatedMachines' vnode-to-host mapping; aliases/split-vnode
+    layouts are not resolved. Sites must establish the physical-vnode layout
+    before enabling this action; mismatches fail rather than guessing a host.
+    """
     jobs = _jobs(deadline)
     source = pbs_job_id(os.environ.get("PBS_JOBID"))
     job = jobs.get(source)
@@ -141,8 +160,7 @@ def _evidence(
             {
                 "source": os.environ.get("PBS_JOBID"),
                 "faults": failures,
-                "environment": config.node_admission.environment
-                or os.environ.get("TARA_DEPLOYMENT_ENV"),
+                "environment": config.node_admission.environment,
                 "observations": observations,
                 "recorded_unix": time.time(),
             },
@@ -171,28 +189,33 @@ def admit_nodes(config: PilotRuntimeConfig) -> None:
     deadline = time.monotonic() + _ACTION_BUDGET_SEC
     if allocation is not None:
         allocation.quarantines = discover_quarantines(_jobs(deadline), _owner())
+    act = ACTIONS[admission.on_failure]
     for hostname, reasons in failures.items():
         logger.error(
             "node %s failed checks: %s; evidence=%s", hostname, reasons, evidence
         )
-        if admission.on_failure == "pbs_quarantine":
-            try:
-                pbs_quarantine(
-                    hostname,
-                    config,
-                    reason=reasons[0].split(":", 1)[0],
-                    evidence=evidence,
-                    deadline=deadline,
-                    allocation=allocation,
-                )
-            except Exception:
-                logger.exception(
-                    "quarantine action failed for %s; ordinary pilot exit continues",
-                    hostname,
-                )
+        try:
+            act(
+                hostname,
+                config,
+                reason=reasons[0].split(":", 1)[0],
+                evidence=evidence,
+                deadline=deadline,
+                allocation=allocation,
+            )
+        except Exception:
+            logger.exception(
+                "%s action failed for %s; ordinary pilot exit continues",
+                admission.on_failure,
+                hostname,
+            )
     raise NodeChecksFailed(
         f"nodes failed startup checks: {sorted(failures)}; evidence={evidence}"
     )
+
+
+def exit_only(hostname: str, config: PilotRuntimeConfig, **_fault_context: Any) -> None:
+    """Schedule nothing; admit_nodes exits after recording the verified fault."""
 
 
 def pbs_quarantine(
@@ -204,9 +227,18 @@ def pbs_quarantine(
     deadline: float | None = None,
     allocation: _Allocation | None = None,
 ) -> None:
-    """Submit at most once, inspect accepted identity, never wait for execution."""
+    """Request an exclusive waiting job before the failed attempt exits.
+
+    Submit at most once per operation and inspect PBS's accepted identity. A
+    timeout or malformed acknowledgement may follow a successful submission,
+    so reconcile by operation lookup instead of risking duplicate qsub calls.
+    Do not wait for execution or gate FIRST's ordinary replacement submissions.
+    """
     if not config.queue or not config.account:
         raise ValueError("pbs_quarantine requires the pilot's queue and account")
+    environment = config.node_admission.environment
+    if environment is None:
+        raise ValueError("pbs_quarantine requires node_admission.environment")
     deadline = time.monotonic() + _ACTION_BUDGET_SEC if deadline is None else deadline
     if allocation is None:
         allocation = _allocation(
@@ -228,13 +260,6 @@ def pbs_quarantine(
         raise RuntimeError(
             "quarantine safety budget reached; ordinary retries remain active"
         )
-    environment: str | None = config.node_admission.environment
-    runtime_environment = os.environ.get("TARA_DEPLOYMENT_ENV")
-    if runtime_environment and environment and runtime_environment != environment:
-        raise RuntimeError(
-            "pilot quarantine environment disagrees with deployment context"
-        )
-    environment = runtime_environment or environment
     operation = uuid.uuid4().hex
     if evidence is None:
         evidence = _evidence(config, {hostname: [reason]})
@@ -247,7 +272,7 @@ def pbs_quarantine(
         TAG + "EVIDENCE": evidence,
     }
     ncpus, ngpus = allocation.resources[host]
-    seconds = config.node_admission.quarantine_walltime_min * 60
+    walltime_min = config.node_admission.quarantine_walltime_min
     if any(
         "," in str(value) or "\n" in str(value) or "\r" in str(value)
         for value in metadata.values()
@@ -256,27 +281,16 @@ def pbs_quarantine(
     name = f"{QUARANTINE_JOB_PREFIX}{environment}_{host}_{operation[:8]}"
     command = [
         "qsub",
-        "-N",
-        name,
-        "-q",
-        config.queue,
-        "-A",
-        config.account,
-        "-l",
-        f"select=1:host={host}:ncpus={ncpus}:ngpus={ngpus}",
-        "-l",
-        "place=exclhost",
-        "-l",
-        f"walltime={seconds // 3600}:{seconds // 60 % 60:02}:00",
-        "-v",
-        ",".join(f"{key}={value}" for key, value in metadata.items()),
-        "-j",
-        "oe",
-        "-o",
-        "/dev/null",
-        "--",
-        "/bin/sleep",
-        "infinity",
+        *("-N", name),
+        *("-q", config.queue),
+        *("-A", config.account),
+        *("-l", f"select=1:host={host}:ncpus={ncpus}:ngpus={ngpus}"),
+        *("-l", "place=exclhost"),
+        *("-l", f"walltime={walltime_min // 60}:{walltime_min % 60:02}:00"),
+        *("-v", ",".join(f"{key}={value}" for key, value in metadata.items())),
+        *("-j", "oe"),
+        *("-o", "/dev/null"),
+        *("--", "/bin/sleep", "infinity"),
     ]
     acknowledged = None
     try:
@@ -321,3 +335,10 @@ def pbs_quarantine(
     raise RuntimeError(
         "quarantine acceptance unresolved; ordinary pilot exit/retry continues"
     )
+
+
+Action = Callable[..., None]
+ACTIONS: dict[str, Action] = {
+    "exit": exit_only,
+    "pbs_quarantine": pbs_quarantine,
+}

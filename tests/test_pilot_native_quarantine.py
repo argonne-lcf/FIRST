@@ -75,7 +75,11 @@ def native(
             "network_interfaces": ["hsn0"],
             "queue": "prod",
             "account": "inference_service",
-            "node_admission": {"checks": [], "on_failure": "pbs_quarantine"},
+            "node_admission": {
+                "checks": [],
+                "on_failure": "pbs_quarantine",
+                "environment": "dev",
+            },
         }
     )
     jobs: dict[str, dict[str, Any]] = {
@@ -153,7 +157,7 @@ def test_start_guard_lookup_error_is_infrastructure_not_fault(
     config, _jobs, pbs = native
     pbs.side_effect = subprocess.TimeoutExpired("qstat", 1)
     action = Mock()
-    monkeypatch.setattr(admission, "pbs_quarantine", action)
+    monkeypatch.setitem(admission.ACTIONS, "pbs_quarantine", action)
     with pytest.raises(subprocess.TimeoutExpired):
         admission.admit_nodes(config)
     action.assert_not_called()
@@ -420,13 +424,67 @@ def test_critical_submission_identity_still_must_match(
     assert sum(call.args[0][0] == "qsub" for call in pbs.call_args_list) == 1
 
 
-def test_environment_disagreement_is_configuration_not_node_fault(
+def test_environment_attribution_uses_configuration_not_tara_environment(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+) -> None:
+    config, jobs, _pbs = native
+    config.node_admission.environment = "prod"
+    admission.pbs_quarantine(HOST, config)
+    assert jobs[JOB]["Variable_List"][TAG + "ENV"] == "prod"
+    assert jobs[JOB]["Job_Name"].startswith("first_quar_prod_")
+
+
+def test_missing_environment_is_configuration_not_node_fault(
     native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
 ) -> None:
     config, _jobs, pbs = native
-    config.node_admission.environment = "prod"
-    with pytest.raises(RuntimeError, match="disagrees"):
+    config.node_admission.environment = None
+    with pytest.raises(ValueError, match="node_admission.environment"):
         admission.pbs_quarantine(HOST, config)
+    assert not any(call.args[0][0] == "qsub" for call in pbs.call_args_list)
+
+
+def test_exit_action_receives_recorded_fault_context_without_scheduling(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _jobs, pbs = native
+    config.node_admission.on_failure = "exit"
+    config.node_admission.checks = ["gpu_count"]
+    monkeypatch.setattr(
+        admission,
+        "run_node_checks",
+        lambda *_args, **_kwargs: {HOST: ["gpu_count: missing"]},
+    )
+    action = Mock(wraps=admission.exit_only)
+    monkeypatch.setitem(admission.ACTIONS, "exit", action)
+    with pytest.raises(admission.NodeChecksFailed):
+        admission.admit_nodes(config)
+    context = action.call_args.kwargs
+    evidence = json.loads(Path(context["evidence"]).read_text())
+    assert evidence["environment"] == "dev"
+    assert context["reason"] == "gpu_count"
+    assert context["allocation"] is None
+    pbs.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        f"({HOST}:ncpus=0:ngpus=4)",
+        f"({HOST}:ncpus=288:ngpus=0)",
+        f"({HOST}:ncpus=144:ngpus=2+{HOST}:ncpus=144:ngpus=2)",
+        "(gpu-vnode-alias:ncpus=288:ngpus=4)",
+    ],
+)
+def test_unsupported_native_vnode_layout_is_infrastructure_error(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+    layout: str,
+) -> None:
+    config, jobs, pbs = native
+    jobs[SOURCE]["exec_vnode"] = layout
+    with pytest.raises(RuntimeError):
+        admission.admit_nodes(config)
     assert not any(call.args[0][0] == "qsub" for call in pbs.call_args_list)
 
 

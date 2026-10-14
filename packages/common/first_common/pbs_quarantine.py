@@ -7,16 +7,6 @@ from typing import Any
 from .schema.types import QUARANTINE_JOB_PREFIX
 
 ACTIVE_STATES = frozenset("QHWTRBSE")
-EXCLUSIVE_PLACEMENT = frozenset(
-    {
-        "exclhost",
-        "scatter:exclhost",
-        "pack:exclhost",
-        "excl",
-        "scatter:excl",
-        "scatter:excl:group=tier0",
-    }
-)
 TAG = "FIRST_QUAR_"
 
 
@@ -73,7 +63,39 @@ def select_resources(value: Any) -> dict[str, str]:
     return result
 
 
+def exclusive_placement(value: Any) -> bool:
+    """Check PBS sharing, without prescribing site-specific resource groups.
+
+    PBS permits arrangement, sharing and grouping in any order. Native jobs
+    request ``exclhost``; some sites normalize it to ``excl``. That is sufficient
+    only for the supported one-physical-vnode-per-host allocation layout.
+    """
+    if not isinstance(value, str) or not 0 < len(value) <= 4096:
+        return False
+    seen = set()
+    for token in value.split(":"):
+        if token in {"free", "pack", "scatter", "vscatter"}:
+            category = "arrangement"
+        elif token in {"excl", "exclhost"}:
+            category = "exclusive"
+        elif re.fullmatch(r"group=[A-Za-z_][A-Za-z0-9_]*", token):
+            category = "grouping"
+        else:
+            return False
+        if category in seen:
+            return False
+        seen.add(category)
+    return "exclusive" in seen
+
+
 def execution_vnodes(value: Any) -> list[tuple[str, dict[str, str]]]:
+    """Parse allocation entries whose vnode names are physical hostnames.
+
+    This native quarantine path does not resolve logical vnodes through PBS
+    MOM mappings. Callers must check node-file membership and resource counts;
+    the site's one-physical-vnode-per-host layout must be established separately.
+    Mismatching names or resource counts are infrastructure errors, not faults.
+    """
     if not isinstance(value, str) or not 0 < len(value) <= 65536:
         raise RuntimeError("physical allocation membership is unavailable")
     if not value.startswith("(") or not value.endswith(")"):
@@ -114,7 +136,7 @@ def validate_quarantine(
     if (
         requested.get("host") != host
         or meta.get(TAG + "HOST") != host
-        or resources.get("place") not in EXCLUSIVE_PLACEMENT
+        or not exclusive_placement(resources.get("place"))
     ):
         raise RuntimeError("quarantine is not an exact-host exclusive request")
     operation = meta.get(TAG + "OP")
