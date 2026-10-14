@@ -1,15 +1,16 @@
-# Pilot-side node quarantine (#372)
+# Pilot-side node admission and quarantine
 
-This is the simple pilot-side PBS implementation, not #371's controller database
-or coordinator architecture. It changes admission of an individual attempt, not
-FIRST's desired replicas, submission path, scheduling limits or retry cadence.
-Dev and Prod use the same code with separate environment attribution and the
-existing per-VM Slack health-alert destinations.
+The pilot screens its allocation before initializing or serving models. Verified
+node faults can trigger lightweight native PBS waiting jobs that keep faulty
+hosts allocated. Admission affects an individual attempt, not FIRST's desired
+replicas, submission path, scheduling limits or retry cadence. Dev and Prod use
+the same implementation with separate environment attribution and health-alert
+destinations.
 
-## Configure and stage
+## Configuration
 
-Use the matching corrected controller, gateway, common package and pilot. The
-cluster's `pilot_system` includes:
+Use compatible controller, gateway, common and pilot package versions. Configure
+the cluster's `pilot_system.node_admission`. For example, Tara uses:
 
 ```yaml
 job_name_prefix: first_dev_tara_v2_
@@ -26,35 +27,30 @@ node_admission:
 Prod substitutes `prod` and `first_prod_tara_v2_`; the policy is otherwise the
 same. Native admission verifies the owned source PBS job ID, running state and
 current physical-host/GPU allocation. Its display name is not fault evidence.
-Attribution comes only from `node_admission.environment`; the generic pilot does
-not infer it from Tara-specific environment variables. The PBS action requires
-that explicit setting. The `ACTIONS` map selects exit-only or native quarantine,
-passing fault evidence, the bounded deadline and verified allocation context.
+Attribution comes only from `node_admission.environment`, not process environment
+variables. The PBS action requires that explicit setting, the pilot's queue and
+account, and a verified running allocation. The `ACTIONS` map in
+`first_pilot.admission` selects `exit_only` or `pbs_quarantine`, passing fault
+evidence, the bounded deadline and verified allocation context. `exit_only`
+schedules nothing; both actions end the failed attempt through `NodeChecksFailed`.
+
+With `on_failure: exit` and no checks, admission does nothing. With
+`on_failure: pbs_quarantine`, the known-quarantine guard runs even if the checks
+list is empty. Configure the GPU checks to screen newly allocated nodes.
 
 Memory policy and safety limits are configurable per cluster. The values above
-are Tara's unchanged choices, not universal limits: admission requires
+are Tara's choices, not universal limits: admission requires
 `ceil(total MiB * minimum_free_memory_fraction) + memory_reserve_mib`, and
 walltime must also be permitted by the site's PBS queue. FIRST validates positive
 walltime/cap values without imposing a seven-day or eight-node maximum.
-Tara's submit preamble must include
-`export PATH=/opt/pbs/bin:$PATH`: these tools are not on the default batch PATH.
-The job must be able to execute and query `qstat` and `qsub` under the
-service identity. Missing binaries, permissions, malformed responses and failed
-lookups are infrastructure/admission errors, never hardware diagnoses.
 
-The Tara wrapper companion retains service identity, allowed-node inventory,
-same-rack placement, image and HSN checks. Its explicit `SECURITY_PASS` delegates
-mandatory GPU checks to this pilot before manager initialization. Its new sealed
-runtime pin must point at a clean matching FIRST source/environment. Remove the
-obsolete headroom-bypass export when preparing that candidate. Existing published
-bundles, model recipes, TCP confinement and the temporary VM reply route remain
-unchanged. Do not activate new settings with an old pilot or old wrapper.
-
-No database migration is added by this PR. Preserve the Dev Dockerfile
-source-permissions workaround. A Dev database previously used for #371 may
-retain its experimental tables and Alembic revision; do not drop or downgrade
-them as part of this change, or blindly run migrations from a different graph.
-Inspect and preserve that checkpoint separately before any future migration.
+For native PBS quarantine, the pilot must be able to run `qstat` and `qsub` under
+the service identity and inspect native JSON job responses. Put the site's PBS
+tools on the job's `PATH`. For installations under `/opt/pbs/bin`, use
+`export PATH=/opt/pbs/bin:$PATH` in the submit preamble. Missing binaries,
+permissions, malformed responses and failed lookups are infrastructure/admission
+errors, never hardware diagnoses. Site launch wrappers remain responsible for
+allowed-node, image, topology, routing and other deployment security boundaries.
 
 ## What happens on a fault
 
@@ -71,7 +67,7 @@ Inspect and preserve that checkpoint separately before any future migration.
    They do not submit a quarantine. Model OOM is not part of this diagnosis.
 3. A stable missing-GPU, uncorrected-ECC or unexplained headroom fault records
    paired observations, the source allocation and reason in a private evidence
-   file. The free-memory threshold remains `ceil(total MiB * 0.95) + 256 MiB`.
+   file. The free-memory threshold uses the configured fraction and MiB reserve.
 4. Look for an existing valid request for that exact host. Names only aid
    discovery; service ownership, accepted host/resources and state establish
    the request. Metadata supplies diagnostic context, not a separate protocol.
@@ -91,8 +87,10 @@ known node without diagnosing another fault. There are no model holds, global
 locks, scaling-to-zero actions or quarantine-specific paused states. Visible
 requests suppress duplicates; simultaneous Dev/Prod submissions can still race.
 Duplicate requests are alerted for administrator resolution, not locked away.
-The configured node cap (eight on Tara) is a safety bound, not a new
-model-scheduling gate.
+The configured node cap counts distinct physical hosts with active service-owned
+requests, including both environments. It bounds quarantine actions, not model
+submissions or retries. Quarantine state comes from PBS jobs; there is no separate
+quarantine database or persistent coordinator.
 
 ## Native PBS layout support
 
@@ -105,8 +103,8 @@ Split entries, missing quantities and node-file mismatches fail as infrastructur
 errors, not missing-GPU diagnoses. Names alone cannot detect a logical alias
 that is also used in the node file: sites must establish this physical-vnode
 layout before enabling native quarantine. Do not enable it on aliased/split-vnode
-sites without an authoritative vnode-to-host mapping; implementing that mapping
-is outside this correction.
+sites without an authoritative vnode-to-host mapping. The native implementation
+does not provide that mapping.
 
 Request `place=exclhost`. PBS on Tara may normalize this to `scatter:excl`;
 vnode exclusivity is whole-host exclusivity only in the supported one-vnode-per-
@@ -146,7 +144,7 @@ The existing health-alert worker distinguishes pending, running isolation and
 unverified/duplicate requests. Messages include host,
 environment, source job, quarantine job, reason, evidence path and expiration
 when available. Configure Slack credentials in the existing secure VM settings,
-never in fixtures. Unit mocks do not establish real delivery.
+never in fixtures.
 
 When a quarantine disappears from PBS's active-job inventory, its alert clears
 normally:
@@ -192,9 +190,15 @@ Native screening exceptions exit nonzero. Save the JSON receipt privately and
 check that it belongs to the intended physical host and current repair attempt.
 There is no automatic expiry-to-recovery or automatic release.
 
-## Intentionally omitted
+## Implementation entry points
 
-No admin-node daemon, dedicated coordinator node, shared status protocol,
-cross-environment locking, held-submission/release machinery, quarantine DB/API
-suite, delegated cancellation framework, generated good-node selections or
-headroom bypass. #371's earlier qualification does not qualify this contract.
+- `first_pilot.admission`: startup guard, source-allocation validation, fault
+  evidence, action dispatch and bounded native PBS submission.
+- `first_pilot.node_checks`: complete command observations and confirmed GPU,
+  memory/process and ECC checks.
+- `first_common.pbs_quarantine`: canonical identities, accepted-request
+  validation and active quarantine discovery.
+- `GraphQLPBSAdapter.get_quarantine_statuses`: scheduler status and intended
+  running placement for the health alerter.
+- `check_quarantined_nodes`: pending, isolated, unverified and duplicate alerts;
+  disappearance clears through the existing health-alert worker.
