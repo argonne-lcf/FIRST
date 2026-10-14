@@ -214,7 +214,7 @@ async def check_quarantined_nodes(client_state: ClientState) -> list[Observation
                 description = "multiple valid isolation requests; administrators must resolve duplicates"
             elif job.isolated:
                 status, severity = "isolated", "warn"
-                description = "running with independently verified whole-host isolation"
+                description = "running on the intended host with PBS-accepted whole-host isolation"
             elif request.state in {"Q", "H", "W", "T", "B"}:
                 status, severity = "isolation_pending", "warn"
                 description = (

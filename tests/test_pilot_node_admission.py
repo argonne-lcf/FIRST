@@ -7,7 +7,7 @@ import pytest
 
 from first_common.schema.pilot import PilotRuntimeConfig
 from first_common.schema.types import PalsDiscovery, SSHDiscovery
-from first_pilot.admission import ACTIONS, NodeChecksFailed, admit_nodes, pbs_quarantine
+from first_pilot.admission import NodeChecksFailed, admit_nodes, pbs_quarantine
 from first_pilot.host_commands import run_on_hosts
 from first_pilot.node_checks import (
     CHECKS,
@@ -108,7 +108,7 @@ def test_run_node_checks_reports_failures_per_host(
     assert failures == {
         "n2": [
             "gpu_count: found 1 GPUs, expected 2 in both observations",
-            "gpu_memory_free: GPU 0 has 51559 MiB free; requires 77738 MiB in both observations with no GPU clients",
+            "gpu_memory_free: GPU 0 has 51559 MiB free; requires 77738 of 81559 MiB in both observations with no GPU clients",
         ]
     }
     # The GPU checks share two coherent samples, each with a GPU-client query.
@@ -212,13 +212,15 @@ def test_admit_nodes_acts_on_each_bad_node_then_refuses_to_start(
     action = MagicMock()
 
     with (
-        patch.dict(ACTIONS, {"pbs_quarantine": action}),
+        patch("first_pilot.admission.pbs_quarantine", action),
         patch("first_pilot.admission.guard_quarantined_nodes"),
     ):
         with pytest.raises(NodeChecksFailed, match="n2"):
             admit_nodes(config)
 
-    action.assert_called_once_with("n2", config)
+    assert action.call_count == 1
+    assert action.call_args.args == ("n2", config)
+    assert action.call_args.kwargs["reason"] == "gpu_count"
 
 
 @patch("first_pilot.admission.run_node_checks", return_value={"n1": ["bad"]})
@@ -226,9 +228,16 @@ def test_admit_nodes_refuses_to_start_even_if_the_action_fails(
     _run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _nodefile(tmp_path, monkeypatch, "n1")
-    config = _config(tmp_path, num_nodes=1, node_admission={"checks": ["gpu_count"]})
+    config = _config(
+        tmp_path,
+        num_nodes=1,
+        node_admission={"checks": ["gpu_count"], "on_failure": "pbs_quarantine"},
+    )
 
-    with patch.dict(ACTIONS, {"exit": MagicMock(side_effect=RuntimeError("boom"))}):
+    with (
+        patch("first_pilot.admission.pbs_quarantine", side_effect=RuntimeError("boom")),
+        patch("first_pilot.admission.guard_quarantined_nodes"),
+    ):
         with pytest.raises(NodeChecksFailed):
             admit_nodes(config)
 
