@@ -62,11 +62,7 @@ django.setup()
 # ---------------------------------------------------------------------------
 
 from resource_server_async import globus_utils
-from resource_server_async.clusters import (
-    BaseCluster,  # noqa: E402
-    MetisCluster,
-    MinervaCluster,
-)
+from resource_server_async.clusters import BaseCluster  # noqa: E402
 from resource_server_async.endpoints import MetisEndpoint, MinervaEndpoint
 from resource_server_async.errors import BaseError
 from resource_server_async.models import (
@@ -128,7 +124,6 @@ GATEWAY_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GATEWAY_TIMEOUT", 5))
 GLOBUS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_GLOBUS_TIMEOUT", 30))
 METIS_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_METIS_TIMEOUT", 15))
 MINERVA_HEALTH_TIMEOUT = int(os.getenv("HEALTH_MONITOR_MINERVA_TIMEOUT", 15))
-MINERVA_REPORT_NONLIVE = os.getenv("HEALTH_MONITOR_MINERVA_REPORT_NONLIVE", "1") == "1"
 
 FULL_REPORT_FREQUENCY_HOURS = int(os.getenv("HEALTH_MONITOR_FULL_REPORT_HOURS", 24))
 
@@ -252,7 +247,7 @@ async def gather_endpoints(cluster: str) -> dict[str, EndpointInfo]:
         # Skip if not in production
         if (
             "removed" in endpoint.model
-            or "aaaaaaaa" in endpoint_uuid
+            or "aaaaaaaa" in (endpoint_uuid or "")
             or "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in endpoint.allowed_globus_groups
         ):
             continue
@@ -421,6 +416,8 @@ async def check_sophia_models() -> list[HealthRecord]:
         cached = endpoint_status_cache.get(info.endpoint_slug)
         if cached is not None:
             return cached
+        if not info.endpoint_uuid:
+            return None, "Endpoint configuration has no endpoint_uuid"
         status, err = globus_utils.get_endpoint_status(
             endpoint_uuid=info.endpoint_uuid,
             client=gcc,
@@ -616,42 +613,59 @@ async def check_sophia_models() -> list[HealthRecord]:
     return records
 
 
-async def extract_metis_models() -> list[str]:
-    """Flatten Metis status structure into a list of live model names"""
+async def direct_api_cluster_records(
+    cluster: str,
+) -> tuple[list[str], list[HealthRecord]]:
+    """Return the models a cluster serves and the records for those it does not."""
 
-    metis = await MetisCluster.load_adapter("metis")
-    jobs = await metis.get_jobs(None)
+    records: list[HealthRecord] = []
+    try:
+        adapter = await BaseCluster.load_adapter(cluster)
+        jobs = await adapter.get_jobs(None)  # type: ignore[arg-type]
+        live = [model.strip() for j in jobs.running for model in j.Models.split(",")]
+        configured = await gather_endpoints(cluster)
+    except Exception as e:
+        return [], [
+            HealthRecord(
+                component=cluster.capitalize(),
+                cluster=cluster,
+                status=HealthStatus.FAILED,
+                detail=str(e),
+            )
+        ]
 
-    return [model.strip() for j in jobs.running for model in j.Models.split(",")]
+    live_keys = {name.lower() for name in live}
+    for model_name in configured:
+        if model_name.lower() in live_keys:
+            continue
+        log.info("%s model not running: %s", cluster, model_name)
+        records.append(
+            HealthRecord(
+                component=model_name,
+                cluster=cluster,
+                status=HealthStatus.OFFLINE,
+                detail=f"not running on {cluster} (no live route)",
+            )
+        )
+
+    if not live:
+        records.append(
+            HealthRecord(
+                component=cluster.capitalize(),
+                cluster=cluster,
+                status=HealthStatus.IDLE,
+                detail=f"No live models returned by {cluster.capitalize()} status",
+            )
+        )
+
+    return live, records
 
 
 async def check_metis_models() -> list[HealthRecord]:
     """Run health checks for active Metis models."""
 
-    records: list[HealthRecord] = []
-
-    try:
-        models = await extract_metis_models()
-    except Exception as e:
-        records.append(
-            HealthRecord(
-                component="Metis",
-                cluster="metis",
-                status=HealthStatus.FAILED,
-                detail=str(e),
-            )
-        )
-        return records
-
+    models, records = await direct_api_cluster_records("metis")
     if not models:
-        records.append(
-            HealthRecord(
-                component="Metis",
-                cluster="metis",
-                status=HealthStatus.IDLE,
-                detail="No live models returned by Metis status",
-            )
-        )
         return records
 
     url = "https://metis.alcf.anl.gov/v1/health"
@@ -707,65 +721,13 @@ async def check_metis_models() -> list[HealthRecord]:
     return records
 
 
-async def extract_minerva_models() -> tuple[list[str], list[str]]:
-    """Return the Minerva models that are live and those that are not."""
-
-    minerva = await MinervaCluster.load_adapter("minerva")
-    jobs = await minerva.get_jobs(None)
-
-    live = [model.strip() for j in jobs.running for model in j.Models.split(",")]
-    not_running = [
-        model.strip()
-        for job in [*jobs.stopped, *jobs.queued]
-        for model in job.Models.split(",")
-    ]
-
-    return live, not_running
-
-
 async def check_minerva_models() -> list[HealthRecord]:
     """Run mTLS route checks for active Minerva models."""
 
-    records: list[HealthRecord] = []
-
-    try:
-        models, not_running = await extract_minerva_models()
-    except Exception as e:
-        records.append(
-            HealthRecord(
-                component="Minerva",
-                cluster="minerva",
-                status=HealthStatus.FAILED,
-                detail=str(e),
-            )
-        )
-        return records
-
     # Models the cluster still knows about but is not running.  They used to be
     # dropped silently, so a model that went down left no record at all.
-    if MINERVA_REPORT_NONLIVE:
-        for model_name in dict.fromkeys(not_running):
-            if model_name in models:
-                continue
-            log.info("Minerva model not running: %s", model_name)
-            records.append(
-                HealthRecord(
-                    component=model_name,
-                    cluster="minerva",
-                    status=HealthStatus.OFFLINE,
-                    detail="not running on Minerva (no live route)",
-                )
-            )
-
+    models, records = await direct_api_cluster_records("minerva")
     if not models:
-        records.append(
-            HealthRecord(
-                component="Minerva",
-                cluster="minerva",
-                status=HealthStatus.IDLE,
-                detail="No live models returned by Minerva status",
-            )
-        )
         return records
 
     for model_name in models:
