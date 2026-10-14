@@ -72,6 +72,7 @@ class _PilotManager:
         self.nginx.start()
         self.nginx.wait_until_healthy()
         logger.info("nginx healthy on port %d", self.config.external_port)
+        self.replica_manager.start_inventory_refresh()
         readyfile.write_text(self._endpoint.model_dump_json())
         logger.info("readyfile written: %s", readyfile)
 
@@ -137,7 +138,7 @@ class _PilotManager:
             for r in self.replica_manager.get_replicas()
         ]
         return PilotJobStatus(
-            resources=self.replica_manager.query_resources(),
+            resources=self.replica_manager.get_resources(),
             replicas=replica_statuses,
         )
 

@@ -14,8 +14,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
 
-from cachetools.func import ttl_cache
-
 from first_common.errors import (
     BadPilotRequest,
     NotFound,
@@ -336,6 +334,7 @@ class ReplicaManager:
     # post-stop verification, auxiliary-group cleanup, and monitor join are all
     # bounded to 162s below this ceiling, including an opt-in 80s pre-stop hook.
     _STOP_JOIN_TIMEOUT = 180.0
+    _INVENTORY_REFRESH_SEC = 60.0
 
     def __init__(self, config: PilotRuntimeConfig) -> None:
         self.config = config
@@ -354,7 +353,10 @@ class ReplicaManager:
             )
         resources = self.query_resources()
 
+        # Hosts and GPU indices are fixed for the life of the job; only the
+        # memory usage in self._resources is refreshed after startup.
         self._inventory = resources.hosts
+        self._resources = resources
         if not any(host.gpus for host in self._inventory):
             raise RuntimeError("no GPUs discovered; cannot start ReplicaManager")
 
@@ -377,7 +379,29 @@ class ReplicaManager:
         # Monotonic counter used to mint short, unique socket filenames
         self._next_socket_id = 0
 
-    @ttl_cache(ttl=60)
+    def get_resources(self) -> PilotResources:
+        """Latest inventory snapshot; never blocks on discovery."""
+        return self._resources
+
+    def start_inventory_refresh(self) -> None:
+        """Keep the snapshot's GPU memory usage current for the process lifetime."""
+        threading.Thread(
+            target=self._inventory_refresh_loop,
+            name="inventory-refresh",
+            daemon=True,
+        ).start()
+
+    def _inventory_refresh_loop(self) -> None:
+        while True:
+            time.sleep(self._INVENTORY_REFRESH_SEC)
+            self._refresh_inventory()
+
+    def _refresh_inventory(self) -> None:
+        try:
+            self._resources = self.query_resources()
+        except Exception:
+            logger.exception("GPU inventory refresh failed; keeping last snapshot")
+
     def query_resources(self) -> PilotResources:
         """Discover and validate the exact scheduler-requested inventory."""
         discovery = self.config.gpu_discovery

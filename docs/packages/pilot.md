@@ -108,8 +108,10 @@ ending in `/metrics`, so `PilotDeploymentSpec` rejects any other
 `ReplicaManager` is the local placement controller. It self-discovers
 GPUs by `ssh <host> nvidia-smi …` over the host list read from the
 scheduler's node-file env var, then tracks the full `(host, gpu_id)`
-inventory plus what's claimed vs free. The inventory query is cached
-(`@ttl_cache(ttl=60)`); placement bookkeeping (`_replicas`, `_claimed`,
+inventory plus what's claimed vs free. `/status` always serves the last
+inventory snapshot; a background thread re-queries it every 60s to keep
+GPU memory usage current, and a failed refresh keeps the previous
+snapshot. Placement bookkeeping (`_replicas`, `_claimed`,
 `_used_ports`) is guarded by a single asyncio lock. A pending placement
 is held in `_replicas` as a `_RESERVED` sentinel between the validate
 and construct steps so concurrent `start_replica` calls cannot race on

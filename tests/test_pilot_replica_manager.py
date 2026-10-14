@@ -394,6 +394,37 @@ def test_replica_manager_dispatches_multi_node_pals_discovery() -> None:
     manager._socket_dir.cleanup()
 
 
+def test_inventory_refresh_swaps_snapshot_and_survives_failure() -> None:
+    hostnames = ["head", "worker"]
+    config = SimpleNamespace(
+        node_file_env="TEST_NODEFILE",
+        gpu_discovery=SSHDiscovery(),
+        num_nodes=2,
+        gpus_per_node=2,
+    )
+    startup = _host_resources(hostnames, 2)
+    refreshed = _host_resources(hostnames, 2)
+    refreshed[0].gpus[0].memory_used_mib = 1
+    with (
+        patch("first_pilot.replica_manager.discover_hosts", return_value=hostnames),
+        patch(
+            "first_pilot.replica_manager.query_gpus_ssh",
+            side_effect=[startup, refreshed, RuntimeError("ssh timed out")],
+        ) as query_ssh,
+    ):
+        manager = ReplicaManager(config)  # type: ignore[arg-type]
+        assert manager.get_resources().hosts == startup
+        assert query_ssh.call_count == 1  # reads never run discovery
+
+        manager._refresh_inventory()
+        assert manager.get_resources().hosts == refreshed
+
+        manager._refresh_inventory()
+        assert manager.get_resources().hosts == refreshed
+
+    manager._socket_dir.cleanup()
+
+
 def test_runtime_config_loads_public_fields_from_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
