@@ -149,7 +149,16 @@ class InferenceService:
             )
 
             client = self.backend_client_manager.get(backend_id)
-            assert client is not None, "Should be filtered by existing clients"
+            if client is None:
+                await self.admission_controller.settle(self.request_id, actual_tokens=0)
+                backend_candidates = [
+                    b for b in backend_candidates if b.uid != backend_id
+                ]
+                failures.append(
+                    msg := f"backend {backend_id} client removed after admission"
+                )
+                logger.warning(msg)
+                continue
 
             deployment = get_deployment_from_backend_id(model.deployments, backend_id)
             backend = next(b for b in deployment.backends if b.id == backend_id)

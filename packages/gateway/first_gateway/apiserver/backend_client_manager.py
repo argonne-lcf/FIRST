@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import socket
+from collections.abc import Coroutine
 from ssl import SSLContext
 
 import httpx
@@ -22,7 +23,13 @@ def _on_done(task: asyncio.Task[None]) -> None:
     if task.cancelled():
         return
     if exc := task.exception():
-        logger.error("Background _close_client failed", exc_info=exc)
+        logger.error("Background task failed", exc_info=exc)
+
+
+def _run_background(coro: Coroutine[None, None, None]) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_on_done)
 
 
 # To accomodate different OS platform (MacOS/Linux)
@@ -41,6 +48,9 @@ STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=60.0, pool=5.0)
 UNARY_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
 
 KEEPALIVE_EXPIRY = 30.0
+
+# How long a retired client stays open for requests that already hold it
+CLOSE_GRACE_SEC = 60
 
 
 class BackendClientManager:
@@ -70,20 +80,21 @@ class BackendClientManager:
         # Backends that should be added or updated
         for backend_id, (backend, deployment) in incoming.items():
             if self._should_recreate(backend_id, backend, deployment):
-                logger.info(
-                    f"Scheduled _close_client for {backend_id}: configuration updated"
-                )
-                await self._close_client(backend_id, sleep=0)
+                logger.info(f"Swap client for {backend_id}: config updated")
+                old_client = self._clients.pop(backend_id)
+                _run_background(self._drain_client(old_client))
+
             if backend_id not in self._clients:
                 self._clients[backend_id] = self._create_client(backend, deployment)
                 self._configs[backend_id] = (backend, deployment)
 
         # Backends that should be removed
         for backend_id in set(self._clients) - incoming.keys():
-            logger.info(f"Scheduled _close_client for {backend_id}: backend removed")
-            task = asyncio.create_task(self._close_client(backend_id, sleep=60))
-            _background_tasks.add(task)
-            task.add_done_callback(_on_done)
+            logger.info(f"Removing backend {backend_id}")
+            client = self._clients.pop(backend_id, None)
+            self._configs.pop(backend_id, None)
+            if client:
+                _run_background(self._drain_client(client))
 
     def _should_recreate(
         self, backend_id: str, backend: BackendConfig, deployment: DeploymentConfig
@@ -101,12 +112,9 @@ class BackendClientManager:
                 return True
         return False
 
-    async def _close_client(self, backend_id: str, sleep: int = 0) -> None:
-        await asyncio.sleep(sleep)
-        client = self._clients.pop(backend_id, None)
-        self._configs.pop(backend_id, None)
-        if client:
-            await client.aclose()
+    async def _drain_client(self, client: httpx.AsyncClient) -> None:
+        await asyncio.sleep(CLOSE_GRACE_SEC)
+        await client.aclose()
 
     async def close_all(self) -> None:
         for client in self._clients.values():
