@@ -1,6 +1,7 @@
 """Tests for PilotControlClient's built-in timeout/retry behavior."""
 
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -9,10 +10,10 @@ import httpx
 import pytest
 from jinja2 import Template
 
-from first_common.errors import ReplicaTeardownError
+from first_common.errors import ReplicaStartError, ReplicaTeardownError
 from first_common.schema.pilot import PilotClientRole
 from first_gateway.services.pilot_control import STOP_TIMEOUT, PilotControlClient
-from first_pilot.control_api import app, get_manager
+from first_pilot.control_api import _PilotManager, app, get_manager
 from first_pilot.nginx_manager import ReplicaUpstream, _conf_template_str
 
 
@@ -193,7 +194,7 @@ async def test_pilot_api_returns_structured_teardown_error() -> None:
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 409
+    assert response.status_code == 400
     assert response.json() == {
         "error": {
             "code": "replica_teardown_incomplete",
@@ -203,3 +204,89 @@ async def test_pilot_api_returns_structured_teardown_error() -> None:
             "info": {},
         }
     }
+
+
+def _pilot_manager(
+    replicas: list[SimpleNamespace],
+) -> tuple[_PilotManager, MagicMock, MagicMock]:
+    """A _PilotManager over mocked NGINX and replica managers."""
+    nginx = MagicMock()
+    replica_manager = MagicMock()
+    replica_manager.get_replicas.return_value = replicas
+    manager = _PilotManager.__new__(_PilotManager)
+    manager.nginx = nginx
+    manager.replica_manager = replica_manager
+    manager._nginx_lock = threading.Lock()
+    return manager, nginx, replica_manager
+
+
+def _fake_replica(name: str) -> SimpleNamespace:
+    return SimpleNamespace(name=name, uds=f"/tmp/{name}.sock", proxy_paths=("/x",))
+
+
+def test_start_replica_rolls_back_when_nginx_reload_fails() -> None:
+    manager, nginx, replica_manager = _pilot_manager([_fake_replica("r0")])
+    nginx.reload.side_effect = RuntimeError("config test failed")
+
+    with pytest.raises(ReplicaStartError, match="config test failed") as exc_info:
+        manager.start_replica(SimpleNamespace(name="r0"))  # type: ignore[arg-type]
+
+    assert "rollback incomplete" not in str(exc_info.value)
+    replica_manager.stop_replica.assert_called_once_with("r0")
+
+
+def test_start_replica_reports_incomplete_rollback_as_start_error() -> None:
+    manager, nginx, replica_manager = _pilot_manager([_fake_replica("r0")])
+    nginx.reload.side_effect = RuntimeError("config test failed")
+    replica_manager.stop_replica.side_effect = ReplicaTeardownError("group survived")
+
+    with pytest.raises(
+        ReplicaStartError, match="rollback incomplete: group survived"
+    ) as exc_info:
+        manager.start_replica(SimpleNamespace(name="r0"))  # type: ignore[arg-type]
+
+    # Never 409: the launcher would read that as "already placed".
+    assert exc_info.value.status_code == 400
+
+
+def test_stop_replica_tolerates_nginx_reload_failure() -> None:
+    manager, nginx, replica_manager = _pilot_manager([])
+    nginx.reload.side_effect = RuntimeError("config test failed")
+
+    manager.stop_replica("r0")
+
+    replica_manager.stop_replica.assert_called_once_with("r0")
+
+
+def test_concurrent_reloads_apply_snapshots_in_order() -> None:
+    """A reload must not apply a replica set older than one already applied."""
+    replicas = [_fake_replica("a")]
+    manager, nginx, replica_manager = _pilot_manager(replicas)
+    applied: list[list[str]] = []
+    first_in_reload = threading.Event()
+    release_first = threading.Event()
+
+    def reload(upstreams: list[ReplicaUpstream]) -> None:
+        if not first_in_reload.is_set():
+            first_in_reload.set()
+            release_first.wait(timeout=5)
+        applied.append([u.name for u in upstreams])
+
+    nginx.reload.side_effect = reload
+
+    first = threading.Thread(target=manager._reload_nginx)
+    first.start()
+    assert first_in_reload.wait(timeout=5)
+
+    replicas.append(_fake_replica("b"))
+    second = threading.Thread(target=manager._reload_nginx)
+    second.start()
+    # The second reload must wait for the first rather than race past it.
+    second.join(timeout=0.2)
+    assert second.is_alive()
+
+    release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert applied == [["a"], ["a", "b"]]

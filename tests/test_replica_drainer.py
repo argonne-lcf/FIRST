@@ -84,7 +84,7 @@ def _server_error(request: httpx.Request) -> httpx.Response:
 def _teardown_incomplete(request: httpx.Request) -> httpx.Response:
     """Handler simulating a structured teardown failure from the pilot."""
     return httpx.Response(
-        409,
+        400,
         json={
             "error": {
                 "code": "replica_teardown_incomplete",

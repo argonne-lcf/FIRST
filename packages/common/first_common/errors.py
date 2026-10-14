@@ -95,7 +95,7 @@ class ReplicaStartError(FirstError):
 
 
 class ReplicaTeardownError(FirstError):
-    status_code = HTTPStatus.CONFLICT
+    status_code = HTTPStatus.BAD_REQUEST
     code: str = "replica_teardown_incomplete"
 
 

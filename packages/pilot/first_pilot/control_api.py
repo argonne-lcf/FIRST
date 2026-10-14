@@ -1,5 +1,6 @@
 import logging
 import socket
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,7 +11,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from first_common.errors import FirstError
+from first_common.errors import FirstError, ReplicaStartError
 from first_common.schema.pilot import (
     AddressInfo,
     PilotJobStatus,
@@ -56,6 +57,9 @@ class _PilotManager:
         interface_ips = resolve_interface_ips(config.network_interfaces)
         self.nginx = NginxManager(self.config, nginx_tmpdir, interface_ips)
         self.replica_manager = ReplicaManager(self.config)
+        # Serializes snapshot + reload so a concurrent start/stop cannot apply
+        # an older replica set after a newer one.
+        self._nginx_lock = threading.Lock()
         self._endpoint = AddressInfo(
             hostname=socket.gethostname(),
             ip=interface_ips[0],
@@ -76,25 +80,47 @@ class _PilotManager:
         self.replica_manager.stop_all()
 
     def _reload_nginx(self) -> None:
-        upstreams = [
-            ReplicaUpstream(name=r.name, uds=r.uds, paths=r.proxy_paths)
-            for r in self.replica_manager.get_replicas()
-        ]
-        try:
+        with self._nginx_lock:
+            upstreams = [
+                ReplicaUpstream(name=r.name, uds=r.uds, paths=r.proxy_paths)
+                for r in self.replica_manager.get_replicas()
+            ]
             self.nginx.reload(upstreams)
-        except Exception:
-            logger.exception("nginx reload failed")
 
     def _replica_url(self, name: str) -> str:
         return f"{self._endpoint.base_url}/replicas/{name}/"
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
+        """
+        Start a replica and route it through NGINX, or fail with nothing left
+        running.
+        """
         self.replica_manager.start_replica(replica)
-        self._reload_nginx()
+        try:
+            self._reload_nginx()
+        except Exception as e:
+            logger.exception(
+                "nginx reload failed; rolling back replica %s", replica.name
+            )
+            message = f"NGINX reload failed for replica {replica.name}: {e}"
+            try:
+                self.replica_manager.stop_replica(replica.name)
+            except Exception as stop_exc:
+                # Still registered (terminating) and holding its GPUs until a
+                # later stop-replica succeeds.
+                logger.exception("rollback of replica %s failed", replica.name)
+                message += f"; rollback incomplete: {stop_exc}"
+            raise ReplicaStartError(message) from e
 
     def stop_replica(self, replica_name: str) -> None:
         self.replica_manager.stop_replica(replica_name)
-        self._reload_nginx()
+        try:
+            self._reload_nginx()
+        except Exception:
+            # The replica is gone; its stale route is dropped by the next reload.
+            logger.exception(
+                "nginx reload failed after stopping replica %s", replica_name
+            )
 
     def get_status(self) -> PilotJobStatus:
         replica_statuses = [
