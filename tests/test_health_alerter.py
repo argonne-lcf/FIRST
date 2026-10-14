@@ -17,6 +17,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_common.pbs_quarantine import QuarantineRequest
+from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.pilot import PilotClientRole
 from first_common.schema.resources.runtime import (
     CommittedAlert,
@@ -781,16 +782,12 @@ async def test_check_quarantined_nodes(
                     job_id="100.tara",
                     host="x4820c7s3b1n0",
                     environment="dev",
-                    cluster="tara",
                     operation="a" * 32,
                     source="99.tara",
                     reason="missing_gpu",
                     evidence="/service/dev/evidence/admission.json",
-                    state="Q",
-                    ncpus=288,
-                    ngpus=4,
-                    walltime_seconds=604800,
                 ),
+                state=SchedulerJobState.queued,
                 isolated=False,
                 expires_at=None,
             )

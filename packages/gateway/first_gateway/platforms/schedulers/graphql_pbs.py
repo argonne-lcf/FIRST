@@ -11,7 +11,7 @@ from httpx import AsyncClient
 from first_common.pbs_quarantine import (
     QuarantineRequest,
     execution_vnodes,
-    quarantine_request,
+    physical_host,
 )
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
@@ -62,6 +62,7 @@ _EXEC_VNODE_PART = re.compile(
 @dataclass(frozen=True)
 class QuarantineStatus:
     request: QuarantineRequest
+    state: SchedulerJobState
     isolated: bool
     expires_at: datetime | None
 
@@ -69,15 +70,13 @@ class QuarantineStatus:
 def _quarantine_hint(row: dict[str, Any]) -> bool:
     """Names aid discovery; metadata also protects renamed/truncated jobs."""
     name = row.get("name")
-    if not isinstance(name, str):
-        raise RuntimeError("PBS job name is unavailable")
     env = row.get("env")
     if env is not None and not isinstance(env, list):
         raise RuntimeError("PBS job metadata is malformed")
-    return name.startswith(("first_quar_", "first_tara_quarantine_")) or any(
+    return (isinstance(name, str) and name.startswith("first_quar_")) or any(
         isinstance(pair, dict)
         and isinstance(pair.get("name"), str)
-        and pair["name"].startswith(("FIRST_QUAR_", "FIRST_QUARANTINE_"))
+        and pair["name"].startswith("FIRST_QUAR_")
         for pair in env or []
     )
 
@@ -116,45 +115,35 @@ def _quarantine_status(row: dict[str, Any], expected_owner: str) -> QuarantineSt
     state = (row.get("status") or {}).get("state")
     if type(state) is not int or state not in _STATE_MAP:
         raise RuntimeError("PBS quarantine state is unverified")
-    native_state = {
-        0: "Q",
-        1: "W",
-        2: "H",
-        3: "H",
-        4: "F",
-        5: "B",
-        6: "E",
-        7: "R",
-        8: "S",
-        9: "E",
-        10: "F",
-        11: "F",
-        12: "X",
-        13: "X",
-        14: "Q",
-    }[state]
-    walltime = (resources.get("jobResources") or {}).get("wallClockTime")
-    if type(walltime) is not int:
-        raise RuntimeError("PBS quarantine walltime is unavailable")
-    request = quarantine_request(
-        row["jobId"],
-        metadata,
-        native_state,
-        tasks[0].get("slots"),
-        tasks[0].get("gpus"),
-        walltime,
+    host, operation = (
+        physical_host(metadata.get("FIRST_QUAR_HOST")),
+        metadata.get("FIRST_QUAR_OP"),
     )
+    if (
+        host != metadata.get("FIRST_QUAR_HOST")
+        or not isinstance(operation, str)
+        or not operation
+    ):
+        raise RuntimeError("PBS quarantine target/operation is unverified")
+    request = QuarantineRequest(
+        row["jobId"],
+        host,
+        operation,
+        metadata.get("FIRST_QUAR_ENV"),
+        metadata.get("FIRST_QUAR_SOURCE"),
+        metadata.get("FIRST_QUAR_REASON"),
+        metadata.get("FIRST_QUAR_EVIDENCE"),
+    )
+    state = _STATE_MAP[state]
     started = _parse_epoch_micros(row.get("startTime"))
+    walltime = (resources.get("jobResources") or {}).get("wallClockTime")
     expires = (
-        datetime.fromtimestamp(
-            started.timestamp() + request.walltime_seconds, timezone.utc
-        )
-        if started
+        datetime.fromtimestamp(started.timestamp() + walltime, timezone.utc)
+        if started and walltime
         else None
     )
     isolated = False
-    if request.state == "R" and expires and expires > datetime.now(timezone.utc):
-        machines = row.get("allocatedMachines") or []
+    if state == SchedulerJobState.running:
         extension = row.get("extension") or {}
         try:
             vnodes = execution_vnodes(
@@ -162,13 +151,8 @@ def _quarantine_status(row: dict[str, Any], expected_owner: str) -> QuarantineSt
             )
         except RuntimeError:
             vnodes = []
-        isolated = (
-            len(machines) == 1
-            and machines[0].get("name") == request.host
-            and len(vnodes) == 1
-            and vnodes[0][0] == request.host
-        )
-    return QuarantineStatus(request, isolated, expires)
+        isolated = len(vnodes) == 1 and vnodes[0][0] == request.host
+    return QuarantineStatus(request, state, isolated, expires)
 
 
 def _parse_epoch_micros(raw: int | None) -> datetime | None:
@@ -372,7 +356,7 @@ class GraphQLPBSAdapter(SchedulerAdapter):
               status {{ state }}
               resourcesRequested {{
                 jobPlacementSharing taskCount {{ min max }}
-                tasksResources {{ index candidateMachineName slots gpus }}
+                tasksResources {{ index candidateMachineName }}
                 jobResources {{ wallClockTime }}
               }}
               allocatedMachines {{
@@ -483,6 +467,9 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         result = []
         for row in await self._job_rows():
             if not _quarantine_hint(row):
+                continue
+            state = (row.get("status") or {}).get("state")
+            if type(state) is int and _STATE_MAP.get(state) == SchedulerJobState.gone:
                 continue
             owner = row.get("owner")
             if isinstance(owner, str) and owner.split("@", 1)[0] != self.owner:

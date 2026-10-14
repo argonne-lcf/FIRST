@@ -17,7 +17,6 @@ EXCLUSIVE_PLACEMENT = frozenset(
         "scatter:excl:group=tier0",
     }
 )
-MAX_WALLTIME_SECONDS = 7 * 24 * 60 * 60
 TAG = "FIRST_QUAR_"
 
 
@@ -94,60 +93,11 @@ def execution_vnodes(value: Any) -> list[tuple[str, dict[str, str]]]:
 class QuarantineRequest:
     job_id: str
     host: str
-    environment: str
-    cluster: str
     operation: str
-    source: str
-    reason: str
-    evidence: str
-    state: str
-    ncpus: int
-    ngpus: int
-    walltime_seconds: int
-
-
-def quarantine_request(
-    job_id: str,
-    metadata: dict[str, Any],
-    state: Any,
-    ncpus: Any,
-    ngpus: Any,
-    walltime_seconds: int,
-) -> QuarantineRequest:
-    """Validate minimal attribution shared by native and GraphQL PBS observations."""
-    environment, host = metadata.get(TAG + "ENV"), metadata.get(TAG + "HOST")
-    operation = metadata.get(TAG + "OP")
-    if environment not in {"dev", "prod"} or physical_host(host) != host:
-        raise RuntimeError("quarantine environment/physical host is unavailable")
-    reason, evidence = metadata.get(TAG + "REASON"), metadata.get(TAG + "EVIDENCE")
-    for value in (operation, reason, evidence):
-        if (
-            not isinstance(value, str)
-            or not value
-            or any(char in value for char in ",\n\r\x00")
-        ):
-            raise RuntimeError("quarantine attribution is unavailable or not CSV-safe")
-    if (
-        type(walltime_seconds) is not int
-        or not 0 < walltime_seconds <= MAX_WALLTIME_SECONDS
-    ):
-        raise RuntimeError("quarantine walltime exceeds the qualified site limit")
-    if not isinstance(state, str) or state not in ACTIVE_STATES | {"F", "X"}:
-        raise RuntimeError("quarantine state is unavailable")
-    return QuarantineRequest(
-        pbs_job_id(job_id),
-        host,
-        environment,
-        "tara",
-        str(operation),
-        pbs_job_id(metadata.get(TAG + "SOURCE")),
-        str(reason),
-        str(evidence),
-        state,
-        positive_int(ncpus),
-        positive_int(ngpus),
-        walltime_seconds,
-    )
+    environment: Any
+    source: Any
+    reason: Any
+    evidence: Any
 
 
 def validate_quarantine(
@@ -160,25 +110,24 @@ def validate_quarantine(
     if not isinstance(meta, dict) or not isinstance(resources, dict):
         raise RuntimeError("quarantine attribution/request is unavailable")
     requested = select_resources(resources.get("select"))
+    host = physical_host(requested.get("host"))
     if (
-        requested.get("host") != meta.get(TAG + "HOST")
+        requested.get("host") != host
+        or meta.get(TAG + "HOST") != host
         or resources.get("place") not in EXCLUSIVE_PLACEMENT
     ):
         raise RuntimeError("quarantine is not an exact-host exclusive request")
-    walltime = resources.get("walltime")
-    if (
-        not isinstance(walltime, str)
-        or re.fullmatch(r"[0-9]+:[0-5][0-9]:[0-5][0-9]", walltime) is None
-    ):
-        raise RuntimeError("quarantine walltime is unavailable")
-    hours, minutes, seconds = map(int, walltime.split(":"))
-    return quarantine_request(
-        job_id,
-        meta,
-        job.get("job_state"),
-        requested.get("ncpus"),
-        requested.get("ngpus"),
-        hours * 3600 + minutes * 60 + seconds,
+    operation = meta.get(TAG + "OP")
+    if not isinstance(operation, str) or not operation:
+        raise RuntimeError("quarantine operation identity is unavailable")
+    return QuarantineRequest(
+        pbs_job_id(job_id),
+        host,
+        operation,
+        meta.get(TAG + "ENV"),
+        meta.get(TAG + "SOURCE"),
+        meta.get(TAG + "REASON"),
+        meta.get(TAG + "EVIDENCE"),
     )
 
 
@@ -198,7 +147,11 @@ def discover_quarantines(
             continue
         if job_owner(job) != expected_owner:
             continue
+        state = job.get("job_state")
+        if not isinstance(state, str) or state not in ACTIVE_STATES | {"F", "X"}:
+            raise RuntimeError("quarantine state is unavailable")
+        if state not in ACTIVE_STATES:
+            continue
         request = validate_quarantine(job_id, job, expected_owner)
-        if request.state in ACTIVE_STATES:
-            result.append(request)
+        result.append(request)
     return result

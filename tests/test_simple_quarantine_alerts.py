@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources.runtime import CommittedAlert, HealthAlertState
 from first_gateway.controllers.workers.health_alerter.checks import (
     check_quarantined_nodes,
@@ -101,6 +102,7 @@ async def test_pending_request_does_not_claim_actual_isolation(state: int) -> No
     statuses = await _statuses([_row(state=state)])
     assert len(statuses) == 1
     assert not statuses[0].isolated
+    assert statuses[0].state in {SchedulerJobState.queued, SchedulerJobState.starting}
 
 
 async def test_running_trusts_accepted_pbs_request_and_intended_placement() -> None:
@@ -127,22 +129,24 @@ async def test_running_does_not_rebuild_a_resource_assignment_census() -> None:
     assert (await _statuses([row]))[0].isolated
 
 
+async def test_exec_vnode_is_the_single_placement_authority() -> None:
+    row = _row(state=7)
+    row["allocatedMachines"] = []
+    assert (await _statuses([row]))[0].isolated
+
+
 @pytest.mark.parametrize(
     "change",
     [
-        "wrong_host",
         "wrong_execution",
         "duplicate_vnode",
-        "multiple_machines",
         "missing_execution",
         "malformed_execution",
     ],
 )
 async def test_missing_or_wrong_running_placement_is_unverified(change: str) -> None:
     row = _row(state=7)
-    if change == "wrong_host":
-        row["allocatedMachines"][0]["name"] = "x4819c0s4b0n0"
-    elif change == "wrong_execution":
+    if change == "wrong_execution":
         row["extension"]["exec_vnode"] = "(x4819c0s4b0n0:ncpus=288:ngpus=4)"
     elif change == "duplicate_vnode":
         row["extension"]["exec_vnode"] = (
@@ -152,8 +156,6 @@ async def test_missing_or_wrong_running_placement_is_unverified(change: str) -> 
         row["extension"] = {}
     elif change == "malformed_execution":
         row["extension"] = "not a scheduler record"
-    else:
-        row["allocatedMachines"].append(copy.deepcopy(row["allocatedMachines"][0]))
     assert not (await _statuses([row]))[0].isolated
 
 
@@ -165,7 +167,6 @@ async def test_missing_or_wrong_running_placement_is_unverified(change: str) -> 
         "shared",
         "wrong_count",
         "duplicate_metadata",
-        "overlong_walltime",
     ],
 )
 async def test_owned_discovery_requires_attribution_and_exact_request(
@@ -184,8 +185,6 @@ async def test_owned_discovery_requires_attribution_and_exact_request(
         row["resourcesRequested"]["taskCount"]["max"] = 2
     elif change == "duplicate_metadata":
         row["env"].append(copy.deepcopy(row["env"][0]))
-    else:
-        row["resourcesRequested"]["jobResources"]["wallClockTime"] += 1
     with pytest.raises(RuntimeError):
         await _statuses([row])
 
@@ -206,6 +205,17 @@ async def test_display_name_is_discovery_not_identity_authority() -> None:
         assert (await _statuses([row]))[0].request.host == HOST
 
 
+async def test_diagnostics_are_not_quarantine_authority() -> None:
+    row = _row()
+    row["env"] = [
+        pair
+        for pair in row["env"]
+        if pair["name"] in {"FIRST_QUAR_HOST", "FIRST_QUAR_OP"}
+    ]
+    status = (await _statuses([row]))[0]
+    assert status.request.host == HOST and status.request.source is None
+
+
 async def test_quarantine_lookup_failure_remains_an_infrastructure_error() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
@@ -220,12 +230,14 @@ async def test_quarantine_lookup_failure_remains_an_infrastructure_error() -> No
             ).get_quarantine_statuses()
 
 
-async def test_expired_or_missing_walltime_start_never_confirms_isolation() -> None:
+async def test_pbs_running_state_not_calculated_expiry_confirms_isolation() -> None:
     row = _row(state=7)
     row["startTime"] = 1_700_000_000_000_000
-    assert not (await _statuses([row]))[0].isolated
+    status = (await _statuses([row]))[0]
+    assert status.isolated and status.expires_at < datetime.now(timezone.utc)
     row["startTime"] = None
-    assert not (await _statuses([row]))[0].isolated
+    status = (await _statuses([row]))[0]
+    assert status.isolated and status.expires_at is None
 
 
 async def test_ordinary_cleanup_does_not_delete_an_absent_or_unowned_job() -> None:
@@ -333,7 +345,7 @@ async def test_alerts_distinguish_pending_verified_and_unverified_running() -> N
     pending = (await _observations(await _statuses([_row()])))[0]
     isolated = (await _observations(await _statuses([_row(state=7)])))[0]
     missing = _row(state=7)
-    missing["allocatedMachines"] = []
+    missing["extension"] = {}
     unverified = (await _observations(await _statuses([missing])))[0]
     assert pending.status == "isolation_pending"
     assert "not yet guaranteed" in pending.summary
@@ -361,15 +373,10 @@ async def test_visible_duplicates_alert_without_mutating_scheduler() -> None:
 async def test_terminal_request_never_claims_isolation_or_node_recovery(
     state: int,
 ) -> None:
-    obs = (await _observations(await _statuses([_row(state=state)])))[0]
-    assert obs.status == "isolation_lost"
-    assert "node health is unverified" in obs.summary
-    assert "recovered" not in obs.summary
+    assert await _observations(await _statuses([_row(state=state)])) == []
 
 
-def test_disappearance_is_lost_isolation_not_hardware_recovery_and_is_deduplicated() -> (
-    None
-):
+def test_disappearance_clears_alert_without_claiming_hardware_recovery() -> None:
     now = datetime.now(timezone.utc)
     key = f"cluster/1/quarantine/{HOST}"
     owner = "check_quarantined_nodes"
@@ -387,12 +394,14 @@ def test_disappearance_is_lost_isolation_not_hardware_recovery_and_is_deduplicat
     )
     advance(state, [], {owner}, now, timedelta(seconds=1))
     plan = advance(state, [], {owner}, now + timedelta(seconds=2), timedelta(seconds=1))
-    assert plan.recoveries == []
-    assert [d.status for d in plan.degradations] == ["isolation_lost"]
+    assert plan.degradations == []
+    assert len(plan.recoveries) == 1
     text = json.dumps(build_alert_blocks(plan.degradations, plan.recoveries, []))
     assert "recovered" not in text and "Recovery" not in text
-    assert "node health is unverified" in text and JOB in text
+    assert "Quarantine ended; node is eligible for startup screening" in text
+    assert HOST in text
     HealthAlerter._commit(state, plan)
+    assert key not in state.committed
     repeated = advance(
         state, [], {owner}, now + timedelta(seconds=4), timedelta(seconds=1)
     )
