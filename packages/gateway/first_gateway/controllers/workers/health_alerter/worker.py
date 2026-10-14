@@ -98,8 +98,8 @@ def advance(
                     summary=(
                         f"{ca.display_name or key}: isolation request disappeared; "
                         "node health is unverified and physical exclusion is no longer guaranteed. "
-                        "Operations confirmation, a fresh passing screen and deliberate administrator "
-                        f"deletion are required for return to service. Previous observation: {ca.summary}"
+                        "Disappearance does not establish hardware recovery; consult Operations "
+                        f"and freshly screen before returning the node. Previous observation: {ca.summary}"
                     ),
                     display_name=ca.display_name,
                     group=ca.group,

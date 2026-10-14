@@ -21,7 +21,6 @@ happens to a node that fails.
 """
 
 import csv
-import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -66,13 +65,7 @@ def run_node_checks(
     if unknown:
         raise ValueError(f"unknown node checks {unknown}; known: {sorted(CHECKS)}")
 
-    gpu_names = [
-        name
-        for name in names
-        if name in _PAIRED_GPU_CHECKS
-        and CHECKS[name].command == tuple(GPU_QUERY)
-        and CHECKS[name].evaluate in (gpu_count, gpu_memory_free, gpu_ecc_errors)
-    ]
+    gpu_names = [name for name in names if name in _PAIRED_GPU_CHECKS]
     outputs: dict[tuple[str, ...], dict[str, str]] = {}
     failures: dict[str, list[str]] = {}
     if gpu_names:
@@ -109,7 +102,7 @@ GPU_QUERY = [
 
 GPU_PROCESS_QUERY = [
     "nvidia-smi",
-    "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
+    "--query-compute-apps=pid",
     "--format=csv,noheader,nounits",
 ]
 
@@ -118,8 +111,6 @@ GPU_PROCESS_QUERY = [
 MIN_FREE_MEMORY_FRACTION = 0.95
 MEMORY_RESERVE_MIB = 256
 _PAIRED_GPU_CHECKS = {"gpu_count", "gpu_memory_free", "gpu_ecc_errors"}
-_GPU_UUID = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-_DRIVER = re.compile(r"\d+(?:\.\d+){1,3}")
 
 
 @dataclass(frozen=True)
@@ -136,6 +127,10 @@ class GpuRow:
     def minimum_free_mib(self) -> int:
         return (self.memory_total_mib * 95 + 99) // 100 + MEMORY_RESERVE_MIB
 
+    @property
+    def identity(self) -> tuple[int, str, str, int]:
+        return self.index, self.uuid, self.driver, self.memory_total_mib
+
 
 def gpu_rows(output: str) -> list[GpuRow]:
     """Strict, coherent native inventory; an empty query is not a GPU fault."""
@@ -150,8 +145,8 @@ def gpu_rows(output: str) -> list[GpuRow]:
             numbers = (index, total, free, volatile, aggregate)
             if not all(value.isascii() and value.isdecimal() for value in numbers):
                 raise ValueError("GPU numeric fields must be nonnegative integers")
-            if not _GPU_UUID.fullmatch(uuid) or not _DRIVER.fullmatch(driver):
-                raise ValueError("GPU identity or driver is malformed")
+            if not uuid or not driver:
+                raise ValueError("GPU identity or driver is missing")
             row = GpuRow(
                 int(index),
                 uuid.lower(),
@@ -180,66 +175,47 @@ def gpu_rows(output: str) -> list[GpuRow]:
     return rows
 
 
-@node_check("gpu_count", command=GPU_QUERY)
-def gpu_count(output: str, config: PilotRuntimeConfig) -> str | None:
-    """Every GPU the scheduler promised is visible."""
-    found = len(gpu_rows(output))
-    if found != config.gpus_per_node:
-        return f"found {found} GPUs, expected {config.gpus_per_node}"
-    return None
-
-
-@node_check("gpu_memory_free", command=GPU_QUERY)
-def gpu_memory_free(output: str, _config: PilotRuntimeConfig) -> str | None:
-    """No GPU memory is already in use before any model has started."""
-    for gpu in gpu_rows(output):
-        if gpu.memory_free_mib < gpu.minimum_free_mib:
-            return (
+def _gpu_faults(
+    rows: list[GpuRow], names: list[str], config: PilotRuntimeConfig
+) -> dict[tuple[str, int | None], str]:
+    """One parsed observation; retain which GPU/check needs confirmation."""
+    faults: dict[tuple[str, int | None], str] = {}
+    if "gpu_count" in names and len(rows) != config.gpus_per_node:
+        faults["gpu_count", None] = (
+            f"found {len(rows)} GPUs, expected {config.gpus_per_node}"
+        )
+    for gpu in rows:
+        if "gpu_memory_free" in names and gpu.memory_free_mib < gpu.minimum_free_mib:
+            faults["gpu_memory_free", gpu.index] = (
                 f"GPU {gpu.index} has {gpu.memory_free_mib} MiB free; "
                 f"requires {gpu.minimum_free_mib} of {gpu.memory_total_mib} MiB"
             )
-    return None
+        if "gpu_ecc_errors" in names and (gpu.ecc_volatile or gpu.ecc_aggregate):
+            faults["gpu_ecc_errors", gpu.index] = (
+                f"GPU {gpu.index} has {max(gpu.ecc_volatile, gpu.ecc_aggregate)} uncorrected ECC errors"
+            )
+    return faults
+
+
+@node_check("gpu_count", command=GPU_QUERY)
+def gpu_count(output: str, config: PilotRuntimeConfig) -> str | None:
+    return next(
+        iter(_gpu_faults(gpu_rows(output), ["gpu_count"], config).values()), None
+    )
+
+
+@node_check("gpu_memory_free", command=GPU_QUERY)
+def gpu_memory_free(output: str, config: PilotRuntimeConfig) -> str | None:
+    return next(
+        iter(_gpu_faults(gpu_rows(output), ["gpu_memory_free"], config).values()), None
+    )
 
 
 @node_check("gpu_ecc_errors", command=GPU_QUERY)
-def gpu_ecc_errors(output: str, _config: PilotRuntimeConfig) -> str | None:
-    """Unsupported/missing counters are infrastructure errors, not zero ECC."""
-    for gpu in gpu_rows(output):
-        for count in (gpu.ecc_volatile, gpu.ecc_aggregate):
-            if count > 0:
-                return f"GPU {gpu.index} has {count} uncorrected ECC errors"
-    return None
-
-
-def _gpu_processes(output: str, rows: list[GpuRow]) -> list[dict[str, object]]:
-    processes: list[dict[str, object]] = []
-    known_uuids = {row.uuid for row in rows}
-    try:
-        for fields in csv.reader(output.splitlines()):
-            if not fields:
-                continue
-            uuid, pid, name, used = (field.strip() for field in fields)
-            uuid = uuid.lower()
-            if (
-                uuid not in known_uuids
-                or not pid.isascii()
-                or not pid.isdecimal()
-                or int(pid) <= 0
-                or not name
-            ):
-                raise ValueError("incoherent GPU client identity")
-            # Any client prevents unexplained-memory attribution, even when the
-            # device does not report its individual memory usage.
-            if used not in {"[N/A]", "N/A"} and not (
-                used.isascii() and used.isdecimal()
-            ):
-                raise ValueError("malformed GPU client memory")
-            processes.append(
-                {"gpu_uuid": uuid, "pid": int(pid), "name": name, "used_mib": used}
-            )
-    except (ValueError, csv.Error) as exc:
-        raise RuntimeError(f"malformed GPU process observation: {exc}") from exc
-    return processes
+def gpu_ecc_errors(output: str, config: PilotRuntimeConfig) -> str | None:
+    return next(
+        iter(_gpu_faults(gpu_rows(output), ["gpu_ecc_errors"], config).values()), None
+    )
 
 
 def _paired_gpu_checks(
@@ -248,101 +224,61 @@ def _paired_gpu_checks(
     config: PilotRuntimeConfig,
     evidence: dict[str, object] | None,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
-    snapshots: list[dict[str, list[GpuRow]]] = []
-    process_snapshots: list[dict[str, list[dict[str, object]]]] = []
-    timestamps: list[str] = []
-    started = time.monotonic()
-    for sample in range(2):
-        if sample:
-            time.sleep(1.0)
+    def observe() -> tuple[dict[str, str], dict[str, list[GpuRow]], str]:
         output = run_on_hosts(
             GPU_QUERY, hostnames, config.gpu_discovery, require_completion=True
         )
-        snapshot = {host: gpu_rows(output[host]) for host in hostnames}
-        all_uuids = [row.uuid for rows in snapshot.values() for row in rows]
-        if len(all_uuids) != len(set(all_uuids)):
+        rows = {host: gpu_rows(output[host]) for host in hostnames}
+        uuids = [gpu.uuid for gpus in rows.values() for gpu in gpus]
+        if len(uuids) != len(set(uuids)):
             raise RuntimeError("GPU UUID is attributed to multiple physical hosts")
-        timestamps.append(datetime.now(timezone.utc).isoformat())
-        snapshots.append(snapshot)
-        for host, rows in snapshot.items():
-            if any(row.index >= config.gpus_per_node for row in rows):
-                raise RuntimeError(
-                    f"GPU indices on {host!r} disagree with requested resources"
-                )
-        processes: dict[str, list[dict[str, object]]] = {host: [] for host in hostnames}
+        if any(
+            gpu.index >= config.gpus_per_node for gpus in rows.values() for gpu in gpus
+        ):
+            raise RuntimeError("GPU indices disagree with requested resources")
         if "gpu_memory_free" in names:
-            process_output = run_on_hosts(
+            clients = run_on_hosts(
                 GPU_PROCESS_QUERY,
                 hostnames,
                 config.gpu_discovery,
                 require_completion=True,
             )
-            processes = {
-                host: _gpu_processes(process_output[host], snapshot[host])
-                for host in hostnames
-            }
-        process_snapshots.append(processes)
-    if time.monotonic() - started > 30.0:
-        raise RuntimeError(
-            "GPU screening observations exceeded their 30s coherence window"
-        )
+            for host in hostnames:
+                if clients[host].strip():
+                    raise RuntimeError(
+                        f"GPU clients present on {host!r}; not an unexplained node memory fault"
+                    )
+        return output, rows, datetime.now(timezone.utc).isoformat()
 
-    failures: dict[str, list[str]] = {}
-    for host in hostnames:
-        first, second = snapshots[0][host], snapshots[1][host]
-
-        def identity(rows: list[GpuRow]) -> set[tuple[int, str, str, int]]:
-            return {
-                (row.index, row.uuid, row.driver, row.memory_total_mib) for row in rows
-            }
-
-        if identity(first) != identity(second):
-            raise RuntimeError(f"GPU identity changed between observations on {host!r}")
-        if process_snapshots[0][host] or process_snapshots[1][host]:
+    started = time.monotonic()
+    output, first, observed = observe()
+    faults = {host: _gpu_faults(first[host], names, config) for host in hostnames}
+    samples = [(first, observed)]
+    # Healthy admission is a point-in-time screen, not a hardware diagnosis.
+    # A suspect check must persist on the same GPU in a second complete sample.
+    if any(faults.values()):
+        time.sleep(1.0)
+        output, second, observed = observe()
+        if time.monotonic() - started > 30.0:
             raise RuntimeError(
-                f"GPU clients present on {host!r}; not an unexplained node memory fault"
+                "GPU screening observations exceeded their 30s coherence window"
             )
-        reasons: list[str] = []
-        if "gpu_count" in names and len(second) != config.gpus_per_node:
-            reasons.append(
-                f"gpu_count: found {len(second)} GPUs, expected {config.gpus_per_node} in both observations"
-            )
-        old = {row.index: row for row in first}
-        for gpu in second:
-            previous = old[gpu.index]
-            if (
-                "gpu_memory_free" in names
-                and gpu.memory_free_mib < gpu.minimum_free_mib
-            ):
-                if previous.memory_free_mib >= previous.minimum_free_mib:
-                    raise RuntimeError(
-                        f"GPU memory changed during screening on {host!r}; no persistent fault established"
-                    )
-                reasons.append(
-                    f"gpu_memory_free: GPU {gpu.index} has {gpu.memory_free_mib} MiB free; requires {gpu.minimum_free_mib} MiB in both observations with no GPU clients"
-                )
-            elif (
-                "gpu_memory_free" in names
-                and previous.memory_free_mib < previous.minimum_free_mib
-            ):
+        for host in hostnames:
+            if {gpu.identity for gpu in first[host]} != {
+                gpu.identity for gpu in second[host]
+            }:
                 raise RuntimeError(
-                    f"GPU memory recovered during screening on {host!r}; no persistent fault established"
+                    f"GPU identity changed between observations on {host!r}"
                 )
-            if "gpu_ecc_errors" in names and (gpu.ecc_volatile or gpu.ecc_aggregate):
-                if not (previous.ecc_volatile or previous.ecc_aggregate):
-                    raise RuntimeError(
-                        f"GPU ECC changed during screening on {host!r}; repeat screening required"
-                    )
-                reasons.append(
-                    f"gpu_ecc_errors: GPU {gpu.index} has uncorrected ECC errors in both observations"
-                )
-            elif "gpu_ecc_errors" in names and (
-                previous.ecc_volatile or previous.ecc_aggregate
-            ):
+            current = _gpu_faults(second[host], names, config)
+            if faults[host].keys() != current.keys():
                 raise RuntimeError(
-                    f"GPU ECC changed during screening on {host!r}; repeat screening required"
+                    f"GPU observations changed on {host!r}; no persistent fault established"
                 )
-        if evidence is not None:
+            faults[host] = current
+        samples.append((second, observed))
+    if evidence is not None:
+        for host in hostnames:
             evidence[host] = {
                 "protocol": 1,
                 "physical_host": host,
@@ -350,13 +286,19 @@ def _paired_gpu_checks(
                 "reserve_mib": MEMORY_RESERVE_MIB,
                 "samples": [
                     {
-                        "observed_at": timestamps[i],
-                        "gpus": [asdict(row) for row in snapshots[i][host]],
-                        "processes": process_snapshots[i][host],
+                        "observed_at": when,
+                        "gpus": [asdict(gpu) for gpu in rows[host]],
+                        "processes": [],
                     }
-                    for i in range(2)
+                    for rows, when in samples
                 ],
             }
-        if reasons:
-            failures[host] = reasons
+    failures = {}
+    for host, checks in faults.items():
+        if checks:
+            failures[host] = [
+                f"{name}: {reason} in both observations"
+                + (" with no GPU clients" if name == "gpu_memory_free" else "")
+                for (name, _), reason in checks.items()
+            ]
     return failures, output

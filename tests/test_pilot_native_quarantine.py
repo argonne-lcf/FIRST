@@ -1,6 +1,5 @@
 """Controlled native-PBS doubles, separate from actual scheduler qualification."""
 
-import copy
 import json
 import subprocess
 from pathlib import Path
@@ -12,7 +11,6 @@ import pytest
 from first_common.pbs_quarantine import (
     TAG,
     discover_quarantines,
-    prove_isolation,
     validate_quarantine,
 )
 from first_common.schema.pilot import PilotRuntimeConfig
@@ -38,9 +36,7 @@ def quarantine(
             "walltime": "168:00:00",
         },
         "Variable_List": {
-            TAG + "VERSION": "1",
             TAG + "ENV": environment,
-            TAG + "CLUSTER": "tara",
             TAG + "HOST": host,
             TAG + "OP": OP,
             TAG + "SOURCE": SOURCE,
@@ -48,15 +44,6 @@ def quarantine(
             TAG + "EVIDENCE": "/service/evidence/fault.json",
         },
         "exec_vnode": f"({host}:ncpus=288:ngpus=4)",
-    }
-
-
-def node(host: str = HOST) -> dict[str, Any]:
-    return {
-        "resources_available": {"host": host, "ncpus": 288, "ngpus": 4},
-        "resources_assigned": {"ncpus": 288, "ngpus": 4},
-        "jobs": [JOB],
-        "state": "job-exclusive",
     }
 
 
@@ -104,8 +91,6 @@ def native(
     def pbs(command: list[str], **_kwargs: Any) -> str:
         if command[0] == "qstat":
             return json.dumps({"Jobs": jobs})
-        if command[0] == "pbsnodes":
-            return json.dumps({"nodes": {HOST: node()}})
         if command[0] == "qsub":
             meta = dict(
                 part.split("=", 1)
@@ -114,14 +99,15 @@ def native(
             attrs = [
                 command[index + 1] for index, item in enumerate(command) if item == "-l"
             ]
-            jobs[JOB] = {
+            job_id = f"{100 + len(jobs)}.tara-north-pbs-01.lab.alcf.anl.gov"
+            jobs[job_id] = {
                 "Job_Name": command[command.index("-N") + 1],
                 "Job_Owner": f"{OWNER}@pilot",
                 "job_state": "Q",
                 "Variable_List": meta,
                 "Resource_List": dict(attr.split("=", 1) for attr in attrs),
             }
-            return JOB + "\n"
+            return job_id + "\n"
         raise AssertionError(command)
 
     mock = Mock(side_effect=pbs)
@@ -168,7 +154,7 @@ def test_start_guard_lookup_error_is_infrastructure_not_fault(
     config, _jobs, pbs = native
     pbs.side_effect = subprocess.TimeoutExpired("qstat", 1)
     action = Mock()
-    monkeypatch.setitem(admission.ACTIONS, "pbs_quarantine", action)
+    monkeypatch.setattr(admission, "pbs_quarantine", action)
     with pytest.raises(subprocess.TimeoutExpired):
         admission.admit_nodes(config)
     action.assert_not_called()
@@ -223,7 +209,6 @@ def test_ambiguous_ack_without_visible_request_is_bounded_no_resubmission(
 @pytest.mark.parametrize(
     "mutation",
     [
-        {"Job_Name": "first_quar_dev_x4820c2s2b1"},
         {"Job_Owner": "other@pilot"},
         {"job_state": "?"},
         {
@@ -282,40 +267,6 @@ def test_owned_quarantine_like_invalid_job_is_lookup_error() -> None:
         discover_quarantines({JOB: invalid}, OWNER)
 
 
-def test_isolation_requires_actual_full_host_and_all_owner_occupancy() -> None:
-    job = quarantine(state="R")
-    request = validate_quarantine(JOB, job, OWNER)
-    assert prove_isolation(request, job, {JOB: job}, {HOST: node()})
-    competitor = {
-        "Job_Name": "other-user",
-        "job_state": "R",
-        "exec_vnode": f"({HOST}:ncpus=1:ngpus=1)",
-    }
-    assert not prove_isolation(
-        request, job, {JOB: job, SOURCE: competitor}, {HOST: node()}
-    )
-    incomplete = copy.deepcopy(node())
-    incomplete["resources_assigned"]["ngpus"] = 3
-    assert not prove_isolation(request, job, {JOB: job}, {HOST: incomplete})
-    incomplete["state"] = "free"
-    assert not prove_isolation(request, job, {JOB: job}, {HOST: incomplete})
-
-
-def test_requested_exclusive_flag_alone_does_not_confirm_isolation() -> None:
-    job = quarantine()
-    request = validate_quarantine(JOB, job, OWNER)
-    assert not prove_isolation(request, job, {JOB: job}, {HOST: node()})
-
-
-def test_unknown_census_owner_state_cannot_confirm_isolation() -> None:
-    job = quarantine(state="R")
-    request = validate_quarantine(JOB, job, OWNER)
-    with pytest.raises(RuntimeError, match="unknown job state"):
-        prove_isolation(
-            request, job, {JOB: job, SOURCE: {"job_state": "?"}}, {HOST: node()}
-        )
-
-
 def test_wrong_source_owner_or_allocation_cannot_create_quarantine(
     native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
 ) -> None:
@@ -356,18 +307,18 @@ def test_fault_actions_complete_before_failed_pilot_exits(
     assert validate_quarantine(JOB, jobs[JOB], OWNER).state == "Q"
 
 
-def test_duplicate_metadata_and_missing_jobs_fail_closed() -> None:
-    with pytest.raises(RuntimeError, match="duplicate"):
-        admission._json_rows('{"Jobs": {}, "Jobs": {}}', "Jobs")
+@pytest.mark.parametrize(
+    "output", ["{}", '{"Jobs": []}', '{"Jobs": null}', '{"Jobs":{"99.pbs":"text"}}']
+)
+def test_missing_or_malformed_jobs_fail_closed(output: str) -> None:
     with pytest.raises(RuntimeError, match="incomplete"):
-        admission._json_rows("{}", "Jobs")
+        admission._json_rows(output, "Jobs")
 
 
-def test_owned_tagged_renamed_quarantine_is_not_silently_ignored() -> None:
+def test_job_names_are_discovery_hints_not_attribution_protocol() -> None:
     job = quarantine()
     job["Job_Name"] = "renamed"
-    with pytest.raises(RuntimeError, match="name differs"):
-        discover_quarantines({JOB: job}, OWNER)
+    assert discover_quarantines({JOB: job}, OWNER)[0].host == HOST
 
 
 @pytest.mark.parametrize(
@@ -394,7 +345,6 @@ def test_incoherent_source_identity_prevents_quarantine_submission(
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("Job_Name", "first_quar_dev_truncated"),
         (TAG + "REASON", "different_fault"),
         (TAG + "EVIDENCE", "/different/evidence.json"),
     ],
@@ -447,3 +397,72 @@ def test_native_calls_have_bounded_timeouts(
     config, _jobs, pbs = native
     admission.pbs_quarantine(HOST, config)
     assert all(0 < call.kwargs["timeout"] <= 15 for call in pbs.call_args_list)
+
+
+def test_two_faults_reuse_source_membership_and_one_post_screen_discovery(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, jobs, pbs = native
+    other = "x4820c2s2b0n0"
+    config.num_nodes = 2
+    config.node_admission.checks = ["gpu_count"]
+    (config.workdir / "nodes").write_text(f"{HOST}\n{other}\n")
+    jobs[SOURCE]["exec_vnode"] += f"+({other}:ncpus=288:ngpus=4)"
+    monkeypatch.setattr(
+        admission,
+        "run_node_checks",
+        lambda *_args, **_kwargs: {
+            HOST: ["gpu_count: missing"],
+            other: ["gpu_count: missing"],
+        },
+    )
+    with pytest.raises(admission.NodeChecksFailed):
+        admission.admit_nodes(config)
+    commands = [call.args[0] for call in pbs.call_args_list]
+    assert sum(command[0] == "qstat" for command in commands) == 4
+    assert sum(command[0] == "qsub" for command in commands) == 2
+    assert not any(command[0] == "pbsnodes" for command in commands)
+
+
+def test_post_screen_discovery_reuses_quarantine_that_became_visible_during_checks(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, jobs, pbs = native
+    config.node_admission.checks = ["gpu_count"]
+
+    def faults(*_args: Any, **_kwargs: Any) -> dict[str, list[str]]:
+        jobs[JOB] = quarantine(environment="prod")
+        return {HOST: ["gpu_count: missing"]}
+
+    monkeypatch.setattr(admission, "run_node_checks", faults)
+    with pytest.raises(admission.NodeChecksFailed):
+        admission.admit_nodes(config)
+    assert sum(call.args[0][0] == "qstat" for call in pbs.call_args_list) == 2
+    assert not any(call.args[0][0] == "qsub" for call in pbs.call_args_list)
+
+
+def test_multiple_fault_actions_share_the_quarantine_count_cap(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, jobs, pbs = native
+    other = "x4820c2s2b0n0"
+    config.num_nodes = 2
+    config.node_admission.checks = ["gpu_count"]
+    config.node_admission.max_quarantined_nodes = 1
+    (config.workdir / "nodes").write_text(f"{HOST}\n{other}\n")
+    jobs[SOURCE]["exec_vnode"] += f"+({other}:ncpus=288:ngpus=4)"
+    monkeypatch.setattr(
+        admission,
+        "run_node_checks",
+        lambda *_args, **_kwargs: {
+            HOST: ["gpu_count: missing"],
+            other: ["gpu_count: missing"],
+        },
+    )
+    with pytest.raises(admission.NodeChecksFailed):
+        admission.admit_nodes(config)
+    assert sum(call.args[0][0] == "qsub" for call in pbs.call_args_list) == 1
+    assert jobs[SOURCE]["job_state"] == "R"

@@ -34,9 +34,7 @@ def _row(
     *, state: int = 0, environment: str = "dev", operation: str = OPERATION
 ) -> dict[str, Any]:
     meta = {
-        "FIRST_QUAR_VERSION": "1",
         "FIRST_QUAR_ENV": environment,
-        "FIRST_QUAR_CLUSTER": "tara",
         "FIRST_QUAR_HOST": HOST,
         "FIRST_QUAR_OP": operation,
         "FIRST_QUAR_SOURCE": SOURCE,
@@ -86,19 +84,11 @@ def _payload(
     }
 
 
-async def _statuses(
-    rows: list[dict[str, Any]], all_jobs: list[dict[str, Any]] | None = None
-) -> list[Any]:
+async def _statuses(rows: list[dict[str, Any]]) -> list[Any]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        selected = (
-            rows
-            if body["variables"]["owner"]
-            else rows
-            if all_jobs is None
-            else all_jobs
-        )
-        return httpx.Response(200, json=_payload(selected))
+        assert body["variables"]["owner"] == "openinference_svc"
+        return httpx.Response(200, json=_payload(rows))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         return await GraphQLPBSAdapter(
@@ -113,49 +103,55 @@ async def test_pending_request_does_not_claim_actual_isolation(state: int) -> No
     assert not statuses[0].isolated
 
 
-async def test_running_requires_complete_independent_all_owner_occupancy() -> None:
+async def test_running_trusts_accepted_pbs_request_and_intended_placement() -> None:
     row = _row(state=7)
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=_payload([row]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        statuses = await GraphQLPBSAdapter(
+            client, "openinference_svc", "https://bridge"
+        ).get_quarantine_statuses()
+    assert statuses[0].isolated
+    assert len(requests) == 1
+    assert requests[0]["variables"]["owner"] == "openinference_svc"
+    assert "resourcesAssigned" not in requests[0]["query"]
+
+
+async def test_running_does_not_rebuild_a_resource_assignment_census() -> None:
+    row = _row(state=7)
+    row["allocatedMachines"] = [{"name": HOST}]
     assert (await _statuses([row]))[0].isolated
-    competing = copy.deepcopy(row)
-    competing.update(
-        jobId=SOURCE, name="first_prod_tara_v2_healthy", env=[], owner="other_team"
-    )
-    assert not (await _statuses([row], [row, competing]))[0].isolated
-    assert not (await _statuses([row], []))[0].isolated
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        "partial_resources",
         "wrong_host",
-        "physical_alias",
         "wrong_execution",
-        "partial_execution",
         "duplicate_vnode",
         "multiple_machines",
+        "missing_execution",
+        "malformed_execution",
     ],
 )
-async def test_requested_exclusivity_is_not_proof_of_running_isolation(
-    change: str,
-) -> None:
+async def test_missing_or_wrong_running_placement_is_unverified(change: str) -> None:
     row = _row(state=7)
-    if change == "partial_resources":
-        row["allocatedMachines"][0]["resourcesAssigned"]["gpus"] = 1
-    elif change == "wrong_host":
+    if change == "wrong_host":
         row["allocatedMachines"][0]["name"] = "x4819c0s4b0n0"
-    elif change == "physical_alias":
-        row["allocatedMachines"][0]["resourcesAvail"]["customResources"][0]["value"] = (
-            "x4819c0s4b0n0"
-        )
     elif change == "wrong_execution":
         row["extension"]["exec_vnode"] = "(x4819c0s4b0n0:ncpus=288:ngpus=4)"
-    elif change == "partial_execution":
-        row["extension"]["exec_vnode"] = f"({HOST}:ncpus=288:ngpus=1)"
     elif change == "duplicate_vnode":
         row["extension"]["exec_vnode"] = (
             f"({HOST}:ncpus=144:ngpus=2)+({HOST}:ncpus=144:ngpus=2)"
         )
+    elif change == "missing_execution":
+        row["extension"] = {}
+    elif change == "malformed_execution":
+        row["extension"] = "not a scheduler record"
     else:
         row["allocatedMachines"].append(copy.deepcopy(row["allocatedMachines"][0]))
     assert not (await _statuses([row]))[0].isolated
@@ -164,7 +160,6 @@ async def test_requested_exclusivity_is_not_proof_of_running_isolation(
 @pytest.mark.parametrize(
     "change",
     [
-        "truncated",
         "missing_metadata",
         "wrong_target",
         "shared",
@@ -173,13 +168,11 @@ async def test_requested_exclusivity_is_not_proof_of_running_isolation(
         "overlong_walltime",
     ],
 )
-async def test_owned_discovery_requires_name_metadata_and_exact_request(
+async def test_owned_discovery_requires_attribution_and_exact_request(
     change: str,
 ) -> None:
     row = _row()
-    if change == "truncated":
-        row["name"] = row["name"][:-1]
-    elif change == "missing_metadata":
+    if change == "missing_metadata":
         row["env"] = []
     elif change == "wrong_target":
         row["resourcesRequested"]["tasksResources"][0]["candidateMachineName"] = (
@@ -206,18 +199,25 @@ async def test_foreign_jobs_ignored_and_both_service_environments_validated() ->
     assert statuses[0].request.environment == "prod"
 
 
-async def test_missing_all_owner_allocation_proof_is_infrastructure_error() -> None:
-    row = _row(state=7)
-    unknown = copy.deepcopy(row)
-    unknown.update(
-        jobId=SOURCE,
-        name="first_prod_tara_v2_healthy",
-        env=[],
-        owner="other_team",
-        extension={},
-    )
-    with pytest.raises(RuntimeError, match="membership"):
-        await _statuses([row], [row, unknown])
+async def test_display_name_is_discovery_not_identity_authority() -> None:
+    for name in ["first_quar_dev_truncated", "renamed-for-operations"]:
+        row = _row()
+        row["name"] = name
+        assert (await _statuses([row]))[0].request.host == HOST
+
+
+async def test_quarantine_lookup_failure_remains_an_infrastructure_error() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, json={"errors": [{"message": "denied"}]}
+            )
+        )
+    ) as client:
+        with pytest.raises(RuntimeError, match="GraphQL query failed"):
+            await GraphQLPBSAdapter(
+                client, "openinference_svc", "https://bridge"
+            ).get_quarantine_statuses()
 
 
 async def test_expired_or_missing_walltime_start_never_confirms_isolation() -> None:
@@ -332,11 +332,13 @@ async def _observations(jobs: list[Any]) -> list[Any]:
 async def test_alerts_distinguish_pending_verified_and_unverified_running() -> None:
     pending = (await _observations(await _statuses([_row()])))[0]
     isolated = (await _observations(await _statuses([_row(state=7)])))[0]
-    unverified = (await _observations(await _statuses([_row(state=7)], [])))[0]
+    missing = _row(state=7)
+    missing["allocatedMachines"] = []
+    unverified = (await _observations(await _statuses([missing])))[0]
     assert pending.status == "isolation_pending"
     assert "not yet guaranteed" in pending.summary
     assert isolated.status == "isolated"
-    assert "independently verified" in isolated.summary
+    assert "PBS-accepted" in isolated.summary
     assert unverified.status == "isolation_unverified"
     for obs in [pending, isolated, unverified]:
         assert (

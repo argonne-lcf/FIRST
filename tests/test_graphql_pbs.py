@@ -199,12 +199,10 @@ def _assert_normal_delete_request(body: dict[str, Any]) -> None:
 
 def _normal_cleanup_identity(body: dict[str, Any]) -> dict[str, object]:
     assert body["variables"] == {
-        "owner": "svc",
-        "ids": ["101.tara"],
-        "history": True,
+        "jobId": "101.tara",
         "cursor": None,
     }
-    assert "query QuarantineJobs" in body["query"]
+    assert "query ExactJobState" in body["query"]
     node = _job_node("101.tara", 7)
     node.update(owner="svc", env=[])
     return _jobs_payload([{"node": node, "error": None}])
@@ -216,7 +214,7 @@ async def test_graphql_delete_returns_after_scheduler_acknowledgement() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         requests.append(body)
-        if "query QuarantineJobs" in body["query"]:
+        if "query ExactJobState" in body["query"]:
             return httpx.Response(200, json=_normal_cleanup_identity(body))
         return httpx.Response(
             200,
@@ -251,7 +249,7 @@ async def test_graphql_delete_accepts_explicit_absence_after_lost_ack(
         nonlocal calls
         calls += 1
         body = json.loads(request.content)
-        if "query QuarantineJobs" in body["query"]:
+        if calls == 1:
             return httpx.Response(200, json=_normal_cleanup_identity(body))
         if "mutation DeleteJob" in body["query"]:
             _assert_normal_delete_request(body)
@@ -269,7 +267,7 @@ async def test_graphql_delete_accepts_explicit_absence_after_lost_ack(
                     }
                 },
             )
-        assert body["variables"] == {"jobId": "101.tara"}
+        assert body["variables"] == {"jobId": "101.tara", "cursor": None}
         assert "withHistoryJobs: true" in body["query"]
         edges: list[dict[str, object]] = (
             []
@@ -294,7 +292,7 @@ async def test_graphql_delete_error_with_live_job_remains_failure(
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         calls.append(body)
-        if "query QuarantineJobs" in body["query"]:
+        if len(calls) == 1:
             return httpx.Response(200, json=_normal_cleanup_identity(body))
         if "mutation DeleteJob" in body["query"]:
             _assert_normal_delete_request(body)
@@ -323,7 +321,7 @@ async def test_graphql_delete_error_with_live_job_remains_failure(
             )
     # Identity lookup, one normal delete and exact status check; no forced retry.
     assert len(calls) == 3
-    assert calls[2]["variables"] == {"jobId": "101.tara"}
+    assert calls[2]["variables"] == {"jobId": "101.tara", "cursor": None}
     assert "withHistoryJobs: true" in calls[2]["query"]
 
 
@@ -334,7 +332,7 @@ async def test_graphql_delete_mismatched_and_malformed_ids_fail_closed() -> None
         nonlocal calls
         calls += 1
         body = json.loads(request.content)
-        if "query QuarantineJobs" in body["query"]:
+        if "query ExactJobState" in body["query"]:
             return httpx.Response(200, json=_normal_cleanup_identity(body))
         _assert_normal_delete_request(body)
         payload: dict[str, Any] = {

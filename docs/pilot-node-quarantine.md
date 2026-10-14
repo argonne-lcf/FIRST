@@ -25,7 +25,7 @@ Prod substitutes `prod` and `first_prod_tara_v2_`; the policy is otherwise the
 same. The source allocation must match the exact prefixed pilot name and current
 PBS physical-host/GPU allocation. Tara's submit preamble must include
 `export PATH=/opt/pbs/bin:$PATH`: these tools are not on the default batch PATH.
-The job must be able to execute and query `qstat`, `pbsnodes` and `qsub` under the
+The job must be able to execute and query `qstat` and `qsub` under the
 service identity. Missing binaries, permissions, malformed responses and failed
 lookups are infrastructure/admission errors, never hardware diagnoses.
 
@@ -51,8 +51,9 @@ Inspect and preserve that checkpoint separately before any future migration.
    loading. Reused pilots repeat this guard before starting a new replica;
    existing healthy replicas are not stopped.
 2. Obtain complete, nonce-terminated native observations on every allocated
-   host. Built-in GPU checks compare two coherent samples at least one second
-   apart. Missing ranks, empty/malformed queries, changing identities, unknown
+   host. Healthy allocations need one complete sample. Suspected GPU faults
+   require a second coherent sample at least one second apart. Missing ranks,
+   empty/malformed queries, changing identities, unknown
    ECC, unexpected GPU clients and transient memory are infrastructure errors.
    They do not submit a quarantine. Model OOM is not part of this diagnosis.
 3. A stable missing-GPU, uncorrected-ECC or unexplained headroom fault records
@@ -60,8 +61,9 @@ Inspect and preserve that checkpoint separately before any future migration.
    file. The free-memory threshold remains `ceil(total MiB * 0.95) + 256 MiB`.
 4. Look for an existing valid request for that exact host. Names only aid
    discovery; owner, metadata, accepted host/resources and state establish
-   identity. Submit at most once per operation, requesting all physical CPU/GPU
-   resources and host exclusivity. The payload is only `/bin/sleep infinity`.
+   identity. Submit at most once per operation, reusing the originating
+   allocation's per-host CPU/GPU request and requesting `place=exclhost`.
+   PBS enforces whole-host exclusivity. The payload is only `/bin/sleep infinity`.
 5. Inspect PBS's accepted job identity, attribution, target, resources and
    walltime, then exit the failed source attempt. An ambiguous acknowledgement
    gets bounded lookup, not blind resubmission. The complete fault-action budget
@@ -79,10 +81,11 @@ The eight-node cap is a safety bound, not a new model-scheduling gate.
 ## Discover and verify requests
 
 Native jobs are named `first_quar_ENV_PHYSICALHOST_OPERATION8` (at most 63
-characters); accepted names must match their metadata exactly. A truncated or
-renamed service-owned tagged request fails lookup safely rather than silently
-letting startup proceed. Attribution uses `FIRST_QUAR_VERSION`, `ENV`, `CLUSTER`,
-`HOST`, `OP`, `SOURCE`, `REASON` and `EVIDENCE` variables. Never delete an arbitrary
+characters). Names aid discovery; a changed/truncated display name does not
+override validated ownership, target and accepted resources. Attribution uses
+`FIRST_QUAR_ENV`, `HOST`, `OP`, `SOURCE`, `REASON` and `EVIDENCE` variables.
+Incomplete service-owned requests fail admission as infrastructure errors.
+Never delete an arbitrary
 job just because its name resembles a quarantine.
 
 ```bash
@@ -92,11 +95,12 @@ qstat -f -F json JOB_ID
 pbsnodes -a -F json
 ```
 
-Requested exclusivity is not confirmed isolation. Confirmation requires actual
-running placement on one exact physical vnode, full physical-host CPU/GPU
-allocation and a complete all-owner occupancy census showing that job alone.
-The gateway's existing health alerter checks the bridge's equivalent evidence.
-If required fields or census access are missing, isolation stays unverified.
+Requested exclusivity alone is not confirmed isolation. The existing health
+alerter verifies the accepted exact-host exclusive request, running placement
+on the intended physical host and a nonexpired walltime. PBS is the authority
+for scheduling and exclusivity. If running placement or expiration evidence is
+missing, isolation stays unverified. Independent occupancy checks belong in
+qualification tooling, not a second runtime scheduler/proof implementation.
 Ordinary model shutdown/orphan cleanup rejects both environments' quarantine
 names or metadata instead of deleting them.
 
@@ -125,7 +129,7 @@ load a model. For Tara's four GPUs, an example on that exact node is:
 ```bash
 # Run as the service identity on the owned quarantine host, using the pinned
 # pilot Python from the admission bundle's first-pilot-runtime.json.
-"$PILOT_PYTHON" -I - <<'PY'
+"$PILOT_PYTHON" -IB - <<'PY'
 import json, socket, sys
 from types import SimpleNamespace
 from first_common.pbs_quarantine import physical_host
