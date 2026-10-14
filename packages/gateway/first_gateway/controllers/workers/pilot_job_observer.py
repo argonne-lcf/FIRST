@@ -63,13 +63,10 @@ class PilotJobObserver(Worker):
             heartbeat_timeout=heartbeat_timeout,
         )
         self.client = PilotControlClient(client_state)
-        self.hb = self.register_heartbeat("poll")
         # Per-cluster throttle for the "skipping (maintenance)" log line.
         self._maintenance_logged_at: dict[int, datetime] = {}
 
     async def run(self) -> None:
-        # Re-register: supervise() clears the heartbeat list on every restart,
-        # so the __init__ registration only survives the first run.
         self.hb = self.register_heartbeat("poll")
         while True:
             self.hb.beat()

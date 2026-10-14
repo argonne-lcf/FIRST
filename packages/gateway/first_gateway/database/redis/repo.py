@@ -1,7 +1,7 @@
 """Redis runtime state access layer."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from redis.asyncio import Redis
 
@@ -16,13 +16,6 @@ from first_common.schema.resources.runtime import (
 from .keys import Keys
 
 
-def _to_str(v: Any) -> str:
-    """Coerce a Redis return value to str. Belt-and-suspenders for decode_responses=True."""
-    if isinstance(v, (bytes, bytearray)):
-        return v.decode()
-    return str(v)
-
-
 def _parse_backend_runtime(inflight_raw: Any, errors_raw: Any) -> BackendRuntime:
     return BackendRuntime(
         inflight=int(inflight_raw) if inflight_raw else 0,
@@ -30,14 +23,13 @@ def _parse_backend_runtime(inflight_raw: Any, errors_raw: Any) -> BackendRuntime
     )
 
 
-def _parse_model_rejects(raw: dict[Any, Any]) -> tuple[int, datetime | None]:
+def _parse_model_rejects(raw: dict[str, str]) -> tuple[int, datetime | None]:
     """Extract rejection counters from the model demand hash."""
     if not raw:
         return 0, None
-    data = {_to_str(k): _to_str(v) for k, v in raw.items()}
-    last_ts = data.get("last_reject_ts")
+    last_ts = raw.get("last_reject_ts")
     return (
-        int(data.get("capacity_rejects_total", "0")),
+        int(raw.get("capacity_rejects_total", "0")),
         datetime.fromtimestamp(float(last_ts), tz=UTC) if last_ts else None,
     )
 
@@ -108,31 +100,14 @@ class RedisRepo:
         return out
 
     async def get_cached_token(self, token_hash: str) -> str | None:
-        val = await self.client.get(Keys.token_introspect(token_hash))
-        return _to_str(val) if val else None
+        # The client is built with decode_responses=True, so values are str.
+        val = cast(
+            "str | None", await self.client.get(Keys.token_introspect(token_hash))
+        )
+        return val or None
 
     async def set_cached_token(self, token_hash: str, value: str, ttl: int) -> None:
         await self.client.set(Keys.token_introspect(token_hash), value, ex=ttl)
-
-    async def mark_authed_user(self, user_id: str, ttl: int = 120) -> bool:
-        """Returns True if this is the first mark within the TTL window."""
-        return bool(
-            await self.client.set(Keys.authed_user(user_id), "", nx=True, ex=ttl)
-        )
-
-    async def is_new_error_log(
-        self,
-        user: str,
-        status_code: int,
-        fingerprint: str | None = None,
-        ttl: int = 30,
-    ) -> bool:
-        """Returns True if this user/status/fingerprint combo hasn't been seen within TTL."""
-        if fingerprint is None:
-            key = Keys.log_dedup_5xx(user, status_code)
-        else:
-            key = Keys.log_dedup_4xx(user, fingerprint, status_code)
-        return bool(await self.client.set(key, "", nx=True, ex=ttl))
 
     async def set_pilot_job_runtime(
         self,

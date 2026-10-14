@@ -19,10 +19,6 @@ class RedisPubSub:
     def __init__(self, redis: Redis) -> None:
         self.client = redis
 
-    @staticmethod
-    def to_str(v: str | bytes) -> str:
-        return v.decode() if isinstance(v, bytes) else v
-
     async def publish(self, channel: Channel, message: str) -> None:
         await self.client.publish(channel.value, message)
 
@@ -36,7 +32,7 @@ class RedisPubSub:
                 event = await pubsub.get_message(timeout=30.0)
                 if event is None or event.get("type") != "message":
                     continue
-                yield Channel(event["channel"]), self.to_str(event["data"])
+                yield Channel(event["channel"]), event["data"]
         finally:
             await pubsub.aclose()  # type: ignore[no-untyped-call]
 

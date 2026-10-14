@@ -4,7 +4,7 @@ import logging
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, cast
 
 from pydantic import BaseModel
 from redis.asyncio import Redis
@@ -24,10 +24,6 @@ _RECORD_ERROR_LUA = (LUA_DIR / "record_error.lua").read_text()
 # EWMA smoothing for the per-user+model token-estimation stats
 USAGE_EWMA_ALPHA = 0.3
 USAGE_EWMA_TTL_SEC = 30 * 24 * 60 * 60
-
-
-def to_str(v: Any) -> str:
-    return v.decode() if isinstance(v, (bytes, bytearray)) else str(v)
 
 
 def _ewma(prev: float | None, sample: float, alpha: float = USAGE_EWMA_ALPHA) -> float:
@@ -81,17 +77,17 @@ class AdmitResult(BaseModel):
     def from_lua(cls, raw: Sequence[Any]) -> "AdmitResult":
         code = int(raw[0])
         if code == AdmitStatus.ADMITTED:
-            return cls(status=AdmitStatus.ADMITTED, backend_id=to_str(raw[1]))
+            return cls(status=AdmitStatus.ADMITTED, backend_id=raw[1])
         if code == AdmitStatus.REJECT_QUOTA:
             retry_after = float(raw[2])
             return cls(
                 status=AdmitStatus.REJECT_QUOTA,
-                quota_reason=QuotaReason(to_str(raw[1])),
+                quota_reason=QuotaReason(raw[1]),
                 retry_after_sec=retry_after if retry_after >= 0 else None,
             )
         return cls(
             status=AdmitStatus.REJECT_CAPACITY,
-            capacity_reason=CapacityReason(to_str(raw[1])),
+            capacity_reason=CapacityReason(raw[1]),
         )
 
 
@@ -397,12 +393,16 @@ class AdmissionController:
         never wrong.  Any worker may run this opportunistically on a timer.
         """
         now = time.time()
-        expired = await self.client.zrangebyscore(
-            Keys.deadlines(), "-inf", now, start=0, num=batch
+        # The client is built with decode_responses=True, so members are str.
+        expired = cast(
+            "list[str]",
+            await self.client.zrangebyscore(
+                Keys.deadlines(), "-inf", now, start=0, num=batch
+            ),
         )
         settled = 0
         for rid in expired:
-            if await self.settle(to_str(rid), actual_tokens=None):
+            if await self.settle(rid, actual_tokens=None):
                 settled += 1
 
         if settled > 0:
@@ -457,17 +457,14 @@ class AdmissionController:
         removed = 0
         for pattern in patterns:
             async for key in self.client.scan_iter(match=pattern, count=100):
-                key_str = to_str(key)
                 batch: list[str] = []
-                async for member in self.client.zscan_iter(
-                    key_str, count=self.chunk_size
-                ):
-                    batch.append(to_str(member[0]))
+                async for member in self.client.zscan_iter(key, count=self.chunk_size):
+                    batch.append(member[0])
                     if len(batch) >= self.chunk_size:
-                        removed += await self._zrem_dead(key_str, batch)
+                        removed += await self._zrem_dead(key, batch)
                         batch = []
                 if batch:
-                    removed += await self._zrem_dead(key_str, batch)
+                    removed += await self._zrem_dead(key, batch)
         return removed
 
     async def _zrem_dead(self, key: str, request_ids: list[str]) -> int:

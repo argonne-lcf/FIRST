@@ -93,21 +93,6 @@ class Keys:
         return f"auth:token_introspect:{token_hash}"
 
     @staticmethod
-    def authed_user(user_id: str) -> str:
-        """NX-guarded flag to emit a UserAuthEvent once per TTL window."""
-        return f"auth:user:{user_id}"
-
-    @staticmethod
-    def log_dedup_5xx(user: str, status_code: int) -> str:
-        """NX-guarded flag to suppress repeated 5xx log lines."""
-        return f"logdedup:{user}:{status_code}"
-
-    @staticmethod
-    def log_dedup_4xx(user: str, fingerprint: str, status_code: int) -> str:
-        """NX-guarded flag to suppress repeated 4xx log lines."""
-        return f"logdedup:{user}:{fingerprint}:{status_code}"
-
-    @staticmethod
     def pilot_job_resources(uid: int) -> str:
         """JSON Blob of serialized PilotResources"""
         return f"pilot_job:{uid}:resources"

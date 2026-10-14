@@ -53,7 +53,7 @@ one object that every downstream layer is given.
 4. The route handler runs. `FirstError` / `TaskPending` / uncaught
    exceptions are normalized into JSON envelopes by app-level handlers.
 5. After the response, `log_request` fire-and-forgets an access-log
-   record (with redis-`SETNX` dedupe for repeated 4xx/5xx) and any
+   record and any
    `UserAuthEvent` from this request.
 
 ## Async-native by design
