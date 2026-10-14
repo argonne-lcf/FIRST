@@ -87,27 +87,6 @@ def advance(
     # "{resource} recovered after {recovery_hint}" rather than a bare key.
     for key, ca in state.committed.items():
         if key not in observed_keys and ca.owner in ran_checks:
-            if ca.owner == "check_quarantined_nodes" and "/quarantine/" in key:
-                # Scheduler absence proves lost isolation, never hardware
-                # recovery. Retain this warning in the existing Redis alert
-                # state until a new valid request for this node is observed.
-                candidates[key] = StagedTransition(
-                    key=key,
-                    status="isolation_lost",
-                    severity="crit",
-                    summary=(
-                        f"{ca.display_name or key}: isolation request disappeared; "
-                        "node health is unverified and physical exclusion is no longer guaranteed. "
-                        "Disappearance does not establish hardware recovery; consult Operations "
-                        f"and freshly screen before returning the node. Previous observation: {ca.summary}"
-                    ),
-                    display_name=ca.display_name,
-                    group=ca.group,
-                    owner=ca.owner,
-                    debounce_s=ca.debounce_s,
-                    first_seen=now,
-                )
-                continue
             candidates[key] = StagedTransition(
                 key=key,
                 status="",

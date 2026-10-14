@@ -7,7 +7,7 @@ import pwd
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from first_common.pbs_quarantine import (
@@ -19,7 +19,6 @@ from first_common.pbs_quarantine import (
     pbs_job_id,
     physical_host,
     positive_int,
-    quarantine_request,
 )
 from first_common.schema.pilot import PilotRuntimeConfig
 from first_common.schema.types import QUARANTINE_JOB_PREFIX
@@ -94,10 +93,6 @@ def _allocation(
         raise RuntimeError(
             "originating PBS allocation ownership/execution is unverified"
         )
-    if job.get("Job_Name") != config.job_name_prefix + config.job_name:
-        raise RuntimeError(
-            "originating PBS allocation name differs from pilot identity"
-        )
     vnodes = execution_vnodes(job.get("exec_vnode"))
     canonical = {physical_host(host) for host in hosts}
     resources = {
@@ -126,9 +121,7 @@ def guard_quarantined_nodes(
         row for row in allocation.quarantines if row.host in allocation.resources
     ]
     if matching:
-        identities = [
-            (row.host, row.job_id, row.environment, row.state) for row in matching
-        ]
+        identities = [(row.host, row.job_id, row.environment) for row in matching]
         raise AdmissionDeferredKnownQuarantine(
             f"admission_deferred_known_quarantine: {identities}"
         )
@@ -255,7 +248,11 @@ def pbs_quarantine(
     }
     ncpus, ngpus = allocation.resources[host]
     seconds = config.node_admission.quarantine_walltime_min * 60
-    intended = quarantine_request("1.pbs", metadata, "Q", ncpus, ngpus, seconds)
+    if any(
+        "," in str(value) or "\n" in str(value) or "\r" in str(value)
+        for value in metadata.values()
+    ):
+        raise ValueError("quarantine qsub variables contain a delimiter")
     name = f"{QUARANTINE_JOB_PREFIX}{environment}_{host}_{operation[:8]}"
     command = [
         "qsub",
@@ -303,8 +300,7 @@ def pbs_quarantine(
             )
         if matches:
             accepted = matches[0]
-            expected = replace(intended, job_id=accepted.job_id, state=accepted.state)
-            if accepted != expected or (
+            if accepted.host != host or (
                 acknowledged is not None and accepted.job_id != acknowledged
             ):
                 raise RuntimeError(

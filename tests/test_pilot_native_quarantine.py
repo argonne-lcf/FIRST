@@ -71,7 +71,6 @@ def native(
             "num_nodes": 1,
             "gpus_per_node": 4,
             "job_name": "pilot-test",
-            "job_name_prefix": "first_dev_",
             "walltime_min": 60,
             "network_interfaces": ["hsn0"],
             "queue": "prod",
@@ -81,7 +80,7 @@ def native(
     )
     jobs: dict[str, dict[str, Any]] = {
         SOURCE: {
-            "Job_Name": config.job_name_prefix + config.job_name,
+            "Job_Name": "first_dev_" + config.job_name,
             "Job_Owner": f"{OWNER}@pilot",
             "job_state": "R",
             "exec_vnode": f"({HOST}:ncpus=288:ngpus=4)",
@@ -210,10 +209,9 @@ def test_ambiguous_ack_without_visible_request_is_bounded_no_resubmission(
     "mutation",
     [
         {"Job_Owner": "other@pilot"},
-        {"job_state": "?"},
         {
             "Resource_List": {
-                "select": f"1:host={HOST}",
+                "select": "1:host=unrelated",
                 "place": "exclhost",
                 "walltime": "168:00:00",
             }
@@ -304,7 +302,7 @@ def test_fault_actions_complete_before_failed_pilot_exits(
     with pytest.raises(admission.NodeChecksFailed):
         admission.admit_nodes(config)
     assert jobs[SOURCE]["job_state"] == "R"
-    assert validate_quarantine(JOB, jobs[JOB], OWNER).state == "Q"
+    assert jobs[JOB]["job_state"] == "Q"
 
 
 @pytest.mark.parametrize(
@@ -324,7 +322,6 @@ def test_job_names_are_discovery_hints_not_attribution_protocol() -> None:
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("Job_Name", "another-model"),
         ("job_state", "Q"),
         ("exec_vnode", "(x4819c0s0b0n0:ncpus=288:ngpus=4)"),
         ("exec_vnode", f"({HOST}:ncpus=288:ngpus=3)"),
@@ -349,7 +346,7 @@ def test_incoherent_source_identity_prevents_quarantine_submission(
         (TAG + "EVIDENCE", "/different/evidence.json"),
     ],
 )
-def test_changed_accepted_identity_never_claims_submission_success(
+def test_changed_diagnostics_do_not_override_accepted_isolation(
     native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
     field: str,
     value: str,
@@ -364,6 +361,57 @@ def test_changed_accepted_identity_never_claims_submission_success(
                 jobs[JOB]["Variable_List"][field] = value
             else:
                 jobs[JOB][field] = value
+        return result
+
+    pbs.side_effect = altered
+    admission.pbs_quarantine(HOST, config)
+    assert sum(call.args[0][0] == "qsub" for call in pbs.call_args_list) == 1
+
+
+def test_source_display_name_is_not_allocation_authority(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+) -> None:
+    config, jobs, _pbs = native
+    jobs[SOURCE]["Job_Name"] = "renamed-source"
+    admission.pbs_quarantine(HOST, config)
+    assert JOB in jobs
+
+
+def test_diagnostic_metadata_is_not_a_required_protocol() -> None:
+    job = quarantine()
+    for field in ("ENV", "SOURCE", "REASON", "EVIDENCE"):
+        job["Variable_List"].pop(TAG + field)
+    assert validate_quarantine(JOB, job, OWNER).host == HOST
+
+
+def test_unknown_quarantine_state_is_a_lookup_error() -> None:
+    with pytest.raises(RuntimeError, match="state"):
+        discover_quarantines({JOB: quarantine(state="?")}, OWNER)
+
+
+@pytest.mark.parametrize("mutation", ["target", "exclusive", "operation", "ack"])
+def test_critical_submission_identity_still_must_match(
+    native: tuple[PilotRuntimeConfig, dict[str, dict[str, Any]], Mock],
+    mutation: str,
+) -> None:
+    config, jobs, pbs = native
+    original = pbs.side_effect
+
+    def altered(command: list[str], **kwargs: Any) -> str:
+        result: str = original(command, **kwargs)
+        if command[0] == "qsub":
+            if mutation == "target":
+                other = "x4819c0s0b0n0"
+                jobs[JOB]["Resource_List"]["select"] = (
+                    f"1:host={other}:ncpus=288:ngpus=4"
+                )
+                jobs[JOB]["Variable_List"][TAG + "HOST"] = other
+            elif mutation == "exclusive":
+                jobs[JOB]["Resource_List"]["place"] = "shared"
+            elif mutation == "operation":
+                jobs[JOB]["Variable_List"][TAG + "OP"] = "different-operation"
+            else:
+                return "999.pbs"
         return result
 
     pbs.side_effect = altered

@@ -43,7 +43,6 @@ class PilotSubmitter:
         runtime_env = {
             "PILOT_CONFIG_FILE": str(pc.pilot_config_path),
             "PILOT_JOB_NAME": pilot_job.name,
-            "PILOT_JOB_NAME_PREFIX": pc.job_name_prefix,
             "PILOT_EXTERNAL_PORT": str(pc.external_port),
             "PILOT_NGINX_PATH": str(pc.nginx_path),
             "PILOT_IP_ALLOWLIST": json.dumps(pc.ip_allowlist, separators=(",", ":")),

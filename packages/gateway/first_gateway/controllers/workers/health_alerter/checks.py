@@ -10,6 +10,7 @@ from cryptography import x509
 from httpx import AsyncClient
 from sqlalchemy.orm import load_only, selectinload
 
+from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources.runtime import AlertGroup, Severity
 from first_common.schema.types import (
     HealthCheckResult,
@@ -203,36 +204,29 @@ async def check_quarantined_nodes(client_state: ClientState) -> list[Observation
         for job in jobs:
             by_host.setdefault(job.request.host, []).append(job)
         for host, requests in by_host.items():
-            active = [
-                entry for entry in requests if entry.request.state not in {"F", "X"}
-            ]
-            job = (active or requests)[0]
-            request = job.request
+            job = requests[0]
             severity: Severity
-            if len(active) > 1:
+            if len(requests) > 1:
                 status, severity = "duplicate_requests", "crit"
                 description = "multiple valid isolation requests; administrators must resolve duplicates"
             elif job.isolated:
                 status, severity = "isolated", "warn"
                 description = "running on the intended host with PBS-accepted whole-host isolation"
-            elif request.state in {"Q", "H", "W", "T", "B"}:
+            elif job.state in {SchedulerJobState.queued, SchedulerJobState.starting}:
                 status, severity = "isolation_pending", "warn"
                 description = (
                     "isolation pending; physical exclusion is not yet guaranteed"
                 )
-            elif request.state in {"F", "X"}:
-                status, severity = "isolation_lost", "crit"
-                description = "isolation request ended or failed; node health is unverified and physical exclusion is not guaranteed"
             else:
                 status, severity = "isolation_unverified", "crit"
                 description = (
                     "isolation is unverified; physical exclusion is not guaranteed"
                 )
             context = "; ".join(
-                f"job {entry.request.job_id} ({entry.request.state}, "
+                f"job {entry.request.job_id} ({entry.state.value}, "
                 f"{entry.request.environment}, source {entry.request.source}, "
                 f"reason {entry.request.reason}, evidence {entry.request.evidence}, "
-                f"expires {entry.expires_at.isoformat() if entry.expires_at else 'not started'})"
+                f"expires {entry.expires_at.isoformat() if entry.expires_at else 'unknown'})"
                 for entry in requests
             )
             observations.append(
