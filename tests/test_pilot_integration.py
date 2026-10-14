@@ -143,7 +143,9 @@ def pilot_config(workdir: Path, pilot_pki: PilotPKI) -> PilotConfig:
             "external_port": external_port,
             "nginx_path": which("nginx"),
             "ip_allowlist": ["127.0.0.1/32"],
-            "node_file_env": "TEST_PILOT_NODEFILE_UNSET",
+            # The local scheduler provides no PBS nodefile. Select local
+            # discovery explicitly; a missing configured nodefile is an error.
+            "node_file_env": "",
             "submit_script_preamble": "#!/bin/bash\nset -eu",
             "pilot_path": "/test/first-pilot",
             "pilot_config_path": str(config_path),
