@@ -227,6 +227,35 @@ class Replica:
         self._env = os.environ.copy()
         self._env.update(self.launch_spec.env)
 
+        self.consecutive_health_ok = 0
+        self.consecutive_health_fail = 0
+        self._unhealthy_since: float | None = None
+
+        self._health_params = self.launch_spec.health_check.model_copy()
+        # Pilot-side policy floor, not a schema rule: the gateway legitimately
+        # uses smaller debounce values, but at our 2s poll interval anything
+        # below 5 makes replica ready/unhealthy flapping too twitchy.
+        self._health_debounce = max(5, self._health_params.debounce)
+
+        if self._health_params.url:
+            path = urlparse(self._health_params.url).path
+            url = f"http://localhost/{path.lstrip('/')}"
+            self._health_params.url = url
+            logger.info(f"Replica will monitor health at {url}")
+        else:
+            logger.info("Replica health check disabled")
+
+        self._stop_lock = threading.Lock()
+        self._teardown_complete: bool = False
+        self._pre_stop_ran: bool = False  # cooperative hook runs at most once, ever
+        self._pre_stop_ok: bool = False  # ...and exited 0 with no descendants
+        self._post_stop_ok: bool = False  # one post-stop run verified cleanly
+        self._post_stop_attempts = 0
+
+        self._health_client = Client(transport=HTTPTransport(uds=self.uds))
+
+        # Everything fallible is set up above: once the model process exists,
+        # nothing below may raise and orphan it.
         logger.info(
             "starting replica %s on uds %s (workdir=%s)",
             self.name,
@@ -245,38 +274,13 @@ class Replica:
         except Exception:
             logger.exception("failed to Popen model replica %s", self.name)
             self._close_log_handles()
+            self._health_client.close()
             raise
 
         self.state = ReplicaState.launching
         self.state_message = "Model startup script has begun."
         self.started_at = datetime.now(timezone.utc)
         self._startup_deadline = time.monotonic() + self.launch_spec.max_startup_sec
-
-        self.consecutive_health_ok = 0
-        self.consecutive_health_fail = 0
-        self._unhealthy_since: float | None = None
-
-        self._health_params = self.launch_spec.health_check.model_copy()
-        # Pilot-side policy floor, not a schema rule: the gateway legitimately
-        # uses smaller debounce values, but at our 2s poll interval anything
-        # below 5 makes replica ready/unhealthy flapping too twitchy.
-        self._health_debounce = max(5, self._health_params.debounce)
-        self._health_client = Client(transport=HTTPTransport(uds=self.uds))
-
-        if self._health_params.url:
-            path = urlparse(self._health_params.url).path
-            url = f"http://localhost/{path.lstrip('/')}"
-            self._health_params.url = url
-            logger.info(f"Replica will monitor health at {url}")
-        else:
-            logger.info("Replica health check disabled")
-
-        self._stop_lock = threading.Lock()
-        self._teardown_complete: bool = False
-        self._pre_stop_ran: bool = False  # cooperative hook runs at most once, ever
-        self._pre_stop_ok: bool = False  # ...and exited 0 with no descendants
-        self._post_stop_ok: bool = False  # one post-stop run verified cleanly
-        self._post_stop_attempts = 0
 
         # The three private groups this replica drives to proven absence. The
         # model group exists for the replica's whole life; the hook groups are

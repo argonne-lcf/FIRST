@@ -84,11 +84,15 @@ async def admit_request(
     request_id: str,
     estimated_tokens: int = 0,
     deployment_name: str | None = None,
+    charge_request: bool = True,
 ) -> str:
     """
     Find and return the backend ID that will serve the request.
     This uses probabilities through the admission controler, which
     takes in to account weights and recent activities.
+
+    Pass `charge_request=False` when retrying a request that was already
+    admitted, so it only counts once against the user's RPM.
     """
 
     usage_limits = model.usage_limits.get_limits(user)
@@ -100,6 +104,7 @@ async def admit_request(
         candidates=backend_candidates,
         estimated_tokens=estimated_tokens,
         quota=usage_limits,
+        charge_request=charge_request,
     )
     if not admit_result.admitted:
         raise_admit_error(admit_result, usage_limits, model, deployment_name)
@@ -143,18 +148,18 @@ def raise_admit_error(
     if admit_result.status == AdmitStatus.REJECT_QUOTA:
         if admit_result.quota_reason == QuotaReason.USER_CONCURRENCY:
             raise TooManyRequests(
-                f"Concurent requests above f{usage_limits.max_user_concurrency}."
+                f"Concurrent requests above {usage_limits.max_user_concurrency}."
                 + retry_str,
                 retry_after_sec=retry_after_sec,
             )
         elif admit_result.quota_reason == QuotaReason.USER_RPM:
             raise TooManyRequests(
-                f"Requests per minute above f{usage_limits.rpm}." + retry_str,
+                f"Requests per minute above {usage_limits.rpm}." + retry_str,
                 retry_after_sec=retry_after_sec,
             )
         elif admit_result.quota_reason == QuotaReason.USER_TPM:
             raise TooManyRequests(
-                f"Tokens per minute above f{usage_limits.tpm}." + retry_str,
+                f"Tokens per minute above {usage_limits.tpm}." + retry_str,
                 retry_after_sec=retry_after_sec,
             )
         else:

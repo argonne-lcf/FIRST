@@ -236,6 +236,39 @@ class TestQuotaRejects:
         assert result.retry_after_sec is not None
         assert result.retry_after_sec > 0
 
+    async def test_failover_retry_charges_quota_once(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        tight_quota = UsageLimits(
+            tpm=600,
+            burst_tokens=150,
+            rpm=60,
+            burst_requests=1,
+            max_user_concurrency=100,
+        )
+        rpm_key = Keys.user_rate_limit(MODEL, USER, "rpm")
+        tokens_key = Keys.user_rate_limit(MODEL, USER, "tokens")
+
+        result = await _admit(ac, "req-1", estimated_tokens=100, quota=tight_quota)
+        assert result.admitted
+        rpm_tat = await redis.get(rpm_key)
+        tokens_tat = await redis.get(tokens_key)
+
+        # The backend fails; the same request fails over to another one.
+        await ac.settle("req-1", actual_tokens=0)
+        result = await _admit(
+            ac,
+            "req-1",
+            estimated_tokens=100,
+            quota=tight_quota,
+            charge_request=False,
+        )
+        assert result.admitted
+        assert await redis.get(rpm_key) == rpm_tat
+        tokens_tat_after = await redis.get(tokens_key)
+        assert tokens_tat is not None and tokens_tat_after is not None
+        assert float(tokens_tat_after) == pytest.approx(float(tokens_tat), abs=0.5)
+
     async def test_quota_reject_does_not_increment_demand(
         self, ac: AdmissionController, redis: Redis
     ) -> None:

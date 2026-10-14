@@ -169,8 +169,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.pilot_manager = manager
             yield
         finally:
-            manager.stop()
-            readyfile.unlink(missing_ok=True)
+            try:
+                manager.stop()
+            finally:
+                readyfile.unlink(missing_ok=True)
 
 
 app = FastAPI(lifespan=lifespan)

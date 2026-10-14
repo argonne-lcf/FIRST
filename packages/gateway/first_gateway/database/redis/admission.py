@@ -154,6 +154,7 @@ class AdmissionController:
         candidates: Sequence[CandidateBackend],
         estimated_tokens: int,
         quota: UsageLimits,
+        charge_request: bool = True,
     ) -> AdmitResult:
         """
         Attempt to admit a request.  Performs one atomic round trip to Redis:
@@ -177,6 +178,10 @@ class AdmissionController:
         - `estimated_tokens`:  estimated heuristic prompt_tokens+max_tokens for
            this request to be reserved.  Set to 0 for non-LLM requests.
         - `quota`: the configured usage rate limits for this model_name.
+        - `charge_request`: set False when re-admitting a request_id that was
+           already charged (failover to another backend), so one user request
+           consumes one unit of RPM.  Tokens need no such flag: settling the
+           failed attempt with actual_tokens=0 refunds its estimate.
         """
         keys: list[str] = [
             Keys.user_rate_limit(model_name, user_id, "tokens"),
@@ -199,7 +204,8 @@ class AdmissionController:
             quota.max_user_concurrency,
             quota.tokens_per_sec,
             quota.burst_tokens,
-            quota.requests_per_sec,
+            # A zero rate makes the script skip the RPM bucket entirely.
+            quota.requests_per_sec if charge_request else 0,
             quota.burst_requests,
             self.lease_sec,
         ]

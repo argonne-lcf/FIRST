@@ -70,6 +70,17 @@ def _replica(tmp_path: Path, spec: ResolvedLaunchSpec) -> Replica:
     )
 
 
+def test_setup_failure_does_not_start_the_model_process(tmp_path: Path) -> None:
+    with (
+        patch("first_pilot.replica.Client", side_effect=RuntimeError("no client")),
+        patch("first_pilot.replica.subprocess.Popen") as popen,
+    ):
+        with pytest.raises(RuntimeError, match="no client"):
+            _replica(tmp_path, _launch_spec())
+
+    popen.assert_not_called()
+
+
 def test_rendered_scripts_persist_in_the_replica_workdir(tmp_path: Path) -> None:
     spec = _launch_spec(
         pre_stop_script_template="echo quiesce",

@@ -4,7 +4,7 @@ import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -13,7 +13,7 @@ from jinja2 import Template
 from first_common.errors import ReplicaStartError, ReplicaTeardownError
 from first_common.schema.pilot import PilotClientRole
 from first_gateway.services.pilot_control import STOP_TIMEOUT, PilotControlClient
-from first_pilot.control_api import _PilotManager, app, get_manager
+from first_pilot.control_api import _PilotManager, app, get_manager, lifespan
 from first_pilot.nginx_manager import ReplicaUpstream, _conf_template_str
 
 
@@ -290,3 +290,27 @@ def test_concurrent_reloads_apply_snapshots_in_order() -> None:
     second.join(timeout=5)
 
     assert applied == [["a"], ["a", "b"]]
+
+
+async def test_readyfile_is_removed_when_shutdown_fails(tmp_path: Path) -> None:
+    readyfile = tmp_path / "alpha.ready.json"
+    manager = MagicMock()
+    manager.start.side_effect = lambda path: path.write_text("{}")
+    manager.stop.side_effect = RuntimeError("replica did not stop")
+    test_app = SimpleNamespace(
+        state=SimpleNamespace(
+            config=SimpleNamespace(
+                ensure_dirs=lambda: None,
+                readyfile_dir=tmp_path,
+                job_name="alpha",
+                nginx_base_dir=tmp_path,
+            )
+        )
+    )
+
+    with patch("first_pilot.control_api._PilotManager", return_value=manager):
+        with pytest.raises(RuntimeError, match="replica did not stop"):
+            async with lifespan(test_app):  # type: ignore[arg-type]
+                assert readyfile.exists()
+
+    assert not readyfile.exists()

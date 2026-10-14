@@ -146,6 +146,7 @@ class InferenceService:
                 self.request_id,
                 estimated_tokens=estimated_tokens,
                 deployment_name=deployment_name,
+                charge_request=attempted == 0,
             )
 
             client = self.backend_client_manager.get(backend_id)
