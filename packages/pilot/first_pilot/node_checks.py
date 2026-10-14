@@ -10,10 +10,16 @@ plus a function that judges one node's output:
             return f"unexpected kernel {output.strip()}"
         return None
 
-Return None for a healthy node, or a short reason for a bad one. Only a
-returned reason marks a node bad: if the command cannot run or the function
-raises, the pilot fails to start exactly as it would on any other startup
-error, and no node is blamed.
+Return None for a passing observation, or a short reason for a suspect fault.
+Commands must complete on every allocation host. Failed commands, malformed
+data and changing GPU identities are infrastructure errors: the pilot exits
+without diagnosing or quarantining a node.
+
+Built-in GPU checks share a parsed inventory. A suspect fault requires a
+second coherent observation of the same GPUs; GPU memory checks also require
+no compute clients. This avoids turning transient activity or another model's
+memory into a hardware diagnosis. Passing startup screening is not proof of
+permanent hardware health.
 
 Checks that share the same command share one launch. Enable checks by name in
 `pilot_system.node_admission.checks`; see `first_pilot.admission` for what
@@ -21,9 +27,11 @@ happens to a node that fails.
 """
 
 import csv
+import math
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Callable
 
 from first_common.schema.pilot import PilotRuntimeConfig
@@ -106,10 +114,6 @@ GPU_PROCESS_QUERY = [
     "--format=csv,noheader,nounits",
 ]
 
-# The established Tara admission threshold is deliberately not equivalent to
-# "used memory <= 5%": reserve another 256 MiB after rounding the 95% target up.
-MIN_FREE_MEMORY_FRACTION = 0.95
-MEMORY_RESERVE_MIB = 256
 _PAIRED_GPU_CHECKS = {"gpu_count", "gpu_memory_free", "gpu_ecc_errors"}
 
 
@@ -122,10 +126,6 @@ class GpuRow:
     memory_free_mib: int
     ecc_volatile: int
     ecc_aggregate: int
-
-    @property
-    def minimum_free_mib(self) -> int:
-        return (self.memory_total_mib * 95 + 99) // 100 + MEMORY_RESERVE_MIB
 
     @property
     def identity(self) -> tuple[int, str, str, int]:
@@ -185,10 +185,17 @@ def _gpu_faults(
             f"found {len(rows)} GPUs, expected {config.gpus_per_node}"
         )
     for gpu in rows:
-        if "gpu_memory_free" in names and gpu.memory_free_mib < gpu.minimum_free_mib:
+        minimum_free_mib = (
+            math.ceil(
+                gpu.memory_total_mib
+                * Decimal(str(config.node_admission.minimum_free_memory_fraction))
+            )
+            + config.node_admission.memory_reserve_mib
+        )
+        if "gpu_memory_free" in names and gpu.memory_free_mib < minimum_free_mib:
             faults["gpu_memory_free", gpu.index] = (
                 f"GPU {gpu.index} has {gpu.memory_free_mib} MiB free; "
-                f"requires {gpu.minimum_free_mib} of {gpu.memory_total_mib} MiB"
+                f"requires {minimum_free_mib} of {gpu.memory_total_mib} MiB"
             )
         if "gpu_ecc_errors" in names and (gpu.ecc_volatile or gpu.ecc_aggregate):
             faults["gpu_ecc_errors", gpu.index] = (
@@ -199,6 +206,7 @@ def _gpu_faults(
 
 @node_check("gpu_count", command=GPU_QUERY)
 def gpu_count(output: str, config: PilotRuntimeConfig) -> str | None:
+    """The complete inventory exposes every GPU promised by the allocation."""
     return next(
         iter(_gpu_faults(gpu_rows(output), ["gpu_count"], config).values()), None
     )
@@ -206,6 +214,11 @@ def gpu_count(output: str, config: PilotRuntimeConfig) -> str | None:
 
 @node_check("gpu_memory_free", command=GPU_QUERY)
 def gpu_memory_free(output: str, config: PilotRuntimeConfig) -> str | None:
+    """Every GPU has the configured free-memory fraction plus MiB reserve.
+
+    Admission confirms a suspect result in a second sample with no compute
+    clients before treating unexplained retained memory as a node fault.
+    """
     return next(
         iter(_gpu_faults(gpu_rows(output), ["gpu_memory_free"], config).values()), None
     )
@@ -213,6 +226,11 @@ def gpu_memory_free(output: str, config: PilotRuntimeConfig) -> str | None:
 
 @node_check("gpu_ecc_errors", command=GPU_QUERY)
 def gpu_ecc_errors(output: str, config: PilotRuntimeConfig) -> str | None:
+    """No GPU reports volatile or aggregate uncorrected ECC errors.
+
+    Missing or unavailable ECC counters are incomplete observations, not a
+    passing result. Admission confirms a reported error before quarantine.
+    """
     return next(
         iter(_gpu_faults(gpu_rows(output), ["gpu_ecc_errors"], config).values()), None
     )
@@ -224,6 +242,8 @@ def _paired_gpu_checks(
     config: PilotRuntimeConfig,
     evidence: dict[str, object] | None,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Confirm suspected faults with complete, stable GPU/client observations."""
+
     def observe() -> tuple[dict[str, str], dict[str, list[GpuRow]], str]:
         output = run_on_hosts(
             GPU_QUERY, hostnames, config.gpu_discovery, require_completion=True
@@ -282,8 +302,8 @@ def _paired_gpu_checks(
             evidence[host] = {
                 "protocol": 1,
                 "physical_host": host,
-                "minimum_free_fraction": MIN_FREE_MEMORY_FRACTION,
-                "reserve_mib": MEMORY_RESERVE_MIB,
+                "minimum_free_fraction": config.node_admission.minimum_free_memory_fraction,
+                "reserve_mib": config.node_admission.memory_reserve_mib,
                 "samples": [
                     {
                         "observed_at": when,

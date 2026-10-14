@@ -17,6 +17,8 @@ node_admission:
   checks: [gpu_count, gpu_memory_free, gpu_ecc_errors]
   on_failure: pbs_quarantine
   environment: dev
+  minimum_free_memory_fraction: 0.95
+  memory_reserve_mib: 256
   quarantine_walltime_min: 10080
   max_quarantined_nodes: 8
 ```
@@ -24,6 +26,16 @@ node_admission:
 Prod substitutes `prod` and `first_prod_tara_v2_`; the policy is otherwise the
 same. Native admission verifies the owned source PBS job ID, running state and
 current physical-host/GPU allocation. Its display name is not fault evidence.
+Attribution comes only from `node_admission.environment`; the generic pilot does
+not infer it from Tara-specific environment variables. The PBS action requires
+that explicit setting. The `ACTIONS` map selects exit-only or native quarantine,
+passing fault evidence, the bounded deadline and verified allocation context.
+
+Memory policy and safety limits are configurable per cluster. The values above
+are Tara's unchanged choices, not universal limits: admission requires
+`ceil(total MiB * minimum_free_memory_fraction) + memory_reserve_mib`, and
+walltime must also be permitted by the site's PBS queue. FIRST validates positive
+walltime/cap values without imposing a seven-day or eight-node maximum.
 Tara's submit preamble must include
 `export PATH=/opt/pbs/bin:$PATH`: these tools are not on the default batch PATH.
 The job must be able to execute and query `qstat` and `qsub` under the
@@ -79,7 +91,28 @@ known node without diagnosing another fault. There are no model holds, global
 locks, scaling-to-zero actions or quarantine-specific paused states. Visible
 requests suppress duplicates; simultaneous Dev/Prod submissions can still race.
 Duplicate requests are alerted for administrator resolution, not locked away.
-The eight-node cap is a safety bound, not a new model-scheduling gate.
+The configured node cap (eight on Tara) is a safety bound, not a new
+model-scheduling gate.
+
+## Native PBS layout support
+
+The native path currently requires each execution vnode to be a canonical
+physical hostname, one vnode per host, with positive CPU/GPU quantities matching
+the pilot configuration and node file. Tara's native `pbsnodes` inventory and
+accepted allocations use that layout. The shared GraphQL adapter can consume
+`allocatedMachines` mappings, but those are not available in native `qstat`.
+Split entries, missing quantities and node-file mismatches fail as infrastructure
+errors, not missing-GPU diagnoses. Names alone cannot detect a logical alias
+that is also used in the node file: sites must establish this physical-vnode
+layout before enabling native quarantine. Do not enable it on aliased/split-vnode
+sites without an authoritative vnode-to-host mapping; implementing that mapping
+is outside this correction.
+
+Request `place=exclhost`. PBS on Tara may normalize this to `scatter:excl`;
+vnode exclusivity is whole-host exclusivity only in the supported one-vnode-per-
+physical-host layout. Validation accepts the PBS exclusivity token with generic
+arrangement/group modifiers, not a hardcoded Tara grouping label. Running
+confirmation still requires valid actual placement on the intended host.
 
 ## Discover and verify requests
 
@@ -138,10 +171,13 @@ load a model. For Tara's four GPUs, an example on that exact node is:
 import json, socket, sys
 from types import SimpleNamespace
 from first_common.pbs_quarantine import physical_host
-from first_common.schema.types import SSHDiscovery
+from first_common.schema.types import NodeAdmission, SSHDiscovery
 from first_pilot.node_checks import run_node_checks
 evidence = {}
-config = SimpleNamespace(gpus_per_node=4, gpu_discovery=SSHDiscovery())
+config = SimpleNamespace(
+    gpus_per_node=4, gpu_discovery=SSHDiscovery(),
+    node_admission=NodeAdmission(
+        minimum_free_memory_fraction=0.95, memory_reserve_mib=256))
 faults = run_node_checks(
     ['gpu_count', 'gpu_memory_free', 'gpu_ecc_errors'],
     [physical_host(socket.gethostname())], config, evidence=evidence)

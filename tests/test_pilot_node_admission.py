@@ -212,8 +212,8 @@ def test_admit_nodes_acts_on_each_bad_node_then_refuses_to_start(
     action = MagicMock()
 
     with (
-        patch("first_pilot.admission.pbs_quarantine", action),
-        patch("first_pilot.admission.guard_quarantined_nodes"),
+        patch.dict("first_pilot.admission.ACTIONS", {"pbs_quarantine": action}),
+        patch("first_pilot.admission.guard_quarantined_nodes", return_value=None),
     ):
         with pytest.raises(NodeChecksFailed, match="n2"):
             admit_nodes(config)
@@ -235,8 +235,11 @@ def test_admit_nodes_refuses_to_start_even_if_the_action_fails(
     )
 
     with (
-        patch("first_pilot.admission.pbs_quarantine", side_effect=RuntimeError("boom")),
-        patch("first_pilot.admission.guard_quarantined_nodes"),
+        patch.dict(
+            "first_pilot.admission.ACTIONS",
+            {"pbs_quarantine": MagicMock(side_effect=RuntimeError("boom"))},
+        ),
+        patch("first_pilot.admission.guard_quarantined_nodes", return_value=None),
     ):
         with pytest.raises(NodeChecksFailed):
             admit_nodes(config)

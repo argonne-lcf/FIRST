@@ -281,16 +281,22 @@ class NodeAdmission(BaseModel):
     the gateway's ordinary retry submits a replacement job.
 
     - `exit`: do nothing more; the scheduler may hand the node out again.
-    - `pbs_quarantine`: first park a sleep job on the node so it cannot.
+    - `pbs_quarantine`: first submit an exclusive waiting job on the node.
+      PBS keeps the node allocated once that job runs; retries do not wait.
     """
 
     checks: list[str] = []
     on_failure: Literal["exit", "pbs_quarantine"] = "exit"
     environment: Literal["dev", "prod"] | None = None
-    quarantine_walltime_min: int = Field(7 * 24 * 60, ge=1, le=7 * 24 * 60)
+    # Round the required free fraction up to MiB, then add this reserve.
+    # Sites can select their admission policy without changing GPU checks.
+    minimum_free_memory_fraction: float = Field(0.95, gt=0, le=1)
+    memory_reserve_mib: int = Field(256, ge=0)
+    # Configure these within the site's PBS walltime and quarantine budget.
+    quarantine_walltime_min: int = Field(7 * 24 * 60, ge=1)
     # Stop quarantining beyond this many nodes: a bad check or system image
     # must not be able to take the whole cluster out of service.
-    max_quarantined_nodes: int = Field(8, ge=1, le=8)
+    max_quarantined_nodes: int = Field(8, ge=1)
 
 
 class PilotConfig(BaseModel):
