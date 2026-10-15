@@ -1,26 +1,24 @@
 # Node admission and quarantine
 
-Before a pilot serves anything, it can check every node of its allocation. A
-confirmed node fault triggers the configured action before the attempt exits.
-FIRST's normal submission and retry policy remains unchanged; replacements do
-not wait for quarantine isolation.
+Before a pilot serves anything, it can check every node of its allocation. If
+a node fails, the pilot takes the configured action and exits. The gateway
+sees an ordinary failed pilot job and submits a replacement.
 
 ```yaml
 pilot_system:
   node_admission:
     checks: [gpu_count, gpu_memory_free, gpu_ecc_errors]
     on_failure: pbs_quarantine   # or "exit" (default): just exit
-    environment: dev            # required for native PBS quarantine submission
+    environment: dev             # required by pbs_quarantine
     minimum_free_memory_fraction: 0.95
     memory_reserve_mib: 256
     quarantine_walltime_min: 10080
     max_quarantined_nodes: 8
 ```
 
-With no `checks` and `on_failure: exit`, admission does nothing. In quarantine
-mode, active-request lookup and the startup guard still run. See
-[pilot-side admission and quarantine](pilot-node-quarantine.md) for allocation
-requirements, fault confirmation, supported PBS layouts and operator commands.
+With no `checks`, nothing runs and the pilot starts as before. A GPU passes
+`gpu_memory_free` with at least `ceil(total MiB * minimum_free_memory_fraction)
++ memory_reserve_mib` free.
 
 ## Writing a check
 
@@ -48,25 +46,37 @@ def kernel(output: str, _config: PilotRuntimeConfig) -> str | None:
 
 ## The `pbs_quarantine` action
 
-The pilot submits a job named `first_quar_ENV_PHYSICALHOST_OPERATION8` that
-requests exactly that host, exclusively, and sleeps. Names aid discovery;
-service ownership, target, operation and accepted exclusivity validate the
-request. While the job runs, PBS keeps the host unavailable to other allocations.
+The action receives every screen's result:
 
-- The quarantine jobs in PBS are the only record of quarantined nodes. There
-  is no separate quarantine database or coordinator.
-- Pending, held and running requests reject model initialization on their target
-  hosts, including new replicas on reused pilots. Visible requests suppress
-  duplicates; `max_quarantined_nodes` caps distinct actively targeted hosts, not
-  job count or normal model submissions.
-- An uncertain submission acknowledgement gets bounded operation lookup, not
-  another `qsub`. Submission failure does not retain the failed attempt forever.
-- After Operations confirms remediation and a fresh screen passes, an
-  administrator deliberately deletes the validated job with `qdel`. Deletion or
-  expiration clears the quarantine condition, not the hardware diagnosis. The
-  next allocation must still pass startup screening.
+- For each failing node, the pilot submits a job named
+  `first_quar_<environment>_<host>`. The job requests exactly that host
+  (`select=1:host=<host>`, `place=exclhost`) and sleeps. Once it runs, PBS
+  cannot place anything else on the node.
+- For each passing node, the pilot deletes that environment's quarantine jobs
+  targeting it. Those jobs are still queued, because the pilot holds the node,
+  and the node has just passed.
+
+The quarantine jobs in PBS are the only record of quarantined nodes:
+
+- `qsub -v FIRST_QUAR_*` variables identify a job: `ENV` and `HOST`, plus
+  `REASON` (the failed checks), `SOURCE` (the pilot's PBS job) and `EVIDENCE`
+  (a JSON file of the failed screen's observations in the pilot workdir). The
+  name is only for people.
+- Dev and Prod share the PBS account. Each environment dedupes, counts, deletes
+  and reports only its own quarantine jobs, so Dev's experimental checks cannot
+  clear Prod's quarantines. A running quarantine still blocks the node for both.
+- A node with an existing quarantine job is not submitted again. Nothing is
+  submitted once `max_quarantined_nodes` nodes are quarantined.
+- A failure to run `qstat`, `qsub` or `qdel` is logged and does not change the
+  outcome: a healthy pilot still starts, and a failed one still exits.
+- To return a node to service, `qdel` its job. A job also ends at its walltime.
+  Either way, the next pilot to land on the node checks it again and
+  quarantines it again if it is still bad.
 - The gateway reports each quarantine job to Slack through the health alerter
-  (`check_quarantined_nodes`), distinguishing pending requests from intended
-  running isolation. Disappearance clears with "Quarantine ended; node is
-  eligible for startup screening." Fault evidence is recorded in the pilot
-  workdir and its location appears in the failed attempt's log.
+  (`check_quarantined_nodes`): "quarantine job X on host Y is queued/running",
+  with the reason, source and evidence in the thread. When the job is gone, the
+  alert clears with "Quarantine ended; node is eligible for startup screening."
+
+The pilot needs `qstat`, `qsub` and `qdel` on its `PATH` (for example
+`export PATH=/opt/pbs/bin:$PATH` in the submit preamble). `select=1:host=<host>`
+assumes each PBS vnode is a whole physical host, as on Tara.

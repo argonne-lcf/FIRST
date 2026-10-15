@@ -1,13 +1,20 @@
+import json
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from first_common.schema.pilot import PilotRuntimeConfig
-from first_common.schema.types import PalsDiscovery, SSHDiscovery
-from first_pilot.admission import NodeChecksFailed, admit_nodes, pbs_quarantine
+from first_common.schema.types import NodeAdmission, PalsDiscovery, SSHDiscovery
+from first_pilot.admission import (
+    ACTIONS,
+    NodeChecksFailed,
+    admit_nodes,
+    pbs_quarantine,
+)
 from first_pilot.host_commands import run_on_hosts
 from first_pilot.node_checks import (
     CHECKS,
@@ -191,57 +198,49 @@ def test_admit_nodes_passes_healthy_nodes(
 ) -> None:
     _nodefile(tmp_path, monkeypatch, "n1", "n2")
     config = _config(tmp_path, node_admission={"checks": ["gpu_count"]})
+    action = MagicMock()
 
-    admit_nodes(config)
+    with patch.dict(ACTIONS, {"exit": action}):
+        admit_nodes(config)
 
-    assert run.call_count == 1
     assert run.call_args.args == (["gpu_count"], ["n1", "n2"], config)
-    assert run.call_args.kwargs == {"evidence": {}}
+    action.assert_called_once_with(config, ["n1", "n2"], {}, None)
 
 
 @patch("first_pilot.admission.run_node_checks")
-def test_admit_nodes_acts_on_each_bad_node_then_refuses_to_start(
+def test_admit_nodes_acts_on_the_screen_then_refuses_to_start(
     run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _nodefile(tmp_path, monkeypatch, "n1", "n2")
-    run.return_value = {"n2": ["gpu_count: found 1 GPUs, expected 2"]}
-    config = _config(
-        tmp_path,
-        node_admission={"checks": ["gpu_count"], "on_failure": "pbs_quarantine"},
-    )
+    failures = {"n2": ["gpu_count: found 1 GPUs, expected 2"]}
+    run.return_value = failures
+    config = _config(tmp_path, node_admission={"checks": ["gpu_count"]})
     action = MagicMock()
 
-    with (
-        patch.dict("first_pilot.admission.ACTIONS", {"pbs_quarantine": action}),
-        patch("first_pilot.admission.guard_quarantined_nodes", return_value=None),
-    ):
+    with patch.dict(ACTIONS, {"exit": action}):
         with pytest.raises(NodeChecksFailed, match="n2"):
             admit_nodes(config)
 
-    assert action.call_count == 1
-    assert action.call_args.args == ("n2", config)
-    assert action.call_args.kwargs["reason"] == "gpu_count"
+    _config_arg, hosts, failures_arg, evidence = action.call_args.args
+    assert (hosts, failures_arg) == (["n1", "n2"], failures)
+    assert json.loads(Path(evidence).read_text())["failures"] == failures
 
 
-@patch("first_pilot.admission.run_node_checks", return_value={"n1": ["bad"]})
-def test_admit_nodes_refuses_to_start_even_if_the_action_fails(
-    _run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("failures", [{}, {"n1": ["bad"]}])
+def test_a_failing_action_does_not_change_the_screen_result(
+    failures: dict[str, list[str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _nodefile(tmp_path, monkeypatch, "n1")
-    config = _config(
-        tmp_path,
-        num_nodes=1,
-        node_admission={"checks": ["gpu_count"], "on_failure": "pbs_quarantine"},
-    )
+    config = _config(tmp_path, num_nodes=1, node_admission={"checks": ["gpu_count"]})
 
     with (
-        patch.dict(
-            "first_pilot.admission.ACTIONS",
-            {"pbs_quarantine": MagicMock(side_effect=RuntimeError("boom"))},
-        ),
-        patch("first_pilot.admission.guard_quarantined_nodes", return_value=None),
+        patch("first_pilot.admission.run_node_checks", return_value=failures),
+        patch.dict(ACTIONS, {"exit": MagicMock(side_effect=RuntimeError("boom"))}),
     ):
-        with pytest.raises(NodeChecksFailed):
+        if failures:
+            with pytest.raises(NodeChecksFailed):
+                admit_nodes(config)
+        else:
             admit_nodes(config)
 
 
@@ -256,7 +255,163 @@ def test_a_new_check_is_registered_by_name() -> None:
         assert CHECKS["kernel"].evaluate("5.14\n", MagicMock()) == "unexpected kernel"
 
 
-# Native PBS identity/resource cases live in test_pilot_native_quarantine.py.
+# ---------------------------------------------------------------------------
+# PBS quarantine
+# ---------------------------------------------------------------------------
+
+
+def _quarantine_config(tmp_path: Path, **admission: Any) -> PilotRuntimeConfig:
+    return _config(
+        tmp_path,
+        node_admission={
+            "on_failure": "pbs_quarantine",
+            "environment": "dev",
+            **admission,
+        },
+    )
+
+
+def _quarantine_job(env: str, host: str, owner: str = "svc") -> dict[str, Any]:
+    return {
+        "Job_Name": f"first_quar_{env}_{host}",
+        "Job_Owner": f"{owner}@login1",
+        "Variable_List": {"FIRST_QUAR_ENV": env, "FIRST_QUAR_HOST": host},
+    }
+
+
+def _fake_pbs(jobs: dict[str, dict[str, Any]]) -> MagicMock:
+    """A stand-in for first_pilot.admission._pbs."""
+
+    def pbs(command: list[str]) -> str:
+        if command[0] == "qstat":
+            return json.dumps({"Jobs": jobs})
+        return "99.pbs\n" if command[0] == "qsub" else ""
+
+    return MagicMock(side_effect=pbs)
+
+
+def _calls(pbs: MagicMock, name: str) -> list[list[str]]:
+    return [c.args[0] for c in pbs.call_args_list if c.args[0][0] == name]
+
+
+@pytest.fixture(autouse=True)
+def _service_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "first_pilot.admission.pwd.getpwuid", lambda _uid: MagicMock(pw_name="svc")
+    )
+    monkeypatch.setenv("PBS_JOBID", "7.pbs")
+
+
+def test_pbs_quarantine_parks_an_exclusive_sleep_job_on_the_node(
+    tmp_path: Path,
+) -> None:
+    pbs = _fake_pbs({})
+    failures = {"x4820c7s3b1n0.lab.example": ["gpu_count: x", "gpu_ecc_errors: y"]}
+
+    with patch("first_pilot.admission._pbs", pbs):
+        pbs_quarantine(
+            _quarantine_config(tmp_path),
+            ["x4820c7s3b1n0.lab.example"],
+            failures,
+            "/w/evidence.json",
+        )
+
+    assert _calls(pbs, "qsub") == [
+        [
+            "qsub",
+            *("-N", "first_quar_dev_x4820c7s3b1n0"),
+            *("-q", "prod"),
+            *("-A", "TestAcct"),
+            *("-l", "select=1:host=x4820c7s3b1n0"),
+            *("-l", "place=exclhost"),
+            *("-l", "walltime=168:00:00"),
+            *(
+                "-v",
+                "FIRST_QUAR_ENV=dev,FIRST_QUAR_HOST=x4820c7s3b1n0,"
+                "FIRST_QUAR_SOURCE=7.pbs,FIRST_QUAR_REASON=gpu_count+gpu_ecc_errors,"
+                "FIRST_QUAR_EVIDENCE=/w/evidence.json",
+            ),
+            *("-j", "oe"),
+            *("-o", "/dev/null"),
+            *("--", "/bin/sleep", "infinity"),
+        ]
+    ]
+
+
+def test_pbs_quarantine_skips_a_node_already_quarantined_by_its_environment(
+    tmp_path: Path,
+) -> None:
+    pbs = _fake_pbs({"1.pbs": _quarantine_job("dev", "n1")})
+
+    with patch("first_pilot.admission._pbs", pbs):
+        pbs_quarantine(_quarantine_config(tmp_path), ["n1"], {"n1": ["bad"]}, None)
+
+    assert _calls(pbs, "qsub") == []
+
+
+def test_pbs_quarantine_ignores_other_environments_and_owners(
+    tmp_path: Path,
+) -> None:
+    pbs = _fake_pbs(
+        {
+            "1.pbs": _quarantine_job("prod", "n1"),
+            "2.pbs": _quarantine_job("dev", "n2", owner="someone"),
+        }
+    )
+    config = _quarantine_config(tmp_path, max_quarantined_nodes=1)
+
+    with patch("first_pilot.admission._pbs", pbs):
+        pbs_quarantine(config, ["n1", "n2"], {"n1": ["bad"]}, None)
+
+    # Prod's n1 job neither dedupes Dev's request nor counts toward Dev's cap.
+    # Neither foreign job is deleted, though n2 passed.
+    assert len(_calls(pbs, "qsub")) == 1
+    assert _calls(pbs, "qdel") == []
+
+
+def test_pbs_quarantine_stops_at_the_configured_limit(tmp_path: Path) -> None:
+    pbs = _fake_pbs(
+        {"1.pbs": _quarantine_job("dev", "n8"), "2.pbs": _quarantine_job("dev", "n9")}
+    )
+    config = _quarantine_config(tmp_path, max_quarantined_nodes=2)
+
+    with patch("first_pilot.admission._pbs", pbs):
+        pbs_quarantine(config, ["n1"], {"n1": ["bad"]}, None)
+
+    assert _calls(pbs, "qsub") == []
+
+
+def test_pbs_quarantine_deletes_queued_quarantines_of_passing_nodes(
+    tmp_path: Path,
+) -> None:
+    pbs = _fake_pbs(
+        {
+            "1.pbs": _quarantine_job("dev", "n1"),
+            "2.pbs": _quarantine_job("dev", "n1"),  # a duplicate request
+            "3.pbs": _quarantine_job("dev", "n2"),  # n2 failed again
+            "4.pbs": _quarantine_job("dev", "n3"),  # not in this allocation
+        }
+    )
+
+    with patch("first_pilot.admission._pbs", pbs):
+        pbs_quarantine(
+            _quarantine_config(tmp_path), ["n1.lab", "n2"], {"n2": ["bad"]}, None
+        )
+
+    assert _calls(pbs, "qdel") == [["qdel", "1.pbs"], ["qdel", "2.pbs"]]
+    assert _calls(pbs, "qsub") == []
+
+
 def test_pbs_quarantine_requires_queue_and_account(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="queue and account"):
-        pbs_quarantine("n1", _config(tmp_path, queue=None))
+        config = _config(
+            tmp_path,
+            queue=None,
+            node_admission={"on_failure": "pbs_quarantine", "environment": "dev"},
+        )
+        pbs_quarantine(config, ["n1"], {"n1": ["bad"]}, None)
+
+
+def test_pbs_quarantine_requires_an_environment() -> None:
+    with pytest.raises(ValidationError, match="requires environment"):
+        NodeAdmission(on_failure="pbs_quarantine")
