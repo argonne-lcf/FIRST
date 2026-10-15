@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -77,6 +77,8 @@ class JobStatusInfo:
     walltime_minutes: int
     head_node_ip_address: str | None = None
     head_node_hostname: str | None = None
+    # The job's environment variables (qsub -v), where the scheduler reports them
+    variables: dict[str, str] = field(default_factory=dict)
 
     @property
     def deadline(self) -> datetime | None:

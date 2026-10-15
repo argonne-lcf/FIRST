@@ -10,9 +10,9 @@ from cryptography import x509
 from httpx import AsyncClient
 from sqlalchemy.orm import load_only, selectinload
 
-from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources.runtime import AlertGroup, Severity
 from first_common.schema.types import (
+    QUARANTINE_VAR_PREFIX,
     HealthCheckResult,
     PilotConfig,
     PilotDeploymentState,
@@ -259,57 +259,43 @@ async def check_schedulers(client_state: ClientState) -> list[Observation]:
 
 async def check_quarantined_nodes(client_state: ClientState) -> list[Observation]:
     """
-    Report the nodes that pilots have quarantined (see first_pilot.admission).
-    The quarantine jobs in the scheduler are the only record of them.
+    Report this environment's quarantine jobs (see first_pilot.admission). The
+    quarantine jobs in the scheduler are the only record of them; an alert
+    clears when its job is gone.
     """
     observations: list[Observation] = []
     for c in await _pilot_clusters_not_in_maintenance(client_state):
         assert c.pilot_system is not None
         pilot_config = PilotConfig.model_validate(c.pilot_system)
-        if pilot_config.node_admission.on_failure != "pbs_quarantine":
+        admission = pilot_config.node_admission
+        if admission.on_failure != "pbs_quarantine":
             continue
         adapter = await build_scheduler(pilot_config, client_state)
-        inspect = getattr(adapter, "get_quarantine_statuses", None)
-        if inspect is None:
-            raise RuntimeError("scheduler cannot validate PBS quarantine requests")
         async with asyncio.timeout(_SCHEDULER_CHECK_TIMEOUT_S):
-            jobs = await inspect()
-        by_host: dict[str, list[Any]] = {}
+            jobs = await adapter.get_job_statuses()
         for job in jobs:
-            by_host.setdefault(job.request.host, []).append(job)
-        for host, requests in by_host.items():
-            job = requests[0]
-            severity: Severity
-            if len(requests) > 1:
-                status, severity = "duplicate_requests", "crit"
-                description = "multiple valid isolation requests; administrators must resolve duplicates"
-            elif job.isolated:
-                status, severity = "isolated", "warn"
-                description = "running on the intended host with PBS-accepted whole-host isolation"
-            elif job.state in {SchedulerJobState.queued, SchedulerJobState.starting}:
-                status, severity = "isolation_pending", "warn"
-                description = (
-                    "isolation pending; physical exclusion is not yet guaranteed"
-                )
-            else:
-                status, severity = "isolation_unverified", "crit"
-                description = (
-                    "isolation is unverified; physical exclusion is not guaranteed"
-                )
-            context = "; ".join(
-                f"job {entry.request.job_id} ({entry.state.value}, "
-                f"{entry.request.environment}, source {entry.request.source}, "
-                f"reason {entry.request.reason}, evidence {entry.request.evidence}, "
-                f"expires {entry.expires_at.isoformat() if entry.expires_at else 'unknown'})"
-                for entry in requests
+            tags = {
+                key.removeprefix(QUARANTINE_VAR_PREFIX): value
+                for key, value in job.variables.items()
+                if key.startswith(QUARANTINE_VAR_PREFIX)
+            }
+            if tags.get("ENV") != admission.environment or "HOST" not in tags:
+                continue
+            resource = (
+                f"Cluster {c.name}: quarantine job {job.id} on host {tags['HOST']}"
             )
             observations.append(
                 Observation(
-                    key=f"cluster/{c.uid}/quarantine/{host}",
-                    status=status,
-                    summary=f"Cluster {c.name}: node {host}: {description}; {context}",
-                    display_name=f"Cluster {c.name} node {host} quarantine",
-                    severity=severity,
+                    key=f"cluster/{c.uid}/quarantine/{job.id}",
+                    status=job.state.value,
+                    summary=f"{resource} is {job.state.value}",
+                    display_name=resource,
+                    detail=(
+                        f"Failed checks: {tags.get('REASON') or 'unknown'}\n"
+                        f"Pilot job: {tags.get('SOURCE') or 'unknown'}\n"
+                        f"Evidence: {tags.get('EVIDENCE') or 'none'}"
+                    ),
+                    severity="warn",
                 )
             )
 

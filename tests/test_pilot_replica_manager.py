@@ -430,7 +430,7 @@ def test_runtime_config_loads_public_fields_from_environment(
     )
     monkeypatch.setenv(
         "PILOT_NODE_ADMISSION",
-        '{"checks":["gpu_count"],"on_failure":"pbs_quarantine"}',
+        '{"checks":["gpu_count"],"on_failure":"pbs_quarantine","environment":"dev"}',
     )
     monkeypatch.setenv("PILOT_QUEUE", "prod")
     monkeypatch.setenv("PILOT_ACCOUNT", "TestAcct")
