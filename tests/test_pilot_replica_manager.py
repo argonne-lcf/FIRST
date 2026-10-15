@@ -379,7 +379,7 @@ def test_inventory_refresh_swaps_snapshot_and_survives_failure() -> None:
     with (
         patch("first_pilot.replica_manager.discover_hosts", return_value=hostnames),
         patch(
-            "first_pilot.replica_manager.query_gpus_ssh",
+            "first_pilot.replica_manager.query_gpus",
             side_effect=[startup, refreshed, RuntimeError("ssh timed out")],
         ) as query_ssh,
     ):

@@ -308,7 +308,10 @@ async def test_readyfile_is_removed_when_shutdown_fails(tmp_path: Path) -> None:
         )
     )
 
-    with patch("first_pilot.control_api._PilotManager", return_value=manager):
+    with (
+        patch("first_pilot.control_api._PilotManager", return_value=manager),
+        patch("first_pilot.control_api.admit_nodes"),
+    ):
         with pytest.raises(RuntimeError, match="replica did not stop"):
             async with lifespan(test_app):  # type: ignore[arg-type]
                 assert readyfile.exists()
