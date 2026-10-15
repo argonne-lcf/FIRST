@@ -1031,3 +1031,129 @@ async def test_unhealthy_to_ready_does_not_record_startup(
     """Recovery from unhealthy -> ready is not a startup measurement."""
     dep = await _poll_ready(db, ReplicaState.unhealthy, prior_last=None)
     assert dep.last_startup_sec is None
+
+
+# ── Write-on-change tests ────────────────────────────────────────────
+
+
+async def test_steady_state_poll_issues_no_replica_or_deployment_writes(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Once state has converged, a poll reads in batches and writes nothing."""
+    names = ["rep-1", "rep-2", "rep-3"]
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess, manager_health=HealthCheckResult.healthy.value)
+        for name in names:
+            await _add_replica(sess, name=name)
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(desired_replicas=len(names))
+        )
+
+    replicas = [_replica_info(name=name, state=ReplicaState.ready) for name in names]
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json(replicas))}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()  # converge: replicas -> ready, deployment -> healthy
+
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, *args):  # type: ignore[no-untyped-def]
+        statements.append(statement)
+
+    engine = db.kw["bind"].sync_engine
+    sa.event.listen(engine, "before_cursor_execute", record)
+    try:
+        await observer.poll()
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", record)
+
+    replica_table = str(PilotReplica.__table__)
+    tables = (replica_table, str(PilotDeployment.__table__))
+    writes = [
+        s for s in statements if s.startswith("UPDATE") and s.split()[1] in tables
+    ]
+    assert writes == []
+
+    # One batched replica read each for sync_replicas and reap_orphans, plus
+    # the selectin load in update_deployments: independent of replica count.
+    replica_reads = [
+        s for s in statements if s.startswith("SELECT") and f" {replica_table} " in s
+    ]
+    assert len(replica_reads) == 3
+
+    dep = await _get_deployment(db)
+    assert dep.state == PilotDeploymentState.healthy.value
+
+
+# ── Per-replica transactions ─────────────────────────────────────────
+
+
+async def test_stale_transition_is_not_counted(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """If the replica changed under us, the guarded write misses and the
+    deployment is not charged for a transition that never committed."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1", state=ReplicaState.launching.value)
+
+    async with db() as sess:
+        stale = (
+            await sess.scalars(select(PilotReplica).where(PilotReplica.name == "rep-1"))
+        ).one()
+
+    # e.g. the drainer terminates it between our read and our write
+    async with db.begin() as sess:
+        await sess.execute(
+            sa.update(PilotReplica)
+            .where(PilotReplica.name == "rep-1")
+            .values(state=ReplicaState.terminated.value)
+        )
+
+    observer = _make_observer(db, _make_transport({}))
+    ri = _replica_info(name="rep-1", state=ReplicaState.error)
+    assert await observer._update_replica(stale, ri) is False
+
+    dep = await _get_deployment(db)
+    assert dep.consecutive_launch_failures == 0
+
+
+async def test_failed_replica_write_is_isolated_and_atomic(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A replica whose write fails rolls back with its deployment charge, and
+    does not stop the other replicas on the job from syncing."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-bad", state=ReplicaState.launching.value)
+        await _add_replica(sess, name="rep-ok", state=ReplicaState.launching.value)
+
+    # Postgres rejects NUL bytes in text columns.
+    bad = _replica_info(
+        name="rep-bad", state=ReplicaState.error, state_message="crash\x00"
+    )
+    ok = _replica_info(name="rep-ok", state=ReplicaState.ready)
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([bad, ok]))}
+    )
+    observer = _make_observer(db, transport)
+    publish = AsyncMock()
+    observer.client_state.redis_pubsub.publish = publish  # type: ignore[method-assign]
+    await observer.poll()
+
+    async with db() as sess:
+        rows = await sess.execute(sa.select(PilotReplica.name, PilotReplica.state))
+        states = {name: state for name, state in rows}
+    assert states == {
+        "rep-bad": ReplicaState.launching.value,
+        "rep-ok": ReplicaState.ready.value,
+    }
+    dep = await _get_deployment(db)
+    assert dep.consecutive_launch_failures == 0
+    publish.assert_awaited_once()

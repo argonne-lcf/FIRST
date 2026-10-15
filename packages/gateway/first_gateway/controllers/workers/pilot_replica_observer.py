@@ -1,11 +1,10 @@
 import logging
-from collections import defaultdict
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
-from typing import Any, Iterable
+from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from first_common.schema.pilot import PilotJobStatus, ReplicaInfo
@@ -24,47 +23,6 @@ from ..wakeup import WakeupDispatcher
 from ..worker import Worker
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ReplicaStateCounts:
-    state_counts: dict[ReplicaState, int] = field(
-        default_factory=lambda: defaultdict(int)
-    )
-    launch_successes: int = 0
-    launch_failures: int = 0
-    # Most recent `placed -> ready` duration (seconds) observed this tick.
-    last_startup_sec: float | None = None
-
-
-class DeploymentCounter:
-    def __init__(self) -> None:
-        self.deployments: dict[str, ReplicaStateCounts] = defaultdict(
-            ReplicaStateCounts
-        )
-
-    def record(self, db_row: PilotReplica, new_info: ReplicaInfo) -> None:
-        name = db_row.pilot_deployment_name
-        self.deployments[name].state_counts[new_info.state] += 1
-
-        # Only on transition, track launch successes/failures:
-        if new_info.state != db_row.state:
-            if new_info.state == ReplicaState.ready:
-                self.deployments[name].launch_successes += 1
-                # Only a clean `launching -> ready` cold start is a startup
-                # measurement; `unhealthy -> ready` recovery flaps are not.
-                if (
-                    db_row.state == ReplicaState.launching
-                    and db_row.placed_at is not None
-                ):
-                    self.deployments[name].last_startup_sec = (
-                        datetime.now(timezone.utc) - db_row.placed_at
-                    ).total_seconds()
-            elif new_info.state in (ReplicaState.error, ReplicaState.start_timeout):
-                self.deployments[name].launch_failures += 1
-
-    def items(self) -> Iterable[tuple[str, ReplicaStateCounts]]:
-        return self.deployments.items()
 
 
 def aggregate_state(dep: PilotDeployment) -> PilotDeploymentState:
@@ -185,8 +143,6 @@ class PilotReplicaObserver(Worker):
             uid: v for uid, v in self._status_cooldown.items() if uid in live_uids
         }
 
-        deploy_counter = DeploymentCounter()
-
         now = monotonic()
         for job in jobs:
             cooldown = self._status_cooldown.get(job.uid)
@@ -202,10 +158,10 @@ class PilotReplicaObserver(Worker):
 
             self._status_cooldown.pop(job.uid, None)
             await self.update_job_status(job, status)
-            await self.sync_replicas(job, status.replicas, deploy_counter)
+            await self.sync_replicas(job, status.replicas)
             await self.reap_orphans(job, status.replicas)
 
-        await self.update_deployments(deploy_counter)
+        await self.update_deployments()
 
     async def _record_status_failure(
         self, job: PilotJob, cooldown: tuple[float, int] | None
@@ -318,102 +274,159 @@ class PilotReplicaObserver(Worker):
             logger.info(f"PilotJob {job.name!r} has zero replicas; marking idle")
 
     async def sync_replicas(
-        self,
-        job: PilotJob,
-        remote_replicas: list[ReplicaInfo],
-        deploy_counter: DeploymentCounter,
+        self, job: PilotJob, remote_replicas: list[ReplicaInfo]
     ) -> None:
-        """
-        Update PilotReplica DB state and return (success_deployments, fail_counts).
-        """
+        """Sync observed replica state to Postgres"""
+        if not remote_replicas:
+            return
+
+        async with self.client_state.db_sessionmaker() as sess:
+            rows = await sess.scalars(
+                sa.select(PilotReplica).where(
+                    PilotReplica.pilot_job_name == job.name,
+                    PilotReplica.name.in_([ri.name for ri in remote_replicas]),
+                )
+            )
+            db_replicas: dict[str, PilotReplica] = {row.name: row for row in rows}
+
         any_started = False
         for ri in remote_replicas:
-            async with self.client_state.db_sessionmaker() as sess:
-                db_replica = await sess.scalar(
-                    sa.select(PilotReplica).where(
-                        PilotReplica.name == ri.name,
-                        PilotReplica.pilot_job_name == job.name,
-                    )
-                )
-
+            db_replica = db_replicas.get(ri.name)
             if db_replica is None:
                 continue
-
-            deploy_counter.record(db_replica, ri)
-
-            values: dict[str, Any] = {}
-
-            if ri.state.value != db_replica.state:
-                values["state"] = ri.state.value
-                logger.info(
-                    f"Replica {db_replica.name!r}: {db_replica.state} -> {ri.state.value} [{ri.state_message}]"
+            try:
+                applied = await self._update_replica(db_replica, ri)
+            except Exception:
+                logger.exception(
+                    "%s: failed to sync replica %s on job %s",
+                    self.name,
+                    ri.name,
+                    job.name,
                 )
-
-                if ri.state == ReplicaState.ready:
-                    any_started = True
-
-                if ri.state in (
-                    ReplicaState.error,
-                    ReplicaState.start_timeout,
-                    ReplicaState.terminated,
-                ):
-                    values["stopped_at"] = datetime.now(timezone.utc)
-
-            if ri.state_message != db_replica.state_message:
-                values["state_message"] = ri.state_message
-
-            if ri.url != db_replica.model_url:
-                values["model_url"] = ri.url
-
-            if ri.served_model_name != db_replica.observed_served_name:
-                values["observed_served_name"] = ri.served_model_name
-
-            if ri.started_at != db_replica.started_at:
-                values["started_at"] = ri.started_at
-
-            if ri.resources and not db_replica.resources:
-                values["resources"] = [r.model_dump(mode="json") for r in ri.resources]
-
-            if ri.log_path and not db_replica.log_path:
-                values["log_path"] = ri.log_path.as_posix()
-
-            if not values:
                 continue
-
-            async with self.client_state.db_sessionmaker.begin() as sess:
-                await sess.execute(
-                    sa.update(PilotReplica)
-                    .where(
-                        PilotReplica.uid == db_replica.uid,
-                        PilotReplica.deleted_at.is_(None),
-                        PilotReplica.state == db_replica.state,
-                    )
-                    .values(**values)
-                )
+            if applied and ri.state == ReplicaState.ready:
+                any_started = True
 
         if any_started:
             await self.client_state.redis_pubsub.publish(Channel.replica_started, "")
+
+    async def _update_replica(self, db_replica: PilotReplica, ri: ReplicaInfo) -> bool:
+        """
+        Write observed changes for one replica. A state transition and its
+        effect on the parent deployment commit together, and only if the
+        replica was still in the state we read. Returns True if a transition
+        was committed.
+        """
+        values: dict[str, Any] = {}
+        transition = ri.state.value != db_replica.state
+
+        if transition:
+            values["state"] = ri.state.value
+            if ri.state in (
+                ReplicaState.error,
+                ReplicaState.start_timeout,
+                ReplicaState.terminated,
+            ):
+                values["stopped_at"] = datetime.now(timezone.utc)
+
+        if ri.state_message != db_replica.state_message:
+            values["state_message"] = ri.state_message
+
+        if ri.url != db_replica.model_url:
+            values["model_url"] = ri.url
+
+        if ri.served_model_name != db_replica.observed_served_name:
+            values["observed_served_name"] = ri.served_model_name
+
+        if ri.started_at != db_replica.started_at:
+            values["started_at"] = ri.started_at
+
+        if ri.resources and not db_replica.resources:
+            values["resources"] = [r.model_dump(mode="json") for r in ri.resources]
+
+        if ri.log_path and not db_replica.log_path:
+            values["log_path"] = ri.log_path.as_posix()
+
+        if not values:
+            return False
+
+        async with self.client_state.db_sessionmaker.begin() as sess:
+            result = await sess.execute(
+                sa.update(PilotReplica)
+                .where(
+                    PilotReplica.uid == db_replica.uid,
+                    PilotReplica.deleted_at.is_(None),
+                    PilotReplica.state == db_replica.state,
+                )
+                .values(**values)
+            )
+            if result.rowcount == 0:  # type: ignore[attr-defined]
+                # Replica changed or was deleted under us; re-observe next tick.
+                return False
+            if transition:
+                await self._record_transition(sess, db_replica, ri.state)
+
+        if transition:
+            logger.info(
+                f"Replica {db_replica.name!r}: {db_replica.state} -> {ri.state.value} [{ri.state_message}]"
+            )
+        return transition
+
+    @staticmethod
+    async def _record_transition(
+        sess: AsyncSession, db_replica: PilotReplica, new_state: ReplicaState
+    ) -> None:
+        """Apply a replica transition's effect on its parent PilotDeployment."""
+        dep_clause = PilotDeployment.name == db_replica.pilot_deployment_name
+
+        if new_state == ReplicaState.ready:
+            values: dict[str, Any] = {"consecutive_launch_failures": 0}
+            # Only a clean `launching -> ready` cold start is a startup
+            # measurement; `unhealthy -> ready` recovery flaps are not.
+            if (
+                db_replica.state == ReplicaState.launching
+                and db_replica.placed_at is not None
+            ):
+                values["last_startup_sec"] = (
+                    datetime.now(timezone.utc) - db_replica.placed_at
+                ).total_seconds()
+            await sess.execute(
+                sa.update(PilotDeployment).where(dep_clause).values(**values)
+            )
+        elif new_state in (ReplicaState.error, ReplicaState.start_timeout):
+            await sess.execute(
+                sa.update(PilotDeployment)
+                .where(dep_clause)
+                .values(
+                    consecutive_launch_failures=(
+                        PilotDeployment.consecutive_launch_failures + 1
+                    )
+                )
+            )
 
     async def reap_orphans(
         self, job: PilotJob, remote_replicas: list[ReplicaInfo]
     ) -> None:
         assert job.manager_url is not None
-        for ri in remote_replicas:
-            # Match on BOTH name and pilot_job_name (even though name is
-            # unique itself), because if same Replica is assigned to a different
-            # PilotJob, this one is still an orphan (resource leak).
-            async with self.client_state.db_sessionmaker() as sess:
-                exists = await sess.scalar(
-                    sa.select(
-                        sa.exists().where(
-                            PilotReplica.name == ri.name,
-                            PilotReplica.pilot_job_name == job.name,
-                            PilotReplica.deleted_at.is_(None),
-                        )
+        if not remote_replicas:
+            return
+
+        # Match on BOTH name and pilot_job_name (even though name is
+        # unique itself), because if same Replica is assigned to a different
+        # PilotJob, this one is still an orphan (resource leak).
+        async with self.client_state.db_sessionmaker() as sess:
+            known = set(
+                await sess.scalars(
+                    sa.select(PilotReplica.name).where(
+                        PilotReplica.pilot_job_name == job.name,
+                        PilotReplica.name.in_([ri.name for ri in remote_replicas]),
+                        PilotReplica.deleted_at.is_(None),
                     )
                 )
+            )
 
-            if exists:
+        for ri in remote_replicas:
+            if ri.name in known:
                 continue
 
             logger.warning("Reaping orphan replica %s on job %s", ri.name, job.name)
@@ -427,57 +440,18 @@ class PilotReplicaObserver(Worker):
                     job.name,
                 )
 
-    async def update_deployments(self, counter: DeploymentCounter) -> None:
-        successful = [
-            name for name, counts in counter.items() if counts.launch_successes > 0
-        ]
-        fail_counts = {
-            name: counts.launch_failures
-            for name, counts in counter.items()
-            if counts.launch_successes == 0 and counts.launch_failures
-        }
-
-        async with self.client_state.db_sessionmaker.begin() as sess:
-            await sess.execute(
-                sa.update(PilotDeployment)
-                .where(
-                    PilotDeployment.name.in_(successful),
-                    PilotDeployment.consecutive_launch_failures != 0,
-                )
-                .values(consecutive_launch_failures=0)
-            )
-
-        for name, fail_count in fail_counts.items():
-            async with self.client_state.db_sessionmaker.begin() as sess:
-                await sess.execute(
-                    sa.update(PilotDeployment)
-                    .where(PilotDeployment.name == name)
-                    .values(
-                        consecutive_launch_failures=(
-                            PilotDeployment.consecutive_launch_failures + fail_count
-                        )
-                    )
-                )
-
-        for name, counts in counter.items():
-            if counts.last_startup_sec is not None:
-                async with self.client_state.db_sessionmaker.begin() as sess:
-                    await sess.execute(
-                        sa.update(PilotDeployment)
-                        .where(PilotDeployment.name == name)
-                        .values(last_startup_sec=counts.last_startup_sec)
-                    )
-
+    async def update_deployments(self) -> None:
+        """Recompute each PilotDeployment's aggregate state; write only changes."""
         async with self.client_state.db_sessionmaker.begin() as sess:
             deploys = await sess.scalars(
                 sa.select(PilotDeployment).options(
                     selectinload(PilotDeployment.replicas)
                 )
             )
-            await sess.execute(
-                sa.update(PilotDeployment),
-                [
-                    {"uid": dep.uid, "state": aggregate_state(dep).value}
-                    for dep in deploys
-                ],
-            )
+            changed = [
+                {"uid": dep.uid, "state": state}
+                for dep in deploys
+                if (state := aggregate_state(dep).value) != dep.state
+            ]
+            if changed:
+                await sess.execute(sa.update(PilotDeployment), changed)

@@ -1,7 +1,6 @@
+import random
 from datetime import datetime, timezone
 from typing import NoReturn
-
-import numpy as np
 
 from first_common.errors import (
     FirstError,
@@ -47,32 +46,25 @@ def get_shuffled_backends(
     if not deployments:
         return []
 
-    items = [
-        (backend, d.router_params.weight, d.router_params)
-        for d in deployments
-        if d.router_params.weight > 0
-        for backend in d.backends
-    ]
-
-    if not items:
-        return []
-
-    backends, weights, router_params = zip(*items)
-    nb_backends = len(backends)
-
-    total = sum(weights)
-    probabilities = [weight / total for weight in weights]
-    idx = np.random.choice(
-        nb_backends, size=nb_backends, replace=False, p=probabilities
+    # Sorting by an Exp(weight) draw is equivalent to repeatedly picking from
+    # the remaining backends with probability proportional to weight.
+    items = sorted(
+        (
+            (random.expovariate(d.router_params.weight), backend, d.router_params)
+            for d in deployments
+            if d.router_params.weight > 0
+            for backend in d.backends
+        ),
+        key=lambda item: item[0],
     )
 
     return [
         CandidateBackend(
-            uid=backends[i].id,
-            max_backend_concurrency=router_params[i].max_backend_concurrency,
-            cooldown_threshold=router_params[i].cooldown_threshold,
+            uid=backend.id,
+            max_backend_concurrency=router_params.max_backend_concurrency,
+            cooldown_threshold=router_params.cooldown_threshold,
         )
-        for i in idx
+        for _, backend, router_params in items
     ]
 
 

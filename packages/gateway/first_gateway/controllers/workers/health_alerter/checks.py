@@ -387,56 +387,56 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
 
 async def check_host(client_state: ClientState) -> list[Observation]:
     obs: list[Observation] = []
-    http = AsyncClient(timeout=10.0)
-
     gateway_url = client_state.settings.gateway_health_url
-    try:
-        resp = await http.get(gateway_url)
-        if resp.status_code >= 300:
+
+    async with AsyncClient(timeout=10.0) as http:
+        try:
+            resp = await http.get(gateway_url)
+            if resp.status_code >= 300:
+                obs.append(
+                    Observation(
+                        key="gateway_health",
+                        status="unreachable",
+                        summary=f"Gateway /health returned {resp.status_code}",
+                        display_name="Gateway /health",
+                        severity="crit",
+                    )
+                )
+        except Exception as e:
             obs.append(
                 Observation(
                     key="gateway_health",
                     status="unreachable",
-                    summary=f"Gateway /health returned {resp.status_code}",
+                    summary=f"Gateway /health unreachable: {_exc_summary(e)}",
                     display_name="Gateway /health",
+                    detail=traceback.format_exc(),
                     severity="crit",
                 )
             )
-    except Exception as e:
-        obs.append(
-            Observation(
-                key="gateway_health",
-                status="unreachable",
-                summary=f"Gateway /health unreachable: {_exc_summary(e)}",
-                display_name="Gateway /health",
-                detail=traceback.format_exc(),
-                severity="crit",
-            )
-        )
 
-    try:
-        resp = await http.get("http://127.0.0.1:9100/healthz")
-        if resp.status_code == 503:
+        try:
+            resp = await http.get("http://127.0.0.1:9100/healthz")
+            if resp.status_code == 503:
+                obs.append(
+                    Observation(
+                        key="controller_healthz",
+                        status="stale",
+                        summary=f"Controller /healthz: {_error_tail(resp.text)}",
+                        display_name="Controller /healthz",
+                        severity="crit",
+                    )
+                )
+        except Exception as e:
             obs.append(
                 Observation(
                     key="controller_healthz",
                     status="stale",
-                    summary=f"Controller /healthz: {_error_tail(resp.text)}",
+                    summary=f"Controller /healthz unreachable: {_exc_summary(e)}",
                     display_name="Controller /healthz",
+                    detail=traceback.format_exc(),
                     severity="crit",
                 )
             )
-    except Exception as e:
-        obs.append(
-            Observation(
-                key="controller_healthz",
-                status="stale",
-                summary=f"Controller /healthz unreachable: {_exc_summary(e)}",
-                display_name="Controller /healthz",
-                detail=traceback.format_exc(),
-                severity="crit",
-            )
-        )
 
     proc = await asyncio.create_subprocess_exec(
         "df",
