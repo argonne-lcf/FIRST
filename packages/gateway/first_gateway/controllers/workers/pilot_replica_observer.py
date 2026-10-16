@@ -239,7 +239,7 @@ class PilotReplicaObserver(Worker):
                 )
                 logger.info(f"Recorded PilotJob {job.name!r} resources on startup")
 
-        # Update in Redis unconditionally (tracking GPU memory usage # continuously)
+        # Update in Redis unconditionally (tracking GPU metrics continuously)
         await self.client_state.redis_repo.set_pilot_job_runtime(
             job.uid, PilotJobRuntime(resources=status.resources)
         )

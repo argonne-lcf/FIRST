@@ -16,8 +16,7 @@ from redis.asyncio import Redis
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from first_common.pbs_quarantine import QuarantineRequest
-from first_common.schema.base_scheduler import SchedulerJobState
+from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
 from first_common.schema.pilot import PilotClientRole
 from first_common.schema.resources.runtime import (
     CommittedAlert,
@@ -63,7 +62,6 @@ from first_gateway.database.models import (
     StaticDeployment,
 )
 from first_gateway.database.redis.repo import RedisRepo
-from first_gateway.platforms.schedulers.graphql_pbs import QuarantineStatus
 from first_gateway.services.certmanager import gen_ca_pem, generate_client_cert
 
 from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
@@ -760,7 +758,11 @@ async def test_check_quarantined_nodes(
         "nginx_path": "/usr/sbin/nginx",
         "ip_allowlist": [],
         "node_file_env": "PBS_NODEFILE",
-        "node_admission": {"checks": ["gpu_count"], "on_failure": "pbs_quarantine"},
+        "node_admission": {
+            "checks": ["gpu_count"],
+            "on_failure": "pbs_quarantine",
+            "environment": "dev",
+        },
         "submit_script_preamble": "#!/bin/bash",
         "pilot_path": "/test/first-pilot",
         "pilot_config_path": "/opt/test/pilot-config.yaml",
@@ -774,23 +776,29 @@ async def test_check_quarantined_nodes(
             )
         )
 
+    def job(name: str, **variables: str) -> JobStatusInfo:
+        return JobStatusInfo(
+            id=f"{name}.pbs",
+            name=name,
+            state=SchedulerJobState.queued,
+            created_at=datetime.now(timezone.utc),
+            started_at=None,
+            walltime_minutes=60,
+            variables={f"FIRST_QUAR_{k}": v for k, v in variables.items()},
+        )
+
     adapter = MagicMock()
-    adapter.get_quarantine_statuses = AsyncMock(
+    adapter.get_job_statuses = AsyncMock(
         return_value=[
-            QuarantineStatus(
-                request=QuarantineRequest(
-                    job_id="100.tara",
-                    host="x4820c7s3b1n0",
-                    environment="dev",
-                    operation="a" * 32,
-                    source="99.tara",
-                    reason="missing_gpu",
-                    evidence="/service/dev/evidence/admission.json",
-                ),
-                state=SchedulerJobState.queued,
-                isolated=False,
-                expires_at=None,
-            )
+            # The name is truncated: the variables identify the job.
+            job(
+                "first_quar_dev_x48",
+                ENV="dev",
+                HOST="x4820c7s3b1n0",
+                REASON="gpu_count",
+            ),
+            job("first_quar_prod_x4820c7s3b1n1", ENV="prod", HOST="x4820c7s3b1n1"),
+            job("__FIRST_PILOT_job-1"),
         ]
     )
     with patch(
@@ -799,12 +807,14 @@ async def test_check_quarantined_nodes(
     ):
         obs = await check_quarantined_nodes(alerter.client_state)
 
-    assert [o.display_name for o in obs] == [
-        "Cluster cl-pilot node x4820c7s3b1n0 quarantine"
-    ]
+    assert len(obs) == 1
+    assert obs[0].summary == (
+        "Cluster cl-pilot: quarantine job first_quar_dev_x48.pbs on host "
+        "x4820c7s3b1n0 is queued"
+    )
+    assert obs[0].status == "queued"
     assert obs[0].severity == "warn"
-    assert obs[0].status == "isolation_pending"
-    assert "not yet guaranteed" in obs[0].summary
+    assert "Failed checks: gpu_count" in obs[0].detail
 
 
 async def test_check_static_deployment(

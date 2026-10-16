@@ -1,18 +1,12 @@
 import base64
 import logging
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Self
 
 from httpx import AsyncClient
 
-from first_common.pbs_quarantine import (
-    QuarantineRequest,
-    execution_vnodes,
-    physical_host,
-)
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
     JobSubmitPayload,
@@ -57,102 +51,6 @@ _EXEC_VNODE_PART = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,254})"
     r"(?::[A-Za-z_][A-Za-z0-9_.-]*=[^():+\s=]+)+"
 )
-
-
-@dataclass(frozen=True)
-class QuarantineStatus:
-    request: QuarantineRequest
-    state: SchedulerJobState
-    isolated: bool
-    expires_at: datetime | None
-
-
-def _quarantine_hint(row: dict[str, Any]) -> bool:
-    """Names aid discovery; metadata also protects renamed/truncated jobs."""
-    name = row.get("name")
-    env = row.get("env")
-    if env is not None and not isinstance(env, list):
-        raise RuntimeError("PBS job metadata is malformed")
-    return (isinstance(name, str) and name.startswith("first_quar_")) or any(
-        isinstance(pair, dict)
-        and isinstance(pair.get("name"), str)
-        and pair["name"].startswith("FIRST_QUAR_")
-        for pair in env or []
-    )
-
-
-def _quarantine_status(row: dict[str, Any], expected_owner: str) -> QuarantineStatus:
-    """Read PBS's accepted request; do not recreate an independent scheduler."""
-    owner = row.get("owner")
-    if (
-        not isinstance(owner, str)
-        or re.fullmatch(rf"{re.escape(expected_owner)}(?:@[A-Za-z0-9.-]+)?", owner)
-        is None
-    ):
-        raise RuntimeError("PBS quarantine ownership is unverified")
-    metadata: dict[str, Any] = {}
-    for pair in row.get("env") or []:
-        key, value = pair.get("name"), pair.get("value")
-        if isinstance(key, str) and key.startswith("FIRST_QUAR_"):
-            if key in metadata:
-                raise RuntimeError("duplicate quarantine attribution")
-            metadata[key] = value
-    resources = row.get("resourcesRequested") or {}
-    tasks = resources.get("tasksResources") or []
-    count = resources.get("taskCount") or {}
-    if (
-        len(tasks) != 1
-        or tasks[0].get("index") != "0"
-        or type(count.get("min")) is not int
-        or count.get("min") not in (0, 1)
-        or type(count.get("max")) is not int
-        or count.get("max") != 1
-        or type(resources.get("jobPlacementSharing")) is not int
-        or resources.get("jobPlacementSharing") not in (1, 2)
-        or tasks[0].get("candidateMachineName") != metadata.get("FIRST_QUAR_HOST")
-    ):
-        raise RuntimeError("PBS exact-host exclusive request is unverified")
-    state = (row.get("status") or {}).get("state")
-    if type(state) is not int or state not in _STATE_MAP:
-        raise RuntimeError("PBS quarantine state is unverified")
-    host, operation = (
-        physical_host(metadata.get("FIRST_QUAR_HOST")),
-        metadata.get("FIRST_QUAR_OP"),
-    )
-    if (
-        host != metadata.get("FIRST_QUAR_HOST")
-        or not isinstance(operation, str)
-        or not operation
-    ):
-        raise RuntimeError("PBS quarantine target/operation is unverified")
-    request = QuarantineRequest(
-        row["jobId"],
-        host,
-        operation,
-        metadata.get("FIRST_QUAR_ENV"),
-        metadata.get("FIRST_QUAR_SOURCE"),
-        metadata.get("FIRST_QUAR_REASON"),
-        metadata.get("FIRST_QUAR_EVIDENCE"),
-    )
-    state = _STATE_MAP[state]
-    started = _parse_epoch_micros(row.get("startTime"))
-    walltime = (resources.get("jobResources") or {}).get("wallClockTime")
-    expires = (
-        datetime.fromtimestamp(started.timestamp() + walltime, timezone.utc)
-        if started and walltime
-        else None
-    )
-    isolated = False
-    if state == SchedulerJobState.running:
-        extension = row.get("extension") or {}
-        try:
-            vnodes = execution_vnodes(
-                extension.get("exec_vnode") if isinstance(extension, dict) else None
-            )
-        except RuntimeError:
-            vnodes = []
-        isolated = len(vnodes) == 1 and vnodes[0][0] == request.host
-    return QuarantineStatus(request, state, isolated, expires)
 
 
 def _parse_epoch_micros(raw: int | None) -> datetime | None:
@@ -244,6 +142,7 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
         walltime_minutes=walltime_sec // 60,
         head_node_ip_address=head_ip,
         head_node_hostname=head_hostname,
+        variables={pair["name"]: pair["value"] for pair in node.get("env") or []},
     )
 
 
@@ -337,87 +236,92 @@ class GraphQLPBSAdapter(SchedulerAdapter):
             raise RuntimeError("GraphQL createJob returned an empty jobId")
         return JobSubmitResult(job_name=job.name, scheduler_id=scheduler_id)
 
-    async def _job_rows(self, job_id: str | None = None) -> list[dict[str, Any]]:
-        """The same bounded inventory serves ordinary status and quarantine reads."""
-        if job_id is not None and _PBS_JOB_ID.fullmatch(job_id) is None:
-            raise ValueError(f"invalid PBS scheduler job ID: {job_id!r}")
-        declaration = "ActiveJobs($owner: String!, $cursor: Cursor)"
-        job_filter = "owner: $owner, withHistoryJobs: false"
-        variables: dict[str, Any] = {"owner": self.owner}
-        if job_id is not None:
-            declaration = "ExactJobState($jobId: String!, $cursor: Cursor)"
-            job_filter = "jobIds: [$jobId], withHistoryJobs: true"
-            variables = {"jobId": job_id}
+    async def get_job_statuses(self) -> list[JobStatusInfo]:
         query = f"""
-        query {declaration} {{
-          jobs(filter: {{{job_filter}}}, count: {_STATUS_PAGE_SIZE if job_id is None else 1}, from: $cursor) {{
-            edges {{ node {{
-              jobId name owner env {{ name value }} submitTime startTime extension
-              status {{ state }}
-              resourcesRequested {{
-                jobPlacementSharing taskCount {{ min max }}
-                tasksResources {{ index candidateMachineName }}
-                jobResources {{ wallClockTime }}
-              }}
-              allocatedMachines {{
-                name hostname resourcesAvail {{ customResources {{ name value }} }}
-              }}
-            }} error {{ errorCode errorMessage }} }}
-            pageInfo {{ hasNextPage endCursor }}
-          }}
+        query ActiveJobs($owner: String!, $cursor: Cursor) {{
+            jobs (
+                filter: {{owner: $owner, withHistoryJobs: false}}
+                count: {_STATUS_PAGE_SIZE}
+                from: $cursor
+            ) {{
+                edges {{
+                    node {{
+                        jobId
+                        name
+                        env {{ name value }}
+                        submitTime
+                        startTime
+                        extension
+                        status {{
+                            state
+                        }}
+                        resourcesRequested {{
+                            jobResources {{
+                                wallClockTime
+                            }}
+                        }}
+                        allocatedMachines {{
+                            name
+                            hostname
+                            resourcesAvail {{
+                                customResources {{ name value }}
+                            }}
+                        }}
+                    }}
+                    error {{
+                        errorCode
+                        errorMessage
+                    }}
+                    cursor
+                }}
+                pageInfo {{
+                    hasNextPage
+                    endCursor
+                }}
+            }}
         }}
         """
-        rows: dict[str, dict[str, Any]] = {}
-        cursors: set[str] = set()
-        cursor = None
+        results: list[JobStatusInfo] = []
+        seen_ids: set[str] = set()
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
         for _ in range(_STATUS_MAX_PAGES):
-            data = await self._post(query, {**variables, "cursor": cursor})
-            for edge in data["jobs"]["edges"]:
-                row = edge.get("node")
-                if edge.get("error") or not isinstance(row, dict):
-                    raise RuntimeError("GraphQL jobs edge failed or was incomplete")
-                identity = row.get("jobId")
-                if not isinstance(identity, str) or not identity:
-                    raise RuntimeError("GraphQL jobs query returned an empty jobId")
-                if job_id is not None and identity != job_id:
-                    raise RuntimeError(
-                        "GraphQL exact-job query returned a different job ID"
-                    )
-                rows.setdefault(identity, row)
-            page = data["jobs"]["pageInfo"]
-            if not page["hasNextPage"]:
-                return list(rows.values())
-            cursor = page.get("endCursor")
-            if not isinstance(cursor, str) or not cursor or cursor in cursors:
-                raise RuntimeError("GraphQL jobs pagination cursor did not advance")
-            cursors.add(cursor)
-        raise RuntimeError("GraphQL active-job listing exceeded bounded pagination")
+            data = await self._post(
+                query,
+                {"owner": self.owner, "cursor": cursor},
+            )
+            edges: list[dict[str, Any]] = data["jobs"]["edges"]
+            for edge in edges:
+                if edge.get("error"):
+                    raise RuntimeError(f"GraphQL jobs edge failed:\n{edge['error']}")
+                node: dict[str, Any] = edge["node"]
+                status = _job_status_from_node(node)
+                if status.id not in seen_ids:
+                    seen_ids.add(status.id)
+                    results.append(status)
 
-    async def get_job_statuses(self) -> list[JobStatusInfo]:
-        return [_job_status_from_node(row) for row in await self._job_rows()]
+            page_info = data["jobs"]["pageInfo"]
+            if not page_info["hasNextPage"]:
+                return results
+            next_cursor = page_info.get("endCursor")
+            if (
+                not isinstance(next_cursor, str)
+                or not next_cursor
+                or next_cursor in seen_cursors
+            ):
+                raise RuntimeError("GraphQL jobs pagination cursor did not advance")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        raise RuntimeError(
+            "GraphQL active-job listing exceeded bounded pagination "
+            f"({_STATUS_MAX_PAGES} pages)"
+        )
 
     async def terminate_job(self, job_id: str) -> None:
         job_id = job_id.strip()
         if _PBS_JOB_ID.fullmatch(job_id) is None:
             raise ValueError(f"invalid PBS scheduler job ID: {job_id!r}")
-
-        # Ordinary lifecycle/orphan cleanup must never cancel either
-        # environment's isolation jobs, including malformed renamed jobs.
-        rows = await self._job_rows(job_id)
-        if not rows:
-            logger.info(
-                "ordinary cleanup job %s is absent from the exact PBS lookup", job_id
-            )
-            return
-        if _quarantine_hint(rows[0]):
-            raise RuntimeError("ordinary model cleanup cannot delete a quarantine job")
-        owner = rows[0].get("owner")
-        if (
-            not isinstance(owner, str)
-            or re.fullmatch(rf"{re.escape(self.owner)}(?:@[A-Za-z0-9.-]+)?", owner)
-            is None
-        ):
-            raise RuntimeError("ordinary model cleanup PBS ownership is unverified")
 
         # Ordinary lifecycle disposal must allow the scheduler's normal
         # termination/cleanup path. Never silently escalate a failed request
@@ -455,27 +359,65 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         # and the scheduler observer completes deletion after it observes gone.
 
     async def get_exact_job_status(self, job_id: str) -> JobStatusInfo | None:
-        rows = await self._job_rows(job_id.strip())
-        return _job_status_from_node(rows[0]) if rows else None
+        job_id = job_id.strip()
+        if _PBS_JOB_ID.fullmatch(job_id) is None:
+            raise ValueError(f"invalid PBS scheduler job ID: {job_id!r}")
+        query = """
+        query ExactJobState($jobId: String!) {
+            jobs(
+                filter: {jobIds: [$jobId], withHistoryJobs: true}
+                count: 1
+            ) {
+                edges {
+                    node {
+                        jobId
+                        name
+                        submitTime
+                        startTime
+                        extension
+                        status { state }
+                        resourcesRequested {
+                            jobResources { wallClockTime }
+                        }
+                        allocatedMachines {
+                            name
+                            hostname
+                            resourcesAvail {
+                                customResources { name value }
+                            }
+                        }
+                    }
+                    error {
+                        errorCode
+                        errorMessage
+                    }
+                }
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
+            }
+        }
+        """
+        data = await self._post(query, {"jobId": job_id})
+        edges = data["jobs"]["edges"]
+        if not edges:
+            return None
+        edge = edges[0]
+        if edge.get("error"):
+            raise RuntimeError(f"GraphQL exact-job edge failed:\n{edge['error']}")
+        node = edge["node"]
+        status = _job_status_from_node(node)
+        if status.id != job_id:
+            raise RuntimeError(
+                "GraphQL exact-job query returned a different job ID: "
+                f"expected {job_id!r}, got {status.id!r}"
+            )
+        return status
 
     async def _get_exact_job_state(self, job_id: str) -> SchedulerJobState | None:
         status = await self.get_exact_job_status(job_id)
         return None if status is None else status.state
-
-    async def get_quarantine_statuses(self) -> list[QuarantineStatus]:
-        """Observe PBS-accepted requests without an all-owner isolation census."""
-        result = []
-        for row in await self._job_rows():
-            if not _quarantine_hint(row):
-                continue
-            state = (row.get("status") or {}).get("state")
-            if type(state) is int and _STATE_MAP.get(state) == SchedulerJobState.gone:
-                continue
-            owner = row.get("owner")
-            if isinstance(owner, str) and owner.split("@", 1)[0] != self.owner:
-                continue
-            result.append(_quarantine_status(row, self.owner))
-        return result
 
     async def put_file(self, content: str, path: Path, mode: int) -> None:
         raise NotImplementedError

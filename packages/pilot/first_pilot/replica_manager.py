@@ -19,15 +19,14 @@ from first_common.errors import (
     ReplicaTeardownError,
 )
 from first_common.schema.pilot import (
-    GpuInfo,
-    HostGpus,
     PilotResources,
     PilotRuntimeConfig,
     ReplicaStartRequest,
 )
-from first_common.schema.types import GpuClaim, GpuDiscovery
+from first_common.schema.types import GpuClaim
 
-from .host_commands import deduplicate_hosts, run_on_hosts
+from .gpu_inventory import query_gpus
+from .host_commands import deduplicate_hosts
 from .replica import Replica
 
 logger = logging.getLogger(__name__)
@@ -41,84 +40,21 @@ ReservedSentinel = Literal[_ReservedSentinel.RESERVED]
 _RESERVED = _ReservedSentinel.RESERVED
 
 
-_NVIDIA_SMI_ARGS = [
-    "--query-gpu=index,name,memory.total,memory.used",
-    "--format=csv,noheader,nounits",
-]
 _REPLICA_UDS_NAME = re.compile(r"^replica-(?:0|[1-9][0-9]*)\.sock$")
-
-
-def _parse_gpu_row(line: str) -> GpuInfo:
-    fields = [field.strip() for field in line.split(",")]
-    if len(fields) != 4:
-        raise ValueError(f"unexpected nvidia-smi row: {line!r}")
-
-    index, name, mem_total, mem_used = fields
-    if not index.isdecimal() or not name:
-        raise ValueError(f"invalid GPU index or name in nvidia-smi row: {line!r}")
-    try:
-        mem_total_mib = int(mem_total)
-        mem_used_mib = int(mem_used)
-    except ValueError as exc:
-        raise ValueError(f"invalid GPU memory in nvidia-smi row: {line!r}") from exc
-    if mem_total_mib <= 0 or not 0 <= mem_used_mib <= mem_total_mib:
-        raise ValueError(f"out-of-range GPU memory in nvidia-smi row: {line!r}")
-
-    return GpuInfo(
-        index=index,
-        name=name,
-        memory_total_mib=mem_total_mib,
-        memory_used_mib=mem_used_mib,
-    )
-
-
-def _host_gpus(hostname: str, output: str, expected_gpus: int) -> HostGpus:
-    """Parse and validate one host's nvidia-smi inventory."""
-    try:
-        gpus = [_parse_gpu_row(line) for line in output.splitlines() if line]
-    except ValueError as exc:
-        raise RuntimeError(
-            f"GPU inventory for host {hostname!r} was malformed: {exc}"
-        ) from exc
-
-    indices = [gpu.index for gpu in gpus]
-    if len(indices) != len(set(indices)):
-        raise RuntimeError(f"GPU inventory duplicated an index on host {hostname!r}")
-
-    expected_indices = {str(index) for index in range(expected_gpus)}
-    if set(indices) != expected_indices:
-        raise RuntimeError(
-            f"GPU inventory for host {hostname!r} reported indices "
-            f"{sorted(indices)!r}; expected {sorted(expected_indices)!r}"
-        )
-    return HostGpus(
-        hostname=hostname,
-        gpus=sorted(gpus, key=lambda gpu: int(gpu.index)),
-    )
-
-
-def query_gpus(
-    hostnames: list[str], discovery: GpuDiscovery, expected_gpus: int
-) -> list[HostGpus]:
-    """Inventory every scheduler host's GPUs, in scheduler order."""
-    outputs = run_on_hosts(["nvidia-smi", *_NVIDIA_SMI_ARGS], hostnames, discovery)
-    return [_host_gpus(host, outputs[host], expected_gpus) for host in hostnames]
 
 
 def discover_hosts(node_file_env: str) -> list[str]:
     if not node_file_env:
         localhost = socket.gethostname()
-        logger.info(
-            "%s not set; assuming single-host deployment (%s)",
-            node_file_env,
-            localhost,
-        )
+        logger.info("no node_file_env; assuming single-host deployment (%s)", localhost)
         return [localhost]
+
     node_file = os.environ.get(node_file_env)
     if not node_file:
         raise RuntimeError(
             f"configured allocation node file {node_file_env} is not set"
         )
+
     try:
         with open(node_file) as f:
             lines = f.readlines()
@@ -159,7 +95,7 @@ class ReplicaManager:
         resources = self.query_resources()
 
         # Hosts and GPU indices are fixed for the life of the job; only the
-        # memory usage in self._resources is refreshed after startup.
+        # GPU metrics in self._resources are refreshed after startup.
         self._inventory = resources.hosts
         self._resources = resources
         if not any(host.gpus for host in self._inventory):
@@ -189,7 +125,7 @@ class ReplicaManager:
         return self._resources
 
     def start_inventory_refresh(self) -> None:
-        """Keep the snapshot's GPU memory usage current for the process lifetime."""
+        """Keep the snapshot's GPU metrics current for the process lifetime."""
         threading.Thread(
             target=self._inventory_refresh_loop,
             name="inventory-refresh",
@@ -209,13 +145,16 @@ class ReplicaManager:
 
     def query_resources(self) -> PilotResources:
         """Discover and validate the exact scheduler-requested inventory."""
-        return PilotResources(
-            hosts=query_gpus(
-                self.node_hostnames,
-                self.config.gpu_discovery,
-                self.config.gpus_per_node,
-            )
-        )
+        resources = query_gpus(self.node_hostnames, self.config.gpu_discovery)
+        expected = [str(index) for index in range(self.config.gpus_per_node)]
+        for host in resources.hosts:
+            indices = [gpu.index for gpu in host.gpus]
+            if indices != expected:
+                raise RuntimeError(
+                    f"GPU inventory for host {host.hostname!r} reported indices "
+                    f"{indices}; expected {expected}"
+                )
+        return resources
 
     @staticmethod
     def _flatten(resources: list[GpuClaim]) -> list[tuple[str, str]]:
@@ -346,12 +285,6 @@ class ReplicaManager:
                 os.close(dir_fd)
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
-        # Reused pilots must not bypass the pending/held quarantine guard. This
-        # applies only to this new attempt; existing healthy replicas keep running.
-        # Local import avoids admission/discover_hosts' module dependency cycle.
-        from .admission import guard_quarantined_nodes
-
-        guard_quarantined_nodes(self.config, self.node_hostnames)
         requested = self._validate_request(replica.name, replica.gpu_indices)
 
         host_gpus: dict[str, list[str]] = defaultdict(list)

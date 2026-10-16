@@ -24,37 +24,31 @@ def run_on_hosts(
     command: list[str],
     hostnames: list[str],
     discovery: GpuDiscovery,
-    *,
-    require_completion: bool = False,
 ) -> dict[str, str]:
     """
-    Return each host's stdout. A single-node pilot runs the command locally;
+    Return each host's stdout. A command for the local host alone runs locally;
     otherwise `discovery` selects SSH or the PALS launcher. Raises RuntimeError
-    if the command cannot be run on every host.
+    unless the command completed successfully on every host.
     """
     timeout_sec = discovery.timeout_sec
+
     if not hostnames or len(deduplicate_hosts(hostnames)) != len(hostnames):
         raise RuntimeError(
             "host-command inventory is empty or contains duplicate hosts"
         )
-    # Startup screening must distinguish an empty successful query (for example
-    # no GPU clients) from a rank that never ran. Inventory callers retain their
-    # existing output format; screening opts into the completion proof.
-    marker = f"FIRST_HOST_COMMAND_{uuid.uuid4().hex}" if require_completion else None
-    native_command = command
-    if marker is not None:
-        if not isinstance(discovery, SSHDiscovery):
-            executable = shutil.which(command[0])
-            if executable is None:
-                raise RuntimeError(
-                    f"required {command[0]} is unavailable on the pilot PATH"
-                )
-            command = [str(Path(executable).resolve()), *command[1:]]
-        native_command = _completed_command(command, marker)
 
-    if len(hostnames) == 1 and (
-        not require_completion or host_matches(socket.gethostname(), hostnames[0])
-    ):
+    if not isinstance(discovery, SSHDiscovery):
+        executable = shutil.which(command[0])
+        if executable is None:
+            raise RuntimeError(
+                f"required {command[0]} is unavailable on the pilot PATH"
+            )
+        command = [str(Path(executable).resolve()), *command[1:]]
+
+    marker = f"FIRST_HOST_COMMAND_{uuid.uuid4().hex}"
+    native_command = _completed_command(command, marker)
+
+    if len(hostnames) == 1 and host_matches(socket.gethostname(), hostnames[0]):
         outputs = {hostnames[0]: _run(native_command, timeout_sec)}
 
     elif isinstance(discovery, SSHDiscovery):
@@ -71,12 +65,10 @@ def run_on_hosts(
             native_command, hostnames, discovery.launcher_path, timeout_sec
         )
 
-    if marker is not None:
-        return {
-            host: _completed_output(output, marker, host)
-            for host, output in outputs.items()
-        }
-    return outputs
+    return {
+        host: _completed_output(output, marker, host)
+        for host, output in outputs.items()
+    }
 
 
 def _completed_command(command: list[str], marker: str) -> list[str]:

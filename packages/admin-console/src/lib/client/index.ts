@@ -182,6 +182,7 @@ export type {
   ModelRuntime,
   ModelSummary,
   ModelSummaryWritable,
+  NodeAdmission,
   OpenAiChatCompletionsPayload,
   OpenAiEmbeddingsPayload,
   OpenAiResponsesPayload,

@@ -268,8 +268,10 @@ GpuDiscovery = Annotated[
 ]
 
 
-# Discovery prefix only; native PBS metadata establishes quarantine identity.
+# Scheduler job name of a quarantine job: this prefix, the environment and the
+# host.
 QUARANTINE_JOB_PREFIX = "first_quar_"
+QUARANTINE_VAR_PREFIX = "FIRST_QUAR_"
 
 
 class NodeAdmission(BaseModel):
@@ -277,26 +279,30 @@ class NodeAdmission(BaseModel):
     Node screening the pilot performs at startup, before serving anything.
 
     `checks` names entries in `first_pilot.node_checks`. If any node fails a
-    check, the pilot applies `on_failure` to each failing node and exits, so
-    the gateway's ordinary retry submits a replacement job.
+    check, the pilot applies `on_failure` and exits, so the gateway's ordinary
+    retry submits a replacement job.
 
     - `exit`: do nothing more; the scheduler may hand the node out again.
-    - `pbs_quarantine`: first submit an exclusive waiting job on the node.
-      PBS keeps the node allocated once that job runs; retries do not wait.
+    - `pbs_quarantine`: submit an exclusive sleep job on each failing node, and
+      delete this environment's queued quarantine jobs on nodes that passed.
     """
 
     checks: list[str] = []
     on_failure: Literal["exit", "pbs_quarantine"] = "exit"
     environment: Literal["dev", "prod"] | None = None
-    # Round the required free fraction up to MiB, then add this reserve.
-    # Sites can select their admission policy without changing GPU checks.
+
+    # A GPU needs ceil(total MiB * fraction) + reserve MiB free to pass.
     minimum_free_memory_fraction: float = Field(0.95, gt=0, le=1)
     memory_reserve_mib: int = Field(256, ge=0)
-    # Configure these within the site's PBS walltime and quarantine budget.
+
     quarantine_walltime_min: int = Field(7 * 24 * 60, ge=1)
-    # Stop quarantining beyond this many nodes: a bad check or system image
-    # must not be able to take the whole cluster out of service.
     max_quarantined_nodes: int = Field(8, ge=1)
+
+    @model_validator(mode="after")
+    def quarantine_requires_environment(self) -> Self:
+        if self.on_failure == "pbs_quarantine" and self.environment is None:
+            raise ValueError("on_failure: pbs_quarantine requires environment")
+        return self
 
 
 class PilotConfig(BaseModel):
