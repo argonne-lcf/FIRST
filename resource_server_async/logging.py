@@ -16,7 +16,6 @@ from resource_server_async.schemas.structured_logs import (
     UserPydantic,
 )
 
-from .cache import should_throttle
 from .minerva_affinity import SESSION_HEADER, validate_session_id
 
 logger = getLogger(__name__)
@@ -144,23 +143,6 @@ async def should_skip_logging(
 ) -> bool:
     # Don't log internal streaming requests:
     if "api/streaming" in request.path:
-        return True
-
-    status_code = response.status_code
-    fingerprint = (
-        "<streaming>"
-        if isinstance(response, StreamingHttpResponse)
-        else str(response.content[:128])
-    )
-
-    user = ctx.user.username if ctx.user else ctx.access_log.origin_ip
-
-    # Debounce if it's the same user/error repeatedly:
-    if status_code >= 400 and await should_throttle(user, fingerprint, status_code):
-        return True
-
-    # Internal errors de-dup'd at user/status level:
-    if status_code >= 500 and await should_throttle(user, status_code):
         return True
 
     return False
