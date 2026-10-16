@@ -414,7 +414,10 @@ export type GpuClaim = {
 /**
  * GpuInfo
  *
- * Information about a GPU resource managed by a pilot.
+ * One GPU managed by a pilot, as `nvidia-smi --query-gpu` last reported it.
+ *
+ * The optional fields are None where the GPU does not report them (nvidia-smi
+ * prints "[N/A]").
  */
 export type GpuInfo = {
   /**
@@ -428,11 +431,55 @@ export type GpuInfo = {
   /**
    * Memory Total Mib
    */
-  memory_total_mib: number | null;
+  memory_total_mib: number;
   /**
    * Memory Used Mib
    */
-  memory_used_mib: number | null;
+  memory_used_mib: number;
+  /**
+   * Memory Free Mib
+   */
+  memory_free_mib?: number | null;
+  /**
+   * Uuid
+   */
+  uuid?: string | null;
+  /**
+   * Driver Version
+   */
+  driver_version?: string | null;
+  /**
+   * Ecc Uncorrected Volatile
+   */
+  ecc_uncorrected_volatile?: number | null;
+  /**
+   * Ecc Uncorrected Aggregate
+   */
+  ecc_uncorrected_aggregate?: number | null;
+  /**
+   * Pstate
+   */
+  pstate?: string | null;
+  /**
+   * Temperature C
+   */
+  temperature_c?: number | null;
+  /**
+   * Utilization Gpu Pct
+   */
+  utilization_gpu_pct?: number | null;
+  /**
+   * Utilization Memory Pct
+   */
+  utilization_memory_pct?: number | null;
+  /**
+   * Power Draw W
+   */
+  power_draw_w?: number | null;
+  /**
+   * Clocks Throttle Reasons
+   */
+  clocks_throttle_reasons?: string | null;
 };
 
 /**
@@ -942,6 +989,50 @@ export type ModelSummary = {
 };
 
 /**
+ * NodeAdmission
+ *
+ * Node screening the pilot performs at startup, before serving anything.
+ *
+ * `checks` names entries in `first_pilot.node_checks`. If any node fails a
+ * check, the pilot applies `on_failure` and exits, so the gateway's ordinary
+ * retry submits a replacement job.
+ *
+ * - `exit`: do nothing more; the scheduler may hand the node out again.
+ * - `pbs_quarantine`: submit an exclusive sleep job on each failing node, and
+ * delete this environment's queued quarantine jobs on nodes that passed.
+ */
+export type NodeAdmission = {
+  /**
+   * Checks
+   */
+  checks?: Array<string>;
+  /**
+   * On Failure
+   */
+  on_failure?: "exit" | "pbs_quarantine";
+  /**
+   * Environment
+   */
+  environment?: "dev" | "prod" | null;
+  /**
+   * Minimum Free Memory Fraction
+   */
+  minimum_free_memory_fraction?: number;
+  /**
+   * Memory Reserve Mib
+   */
+  memory_reserve_mib?: number;
+  /**
+   * Quarantine Walltime Min
+   */
+  quarantine_walltime_min?: number;
+  /**
+   * Max Quarantined Nodes
+   */
+  max_quarantined_nodes?: number;
+};
+
+/**
  * OpenAIChatCompletionsPayload
  */
 export type OpenAiChatCompletionsPayload = {
@@ -1138,6 +1229,7 @@ export type PilotConfig = {
     | ({
         method: "pals";
       } & PalsDiscovery);
+  node_admission?: NodeAdmission;
   /**
    * Submit Script Preamble
    */
@@ -1543,6 +1635,10 @@ export type PilotResources = {
    * Hosts
    */
   hosts?: Array<HostGpus>;
+  /**
+   * Observed At
+   */
+  observed_at?: string | null;
 };
 
 /**

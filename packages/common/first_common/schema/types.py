@@ -269,8 +269,7 @@ GpuDiscovery = Annotated[
 
 
 # Scheduler job name of a quarantine job: this prefix, the environment and the
-# host. The name is for people; QUARANTINE_VAR_PREFIX variables (qsub -v) carry
-# the identity, so a truncated or edited name cannot misattribute a job.
+# host.
 QUARANTINE_JOB_PREFIX = "first_quar_"
 QUARANTINE_VAR_PREFIX = "FIRST_QUAR_"
 
@@ -290,15 +289,13 @@ class NodeAdmission(BaseModel):
 
     checks: list[str] = []
     on_failure: Literal["exit", "pbs_quarantine"] = "exit"
-    # Dev and Prod share a PBS account. Each manages, counts and reports only
-    # the quarantine jobs tagged with its own environment.
     environment: Literal["dev", "prod"] | None = None
+
     # A GPU needs ceil(total MiB * fraction) + reserve MiB free to pass.
     minimum_free_memory_fraction: float = Field(0.95, gt=0, le=1)
     memory_reserve_mib: int = Field(256, ge=0)
+
     quarantine_walltime_min: int = Field(7 * 24 * 60, ge=1)
-    # Stop quarantining beyond this many nodes: a bad check or system image
-    # must not be able to take the whole cluster out of service.
     max_quarantined_nodes: int = Field(8, ge=1)
 
     @model_validator(mode="after")

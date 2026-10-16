@@ -18,6 +18,11 @@ export function slugify(name: string): string {
   return name.split("/").join("~");
 }
 
+/** MiB → GiB with one decimal, e.g. 81920 → "80.0". */
+export function gib(mib: number): string {
+  return (mib / 1024).toFixed(1);
+}
+
 /** Format an ISO timestamp for display, or "—" when absent. */
 export function formatTimestamp(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -36,6 +41,7 @@ export function formatAgo(iso: string | null | undefined): string {
   const hours = Math.floor(seconds / 3600);
   if (hours > 0) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
   const minutes = Math.floor(seconds / 60);
+  if (minutes === 0) return "just now";
   return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
 }
 
