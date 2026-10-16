@@ -162,6 +162,32 @@ def _token_helper_command() -> list[str] | None:
 OPENCODE_PLUGIN_PACKAGE = "alcf-ai-opencode-plugin"
 
 
+def _opencode_plugin_id(entry: Any) -> str:
+    """
+    Return the npm package name of an opencode plugin entry.
+    """
+    if isinstance(entry, str):
+        package = entry
+    elif isinstance(entry, list):
+        package = entry[0] if entry else ""
+    else:
+        package = entry.get("package", "")
+
+    return re.sub(r"@[\w.\-+]+$", "", str(package))
+
+
+def _clear_opencode_plugin_cache() -> None:
+    """
+    Drop opencode's cached copy of the plugin so it installs the current release.
+    """
+    for cache in ("packages", "npm"):
+        for path in (Path.home() / ".cache" / "opencode" / cache).glob(
+            f"{OPENCODE_PLUGIN_PACKAGE}*"
+        ):
+            shutil.rmtree(path, ignore_errors=True)
+            logger.info(f"Cleared the cached opencode plugin at {path}")
+
+
 def _merge_capabilities(model: dict[str, Any]) -> dict[str, Any]:
     """
     Merge the model's reported capabilities with DEFAULT_CAPABILITIES.
@@ -421,7 +447,7 @@ def _edit_opencode_v1(
     plugins = [
         p
         for p in config.get("plugin", [])
-        if (p if isinstance(p, str) else p[0]) != OPENCODE_PLUGIN_PACKAGE
+        if _opencode_plugin_id(p) != OPENCODE_PLUGIN_PACKAGE
     ]
     if token_helper:
         plugins.append([OPENCODE_PLUGIN_PACKAGE, {"tokenHelper": token_helper}])
@@ -503,7 +529,7 @@ def _edit_opencode_v2(
     plugins = [
         p
         for p in config.get("plugins", [])
-        if (p if isinstance(p, str) else p.get("package")) != OPENCODE_PLUGIN_PACKAGE
+        if _opencode_plugin_id(p) != OPENCODE_PLUGIN_PACKAGE
     ]
     if token_helper:
         plugins.append(
@@ -519,7 +545,7 @@ def _edit_opencode_v2(
         kept = [
             p
             for p in legacy_plugins
-            if (p if isinstance(p, str) else p[0]) != OPENCODE_PLUGIN_PACKAGE
+            if _opencode_plugin_id(p) != OPENCODE_PLUGIN_PACKAGE
         ]
         if kept:
             config["plugin"] = kept
@@ -557,6 +583,7 @@ def edit_opencode(
         _edit_opencode_v1(config, base_url, api_key, model_infos)
 
     _write_json_config(path, config)
+    _clear_opencode_plugin_cache()
 
     logger.info(f"Updated configuration at {path}")
 
