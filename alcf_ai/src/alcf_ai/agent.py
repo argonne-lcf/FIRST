@@ -151,12 +151,26 @@ def _token_helper_command() -> list[str] | None:
 
     Returns None when no way to run the helper was found.
     """
-    if exe := shutil.which("alcf-tokens"):
+    # uv prunes its cache, so an executable in there is not a durable helper.
+    cache = Path(os.environ.get("UV_CACHE_DIR", Path.home() / ".cache" / "uv"))
+    if uv := shutil.which("uv"):
+        try:
+            output = subprocess.check_output(
+                [uv, "cache", "dir"], text=True, stderr=subprocess.DEVNULL
+            )
+            cache = Path(output.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def durable(exe: str | Path) -> bool:
+        return cache.resolve() not in Path(exe).resolve().parents
+
+    if (exe := shutil.which("alcf-tokens")) and durable(exe):
         return [exe, "get-token", "inference"]
-    if exe := shutil.which("alcf-ai"):
+    if (exe := shutil.which("alcf-ai")) and durable(exe):
         return [exe, "auth", "get-access-token"]
     argv0 = Path(sys.argv[0])
-    if argv0.name.startswith("alcf-ai") and argv0.is_file():
+    if argv0.name.startswith("alcf-ai") and argv0.is_file() and durable(argv0):
         return [str(argv0.resolve()), "auth", "get-access-token"]
     if uvx := shutil.which("uvx"):
         return [uvx, "alcf-tokens", "get-token", "inference"]
