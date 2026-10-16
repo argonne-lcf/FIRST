@@ -28,7 +28,12 @@ ALLOWLIST: dict[str, list[str]] = {
     "sophia": ["openai/gpt-oss-120b"],
     # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
     # "metis": ["gpt-oss-120b"],
-    "minerva": ["nemotron-3-ultra", "inkling-bf16", "gpt-oss-120b"],
+    "minerva": [
+        "nemotron-3-ultra",
+        "inkling-bf16",
+        "gpt-oss-120b",
+        "muse-spark-bf16",
+    ],
 }
 
 DEFAULT_CAPABILITIES: dict[str, Any] = {

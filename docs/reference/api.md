@@ -62,7 +62,9 @@ object:
       "streaming": true,
       "reasoning": {
         "supported": true,
-        "separate_output": true
+        "separate_output": true,
+        "effort_levels": ["low", "medium", "high", "xhigh"],
+        "default_effort": "xhigh"
       },
       "tool_calling": {
         "supported": true
