@@ -160,6 +160,72 @@ async def test_gives_up_and_raises_after_persistent_transport_error(
     assert calls["n"] == 3
 
 
+async def test_failed_attempts_log_no_warning(
+    monkeypatch: pytest.MonkeyPatch, gateway_caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only the first failed attempt is logged, at DEBUG; the caller decides
+    the level for the final outcome."""
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("first_gateway.services.pilot_control.asyncio.sleep", _no_sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    client = _make_client(handler)
+    with gateway_caplog.at_level(
+        "DEBUG", logger="first_gateway.services.pilot_control"
+    ):
+        with pytest.raises(httpx.ConnectError):
+            await client._request("GET", "https://mgr/start-replica")
+
+    records = [
+        r
+        for r in gateway_caplog.records
+        if r.name == "first_gateway.services.pilot_control"
+    ]
+    assert [r.levelname for r in records] == ["DEBUG"]
+
+
+async def test_retryable_status_logs_no_warning(
+    monkeypatch: pytest.MonkeyPatch, gateway_caplog: pytest.LogCaptureFixture
+) -> None:
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("first_gateway.services.pilot_control.asyncio.sleep", _no_sleep)
+
+    client = _make_client(lambda _request: httpx.Response(503))
+    with gateway_caplog.at_level(
+        "DEBUG", logger="first_gateway.services.pilot_control"
+    ):
+        resp = await client._request("GET", "https://mgr/logs/r0")
+
+    assert resp.status_code == 503
+    records = [
+        r
+        for r in gateway_caplog.records
+        if r.name == "first_gateway.services.pilot_control"
+    ]
+    assert [r.levelname for r in records] == ["DEBUG"]
+
+
+async def test_get_status_makes_one_attempt_on_transport_error() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ConnectTimeout("hung", request=request)
+
+    client = _make_client(handler)
+    with pytest.raises(httpx.ConnectTimeout):
+        await client.get_status("https://mgr")
+
+    assert calls["n"] == 1
+
+
 async def test_4xx_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _no_sleep(_seconds: float) -> None:
         return None

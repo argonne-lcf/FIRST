@@ -21,6 +21,7 @@ from first_common.schema.resources.read import (
     StaticDeploymentDetail,
     SystemHealth,
 )
+from first_common.schema.resources.runtime import ModelRuntime
 from first_common.schema.types import PilotConfig, ReplicaState
 from first_gateway.platforms.schedulers import build_scheduler
 
@@ -68,9 +69,21 @@ async def list_models(
         models = [m for m in models if user_can_access_group(user, m.access_group)]
 
     runtimes = await repo.get_many_model_runtimes([m.name for m in models])
-    return [
-        ModelSummary.merge(model, runtime=rt) for (model, rt) in zip(models, runtimes)
-    ]
+    notices = await db.Cluster.maintenance_notices(sess)
+    return [model_summary(model, rt, notices) for (model, rt) in zip(models, runtimes)]
+
+
+def model_summary(
+    model: db.Model, runtime: ModelRuntime, notices: dict[str, str]
+) -> ModelSummary:
+    """Merge a Model row with its runtime and its clusters' maintenance notices."""
+    return ModelSummary.merge(
+        model,
+        runtime=runtime,
+        maintenance_notices={
+            c: notices[c] for c in sorted(model.cluster_names) if c in notices
+        },
+    )
 
 
 @admin_router.get("/launch-templates", response_model=list[LaunchTemplate])

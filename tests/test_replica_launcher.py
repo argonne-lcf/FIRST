@@ -7,6 +7,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _replica_counter = itertools.count()
@@ -17,7 +19,8 @@ from first_common.schema.pilot import (
     PilotResources,
     ReplicaInfo,
 )
-from first_common.schema.types import ReplicaState
+from first_common.schema.types import HealthCheckResult, ReplicaState
+from first_gateway.controllers.controller import ExpectedReconcileFailure
 from first_gateway.controllers.worker import Worker
 from first_gateway.controllers.workers.replica_launcher import ReplicaLauncher
 from first_gateway.database.models import (
@@ -483,3 +486,93 @@ async def test_reconcile_server_error_raises_without_penalty(
     assert replica.state == ReplicaState.placed.value
     dep = await _get_deployment(db, "deploy-1")
     assert dep.consecutive_launch_failures == 0
+
+
+# ── manager health and maintenance ───────────────────────────────────────
+
+
+async def _set_manager_health(
+    db: async_sessionmaker[AsyncSession], health: HealthCheckResult
+) -> None:
+    async with db.begin() as sess:
+        await sess.execute(sa.update(PilotJob).values(manager_health=health.value))
+
+
+async def test_unhealthy_manager_is_not_actionable_until_healthy(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        uid = await _insert_replica(sess)
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200)
+
+    ctrl = _make_controller(db, handler)
+    await _set_manager_health(db, HealthCheckResult.unhealthy)
+    async with db() as sess:
+        assert await ctrl.list_actionable(sess) == []
+    # A stale wake doesn't launch onto the dead manager either.
+    await ctrl.reconcile(uid)
+    assert calls == 0
+    assert (await _get_replica(db, uid)).state == ReplicaState.placed.value
+
+    await _set_manager_health(db, HealthCheckResult.healthy)
+    async with db() as sess:
+        assert await ctrl.list_actionable(sess) == [uid]
+    await ctrl.reconcile(uid)
+    assert calls == 1
+    assert (await _get_replica(db, uid)).state == ReplicaState.launching.value
+
+
+def _unreachable(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("down", request=request)
+
+
+async def test_transport_error_in_maintenance_is_expected_failure(
+    db: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "first_gateway.services.pilot_control._RETRY_BACKOFF", 0.0, raising=True
+    )
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await sess.execute(sa.update(Cluster).values(maintenance_notice="PM"))
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        uid = await _insert_replica(sess)
+
+    ctrl = _make_controller(db, _unreachable)
+    with pytest.raises(ExpectedReconcileFailure, match="under maintenance"):
+        await ctrl.reconcile(uid)
+
+    # The base controller still backs the replica off.
+    await ctrl._reconcile_one(uid)
+    replica = await _get_replica(db, uid)
+    assert replica.reconcile_failures == 1
+    assert replica.state == ReplicaState.placed.value
+
+
+async def test_transport_error_outside_maintenance_raises_as_is(
+    db: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "first_gateway.services.pilot_control._RETRY_BACKOFF", 0.0, raising=True
+    )
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        uid = await _insert_replica(sess)
+
+    ctrl = _make_controller(db, _unreachable)
+    with pytest.raises(httpx.ConnectError):
+        await ctrl.reconcile(uid)

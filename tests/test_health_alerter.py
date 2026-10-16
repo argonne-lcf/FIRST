@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import sqlalchemy as sa
 from pydantic import SecretStr
 from redis.asyncio import Redis
 from sqlalchemy import update
@@ -40,6 +41,7 @@ from first_gateway.controllers.workers.health_alerter.checks import (
     check_pilot_deployment,
     check_pilot_job,
     check_pilot_replica,
+    check_pilot_starts,
     check_quarantined_nodes,
     check_static_deployment,
 )
@@ -820,6 +822,165 @@ async def test_check_cluster_health(
 
     obs = await check_cluster_health(alerter.client_state)
     assert [o for o in obs if o.status == "unhealthy"]
+
+
+async def test_check_cluster_health_maintenance_is_info(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(
+            Cluster(
+                name="cl-maint",
+                health_check={"url": "", "debounce": 2},
+                health=HealthCheckResult.unhealthy.value,
+                maintenance_notice="PM today",
+            )
+        )
+
+    obs = [
+        o
+        for o in await check_cluster_health(alerter.client_state)
+        if "cl-maint" in o.summary
+    ]
+    assert [(o.status, o.severity) for o in obs] == [("maintenance", "info")]
+    assert "PM today" in obs[0].summary
+
+
+async def test_check_pilot_job_suppresses_expected_faults_in_maintenance(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await sess.execute(
+            sa.update(Cluster)
+            .where(Cluster.name == "cl")
+            .values(maintenance_notice="PM today")
+        )
+        sess.add(
+            PilotJob(
+                name="cl/pilot-job/maint",
+                cluster_name="cl",
+                walltime_min=60,
+                num_nodes=1,
+                gpus_per_node=4,
+                reconcile_failures=3,
+                reconcile_last_error="timeout connecting to scheduler",
+                manager_health=HealthCheckResult.unhealthy.value,
+            )
+        )
+
+    obs = await check_pilot_job(alerter.client_state)
+    assert not [o for o in obs if "/reconcile" in o.key or "/health" in o.key]
+
+
+async def test_maintenance_suppresses_lost_deployments_and_replicas(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await sess.execute(
+            sa.update(Cluster)
+            .where(Cluster.name == "cl")
+            .values(maintenance_notice="PM today")
+        )
+        sess.add(_sd("sd-down"))
+        sess.add(
+            PilotDeployment(
+                name="pd1",
+                cluster_name="cl",
+                model_name="mdl",
+                launch_template_name=LAUNCH_TEMPLATE_NAME,
+                router_params={},
+                scaling_strategy=None,
+                min_replicas=0,
+                max_replicas=2,
+                launch_spec={},
+                state=PilotDeploymentState.degraded.value,
+                prometheus_scrape_interval_sec=30,
+            )
+        )
+        await sess.flush()
+        sess.add(
+            PilotReplica(
+                name="pd1/replica/abc",
+                pilot_deployment_name="pd1",
+                state=ReplicaState.error.value,
+                reconcile_failures=2,
+            )
+        )
+
+    client_state = alerter.client_state
+    assert await check_static_deployment(client_state) == []
+    assert await check_pilot_deployment(client_state) == []
+    assert await check_pilot_replica(client_state) == []
+
+
+_LATCH_PILOT_SYSTEM = {
+    "scheduler_adapter": "first_gateway.platforms.schedulers.GraphQLPBSAdapter",
+    "job_walltime_min": 60,
+    "queue": "prod",
+    "account": "TestAcct",
+    "max_num_nodes": 10,
+    "gpus_per_node": 4,
+    "workdir": "/opt/test/workdir",
+    "external_port": 8443,
+    "nginx_path": "/usr/sbin/nginx",
+    "ip_allowlist": [],
+    "node_file_env": "PBS_NODEFILE",
+    "submit_script_preamble": "#!/bin/bash",
+    "pilot_path": "/test/first-pilot",
+    "pilot_config_path": "/opt/test/pilot-config.yaml",
+    "max_consecutive_pilot_start_failures": 2,
+}
+
+
+async def test_check_pilot_starts_alerts_while_halted(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        sess.add(
+            Cluster(
+                name="cl-pilot",
+                health_check={"url": "", "debounce": 2},
+                pilot_system=_LATCH_PILOT_SYSTEM,
+                pilot_start_failures=1,
+                # Counting is already off during maintenance; the alert stays.
+                maintenance_notice="PM today",
+            )
+        )
+        await sess.flush()
+        for i, reason in enumerate(["older failure", "latest failure"]):
+            sess.add(
+                PilotJob(
+                    name=f"cl-pilot-job-{i}",
+                    cluster_name="cl-pilot",
+                    walltime_min=60,
+                    num_nodes=1,
+                    gpus_per_node=4,
+                    failure_reason=reason,
+                    deleted_at=datetime.now(timezone.utc),
+                )
+            )
+
+    assert await check_pilot_starts(alerter.client_state) == []
+
+    async with db.begin() as sess:
+        await sess.execute(sa.update(Cluster).values(pilot_start_failures=2))
+    (obs,) = await check_pilot_starts(alerter.client_state)
+    assert obs.status == "halted"
+    assert obs.severity == "crit"
+    assert obs.key.endswith("/pilot_starts")
+    assert "latest failure" in obs.summary
+    assert "reconcile-reset Cluster.cl-pilot" in obs.detail
+
+    async with db.begin() as sess:
+        await sess.execute(sa.update(Cluster).values(pilot_start_failures=0))
+    assert await check_pilot_starts(alerter.client_state) == []
 
 
 async def test_check_quarantined_nodes(

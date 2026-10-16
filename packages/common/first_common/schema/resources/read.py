@@ -174,11 +174,14 @@ class ModelSummary(ResourceMeta, spec.ModelSpec):
     endpoints the model supports.
 
     Embeds a summary of deployments currently specified for this model.
+    `maintenance_notices` maps the name of each cluster hosting this model that
+    is under maintenance to its notice.
     """
 
     kind: Literal["Model"] = "Model"
     pilot_deployments: list[PilotDeploymentSummary]
     static_deployments: list[StaticDeploymentSummary]
+    maintenance_notices: dict[str, str] = {}
     runtime: ModelRuntime = ModelRuntime()
 
 
@@ -207,6 +210,7 @@ class PilotJob(ResourceMeta):
     num_nodes: int
     gpus_per_node: int
     deleted_at: datetime | None = None
+    failure_reason: str | None = None
 
     runtime: PilotJobRuntime | None = None
 
@@ -220,6 +224,9 @@ class ClusterSummary(ResourceMeta, spec.ClusterSpec):
 
     kind: Literal["Cluster"] = "Cluster"
     health: HealthCheckResult
+    # New pilot submissions halt at pilot_system's
+    # max_consecutive_pilot_start_failures.
+    pilot_start_failures: int = 0
 
 
 class ClusterDetail(ClusterSummary):

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 from time import monotonic
@@ -15,14 +16,16 @@ from first_common.schema.types import (
     ReplicaState,
 )
 
-from ...database.models import PilotDeployment, PilotJob, PilotReplica
+from ...database.models import Cluster, PilotDeployment, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
 from ...services.pilot_control import PilotControlClient
 from ...settings import ClientState
 from ..wakeup import WakeupDispatcher
-from ..worker import Worker
+from ..worker import Heartbeat, Worker
 
 logger = logging.getLogger(__name__)
+
+MAINTENANCE_UNREACHABLE = "Pilot manager unreachable during cluster maintenance."
 
 
 def aggregate_state(dep: PilotDeployment) -> PilotDeploymentState:
@@ -96,6 +99,10 @@ class PilotReplicaObserver(Worker):
     status_backoff_base = poll_interval
     status_backoff_max = 120.0
 
+    # /status probes in flight at once, so a pass over many hung managers
+    # finishes within a few connect timeouts.
+    max_concurrent_probes = 16
+
     def __init__(
         self,
         name: str,
@@ -118,9 +125,9 @@ class PilotReplicaObserver(Worker):
         self._status_cooldown: dict[int, tuple[float, int]] = {}
 
     async def run(self) -> None:
-        hb = self.register_heartbeat("poll")
+        self.hb: Heartbeat = self.register_heartbeat("poll")
         while True:
-            hb.beat()
+            self.hb.beat()
             try:
                 await self.poll()
             except Exception:
@@ -137,6 +144,7 @@ class PilotReplicaObserver(Worker):
                     )
                 )
             )
+            maintenance = await Cluster.maintenance_notices(sess)
 
         live_uids = {job.uid for job in jobs}
         self._status_cooldown = {
@@ -144,29 +152,53 @@ class PilotReplicaObserver(Worker):
         }
 
         now = monotonic()
-        for job in jobs:
-            cooldown = self._status_cooldown.get(job.uid)
-            if cooldown is not None and now < cooldown[0]:
-                continue
+        due = [
+            job
+            for job in jobs
+            if (cooldown := self._status_cooldown.get(job.uid)) is None
+            or now >= cooldown[0]
+        ]
+        semaphore = asyncio.Semaphore(self.max_concurrent_probes)
 
-            try:
-                assert job.manager_url is not None
-                status = await self.client.get_status(job.manager_url)
-            except Exception:
-                await self._record_status_failure(job, cooldown)
-                continue
+        async def probe(job: PilotJob) -> None:
+            async with semaphore:
+                try:
+                    await self._probe(job, expected=job.cluster_name in maintenance)
+                except Exception:
+                    logger.exception(
+                        "%s: failed to sync status of job %s", self.name, job.name
+                    )
+                finally:
+                    # Beat per probe: a pass is only as stalled as its slowest one.
+                    self.hb.beat()
 
-            self._status_cooldown.pop(job.uid, None)
-            await self.update_job_status(job, status)
-            await self.sync_replicas(job, status.replicas)
-            await self.reap_orphans(job, status.replicas)
-
+        await asyncio.gather(*(probe(job) for job in due))
         await self.update_deployments()
 
+    async def _probe(self, job: PilotJob, *, expected: bool) -> None:
+        """Fetch one job's /status and sync it, or record the failure."""
+        cooldown = self._status_cooldown.get(job.uid)
+        try:
+            assert job.manager_url is not None
+            status = await self.client.get_status(job.manager_url)
+        except Exception:
+            await self._record_status_failure(job, cooldown, expected=expected)
+            return
+
+        self._status_cooldown.pop(job.uid, None)
+        await self.update_job_status(job, status)
+        await self.sync_replicas(job, status.replicas)
+        await self.reap_orphans(job, status.replicas)
+
     async def _record_status_failure(
-        self, job: PilotJob, cooldown: tuple[float, int] | None
+        self, job: PilotJob, cooldown: tuple[float, int] | None, *, expected: bool
     ) -> None:
-        """Mark the job's manager unhealthy and backoff on status polling."""
+        """Mark the job's manager unhealthy and backoff on status polling.
+
+        `expected` failures (cluster under maintenance) are logged quietly, and
+        the job's serving replicas are marked unhealthy so they stop being
+        routed right away.
+        """
         failures = (cooldown[1] if cooldown else 0) + 1
         delay = min(
             self.status_backoff_base * 2.0 ** (failures - 1),
@@ -175,21 +207,33 @@ class PilotReplicaObserver(Worker):
 
         self._status_cooldown[job.uid] = (monotonic() + delay, failures)
 
-        logger.warning(
+        logger.log(
+            logging.INFO if expected else logging.WARNING,
             "%s: failed to fetch /status from job %s at %s "
-            "(failure #%d, backing off %.0fs)",
+            "(failure #%d, backing off %.0fs)%s",
             self.name,
             job.name,
             job.manager_url,
             failures,
             delay,
+            "; cluster under maintenance" if expected else "",
             # Full traceback on the first failure only; later ones are expected.
-            exc_info=(failures == 1),
+            exc_info=(failures == 1 and not expected),
         )
-        await self.record_unhealthy(job)
+        await self.record_unhealthy(job, mark_replicas=expected)
 
-    async def record_unhealthy(self, job: PilotJob) -> None:
+    async def record_unhealthy(
+        self, job: PilotJob, *, mark_replicas: bool = False
+    ) -> None:
+        """Mark the job's manager unhealthy.
+
+        `mark_replicas`: also mark its ready and launching replicas unhealthy.
+        Runs on every call, not only on the job's transition, so it also covers
+        a maintenance notice set after the manager had already gone unhealthy.
+        A later successful /status writes back the manager's view of them.
+        """
         now = datetime.now(timezone.utc)
+        marked = 0
         async with self.client_state.db_sessionmaker.begin() as sess:
             await sess.execute(
                 sa.update(PilotJob)
@@ -204,7 +248,31 @@ class PilotReplicaObserver(Worker):
                     manager_unhealthy_since=now,
                 )
             )
+            if mark_replicas:
+                result = await sess.execute(
+                    sa.update(PilotReplica)
+                    .where(
+                        PilotReplica.pilot_job_name == job.name,
+                        PilotReplica.state.in_(
+                            [ReplicaState.ready.value, ReplicaState.launching.value]
+                        ),
+                        PilotReplica.deleted_at.is_(None),
+                        PilotReplica.scheduled_deletion_at.is_(None),
+                    )
+                    .values(
+                        state=ReplicaState.unhealthy.value,
+                        state_message=MAINTENANCE_UNREACHABLE,
+                    )
+                )
+                marked = result.rowcount  # type: ignore[attr-defined]
 
+        if marked:
+            logger.info(
+                "Marked %d replica(s) on PilotJob %r unhealthy; cluster under "
+                "maintenance",
+                marked,
+                job.name,
+            )
         logger.info(f"Recorded PilotJob {job.name!r} manager_health=unhealthy")
 
     async def update_job_status(self, job: PilotJob, status: PilotJobStatus) -> None:

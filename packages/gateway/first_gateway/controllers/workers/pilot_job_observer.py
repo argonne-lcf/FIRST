@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from collections.abc import Awaitable
 from datetime import datetime, timezone
@@ -8,11 +7,15 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
-from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaState
+from first_common.schema.types import HealthCheckResult, PilotConfig
 
-from ...database.models import Cluster, PilotDeployment, PilotJob, PilotReplica
+from ...database.models import Cluster, PilotJob
 from ...database.redis.pubsub import Channel
-from ...platforms.schedulers import build_scheduler
+from ...platforms.schedulers import (
+    SCHEDULER_RPC_TIMEOUT,
+    build_scheduler,
+    scheduler_rpc,
+)
 from ...services.pilot_control import PilotControlClient
 from ...services.pilot_submitter import PilotSubmitter
 from ...settings import ClientState
@@ -21,10 +24,10 @@ from ..worker import Worker
 
 logger = logging.getLogger(__name__)
 
-_RPC_TIMEOUT = 60.0
+_RPC_TIMEOUT = SCHEDULER_RPC_TIMEOUT
 
-# Reconciler/controller cleanup begins at exiting. Account for a failed
-# bootstrap in that same first terminal transition, before claims can drain.
+# Reconciler/controller cleanup begins at exiting. Account for a failed pilot
+# start in that same first terminal transition.
 _TERMINAL_STATES = frozenset(
     {SchedulerJobState.exiting.value, SchedulerJobState.gone.value}
 )
@@ -40,6 +43,13 @@ class PilotJobObserver(Worker):
     Writes scheduler_state, time_started, and manager_url to Postgres, and
     idle_since while a running job has no manager_url.
     Reaps orphaned scheduler jobs that have no matching PilotJob row.
+
+    Counts pilots that end before their manager comes up in
+    Cluster.pilot_start_failures (with PilotJob.failure_reason), and resets the
+    count when a manager comes up, unless the latch has already tripped.
+
+    Clusters under maintenance are still polled, so jobs that survive it keep
+    being tracked; poll failures there are expected and logged quietly.
     """
 
     poll_interval = 10.0
@@ -63,8 +73,6 @@ class PilotJobObserver(Worker):
             heartbeat_timeout=heartbeat_timeout,
         )
         self.client = PilotControlClient(client_state)
-        # Per-cluster throttle for the "skipping (maintenance)" log line.
-        self._maintenance_logged_at: dict[int, datetime] = {}
 
     async def run(self) -> None:
         self.hb = self.register_heartbeat("poll")
@@ -86,14 +94,7 @@ class PilotJobObserver(Worker):
         """
         self.hb.beat()
         try:
-            return await asyncio.wait_for(awaitable, timeout=_RPC_TIMEOUT)
-        except TimeoutError as e:
-            # asyncio.wait_for raises a bare TimeoutError with an empty message;
-            # name the RPC so record_failure() stores something actionable.
-            name = getattr(awaitable, "__qualname__", None) or repr(awaitable)
-            raise TimeoutError(
-                f"Scheduler {name} RPC timed out after {_RPC_TIMEOUT:g}s"
-            ) from e
+            return await scheduler_rpc(awaitable, _RPC_TIMEOUT)
         finally:
             self.hb.beat()
 
@@ -104,10 +105,6 @@ class PilotJobObserver(Worker):
         now = datetime.now(timezone.utc)
         for cluster in clusters:
             if cluster.pilot_system is None:
-                continue
-
-            if cluster.maintenance_notice:
-                self._log_maintenance_skip(cluster, now)
                 continue
 
             # Honor the reconcile backoff written by record_failure() so a cluster
@@ -123,11 +120,25 @@ class PilotJobObserver(Worker):
 
             submitter = PilotSubmitter(pilot_config, adapter)
             try:
-                await self._poll_cluster(submitter, cluster.name)
-            except Exception as e:
-                logger.exception(
-                    "%s: poll failed for cluster %s", self.name, cluster.name
+                await self._poll_cluster(
+                    submitter,
+                    cluster.name,
+                    in_maintenance=bool(cluster.maintenance_notice),
                 )
+            except Exception as e:
+                if cluster.maintenance_notice:
+                    # Expected while the cluster is down for maintenance.
+                    logger.info(
+                        "%s: poll failed for cluster %s under maintenance (%s): %r",
+                        self.name,
+                        cluster.name,
+                        cluster.maintenance_notice,
+                        e,
+                    )
+                else:
+                    logger.exception(
+                        "%s: poll failed for cluster %s", self.name, cluster.name
+                    )
                 async with self.client_state.db_sessionmaker.begin() as sess:
                     await Cluster.record_failure(sess, cluster.uid, e)
                     await self._mark_cluster_health(
@@ -149,23 +160,12 @@ class PilotJobObserver(Worker):
                             sess, cluster, HealthCheckResult.healthy
                         )
 
-    def _log_maintenance_skip(self, cluster: Cluster, now: datetime) -> None:
-        """Log that a cluster in maintenance is being skipped, at most once/min."""
-        last = self._maintenance_logged_at.get(cluster.uid)
-        if last is not None and (now - last).total_seconds() < 60:
-            return
-        self._maintenance_logged_at[cluster.uid] = now
-        logger.info(
-            "%s: skipping cluster %r in maintenance mode: %s",
-            self.name,
-            cluster.name,
-            cluster.maintenance_notice,
-        )
-
     async def _poll_cluster(
         self,
         submitter: PilotSubmitter,
         cluster_name: str,
+        *,
+        in_maintenance: bool = False,
     ) -> None:
         async with self.client_state.db_sessionmaker() as sess:
             db_jobs = (
@@ -174,6 +174,7 @@ class PilotJobObserver(Worker):
                         PilotJob.cluster_name == cluster_name,
                         PilotJob.scheduler_job_id.is_not(None),
                         PilotJob.scheduler_state.not_in([SchedulerJobState.gone.value]),
+                        PilotJob.deleted_at.is_(None),
                     )
                 )
             ).all()
@@ -191,7 +192,7 @@ class PilotJobObserver(Worker):
                 status = await self._rpc(
                     submitter.adapter.get_exact_job_status(job.scheduler_job_id)
                 )
-            await self._update_job(job, status)
+            await self._update_job(job, status, in_maintenance=in_maintenance)
 
         now = datetime.now(timezone.utc)
         queued_steady = set(
@@ -217,10 +218,21 @@ class PilotJobObserver(Worker):
 
         await self._discover_endpoints(submitter, cluster_name)
 
-    async def _update_job(self, db_job: PilotJob, status: JobStatusInfo | None) -> None:
+    async def _update_job(
+        self,
+        db_job: PilotJob,
+        status: JobStatusInfo | None,
+        *,
+        in_maintenance: bool = False,
+    ) -> None:
+        """Record the scheduler's view of a job.
+
+        `in_maintenance`: a job lost from the scheduler is expected, so logged
+        quietly and not counted as a pilot start failure.
+        """
         async with self.client_state.db_sessionmaker.begin() as sess:
             # Serialize competing observations and intentional job retirement;
-            # the first terminal transition and its charge commit together.
+            # the first terminal transition and its accounting commit together.
             current = await sess.get(PilotJob, db_job.uid, with_for_update=True)
             if current is None:
                 return
@@ -235,7 +247,7 @@ class PilotJobObserver(Worker):
                 new_started = status.started_at
 
             # FIRST retires an allocation at exiting; a delayed scheduler
-            # response must not resurrect it or reopen its one-time charge.
+            # response must not resurrect it or count it again.
             # Nonterminal PBS transitions (including requeue) remain allowed.
             if (
                 prev_state in _TERMINAL_STATES and target_state not in _TERMINAL_STATES
@@ -248,8 +260,10 @@ class PilotJobObserver(Worker):
             if prev_state == target_state and current.time_started == new_started:
                 return
 
-            charge = (
-                target_state in _TERMINAL_STATES
+            # A job lost during maintenance says nothing about pilot health.
+            start_failure = (
+                not in_maintenance
+                and target_state in _TERMINAL_STATES
                 and prev_state not in _TERMINAL_STATES
                 and current.manager_url is None
                 and current.scheduled_deletion_at is None
@@ -261,56 +275,65 @@ class PilotJobObserver(Worker):
                 now = datetime.now(timezone.utc)
                 current.scheduled_deletion_at = now
                 current.deleted_at = now
-                logger.warning(
+                logger.log(
+                    logging.INFO if in_maintenance else logging.WARNING,
                     f"PilotJob {current.name}: {current.scheduler_job_id!r} is no longer "
                     "in the scheduler. Assuming gone; marking terminated."
+                    + ("; cluster under maintenance" if in_maintenance else ""),
                 )
             else:
                 logger.info(f"PilotJob {current.name}: {prev_state} -> {target_state}")
 
-            if charge:
-                await self._record_pre_manager_launch_failure(sess, current)
+            if start_failure:
+                await self._record_pilot_start_failure(sess, current)
 
     @staticmethod
-    async def _record_pre_manager_launch_failure(
-        sess: AsyncSession, job: PilotJob
-    ) -> None:
-        """Charge each actively assigned deployment once for a dead pilot.
+    async def _record_pilot_start_failure(sess: AsyncSession, job: PilotJob) -> None:
+        """Count a pilot that ended before publishing its manager endpoint.
 
-        A PilotJob that reaches a scheduler terminal state before publishing its
-        manager endpoint never had an opportunity to launch its placed replicas.
-        Count the failed allocation against each distinct affected deployment so
-        ``max_consecutive_launch_failures`` bounds automatic replacements.  Rows
-        already draining are excluded: their allocation is being intentionally
-        retired, rather than replaced after a launch failure.
+        Blames the cluster: a pilot that never came up usually points at the
+        cluster or its scheduler. At `max_consecutive_pilot_start_failures`, new
+        submissions on the cluster halt until an admin resets it.
         """
-        affected_deployments = (
-            sa.select(PilotReplica.pilot_deployment_name)
-            .where(
-                PilotReplica.pilot_job_name == job.name,
-                PilotReplica.state == ReplicaState.placed.value,
-                PilotReplica.scheduled_deletion_at.is_(None),
-                PilotReplica.deleted_at.is_(None),
-            )
-            .distinct()
+        job.failure_reason = (
+            f"Pilot job died ({job.scheduler_state}) before its manager came up"
         )
-        result = await sess.execute(
-            sa.update(PilotDeployment)
-            .where(PilotDeployment.name.in_(affected_deployments))
-            .values(
-                consecutive_launch_failures=(
-                    PilotDeployment.consecutive_launch_failures + 1
-                )
+        row = (
+            await sess.execute(
+                sa.update(Cluster)
+                .where(Cluster.name == job.cluster_name)
+                .values(pilot_start_failures=Cluster.pilot_start_failures + 1)
+                .returning(Cluster.pilot_start_failures, Cluster.pilot_system)
             )
+        ).one_or_none()
+        if row is None:
+            return
+        failures, pilot_system = row
+        threshold = (
+            PilotConfig.model_validate(
+                pilot_system
+            ).max_consecutive_pilot_start_failures
+            if pilot_system is not None
+            else None
         )
-        affected = result.rowcount  # type: ignore[attr-defined]
 
-        if affected:
+        logger.warning(
+            "PilotJob %s: pilot start failure %d%s on cluster %s: %s",
+            job.name,
+            failures,
+            f"/{threshold}" if threshold is not None else "",
+            job.cluster_name,
+            job.failure_reason,
+        )
+        if failures == threshold:
             logger.warning(
-                "PilotJob %s terminated before manager readiness; charged one "
-                "launch failure to %d assigned deployment(s)",
-                job.name,
-                affected,
+                "Cluster %s: halting pilot submissions after %d consecutive pilot "
+                "start failures (last: %s). Reset with `first-admin "
+                "reconcile-reset Cluster.%s` or by re-applying the cluster.",
+                job.cluster_name,
+                failures,
+                job.failure_reason,
+                job.cluster_name,
             )
 
     async def _discover_endpoints(
@@ -387,9 +410,16 @@ class PilotJobObserver(Worker):
                     # reachable pilot.
                     .values(manager_url=addr.control_url, idle_since=None)
                 )
-
-            if result.rowcount == 0:  # type: ignore[attr-defined]
-                continue
+                if result.rowcount == 0:  # type: ignore[attr-defined]
+                    continue
+                # A pilot came up: the failure streak is over
+                await sess.execute(
+                    sa.update(Cluster)
+                    .where(
+                        Cluster.name == cluster_name, Cluster.pilot_start_failures > 0
+                    )
+                    .values(pilot_start_failures=0)
+                )
 
             await self.client_state.redis_pubsub.publish(
                 Channel.pilot_job_ready, job_name

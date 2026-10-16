@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -10,13 +9,17 @@ from first_common.schema.types import HealthCheckResult, PilotConfig
 
 from ...database.models import Cluster, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
-from ...platforms.schedulers import build_scheduler
+from ...platforms.schedulers import (
+    SCHEDULER_RPC_TIMEOUT,
+    build_scheduler,
+    scheduler_rpc,
+)
 from ...services.pilot_submitter import PilotSubmitter
 from ..controller import Controller, StaleReconcile
 
 logger = logging.getLogger(__name__)
 
-_RPC_TIMEOUT = 60.0
+_RPC_TIMEOUT = SCHEDULER_RPC_TIMEOUT
 _DYING_STATES = frozenset({SchedulerJobState.exiting.value})
 _GONE_STATES = frozenset({SchedulerJobState.gone.value})
 _SUBMISSION_CAPACITY_STATES = [
@@ -60,13 +63,15 @@ class PilotJobController(Controller):
             job = await sess.get(PilotJob, uid)
             if job is None:
                 return
-            pilot_config = await self._get_pilot_config(sess, job.cluster_name)
+            cluster = await self._get_pilot_cluster(sess, job.cluster_name)
 
-        if pilot_config is None:
+        if cluster is None:
             return
+        pilot_config = PilotConfig.model_validate(cluster.pilot_system)
+        maintenance_notice = cluster.maintenance_notice
 
         if job.scheduled_deletion:
-            await self._terminate_and_delete(job, pilot_config)
+            await self._terminate_and_delete(job, cluster, pilot_config)
             return
 
         if job.scheduler_state in _DYING_STATES | _GONE_STATES:
@@ -104,10 +109,11 @@ class PilotJobController(Controller):
             ).total_seconds() / 60
             if unhealthy_min >= pilot_config.pilot_max_unhealthy_time_min:
                 logger.info(
-                    "PilotJob %s unhealthy %.1f min (limit %d), scheduling deletion",
+                    "PilotJob %s unhealthy %.1f min (limit %d), scheduling deletion%s",
                     job.name,
                     unhealthy_min,
                     pilot_config.pilot_max_unhealthy_time_min,
+                    "; cluster under maintenance" if maintenance_notice else "",
                 )
                 await self._mark_scheduled_deletion(
                     job,
@@ -116,11 +122,26 @@ class PilotJobController(Controller):
                 return
 
         if job.scheduler_state == SchedulerJobState.pending_submit.value:
-            await self._submit(job, pilot_config)
+            # Held jobs stay queued and submit once the cause clears.
+            if maintenance_notice:
+                reason = "under maintenance"
+            elif cluster.scheduler_unreachable:
+                reason = "scheduler unreachable"
+            elif cluster.pilot_submissions_halted(pilot_config):
+                reason = "pilot submissions halted"
+            else:
+                await self._submit(job, pilot_config)
+                return
+            logger.debug(
+                "PilotJob %s: will not submit; cluster %s %s",
+                job.name,
+                job.cluster_name,
+                reason,
+            )
 
-    async def _get_pilot_config(
+    async def _get_pilot_cluster(
         self, sess: AsyncSession, cluster_name: str
-    ) -> PilotConfig | None:
+    ) -> Cluster | None:
         cluster = await sess.scalar(
             sa.select(Cluster).where(Cluster.name == cluster_name)
         )
@@ -130,13 +151,36 @@ class PilotJobController(Controller):
                 cluster_name,
             )
             return None
-        return PilotConfig.model_validate(cluster.pilot_system)
+        return cluster
 
     async def _terminate_and_delete(
-        self, job: PilotJob, pilot_config: PilotConfig
+        self, job: PilotJob, cluster: Cluster, pilot_config: PilotConfig
     ) -> None:
         if job.scheduler_job_id is None or job.scheduler_state in _GONE_STATES:
             await self._finalize_deletion(job)
+            return
+
+        if cluster.scheduler_unreachable:
+            if (
+                job.manager_health == HealthCheckResult.unhealthy.value
+                and cluster.maintenance_notice
+            ):
+                # Nothing can reach the pilot or the scheduler, and the outage
+                # is expected. If the job survives, the observer reaps it as an
+                # orphan once the scheduler is back.
+                logger.info(
+                    "PilotJob %s: manager and scheduler unreachable during "
+                    "maintenance; marking gone",
+                    job.name,
+                )
+                await self._finalize_deletion(
+                    job, PilotJob.manager_health == HealthCheckResult.unhealthy.value
+                )
+                return
+            logger.info(
+                "PilotJob %s: waiting for scheduler to become reachable to terminate",
+                job.name,
+            )
             return
 
         if job.scheduler_state in _DYING_STATES:
@@ -148,9 +192,7 @@ class PilotJobController(Controller):
             return
 
         adapter = await build_scheduler(pilot_config, self.client_state)
-        await asyncio.wait_for(
-            adapter.terminate_job(job.scheduler_job_id), timeout=_RPC_TIMEOUT
-        )
+        await scheduler_rpc(adapter.terminate_job(job.scheduler_job_id), _RPC_TIMEOUT)
         logger.info(
             "PilotJob %s: requested termination of scheduler job %s",
             job.name,
@@ -175,12 +217,20 @@ class PilotJobController(Controller):
                     f"PilotJob {job.name}: scheduler state changed after qdel"
                 )
 
-    async def _finalize_deletion(self, job: PilotJob) -> None:
-        scheduler_gone = (
-            PilotJob.scheduler_job_id.is_(None)
-            if job.scheduler_job_id is None
-            else PilotJob.scheduler_state.in_(list(_GONE_STATES))
-        )
+    async def _finalize_deletion(
+        self, job: PilotJob, premise: sa.ColumnElement[bool] | None = None
+    ) -> None:
+        """Mark a job scheduled for deletion gone and deleted.
+
+        `premise` guards the update; by default, that the scheduler no longer
+        has the job.
+        """
+        if premise is None:
+            premise = (
+                PilotJob.scheduler_job_id.is_(None)
+                if job.scheduler_job_id is None
+                else PilotJob.scheduler_state.in_(list(_GONE_STATES))
+            )
         async with self.client_state.db_sessionmaker.begin() as sess:
             result = await sess.execute(
                 sa.update(PilotJob)
@@ -188,7 +238,7 @@ class PilotJobController(Controller):
                     PilotJob.uid == job.uid,
                     PilotJob.scheduled_deletion_at.is_not(None),
                     PilotJob.deleted_at.is_(None),
-                    scheduler_gone,
+                    premise,
                 )
                 .values(
                     deleted_at=datetime.now(timezone.utc),
@@ -283,10 +333,7 @@ class PilotJobController(Controller):
         submitter = PilotSubmitter(pilot_config, adapter)
 
         # Check if already queued to prevent duplicates on partial failure
-        statuses = await asyncio.wait_for(
-            submitter.get_statuses(),
-            timeout=_RPC_TIMEOUT,
-        )
+        statuses = await scheduler_rpc(submitter.get_statuses(), _RPC_TIMEOUT)
         existing_job = next((j for j in statuses if j.name == job.name), None)
 
         if existing_job:
@@ -296,10 +343,7 @@ class PilotJobController(Controller):
             )
             submit_result = JobSubmitResult(job.name, scheduler_id=existing_job.id)
         else:
-            submit_result = await asyncio.wait_for(
-                submitter.submit(job),
-                timeout=_RPC_TIMEOUT,
-            )
+            submit_result = await scheduler_rpc(submitter.submit(job), _RPC_TIMEOUT)
             logger.info(
                 "PilotJob %s: submitted as scheduler job %s",
                 job.name,

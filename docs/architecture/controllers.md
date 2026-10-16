@@ -132,7 +132,7 @@ Resolution path for a stuck resource:
     - **Fix in place**: edit the spec (e.g. correct `launch_spec`). The
      spec-apply path resets `reconcile_failures=0, retry_at=NULL`
      atomically with the spec change.
-    - **Manually retry now**: `alcf-ai admin reconcile-reset <resource>` —
+    - **Manually retry now**: `first-admin reconcile-reset <resource>` —
      same reset, no spec change. Useful when the fix was external (cluster
      filesystem permissions, etc).
 

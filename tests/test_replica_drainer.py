@@ -7,13 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _replica_counter = itertools.count()
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources.runtime import BackendRuntime
-from first_common.schema.types import ReplicaState
+from first_common.schema.types import HealthCheckResult, ReplicaState
 from first_gateway.controllers.worker import Worker
 from first_gateway.controllers.workers.replica_drainer import ReplicaDrainer
 from first_gateway.database.models import (
@@ -74,6 +75,10 @@ def _ok(request: httpx.Request) -> httpx.Response:
 def _not_found(request: httpx.Request) -> httpx.Response:
     """Handler simulating a manager that no longer knows this replica."""
     return httpx.Response(404)
+
+
+def _reject_any_call(request: httpx.Request) -> httpx.Response:
+    raise AssertionError(f"unexpected pilot call {request.url}")
 
 
 def _server_error(request: httpx.Request) -> httpx.Response:
@@ -455,6 +460,51 @@ async def test_reconcile_skips_rpc_when_job_not_running(
     assert replica.deleted_at is not None
     job = await _get_job(db, "job-1")
     assert job.claimed_gpu_ids == []
+
+
+async def test_reconcile_skips_stop_when_parent_job_torn_down(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A culled job may still read `running` while its manager is dead."""
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        await sess.execute(sa.update(PilotJob).values(scheduled_deletion_at=NOW))
+        uid = await _insert_replica(sess, state=ReplicaState.unhealthy)
+
+    ctrl = _make_controller(db, _reject_any_call)
+    await ctrl.reconcile(uid)
+
+    replica = await _get_replica(db, uid)
+    assert replica.state == ReplicaState.terminated.value
+    assert replica.deleted_at is not None
+
+
+async def test_reconcile_still_stops_on_unhealthy_job_not_torn_down(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """An unhealthy pilot may recover, so its replica still gets a real stop."""
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        await sess.execute(
+            sa.update(PilotJob).values(manager_health=HealthCheckResult.unhealthy.value)
+        )
+        uid = await _insert_replica(sess, state=ReplicaState.unhealthy)
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200)
+
+    ctrl = _make_controller(db, handler)
+    await ctrl.reconcile(uid)
+
+    assert len(calls) == 1 and "stop-replica" in calls[0]
+    assert (await _get_replica(db, uid)).deleted_at is not None
 
 
 async def test_reconcile_handles_replica_without_job(

@@ -33,10 +33,10 @@ In practice this looks like:
 
 ```bash
 # Diff and apply YAML manifests against the running gateway:
-alcf-ai admin apply tests/resource_specs/baseline/
+first-admin apply tests/resource_specs/baseline/
 
 # Inspect what's currently configured (Spec) vs. what's live (Status):
-alcf-ai admin audit
+first-admin audit
 alcf-ai clusters get sophia
 ```
 

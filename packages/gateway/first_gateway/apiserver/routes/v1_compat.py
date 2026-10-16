@@ -23,6 +23,7 @@ from first_common.schema.types import HealthCheckResult, PilotDeploymentState
 
 from ...database import models as db
 from ...database.redis.router_config import ModelConfig, RouterConfig
+from ...services.orchestration import maintenance_notices, maintenance_suffix
 from ...settings import ClientState
 from ..auth import user_can_access_group
 from ..dependencies import (
@@ -33,6 +34,7 @@ from ..dependencies import (
     RouterConfigDep,
 )
 from ..inference import InferenceService, InferenceServiceDep
+from .catalog import model_summary
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +102,6 @@ async def _visible_models(sess: DbSession, user: UserAuthEvent) -> list[db.Model
     ]
 
 
-def _clusters_of(model: db.Model) -> set[str]:
-    return {d.cluster_name for d in model.pilot_deployments} | {
-        d.cluster_name for d in model.static_deployments
-    }
-
-
 # --- health / whoami: trivial re-maps onto V2 --------------------------------
 
 
@@ -131,7 +127,7 @@ async def list_endpoints(sess: DbSession, user: AuthUser) -> ListEndpointsRespon
     by_cluster: dict[str, ClusterEndpointSummary] = {}
 
     for model in await _visible_models(sess, user):
-        for cluster in _clusters_of(model):
+        for cluster in model.cluster_names:
             summary = by_cluster.setdefault(
                 cluster,
                 ClusterEndpointSummary(
@@ -229,12 +225,11 @@ async def cluster_models(
     cluster: str, sess: DbSession, user: AuthUser, repo: RedisRepo
 ) -> list[ModelSummary]:
     models = [
-        m for m in await _visible_models(sess, user) if cluster in _clusters_of(m)
+        m for m in await _visible_models(sess, user) if cluster in m.cluster_names
     ]
     runtimes = await repo.get_many_model_runtimes([m.name for m in models])
-    return [
-        ModelSummary.merge(model, runtime=rt) for model, rt in zip(models, runtimes)
-    ]
+    notices = await db.Cluster.maintenance_notices(sess)
+    return [model_summary(model, rt, notices) for model, rt in zip(models, runtimes)]
 
 
 # --- staging: hoisted from V1 (the one genuinely new V2 feature) -------------
@@ -330,12 +325,17 @@ def _deployment_name(cluster: str, config: RouterConfig, model_name: str) -> str
     model: ModelConfig | None = config.models_by_name.get(
         model_name
     ) or config.models_by_alias.get(model_name)
+    notices: dict[str, str] = {}
     if model is not None:
-        for dep in model.deployments:
-            if dep.name.startswith(f"{cluster}/") and dep.backends:
+        on_cluster = [d for d in model.deployments if d.name.startswith(f"{cluster}/")]
+        for dep in on_cluster:
+            if dep.backends:
                 return dep.name
+        notices = maintenance_notices(on_cluster)
     raise ServiceUnavailable(
         f"No available deployment for {model_name!r} on cluster {cluster!r}."
+        + maintenance_suffix(notices),
+        info={"maintenance_notices": notices},
     )
 
 

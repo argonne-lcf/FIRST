@@ -4,6 +4,7 @@ import itertools
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _replica_counter = itertools.count()
@@ -540,3 +541,17 @@ async def test_drain_terminal_and_scale_up_in_one_pass(
 
     # 1 ready + 1 new pending = 2 live, plus the drained error = 3 total rows
     assert await _count_replicas(db, "dep-combo") == 3
+
+
+async def test_maintenance_blocks_scale_up(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await sess.execute(sa.update(Cluster).values(maintenance_notice="PM today"))
+        uid = await _insert_deployment(sess, "dep-maint", desired_replicas=2)
+
+    ctrl = _make_controller(db)
+    await ctrl.reconcile(uid)
+
+    assert await _count_replicas(db, "dep-maint") == 0

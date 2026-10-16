@@ -10,7 +10,7 @@ for deployments whose launches keep failing.
 
 With nothing launching, `consecutive_launch_failures` can never reset on its own, so this
 clears only via operator action — a spec edit (`plan_apply` resets the counter)
-or `alcf-ai admin reconcile-reset`.
+or `first-admin reconcile-reset`.
 """
 
 import logging

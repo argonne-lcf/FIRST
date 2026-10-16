@@ -1,8 +1,10 @@
 """Tests for PilotReplicaObserver: replica state sync, orphan reaping,
 and consecutive_launch_failures tracking."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -24,8 +26,9 @@ from first_common.schema.types import (
     PilotDeploymentState,
     ReplicaState,
 )
-from first_gateway.controllers.worker import Worker
+from first_gateway.controllers.worker import Heartbeat, Worker
 from first_gateway.controllers.workers.pilot_replica_observer import (
+    MAINTENANCE_UNREACHABLE,
     PilotReplicaObserver,
 )
 from first_gateway.database.models import (
@@ -115,6 +118,7 @@ def _make_observer(
     client._client = httpx.AsyncClient(transport=transport)
     observer.client = client
     observer._status_cooldown = {}
+    observer.hb = observer.register_heartbeat("poll")
     return observer
 
 
@@ -720,6 +724,185 @@ async def test_cooldown_forgotten_when_job_leaves_running(
         )
     await observer.poll()
     assert job.uid not in observer._status_cooldown
+
+
+async def test_hung_managers_are_all_probed_in_one_pass(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Probes run concurrently and beat the heartbeat, so a pass over many
+    hung managers reaches every job without going stale."""
+    n_jobs = 24
+    hang = 0.2
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        for i in range(n_jobs):
+            await _add_job(
+                sess, name=f"job-{i}", manager_url=f"https://10.0.1.{i}:8443"
+            )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(hang)
+        raise httpx.ConnectTimeout("hung", request=request)
+
+    observer = _make_observer(db, httpx.MockTransport(handler))
+    # One probe at a time would take n_jobs * hang = 4.8s.
+    observer.hb = Heartbeat("poll", timeout=1.0)
+    stale = False
+
+    async def watch() -> None:
+        nonlocal stale
+        while True:
+            stale = stale or observer.hb.timed_out()
+            await asyncio.sleep(0.02)
+
+    watcher = asyncio.create_task(watch())
+    t0 = monotonic()
+    try:
+        await observer.poll()
+    finally:
+        watcher.cancel()
+    assert monotonic() - t0 < 2.0
+    assert not stale
+
+    async with db() as sess:
+        healths = set(await sess.scalars(select(PilotJob.manager_health)))
+    assert healths == {HealthCheckResult.unhealthy.value}
+    assert len(observer._status_cooldown) == n_jobs
+
+
+async def test_sync_error_on_one_job_does_not_abort_pass(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess, name="job-bad", manager_url="https://10.0.0.1:8443")
+        await _add_job(sess, name="job-good", manager_url="https://10.0.0.2:8443")
+        await _add_replica(sess, name="rep-good", job="job-good")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "10.0.0.1":
+            return httpx.Response(200, json=_status_json())
+        return httpx.Response(200, json=_status_json([_replica_info("rep-good")]))
+
+    observer = _make_observer(db, httpx.MockTransport(handler))
+    original = observer.update_job_status
+
+    async def flaky(job: PilotJob, status: PilotJobStatus) -> None:
+        if job.name == "job-bad":
+            raise RuntimeError("injected")
+        await original(job, status)
+
+    observer.update_job_status = flaky  # type: ignore[method-assign]
+    await observer.poll()
+
+    async with db() as sess:
+        rep = await sess.scalar(
+            select(PilotReplica).where(PilotReplica.name == "rep-good")
+        )
+    assert rep is not None and rep.state == ReplicaState.ready.value
+
+
+# ── Maintenance: dead pilot's replicas leave routing ────────────────
+
+
+async def _seed_maintenance_replicas(sess: AsyncSession) -> None:
+    await _add_job(sess)
+    for state in ("ready", "launching", "placed"):
+        await _add_replica(sess, name=f"rep-{state}", state=state)
+    draining = await _add_replica(sess, name="rep-draining", state="ready")
+    draining.scheduled_deletion_at = NOW
+    deleted = await _add_replica(sess, name="rep-deleted", state="ready")
+    deleted.deleted_at = NOW
+
+
+async def _replica_states(db: async_sessionmaker[AsyncSession]) -> dict[str, str]:
+    async with db() as sess:
+        rows = await sess.execute(select(PilotReplica.name, PilotReplica.state))
+    return dict(rows.tuples().all())
+
+
+async def test_maintenance_failure_marks_serving_replicas_unhealthy(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await sess.execute(sa.update(Cluster).values(maintenance_notice="PM until 5pm"))
+        await _seed_maintenance_replicas(sess)
+
+    observer = _make_observer(db, _make_transport({"GET /status": httpx.Response(500)}))
+    await observer.poll()
+
+    assert await _replica_states(db) == {
+        "rep-ready": "unhealthy",
+        "rep-launching": "unhealthy",
+        "rep-placed": "placed",
+        "rep-draining": "ready",
+        "rep-deleted": "ready",
+    }
+    async with db() as sess:
+        rep = await sess.scalar(
+            select(PilotReplica).where(PilotReplica.name == "rep-ready")
+        )
+    assert rep is not None and rep.state_message == MAINTENANCE_UNREACHABLE
+
+
+async def test_maintenance_set_after_manager_unhealthy_still_marks_replicas(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _seed_maintenance_replicas(sess)
+
+    observer = _make_observer(db, _make_transport({"GET /status": httpx.Response(500)}))
+    await observer.poll()
+    assert (await _replica_states(db))["rep-ready"] == "ready"
+
+    async with db.begin() as sess:
+        await sess.execute(sa.update(Cluster).values(maintenance_notice="PM until 5pm"))
+    observer._status_cooldown.clear()
+    await observer.poll()
+    assert (await _replica_states(db))["rep-ready"] == "unhealthy"
+
+
+async def test_non_maintenance_failure_leaves_replicas_routable(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _seed_maintenance_replicas(sess)
+
+    observer = _make_observer(db, _make_transport({"GET /status": httpx.Response(500)}))
+    await observer.poll()
+
+    states = await _replica_states(db)
+    assert states["rep-ready"] == "ready"
+    assert states["rep-launching"] == "launching"
+
+
+async def test_manager_recovery_restores_replicas_marked_in_maintenance(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await sess.execute(sa.update(Cluster).values(maintenance_notice="PM until 5pm"))
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1", state="ready")
+
+    healthy = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not healthy:
+            return httpx.Response(500)
+        return httpx.Response(200, json=_status_json([_replica_info("rep-1")]))
+
+    observer = _make_observer(db, httpx.MockTransport(handler))
+    await observer.poll()
+    assert (await _replica_states(db))["rep-1"] == "unhealthy"
+
+    healthy = True
+    observer._status_cooldown.clear()
+    await observer.poll()
+    assert (await _replica_states(db))["rep-1"] == "ready"
 
 
 # ── Deployment aggregate state tests ────────────────────────────────

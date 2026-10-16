@@ -184,7 +184,6 @@ async def apply_plan(
             obj = await cls.get_by_name(sess, patch_resource.name)
             obj.apply_patch(patch_resource.patch)
             await cls.reset_reconcile_state(sess, obj.uid, cascade=True)
-            if isinstance(obj, models.PilotDeployment):
-                obj.consecutive_launch_failures = 0
+            models.reset_failure_latches(obj)
 
     return config_version

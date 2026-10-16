@@ -445,6 +445,51 @@ async def test_apply_cascades_reconcile_reset_to_pilot_jobs(
     assert job.reconcile_last_error is None
 
 
+async def test_notice_only_patch_clears_cluster_and_job_backoff_and_latch(
+    control_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    baseline_plan: ResourceChangePlan,
+) -> None:
+    """Setting or clearing a maintenance notice re-polls the cluster promptly
+    and releases the pilot start latch."""
+    from datetime import datetime, timezone
+
+    from first_gateway.database.models import Cluster, PilotJob
+
+    cluster = await Cluster.get_by_name(db_session, "sophia")
+    cluster.reconcile_failures = 7
+    cluster.reconcile_retry_at = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    cluster.pilot_start_failures = 3
+    job = await _create_pilot_job(db_session, "sophia", "sophia-job-notice")
+    job.reconcile_failures = 4
+    job.reconcile_retry_at = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    await db_session.commit()
+
+    resources = [
+        r.model_copy(
+            update={
+                "spec": r.spec.model_copy(update={"maintenance_notice": "Down today"})
+            }
+        )
+        if (r.kind, r.name) == ("Cluster", "sophia")
+        else r
+        for r in _load("baseline")
+    ]
+    plan = await _plan(control_client, resources)
+    (patch,) = plan.to_update
+    assert set(patch.patch) == {"maintenance_notice"}
+    await _apply(control_client, resources, plan)
+
+    await db_session.refresh(cluster)
+    await db_session.refresh(job)
+    applied = await Cluster.get_by_name(db_session, "sophia")
+    assert applied.maintenance_notice == "Down today"
+    assert (applied.reconcile_failures, applied.reconcile_retry_at) == (0, None)
+    assert applied.pilot_start_failures == 0
+    applied_job = await PilotJob.get_by_name(db_session, "sophia-job-notice")
+    assert (applied_job.reconcile_failures, applied_job.reconcile_retry_at) == (0, None)
+
+
 async def test_apply_cascades_reconcile_reset_to_pilot_replicas(
     control_client: httpx.AsyncClient,
     db_session: AsyncSession,
@@ -486,6 +531,7 @@ async def test_reconcile_reset_endpoint(
     cluster = await Cluster.get_by_name(db_session, "sophia")
     cluster.reconcile_failures = 10
     cluster.reconcile_last_error = "persistent failure"
+    cluster.pilot_start_failures = 3
     await db_session.commit()
 
     resp = await control_client.post(
@@ -497,8 +543,10 @@ async def test_reconcile_reset_endpoint(
     assert resp.json() == {"status": "ok", "resource": "Cluster.sophia"}
 
     await db_session.refresh(cluster)
-    assert cluster.reconcile_failures == 0
-    assert cluster.reconcile_last_error is None
+    reset = await Cluster.get_by_name(db_session, "sophia")
+    assert reset.reconcile_failures == 0
+    assert reset.reconcile_last_error is None
+    assert reset.pilot_start_failures == 0
 
 
 async def test_reconcile_reset_cascades_to_child_pilot_jobs(

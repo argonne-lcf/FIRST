@@ -61,6 +61,9 @@ class ReplicaReconciler(Controller):
     Placement controller and Drainer consume the rows/flags this controller
     produces.
 
+    No replicas are added while the deployment's cluster is under maintenance;
+    drains still proceed.
+
     Keyed on PilotDeployment rather than pilot_replica: the core decision
     (scale a deployment up or down) is per-deployment, and every replica is
     reachable from its parent in one reconcile.
@@ -86,13 +89,15 @@ class ReplicaReconciler(Controller):
                 options=[
                     selectinload(PilotDeployment.replicas).selectinload(
                         PilotReplica.pilot_job
-                    )
+                    ),
+                    selectinload(PilotDeployment.cluster),
                 ],
             )
             if dep is None:
                 return
             replicas = list(dep.replicas)
             desired = dep.desired_replicas
+            maintenance_notice = dep.cluster.maintenance_notice
 
         # 1. Drain-by-predicate: terminal replicas and replicas whose parent job
         #    is going away. Only consider rows not already flagged or deleted.
@@ -128,7 +133,15 @@ class ReplicaReconciler(Controller):
                 drain_uids.add(r.uid)
 
         await self._apply_drains(dep, drain_uids)
-        if n_new:
+        if n_new and maintenance_notice:
+            logger.debug(
+                "ReplicaReconciler: deployment %s not adding %d replica(s); "
+                "cluster %s under maintenance",
+                dep.name,
+                n_new,
+                dep.cluster_name,
+            )
+        elif n_new:
             await self._insert_replicas(dep, n_new)
 
     @staticmethod

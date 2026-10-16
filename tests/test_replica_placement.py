@@ -12,10 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 _replica_counter = itertools.count()
 
 from first_common.schema.base_scheduler import SchedulerJobState
-from first_common.schema.types import ReplicaState
+from first_common.schema.types import HealthCheckResult, ReplicaState
 from first_gateway.controllers.controller import StaleReconcile
 from first_gateway.controllers.workers.replica_placement import (
     AT_CAPACITY,
+    IN_MAINTENANCE,
+    SCHEDULER_UNREACHABLE,
+    SUBMISSIONS_HALTED,
     ReplicaPlacer,
 )
 from first_gateway.database.models import (
@@ -618,3 +621,80 @@ async def test_two_replicas_pack_onto_same_job(
     assert set(rep2.claimed_gpu_ids) == {(0, 2), (0, 3)}
     # Both packed; no extra job created.
     assert await _count_jobs(db) == 1
+
+
+async def test_maintenance_blocks_placement(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await sess.execute(sa.update(Cluster).values(maintenance_notice="PM today"))
+        await _insert_deployment(sess, "dep", num_nodes=1, gpus_per_node=2)
+        uid = await _insert_replica(sess, "dep")
+
+    ctrl = _make_controller(db)
+    await ctrl.reconcile(uid)
+
+    assert await _count_jobs(db) == 0
+    replica = await _get_replica(db, uid)
+    assert replica.state == ReplicaState.pending.value
+    assert replica.state_message == IN_MAINTENANCE.format(notice="PM today")
+
+
+async def test_skips_job_with_unhealthy_manager(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess, "dep", num_nodes=1, gpus_per_node=2)
+        await _insert_pilot_job(sess, "job-dead", num_nodes=1, gpus_per_node=4)
+        await _insert_pilot_job(sess, "job-ok", num_nodes=1, gpus_per_node=4)
+        await sess.execute(
+            sa.update(PilotJob)
+            .where(PilotJob.name == "job-dead")
+            .values(manager_health=HealthCheckResult.unhealthy.value)
+        )
+        uid = await _insert_replica(sess, "dep")
+
+    await _make_controller(db).reconcile(uid)
+
+    replica = await _get_replica(db, uid)
+    assert replica.pilot_job_name == "job-ok"
+
+
+@pytest.mark.parametrize(
+    ("cluster_values", "message"),
+    [
+        ({"reconcile_failures": 2}, SCHEDULER_UNREACHABLE),
+        ({"pilot_start_failures": 3}, SUBMISSIONS_HALTED.format(n=3)),
+    ],
+)
+async def test_no_new_job_while_scheduler_unreachable_or_halted(
+    db: async_sessionmaker[AsyncSession],
+    cluster_values: dict[str, int],
+    message: str,
+) -> None:
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await sess.execute(sa.update(Cluster).values(**cluster_values))
+        await _insert_deployment(sess, "dep", num_nodes=1, gpus_per_node=2)
+        await _insert_pilot_job(sess, "job-full", num_nodes=1, gpus_per_node=4)
+        await sess.execute(
+            sa.update(PilotJob).values(claimed_gpu_ids=[(0, g) for g in range(4)])
+        )
+        uid = await _insert_replica(sess, "dep")
+        fits_uid = await _insert_replica(sess, "dep")
+
+    ctrl = _make_controller(db)
+    await ctrl.reconcile(uid)
+
+    assert await _count_jobs(db) == 1
+    replica = await _get_replica(db, uid)
+    assert replica.state == ReplicaState.pending.value
+    assert replica.state_message == message
+
+    # An existing healthy pilot with room is still used.
+    async with db.begin() as sess:
+        await sess.execute(sa.update(PilotJob).values(claimed_gpu_ids=[]))
+    await ctrl.reconcile(fits_uid)
+    assert (await _get_replica(db, fits_uid)).pilot_job_name == "job-full"

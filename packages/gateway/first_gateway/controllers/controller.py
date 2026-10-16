@@ -48,6 +48,14 @@ class StaleReconcile(Exception):
     """
 
 
+class ExpectedReconcileFailure(Exception):
+    """Raised by reconcile() for a failure that is expected in context, such as
+    an unreachable pilot on a cluster under maintenance.
+
+    Recorded with the usual backoff, but logged at INFO without a traceback.
+    """
+
+
 class Controller(Worker):
     """Worker subclass that polls Postgres for actionable rows, calls
     reconcile() on each, and sleeps until either the poll_interval
@@ -103,6 +111,10 @@ class Controller(Worker):
         except StaleReconcile:
             outcome = "stale"
             logger.warning("%s: reconcile uid=%d stale", self.name, uid)
+        except ExpectedReconcileFailure as exc:
+            outcome = "failure"
+            logger.info("%s: reconcile uid=%d failed: %s", self.name, uid, exc)
+            await self._record_failure(uid, exc)
         except Exception as exc:
             outcome = "failure"
             logger.exception("%s: reconcile uid=%d failed", self.name, uid)

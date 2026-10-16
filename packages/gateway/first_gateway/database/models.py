@@ -24,6 +24,7 @@ from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources.spec import LaunchSpec, LaunchTemplateSpec
 from first_common.schema.types import (
     HealthCheckResult,
+    PilotConfig,
     PilotDeploymentState,
     ReplicaState,
     ResolvedLaunchSpec,
@@ -286,15 +287,30 @@ class Model(ResourceRow):
             )
         return list(await sess.scalars(q))
 
+    @property
+    def cluster_names(self) -> set[str]:
+        """Clusters hosting any deployment of this model (deployments loaded)."""
+        return {d.cluster_name for d in self.pilot_deployments} | {
+            d.cluster_name for d in self.static_deployments
+        }
+
 
 class Cluster(ResourceRow):
     __tablename__ = "cluster"
+    # Cap scheduler poll backoff so a cluster back from a long outage is
+    # noticed within minutes.
+    _MAX_BACKOFF_SEC: ClassVar[float] = 600.0
 
     health_check: Mapped[DictJsonb]
     maintenance_notice: Mapped[str | None]
     pilot_system: Mapped[DictJsonbOrNone]
 
     health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
+
+    # Consecutive jobs that died before the manager came up
+    pilot_start_failures: Mapped[int] = mapped_column(
+        default=0, server_default=sa.text("0")
+    )
 
     pilot_jobs: Mapped[list["PilotJob"]] = relationship(
         back_populates="cluster", cascade="all, delete-orphan", lazy="raise"
@@ -305,6 +321,33 @@ class Cluster(ResourceRow):
     static_deployments: Mapped[list["StaticDeployment"]] = relationship(
         back_populates="cluster", lazy="raise"
     )
+
+    @property
+    def scheduler_unreachable(self) -> bool:
+        """The PilotJobObserver's last poll of this cluster's scheduler failed.
+
+        The observer is the only writer of `record_failure` on a Cluster. A spec
+        patch or `reconcile-reset` clears the failure count, so the cluster
+        counts as reachable again until the next failed poll.
+        """
+        return self.reconcile_failures > 0
+
+    def pilot_submissions_halted(self, pilot_config: PilotConfig) -> bool:
+        """Too many consecutive pilot startup failures"""
+        return (
+            self.pilot_start_failures
+            >= pilot_config.max_consecutive_pilot_start_failures
+        )
+
+    @classmethod
+    async def maintenance_notices(cls, sess: AsyncSession) -> dict[str, str]:
+        """Map each cluster under maintenance to its notice."""
+        rows = await sess.execute(
+            sa.select(cls.name, cls.maintenance_notice).where(
+                cls.maintenance_notice.is_not(None)
+            )
+        )
+        return {name: notice for name, notice in rows.tuples() if notice}
 
     @classmethod
     async def get_detail(cls, sess: AsyncSession, name: str) -> Self:
@@ -495,6 +538,9 @@ class PilotJob(ResourceRow, SoftDeletable):
     num_nodes: Mapped[int]
     gpus_per_node: Mapped[int]
 
+    # Why the pilot failed to start
+    failure_reason: Mapped[str | None] = mapped_column(sa.Text(), default=None)
+
     cluster: Mapped[Cluster] = relationship(back_populates="pilot_jobs", lazy="raise")
     assigned_replicas: Mapped[list["PilotReplica"]] = relationship(
         back_populates="pilot_job", lazy="raise"
@@ -657,6 +703,18 @@ class PilotReplica(ResourceRow, SoftDeletable):
     @property
     def is_draining(self) -> bool:
         return self.scheduled_deletion or self.state == ReplicaState.terminating
+
+
+def reset_failure_latches(row: ResourceRow) -> None:
+    """Clear the one-way failure latches an admin reset or a spec patch releases.
+
+    Kept out of reset_reconcile_state: that also runs on every successful
+    reconcile or poll, which would release a latch on its own.
+    """
+    if isinstance(row, PilotDeployment):
+        row.consecutive_launch_failures = 0
+    elif isinstance(row, Cluster):
+        row.pilot_start_failures = 0
 
 
 _RECONCILE_CASCADES: dict[str, list[tuple[type[ResourceRow], str]]] = {

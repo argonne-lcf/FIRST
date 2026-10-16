@@ -45,30 +45,54 @@ full migration, DB/Redis integration-suite, or live deployment qualification.
 
 ## First-terminal pilot failure accounting
 
-The observer now charges pre-manager failures on the first `exiting` **or**
-`gone` transition. Waiting until `gone` allowed the reconciler/controller to
-begin draining at `exiting`, clearing the active assignment or marking the job
-for deletion before failure accounting could see it. A locked current PilotJob
-row serializes concurrent observations; the terminal state and distinct affected
-deployment increments remain in one transaction. Intentional deletion,
-already-draining replicas, and jobs that published manager readiness retain
-their no-charge behavior. This does not change scheduler cleanup ownership.
+A pilot that reaches `exiting` or `gone` without ever publishing a manager
+endpoint is a *pilot start failure*. It is counted against its **cluster**, not
+against the deployments placed on it: a pilot that never comes up usually
+points at the cluster or its scheduler, and charging deployments left them
+`failed` after an outage or maintenance. `PilotDeployment.consecutive_launch_failures`
+now counts only replica-level failures (a launcher 400, or a replica reaching
+`error` or `start_timeout`).
+
+The observer counts on the first `exiting` **or** `gone` transition. Waiting
+until `gone` allowed the reconciler/controller to begin draining at `exiting`
+first. A locked current PilotJob row serializes concurrent observations; the
+terminal state, `PilotJob.failure_reason`, and the `Cluster.pilot_start_failures`
+increment commit in one transaction. Intentional deletion, jobs that published
+manager readiness, and jobs lost while their cluster is under maintenance are
+not counted. `failure_reason` stays on the soft-deleted row (visible in cluster
+detail until retention removes it), since cluster resets wipe
+`reconcile_last_error`.
+
+### The cluster latch
+
+At `PilotConfig.max_consecutive_pilot_start_failures` (default 3), the observer
+logs one WARNING and the cluster's pilot submissions halt: the PilotJobController
+holds `pending_submit` jobs and the ReplicaPlacer creates no new PilotJobs.
+Placement onto existing healthy pilots and all other reconciliation continue, and
+the health alerter reports a critical `cluster/{uid}/pilot_starts` observation.
+
+The latch is one-way. A manager coming up resets the count only while it is
+still below the threshold. Once tripped, only `first-admin reconcile-reset
+Cluster.<name>` or an apply that patches the cluster clears it; a no-op apply
+does not. The reset deliberately lives outside `reset_reconcile_state`, which
+also runs on every successful scheduler poll and would release the latch on its
+own. Held jobs then submit as normal.
+
+### Tests
 
 The separate opt-in `tests/test_pilot_job_failure_accounting_postgres.py` suite
 reuses the same guarded disposable PostgreSQL setup, with pilot RPC construction
-mocked. It includes the five insertion tests plus seven accounting cases:
+mocked. It includes the five insertion tests plus nine accounting cases:
 exiting-before-unassignment, duplicate concurrent observations, direct gone,
-distinct deployment counting, intentional/ready no-charge, already-draining
-no-charge, and atomic state/counter rollback on injected precommit failure.
-All 12 tests passed on the isolated PostgreSQL setup on 2026-09-13.
+stale observations across both terminal states, unchanged nonterminal
+transitions, one count per pilot regardless of its replicas, intentional/ready
+not counted, maintenance not counted, and atomic state/counter rollback on an
+injected precommit failure.
 
-A follow-up keeps terminal retirement monotonic: a locked `exiting` row cannot
-regress to a nonterminal observation, and `gone` cannot regress at all. Otherwise
-a stale running observation could reopen the next terminal transition's charge.
-Ordinary queued/starting/running transitions, including requeue, remain allowed.
-The existing adapter maps suspended/staging-out jobs to `exiting`, and FIRST
-already retires those allocations; this guard does not claim general PBS
-suspend/resume support for an identity that FIRST has begun retiring. Two added
-regressions cover stale observations across both terminal states and unchanged
-nonterminal transitions.
-The complete 14-test PostgreSQL suite passed again after this follow-up.
+Terminal retirement stays monotonic: a locked `exiting` row cannot regress to a
+nonterminal observation, and `gone` cannot regress at all. Otherwise a stale
+running observation could reopen the next terminal transition's count. Ordinary
+queued/starting/running transitions, including requeue, remain allowed. The
+existing adapter maps suspended/staging-out jobs to `exiting`, and FIRST already
+retires those allocations; this guard does not claim general PBS suspend/resume
+support for an identity that FIRST has begun retiring.

@@ -33,9 +33,12 @@ class DeploymentConfig(BaseModel):
 
     # Cold-start hints (pilot deployments only) so the 503 path can tell the
     # caller when a replica is expected to be ready.
-    incoming: bool = False  # a non-draining replica is pending/placed/launching
+    incoming: bool = False  # A replica is on the way
     earliest_placed_at: datetime | None = None  # oldest placed_at among incoming
     last_startup_sec: float | None = None  # most recent placed -> ready duration
+
+    # The hosting cluster's maintenance notice, reported on 503s.
+    maintenance_notice: str | None = None
 
     def startup_eta_sec(self, now: datetime) -> float | None:
         """Seconds until the earliest incoming replica is expected to be ready."""
@@ -73,7 +76,9 @@ class RouterConfig(BaseModel):
     information about all model instances that are running and routeable.
     Pilot deployments are listed even when they have no routable backend
     (an empty `backends` list) so that their cold-start hints are available
-    to the data plane; only static deployments are omitted when unhealthy.
+    to the data plane; static deployments are omitted when unhealthy, unless
+    their cluster is under maintenance (then listed without backends so the
+    notice reaches the caller).
 
     The apiserver is the sole reader of the RouterConfig: it uses this
     live-updating configuration snapshot to route incoming traffic to model backends.

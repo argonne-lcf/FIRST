@@ -29,6 +29,8 @@ from ..services.orchestration import (
     admit_request,
     get_deployment_from_backend_id,
     get_shuffled_backends,
+    maintenance_notices,
+    maintenance_suffix,
 )
 from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
 from .auth import enforce_permission
@@ -224,9 +226,11 @@ class InferenceService:
                 )
 
         # Error if none of the retryable attempts worked.
+        notices = maintenance_notices(model.deployments)
         raise ServiceUnavailable(
             f"All {attempted} backend(s) failed for model {model.name}. "
-            f"Encountered: {', '.join(failures)}."
+            f"Encountered: {', '.join(failures)}." + maintenance_suffix(notices),
+            info={"maintenance_notices": notices},
         )
 
     async def _release_failed_backend(

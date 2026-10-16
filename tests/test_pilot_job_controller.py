@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -15,9 +16,12 @@ from first_common.schema.base_scheduler import (
     SchedulerAdapter,
     SchedulerJobState,
 )
-from first_common.schema.types import HealthCheckResult
+from first_common.schema.types import HealthCheckResult, ReplicaState
 from first_gateway.controllers.controller import StaleReconcile
+from first_gateway.controllers.worker import Worker
 from first_gateway.controllers.workers.pilot_job_controller import PilotJobController
+from first_gateway.controllers.workers.replica_drainer import ReplicaDrainer
+from first_gateway.controllers.workers.replica_reconciler import ReplicaReconciler
 from first_gateway.database.models import (
     AccessGroup,
     Cluster,
@@ -25,7 +29,9 @@ from first_gateway.database.models import (
     PilotDeployment,
     PilotJob,
     PilotReplica,
+    reset_failure_latches,
 )
+from first_gateway.services.pilot_control import PilotControlClient
 
 from .fixtures.db import LAUNCH_TEMPLATE_NAME, launch_template
 
@@ -818,3 +824,317 @@ async def test_unhealthy_premise_prevents_stale_mark(
 
     job = await _get_job(db, uid)
     assert job.scheduled_deletion is False
+
+
+async def _set_maintenance(sess: AsyncSession, notice: str = "PM today") -> None:
+    await sess.execute(sa.update(Cluster).values(maintenance_notice=notice))
+
+
+async def test_maintenance_blocks_submission(
+    db: async_sessionmaker[AsyncSession],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_maintenance(sess)
+        uid = await _insert_pilot_job(
+            sess, "new-job", scheduler_state=SchedulerJobState.pending_submit
+        )
+
+    controller = _make_controller(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+
+    assert adapter.submitted == []
+    job = await _get_job(db, uid)
+    assert job.scheduler_state == SchedulerJobState.pending_submit.value
+
+
+async def test_maintenance_still_deletes_unreachable_job(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A manager lost to maintenance is truly gone: clear it out as usual."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_maintenance(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "sick-job",
+            manager_health=HealthCheckResult.unhealthy.value,
+            manager_unhealthy_since=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+
+    controller = _make_controller(db)
+    await controller.reconcile(uid)
+
+    job = await _get_job(db, uid)
+    assert job.scheduled_deletion is True
+
+
+async def test_maintenance_still_honors_scheduled_deletion(
+    db: async_sessionmaker[AsyncSession],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_maintenance(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "doomed",
+            scheduler_job_id="7.pbs",
+            scheduled_deletion_at=datetime.now(timezone.utc),
+        )
+
+    controller = _make_controller(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+
+    assert adapter.terminated == ["7.pbs"]
+
+
+# ---------------------------------------------------------------------------
+# scheduler unreachable, submissions halted, and the maintenance shortcut
+# ---------------------------------------------------------------------------
+
+
+class UnreachableSchedulerAdapter(FakeSchedulerAdapter):
+    """Fails the test if the controller calls the scheduler."""
+
+    async def submit_job(self, job_spec: JobSubmitPayload) -> JobSubmitResult:
+        raise AssertionError("submit_job called")
+
+    async def get_job_statuses(self) -> list[Any]:
+        raise AssertionError("get_job_statuses called")
+
+    async def terminate_job(self, job_id: str) -> None:
+        raise AssertionError("terminate_job called")
+
+
+async def _set_cluster(sess: AsyncSession, **values: Any) -> None:
+    await sess.execute(sa.update(Cluster).values(**values))
+
+
+async def _reset_cluster(db: async_sessionmaker[AsyncSession]) -> None:
+    """What a successful observer poll or an admin reset leaves behind."""
+    async with db.begin() as sess:
+        cluster = await Cluster.get_by_name(sess, "polaris")
+        await Cluster.reset_reconcile_state(sess, cluster.uid)
+
+
+async def test_unreachable_scheduler_defers_termination(
+    db: async_sessionmaker[AsyncSession],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_cluster(sess, reconcile_failures=3)
+        uid = await _insert_pilot_job(
+            sess,
+            "doomed",
+            scheduler_job_id="8.pbs",
+            scheduled_deletion_at=NOW,
+            manager_health=HealthCheckResult.unhealthy.value,
+        )
+
+    controller = _make_controller(db)
+    with patch(
+        _PATCH_BUILD, new_callable=AsyncMock, return_value=UnreachableSchedulerAdapter()
+    ):
+        await controller._reconcile_one(uid)
+
+    job = await _get_job(db, uid)
+    assert job.deleted_at is None
+    assert job.reconcile_failures == 0
+
+    await _reset_cluster(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+    assert adapter.terminated == ["8.pbs"]
+
+
+async def test_unreachable_scheduler_defers_submission(
+    db: async_sessionmaker[AsyncSession],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_cluster(sess, reconcile_failures=1)
+        uid = await _insert_pilot_job(
+            sess, "new-job", scheduler_state=SchedulerJobState.pending_submit
+        )
+
+    controller = _make_controller(db)
+    with patch(
+        _PATCH_BUILD, new_callable=AsyncMock, return_value=UnreachableSchedulerAdapter()
+    ):
+        await controller._reconcile_one(uid)
+    job = await _get_job(db, uid)
+    assert job.scheduler_state == SchedulerJobState.pending_submit.value
+    assert job.reconcile_failures == 0
+
+    await _reset_cluster(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+    assert len(adapter.submitted) == 1
+
+
+async def test_halted_cluster_holds_submission_until_reset(
+    db: async_sessionmaker[AsyncSession],
+    adapter: FakeSchedulerAdapter,
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_cluster(sess, pilot_start_failures=3)
+        uid = await _insert_pilot_job(
+            sess, "new-job", scheduler_state=SchedulerJobState.pending_submit
+        )
+
+    controller = _make_controller(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+        assert adapter.submitted == []
+
+        # A successful poll does not release the latch...
+        await _reset_cluster(db)
+        await controller.reconcile(uid)
+        assert adapter.submitted == []
+
+        # ...an admin reset does.
+        async with db.begin() as sess:
+            reset_failure_latches(await Cluster.get_by_name(sess, "polaris"))
+        await controller.reconcile(uid)
+    assert len(adapter.submitted) == 1
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [None, "scheduled_deletion", "manager_unhealthy", "scheduler_down", "notice"],
+)
+async def test_maintenance_shortcut_requires_all_conditions(
+    db: async_sessionmaker[AsyncSession], drop: str | None
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_cluster(
+            sess,
+            reconcile_failures=0 if drop == "scheduler_down" else 2,
+            maintenance_notice=None if drop == "notice" else "PM today",
+        )
+        uid = await _insert_pilot_job(
+            sess,
+            "lost",
+            scheduler_job_id="9.pbs",
+            scheduled_deletion_at=None if drop == "scheduled_deletion" else NOW,
+            manager_health=(
+                HealthCheckResult.healthy.value
+                if drop == "manager_unhealthy"
+                else HealthCheckResult.unhealthy.value
+            ),
+            manager_unhealthy_since=datetime.now(timezone.utc),
+        )
+
+    adapter = FakeSchedulerAdapter()
+    controller = _make_controller(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await controller.reconcile(uid)
+
+    job = await _get_job(db, uid)
+    if drop is None:
+        assert job.scheduler_state == SchedulerJobState.gone.value
+        assert job.deleted_at is not None
+        assert adapter.terminated == []
+    elif drop == "scheduler_down":
+        # The scheduler is reachable: the normal termination pathway.
+        assert adapter.terminated == ["9.pbs"]
+        assert job.deleted_at is None
+    else:
+        assert adapter.terminated == []
+        assert job.deleted_at is None
+        assert job.scheduler_state == SchedulerJobState.running.value
+
+
+async def test_maintenance_shortcut_covers_exiting_job(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A job qdel'd just before the outage is not stuck waiting for `gone`."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _set_cluster(sess, reconcile_failures=2, maintenance_notice="PM")
+        uid = await _insert_pilot_job(
+            sess,
+            "lost",
+            scheduler_job_id="9.pbs",
+            scheduler_state=SchedulerJobState.exiting,
+            scheduled_deletion_at=NOW,
+            manager_health=HealthCheckResult.unhealthy.value,
+        )
+
+    await _make_controller(db).reconcile(uid)
+    job = await _get_job(db, uid)
+    assert job.deleted_at is not None
+
+
+async def test_maintenance_shortcut_drains_replicas_without_remote_calls(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """After the shortcut, the reconciler drains the job's replicas and the
+    drainer finalizes them with no pilot or scheduler calls."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_replica_parents(sess)
+        await _set_cluster(sess, reconcile_failures=2, maintenance_notice="PM")
+        job_uid = await _insert_pilot_job(
+            sess,
+            "lost",
+            scheduler_job_id="9.pbs",
+            scheduled_deletion_at=NOW,
+            manager_health=HealthCheckResult.unhealthy.value,
+        )
+        await sess.execute(
+            sa.update(PilotJob).values(manager_url="https://10.0.0.1:8443/control")
+        )
+        sess.add(
+            PilotReplica(
+                name="test-deployment/replica/lost",
+                pilot_deployment_name="test-deployment",
+                pilot_job_name="lost",
+                state=ReplicaState.unhealthy.value,
+            )
+        )
+        dep = await PilotDeployment.get_by_name(sess, "test-deployment")
+        dep.desired_replicas = 1
+        dep_uid = dep.uid
+
+    with patch(
+        _PATCH_BUILD, new_callable=AsyncMock, return_value=UnreachableSchedulerAdapter()
+    ):
+        await _make_controller(db).reconcile(job_uid)
+
+    client_state = _make_client_state(db)
+    client_state.redis_pubsub.publish = AsyncMock()
+    await ReplicaReconciler("reconciler", client_state, MagicMock()).reconcile(dep_uid)
+
+    def no_calls(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected pilot call {request.url}")
+
+    drainer = ReplicaDrainer.__new__(ReplicaDrainer)
+    Worker.__init__(drainer, "drainer", client_state, MagicMock())
+    client = PilotControlClient.__new__(PilotControlClient)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(no_calls))
+    drainer.client = client
+    async with db() as sess:
+        replica = await PilotReplica.get_by_name(sess, "test-deployment/replica/lost")
+    assert replica.scheduled_deletion
+    await drainer.reconcile(replica.uid)
+
+    async with db() as sess:
+        replica = await PilotReplica.get_by_name(sess, "test-deployment/replica/lost")
+        live = await sess.scalar(
+            sa.select(sa.func.count())
+            .select_from(PilotReplica)
+            .where(PilotReplica.deleted_at.is_(None))
+        )
+    assert replica.state == ReplicaState.terminated.value
+    assert replica.deleted_at is not None
+    # No replacement while the cluster is under maintenance.
+    assert live == 0

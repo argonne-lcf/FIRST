@@ -25,11 +25,14 @@ def _dep(
     incoming: bool = False,
     placed_ago_sec: float | None = None,
     last_startup_sec: float | None = None,
+    cluster_name: str = "c",
+    maintenance_notice: str | None = None,
 ) -> DeploymentConfig:
     return DeploymentConfig(
         kind="pilot",
         name=name,
-        cluster_name="c",
+        cluster_name=cluster_name,
+        maintenance_notice=maintenance_notice,
         router_params=RouterParams(),
         prometheus_metrics_path=None,
         prometheus_scrape_interval_sec=30,
@@ -101,7 +104,11 @@ def test_incoming_without_eta_reports_typical() -> None:
     model = _model(_dep("d", incoming=True, last_startup_sec=80))
     exc = cold_start_error(model, None, "")
     assert str(exc) == "Model open/model is starting. Startup typically takes ~80s."
-    assert exc.info == {"startup_eta_sec": None, "typical_startup_sec": 80}
+    assert exc.info == {
+        "startup_eta_sec": None,
+        "typical_startup_sec": 80,
+        "maintenance_notices": {},
+    }
 
 
 def test_not_running_reports_typical() -> None:
@@ -114,7 +121,45 @@ def test_not_running_reports_typical() -> None:
 def test_nothing_known_keeps_generic_message() -> None:
     exc = cold_start_error(_model(_dep("d")), 15, " Retry in 15 seconds.")
     assert str(exc) == "Backend not available yet. Retry in 15 seconds."
-    assert exc.info == {"startup_eta_sec": None, "typical_startup_sec": None}
+    assert exc.info == {
+        "startup_eta_sec": None,
+        "typical_startup_sec": None,
+        "maintenance_notices": {},
+    }
+
+
+def test_all_deployments_in_maintenance_reports_notice() -> None:
+    model = _model(
+        _dep("d", last_startup_sec=80, maintenance_notice="Down until Monday 8am")
+    )
+    exc = cold_start_error(model, 15, " Retry in 15 seconds.")
+    assert str(exc) == (
+        "Model open/model is unavailable due to cluster maintenance: "
+        "c: Down until Monday 8am. Retry in 15 seconds."
+    )
+    assert exc.info["maintenance_notices"] == {"c": "Down until Monday 8am"}
+
+
+def test_partial_maintenance_appends_notice() -> None:
+    """A deployment elsewhere is starting: report its ETA, then the notice."""
+    model = _model(
+        _dep("up", cluster_name="a", placed_ago_sec=10, last_startup_sec=100),
+        _dep("down", cluster_name="b", maintenance_notice="PM today"),
+    )
+    exc = cold_start_error(model, None, "")
+    assert "s until ready." in str(exc)
+    assert str(exc).endswith(" Cluster maintenance: b: PM today.")
+    assert exc.info["maintenance_notices"] == {"b": "PM today"}
+
+
+def test_pinned_deployment_ignores_other_clusters_maintenance() -> None:
+    model = _model(
+        _dep("up", cluster_name="a", last_startup_sec=80),
+        _dep("down", cluster_name="b", maintenance_notice="PM today"),
+    )
+    exc = cold_start_error(model, None, "", deployment_name="up")
+    assert "maintenance" not in str(exc)
+    assert exc.info["maintenance_notices"] == {}
 
 
 # ── RouterConfigObserver._build_deployments ──────────────────────────
@@ -161,7 +206,7 @@ def test_pilot_deployment_listed_without_ready_replicas() -> None:
         ],
         last_startup_sec=120.0,
     )
-    (cfg,) = RouterConfigObserver._build_deployments([dep], [])
+    (cfg,) = RouterConfigObserver._build_deployments([dep], [], {})
 
     assert cfg.backends == []
     assert cfg.incoming is True
@@ -171,7 +216,7 @@ def test_pilot_deployment_listed_without_ready_replicas() -> None:
 
 
 def test_idle_pilot_deployment_has_no_hints() -> None:
-    (cfg,) = RouterConfigObserver._build_deployments([_pilot([], None)], [])
+    (cfg,) = RouterConfigObserver._build_deployments([_pilot([], None)], [], {})
     assert cfg.backends == []
     assert cfg.incoming is False
     assert cfg.earliest_placed_at is None
@@ -180,6 +225,71 @@ def test_idle_pilot_deployment_has_no_hints() -> None:
 
 def test_terminating_replica_is_not_incoming() -> None:
     dep = _pilot([_replica(ReplicaState.terminating, placed_at=NOW)], 10.0)
-    (cfg,) = RouterConfigObserver._build_deployments([dep], [])
+    (cfg,) = RouterConfigObserver._build_deployments([dep], [], {})
     assert cfg.incoming is False
     assert cfg.earliest_placed_at is None
+
+
+def _static(health: str) -> db.StaticDeployment:
+    return db.StaticDeployment(
+        uid=1,
+        name="c/sd",
+        cluster_name="c",
+        model_name="m",
+        api_url="http://x/v1",
+        api_key=None,
+        upstream_model_name="m",
+        router_params={},
+        health_check={},
+        health=health,
+        prometheus_metrics_path=None,
+        prometheus_scrape_interval_sec=30,
+    )
+
+
+def test_unhealthy_static_omitted_outside_maintenance() -> None:
+    assert RouterConfigObserver._build_deployments([], [_static("unhealthy")], {}) == []
+
+
+def test_unhealthy_static_listed_without_backends_in_maintenance() -> None:
+    (cfg,) = RouterConfigObserver._build_deployments(
+        [], [_static("unhealthy")], {"c": "PM today"}
+    )
+    assert cfg.backends == []
+    assert cfg.maintenance_notice == "PM today"
+
+
+def test_healthy_static_keeps_routing_in_maintenance() -> None:
+    (cfg,) = RouterConfigObserver._build_deployments(
+        [], [_static("healthy")], {"c": "PM today"}
+    )
+    assert len(cfg.backends) == 1
+    assert cfg.maintenance_notice == "PM today"
+
+
+def test_pilot_deployment_carries_maintenance_notice() -> None:
+    (cfg,) = RouterConfigObserver._build_deployments(
+        [_pilot([], None)], [], {"c": "PM today"}
+    )
+    assert cfg.maintenance_notice == "PM today"
+
+
+def test_pending_replica_is_not_incoming_in_maintenance() -> None:
+    """Placement is blocked during maintenance, so pending won't progress."""
+    dep = _pilot([_replica(ReplicaState.pending)], 10.0)
+    (cfg,) = RouterConfigObserver._build_deployments([dep], [], {"c": "PM today"})
+    assert cfg.incoming is False
+
+
+def test_placed_replica_is_not_incoming_in_maintenance() -> None:
+    """A placed replica waits on a pilot that won't be submitted or launch."""
+    dep = _pilot([_replica(ReplicaState.placed, placed_at=NOW)], 10.0)
+    (cfg,) = RouterConfigObserver._build_deployments([dep], [], {"c": "PM today"})
+    assert cfg.incoming is False
+
+
+def test_launching_replica_is_incoming_in_maintenance() -> None:
+    dep = _pilot([_replica(ReplicaState.launching, placed_at=NOW)], 10.0)
+    (cfg,) = RouterConfigObserver._build_deployments([dep], [], {"c": "PM today"})
+    assert cfg.incoming is True
+    assert cfg.earliest_placed_at == NOW

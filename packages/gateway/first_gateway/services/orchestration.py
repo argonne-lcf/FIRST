@@ -194,6 +194,9 @@ def cold_start_error(
     `last_startup_sec`, so the ETA is never computed by mixing one
     deployment's placement time with another's startup duration. A request
     pinned to one deployment only reports that deployment's outlook.
+
+    When every deployment is on a cluster under maintenance, the maintenance
+    notice replaces the startup outlook; otherwise any notices are appended.
     """
     now = datetime.now(timezone.utc)
     deployments = [d for d in model.deployments if deployment_name in (None, d.name)]
@@ -201,6 +204,23 @@ def cold_start_error(
     typical = [
         d.last_startup_sec for d in deployments if d.last_startup_sec is not None
     ]
+    notices = maintenance_notices(deployments)
+    all_in_maintenance = bool(deployments) and all(
+        d.maintenance_notice for d in deployments
+    )
+
+    if all_in_maintenance and not any(d.incoming for d in deployments):
+        return ServiceUnavailable(
+            f"Model {model.name} is unavailable due to cluster maintenance: "
+            + _format_notices(notices)
+            + retry_str,
+            retry_after_sec=retry_after_sec,
+            info={
+                "startup_eta_sec": None,
+                "typical_startup_sec": None,
+                "maintenance_notices": notices,
+            },
+        )
 
     if etas and min(etas) > 0:
         message = f"Model {model.name} is starting; ~{min(etas):.0f}s until ready."
@@ -218,13 +238,33 @@ def cold_start_error(
         message += f" Startup typically takes ~{min(typical):.0f}s."
 
     return ServiceUnavailable(
-        message + retry_str,
+        message + maintenance_suffix(notices) + retry_str,
         retry_after_sec=retry_after_sec,
         info={
             "startup_eta_sec": round(min(etas)) if etas else None,
             "typical_startup_sec": round(min(typical)) if typical else None,
+            "maintenance_notices": notices,
         },
     )
+
+
+def maintenance_notices(deployments: list[DeploymentConfig]) -> dict[str, str]:
+    """Map each cluster under maintenance among `deployments` to its notice."""
+    return {
+        d.cluster_name: d.maintenance_notice
+        for d in sorted(deployments, key=lambda d: d.cluster_name)
+        if d.maintenance_notice
+    }
+
+
+def maintenance_suffix(notices: dict[str, str]) -> str:
+    """Sentence appended to a 503 message naming clusters under maintenance."""
+    return f" Cluster maintenance: {_format_notices(notices)}" if notices else ""
+
+
+def _format_notices(notices: dict[str, str]) -> str:
+    """`cluster: notice` pairs joined into one sentence."""
+    return "; ".join(f"{c}: {n}" for c, n in notices.items()).rstrip(".") + "."
 
 
 def get_name_from_slug(slug: str) -> str:

@@ -68,39 +68,50 @@ class PilotControlClient:
         ctx = pilot_ssl_context(client_state.settings)
         self._client = httpx.AsyncClient(verify=ctx, timeout=timeout)
 
-    async def _request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        attempts: int = _RETRY_ATTEMPTS,
+        **kwargs: object,
+    ) -> httpx.Response:
         """
         Issue an mTLS request, retrying a few times on transport errors and
         transient 5xx gateway statuses. Non-retryable responses (2xx, 4xx, and a
         final-attempt 5xx) are returned as-is for the caller to interpret; a
         transport error that never resolves is re-raised after the last attempt.
+
+        Only the first failed attempt is logged, at DEBUG: the caller knows the
+        context (maintenance, its own retry count) and picks the log level for
+        the final outcome.
         """
         last_exc: httpx.TransportError | None = None
-        for attempt in range(_RETRY_ATTEMPTS):
+        for attempt in range(attempts):
             if attempt:
                 await asyncio.sleep(_RETRY_BACKOFF * attempt)
             try:
                 resp = await self._client.request(method, url, **kwargs)  # type: ignore[arg-type]
             except httpx.TransportError as exc:
                 last_exc = exc
-                logger.warning(
-                    "pilot control %s %s attempt %d/%d failed: %r",
-                    method,
-                    url,
-                    attempt + 1,
-                    _RETRY_ATTEMPTS,
-                    exc,
-                )
+                if attempt == 0:
+                    logger.debug(
+                        "pilot control %s %s attempt 1/%d failed: %r",
+                        method,
+                        url,
+                        attempts,
+                        exc,
+                    )
                 continue
-            if resp.status_code in _RETRYABLE_STATUS and attempt < _RETRY_ATTEMPTS - 1:
-                logger.warning(
-                    "pilot control %s %s attempt %d/%d returned %d; retrying",
-                    method,
-                    url,
-                    attempt + 1,
-                    _RETRY_ATTEMPTS,
-                    resp.status_code,
-                )
+            if resp.status_code in _RETRYABLE_STATUS and attempt < attempts - 1:
+                if attempt == 0:
+                    logger.debug(
+                        "pilot control %s %s attempt 1/%d returned %d; retrying",
+                        method,
+                        url,
+                        attempts,
+                        resp.status_code,
+                    )
                 continue
             return resp
 
@@ -108,8 +119,10 @@ class PilotControlClient:
         raise last_exc
 
     async def get_status(self, manager_url: str) -> PilotJobStatus:
+        # One attempt: callers re-poll /status on their own schedule and back
+        # off per job, so retries here only stretch a pass over dead managers.
         resp = await self._request(
-            "GET", f"{manager_url}/status", timeout=STATUS_TIMEOUT
+            "GET", f"{manager_url}/status", attempts=1, timeout=STATUS_TIMEOUT
         )
         resp.raise_for_status()
         return PilotJobStatus.model_validate(resp.json())

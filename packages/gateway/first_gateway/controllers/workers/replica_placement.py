@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from first_common.schema.base_scheduler import SchedulerJobState
-from first_common.schema.types import PilotConfig, ReplicaState
+from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaState
 
 from ...database.models import Cluster, PilotDeployment, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
@@ -28,6 +28,12 @@ _PLACEABLE_JOB_STATES = [
 ]
 
 AT_CAPACITY = "Waiting for free cluster capacity to place this replica."
+IN_MAINTENANCE = "Waiting for cluster maintenance to end: {notice}"
+SCHEDULER_UNREACHABLE = "Waiting for cluster scheduler to become reachable."
+SUBMISSIONS_HALTED = (
+    "Pilot submissions on this cluster are halted after {n} consecutive pilot "
+    "start failures; an admin must reset the cluster."
+)
 
 
 def _free_gpus(job: PilotJob) -> set[tuple[int, int]]:
@@ -42,6 +48,10 @@ class ReplicaPlacer(Controller):
     """
     Schedules pending PilotReplicas onto PilotJobs, creating new PilotJobs to
     meet demand up to the cluster's capacity limits.
+
+    Replicas on a cluster under maintenance stay pending until it ends. While
+    the cluster's scheduler is unreachable or its pilot submissions are halted,
+    replicas are still placed on existing pilots but no new PilotJob is created.
 
     Pure Postgres state management: no RPC or scheduler interaction.
     """
@@ -118,10 +128,20 @@ class ReplicaPlacer(Controller):
                         PilotJob.scheduler_state.in_(_PLACEABLE_JOB_STATES),
                         PilotJob.scheduled_deletion_at.is_(None),
                         PilotJob.deleted_at.is_(None),
+                        # Launching onto a dead manager would fail.
+                        PilotJob.manager_health.is_distinct_from(
+                            HealthCheckResult.unhealthy.value
+                        ),
                     )
                     .order_by(PilotJob.uid)
                 )
             )
+
+        if cluster.maintenance_notice:
+            await self._mark_pending(
+                replica.uid, IN_MAINTENANCE.format(notice=cluster.maintenance_notice)
+            )
+            return
 
         # First, prefer to place on an existing PilotJob:
         req_nodes = int(deploy.launch_spec["num_nodes"])
@@ -143,9 +163,25 @@ class ReplicaPlacer(Controller):
                 )
             return
 
-        # If no existing job fits, add one, if the cluster has headroom.
+        # If no existing job fits, add one, if the cluster can take it.
         pilot_cfg = PilotConfig.model_validate(cluster.pilot_system)
-        if self._has_headroom(jobs, pilot_cfg, req_nodes):
+        if cluster.scheduler_unreachable:
+            await self._mark_pending(replica.uid, SCHEDULER_UNREACHABLE)
+            logger.info(
+                "Replica %s cannot be placed: scheduler of cluster %s is unreachable",
+                replica.name,
+                cluster.name,
+            )
+        elif cluster.pilot_submissions_halted(pilot_cfg):
+            await self._mark_pending(
+                replica.uid, SUBMISSIONS_HALTED.format(n=cluster.pilot_start_failures)
+            )
+            logger.info(
+                "Replica %s cannot be placed: pilot submissions on cluster %s halted",
+                replica.name,
+                cluster.name,
+            )
+        elif self._has_headroom(jobs, pilot_cfg, req_nodes):
             await self._create_job_and_place(
                 replica.uid,
                 replica.name,
@@ -155,7 +191,7 @@ class ReplicaPlacer(Controller):
                 req_gpus,
             )
         else:
-            await self._mark_at_capacity(replica.uid)
+            await self._mark_pending(replica.uid, AT_CAPACITY)
             logger.info(
                 "Replica %s cannot be placed: cluster is at capacity", replica.name
             )
@@ -307,14 +343,15 @@ class ReplicaPlacer(Controller):
             Channel.pilot_job_created, job.name
         )
 
-    async def _mark_at_capacity(self, replica_uid: int) -> None:
+    async def _mark_pending(self, replica_uid: int, message: str) -> None:
+        """Record why a pending replica is still waiting to be placed."""
         async with self.client_state.db_sessionmaker.begin() as sess:
             await sess.execute(
                 sa.update(PilotReplica)
                 .where(
                     PilotReplica.uid == replica_uid,
                     PilotReplica.state == ReplicaState.pending.value,
-                    PilotReplica.state_message.is_distinct_from(AT_CAPACITY),
+                    PilotReplica.state_message.is_distinct_from(message),
                 )
-                .values(state_message=AT_CAPACITY)
+                .values(state_message=message)
             )

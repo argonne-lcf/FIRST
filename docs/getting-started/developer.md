@@ -81,8 +81,8 @@ Run a declarative apply against the local service:
 
 ```bash
 alcf-ai auth login
-alcf-ai admin apply tests/resource_specs/baseline/
-alcf-ai admin audit
+first-admin apply tests/resource_specs/baseline/
+first-admin audit
 ```
 
 ## More on the Docker Compose setup

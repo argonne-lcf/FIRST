@@ -49,6 +49,12 @@ def upgrade() -> None:
             "pilot_system", postgresql.JSONB(astext_type=sa.Text()), nullable=True
         ),
         sa.Column("health", sa.String(), nullable=False),
+        sa.Column(
+            "pilot_start_failures",
+            sa.Integer(),
+            server_default=sa.text("0"),
+            nullable=False,
+        ),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
@@ -150,6 +156,7 @@ def upgrade() -> None:
         sa.Column("walltime_min", sa.Integer(), nullable=False),
         sa.Column("num_nodes", sa.Integer(), nullable=False),
         sa.Column("gpus_per_node", sa.Integer(), nullable=False),
+        sa.Column("failure_reason", sa.Text(), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",

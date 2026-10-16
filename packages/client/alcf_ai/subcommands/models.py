@@ -23,6 +23,7 @@ def ls(ctx: typer.Context) -> None:
     table.add_column("Endpoints")
     table.add_column("Pilot deployments", justify="right")
     table.add_column("Static deployments", justify="right")
+    table.add_column("Maintenance")
 
     for m in client.models.list():
         table.add_row(
@@ -32,6 +33,7 @@ def ls(ctx: typer.Context) -> None:
             ", ".join(m.supported_endpoints) or "-",
             str(len(m.pilot_deployments)),
             str(len(m.static_deployments)),
+            "\n".join(f"{c}: {n}" for c, n in m.maintenance_notices.items()) or "-",
         )
 
     console.print(table)

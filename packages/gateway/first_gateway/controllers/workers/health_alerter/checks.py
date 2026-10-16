@@ -17,6 +17,7 @@ from first_common.schema.types import (
     PilotConfig,
     PilotDeploymentState,
     ReplicaState,
+    ResourceName,
 )
 from first_gateway.controllers.workers.health_alerter.types import Observation
 from first_gateway.controllers.workers.replica_placement import AT_CAPACITY
@@ -92,23 +93,110 @@ def _probe_hint(health_check: dict[str, Any] | None) -> str:
 
 
 async def check_cluster_health(client_state: ClientState) -> list[Observation]:
+    """
+    Alert on unhealthy clusters. A cluster under maintenance is reported once
+    at info level instead: its faults are expected.
+    """
     async with client_state.db_sessionmaker() as sess:
-        q = sa.select(Cluster.uid, Cluster.name, Cluster.health_check).where(
-            Cluster.health == HealthCheckResult.unhealthy.value
+        q = sa.select(Cluster.uid, Cluster.name, Cluster.health_check, Cluster.health)
+        clusters = (await sess.execute(q)).all()
+        maintenance = await Cluster.maintenance_notices(sess)
+
+    obs: list[Observation] = []
+    for c in clusters:
+        if c.name in maintenance:
+            obs.append(
+                Observation(
+                    key=f"cluster/{c.uid}/maintenance",
+                    status="maintenance",
+                    summary=f"Cluster {c.name}: under maintenance: {maintenance[c.name]}",
+                    display_name=f"Cluster {c.name}",
+                    severity="info",
+                )
+            )
+        elif c.health == HealthCheckResult.unhealthy.value:
+            obs.append(
+                Observation(
+                    key=f"cluster/{c.uid}/health",
+                    status="unhealthy",
+                    summary=f"Cluster {c.name}: health check failing{_probe_hint(c.health_check)}",
+                    display_name=f"Cluster {c.name}",
+                    severity="crit",
+                    debounce_s=_DEBOUNCE_S,
+                )
+            )
+    return obs
+
+
+async def check_pilot_starts(client_state: ClientState) -> list[Observation]:
+    """
+    Alert on clusters whose pilot submissions are halted by consecutive pilot
+    start failures. Not suppressed during maintenance: nothing is counted then.
+    """
+    async with client_state.db_sessionmaker() as sess:
+        q = sa.select(
+            Cluster.uid,
+            Cluster.name,
+            Cluster.pilot_system,
+            Cluster.pilot_start_failures,
+        ).where(
+            Cluster.pilot_system.is_not(None),
+            Cluster.pilot_system != sa.JSON.NULL,
+            Cluster.pilot_start_failures > 0,
         )
         clusters = (await sess.execute(q)).all()
 
-    return [
-        Observation(
-            key=f"cluster/{c.uid}/health",
-            status="unhealthy",
-            summary=f"Cluster {c.name}: health check failing{_probe_hint(c.health_check)}",
-            display_name=f"Cluster {c.name}",
-            severity="crit",
-            debounce_s=_DEBOUNCE_S,
+        obs: list[Observation] = []
+        for c in clusters:
+            assert c.pilot_system is not None
+            pilot_config = PilotConfig.model_validate(c.pilot_system)
+            if (
+                c.pilot_start_failures
+                < pilot_config.max_consecutive_pilot_start_failures
+            ):
+                continue
+            reason = await sess.scalar(
+                sa.select(PilotJob.failure_reason)
+                .where(
+                    PilotJob.cluster_name == c.name,
+                    PilotJob.failure_reason.is_not(None),
+                )
+                .order_by(PilotJob.uid.desc())
+                .limit(1)
+            )
+            obs.append(
+                Observation(
+                    key=f"cluster/{c.uid}/pilot_starts",
+                    status="halted",
+                    summary=(
+                        f"Cluster {c.name}: pilot submissions halted after "
+                        f"{c.pilot_start_failures} consecutive pilot start "
+                        f"failures; last: {reason or 'unknown'}"
+                    ),
+                    display_name=f"Cluster {c.name}",
+                    severity="crit",
+                    recovery_hint="halting pilot submissions",
+                    detail=(
+                        f"Reset with `first-admin reconcile-reset Cluster.{c.name}` "
+                        "or by re-applying the cluster."
+                    ),
+                )
+            )
+    return obs
+
+
+async def _pilot_clusters_not_in_maintenance(
+    client_state: ClientState,
+) -> list[sa.Row[tuple[int, ResourceName, dict[str, Any] | None]]]:
+    """(uid, name, pilot_system) rows of pilot clusters not under maintenance."""
+    async with client_state.db_sessionmaker() as sess:
+        q = sa.select(Cluster.uid, Cluster.name, Cluster.pilot_system).where(
+            Cluster.pilot_system.is_not(None),
+            Cluster.pilot_system != sa.JSON.NULL,
         )
-        for c in clusters
-    ]
+        clusters = (await sess.execute(q)).all()
+        maintenance = await Cluster.maintenance_notices(sess)
+    return [c for c in clusters if c.name not in maintenance]
 
 
 async def _check_scheduler(
@@ -159,14 +247,7 @@ async def _check_scheduler(
 
 async def check_schedulers(client_state: ClientState) -> list[Observation]:
     observations: list[Observation] = []
-    async with client_state.db_sessionmaker() as sess:
-        q = sa.select(Cluster.uid, Cluster.name, Cluster.pilot_system).where(
-            Cluster.pilot_system.is_not(None),
-            Cluster.pilot_system != sa.JSON.NULL,
-        )
-        clusters = (await sess.execute(q)).all()
-
-    for c in clusters:
+    for c in await _pilot_clusters_not_in_maintenance(client_state):
         assert c.pilot_system is not None
         key = f"cluster/{c.uid}/scheduler"
         pilot_config = PilotConfig.model_validate(c.pilot_system)
@@ -182,14 +263,7 @@ async def check_quarantined_nodes(client_state: ClientState) -> list[Observation
     The quarantine jobs in the scheduler are the only record of them.
     """
     observations: list[Observation] = []
-    async with client_state.db_sessionmaker() as sess:
-        q = sa.select(Cluster.uid, Cluster.name, Cluster.pilot_system).where(
-            Cluster.pilot_system.is_not(None),
-            Cluster.pilot_system != sa.JSON.NULL,
-        )
-        clusters = (await sess.execute(q)).all()
-
-    for c in clusters:
+    for c in await _pilot_clusters_not_in_maintenance(client_state):
         assert c.pilot_system is not None
         pilot_config = PilotConfig.model_validate(c.pilot_system)
         if pilot_config.node_admission.on_failure != "pbs_quarantine":
@@ -243,13 +317,19 @@ async def check_quarantined_nodes(client_state: ClientState) -> list[Observation
 
 
 async def check_static_deployment(client_state: ClientState) -> list[Observation]:
+    """
+    Alert on unhealthy static deployments, except on clusters under
+    maintenance, where check_cluster_health reports it.
+    """
     async with client_state.db_sessionmaker() as sess:
         q = sa.select(
             StaticDeployment.uid,
             StaticDeployment.name,
             StaticDeployment.health_check,
+            StaticDeployment.cluster_name,
         ).where(StaticDeployment.health == HealthCheckResult.unhealthy.value)
         deps = (await sess.execute(q)).all()
+        maintenance = await Cluster.maintenance_notices(sess)
 
     return [
         Observation(
@@ -261,6 +341,7 @@ async def check_static_deployment(client_state: ClientState) -> list[Observation
             debounce_s=_DEBOUNCE_S,
         )
         for d in deps
+        if d.cluster_name not in maintenance
     ]
 
 
@@ -271,7 +352,10 @@ async def check_pilot_deployment(client_state: ClientState) -> list[Observation]
             await sess.scalars(
                 sa.select(PilotDeployment).options(
                     load_only(
-                        PilotDeployment.uid, PilotDeployment.name, PilotDeployment.state
+                        PilotDeployment.uid,
+                        PilotDeployment.name,
+                        PilotDeployment.state,
+                        PilotDeployment.cluster_name,
                     ),
                     selectinload(PilotDeployment.replicas).load_only(
                         PilotReplica.deleted_at,
@@ -281,9 +365,13 @@ async def check_pilot_deployment(client_state: ClientState) -> list[Observation]
                 )
             )
         ).all()
+        maintenance = await Cluster.maintenance_notices(sess)
 
     for d in deps:
         sev = _PILOT_DEPLOYMENT_SEVERITY.get(d.state)
+        # Losing replicas is expected while the cluster is under maintenance.
+        if d.state == PilotDeploymentState.degraded and d.cluster_name in maintenance:
+            sev = None
         if sev is not None:
             obs.append(
                 Observation(
@@ -320,9 +408,13 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
         jobs = (
             await sess.scalars(sa.select(PilotJob).where(PilotJob.deleted_at.is_(None)))
         ).all()
+        maintenance = await Cluster.maintenance_notices(sess)
 
     for j in jobs:
-        if j.reconcile_failures > 0:
+        # Reconcile failures and unreachable managers are expected while the
+        # cluster is under maintenance; check_cluster_health reports it.
+        expected_faults = j.cluster_name in maintenance
+        if j.reconcile_failures > 0 and not expected_faults:
             err = _error_tail(j.reconcile_last_error)
             n = j.reconcile_failures
             summary = f"PilotJob {j.name}: {n} reconcile failures"
@@ -339,7 +431,10 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
                     severity="crit",
                 )
             )
-        if j.manager_health == HealthCheckResult.unhealthy.value:
+        if (
+            j.manager_health == HealthCheckResult.unhealthy.value
+            and not expected_faults
+        ):
             since = (
                 f", since {j.manager_unhealthy_since}"
                 if j.manager_unhealthy_since
@@ -375,15 +470,27 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
 
 
 async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
+    """
+    Alert on failing replicas, except on clusters under maintenance, where
+    their loss is expected and check_cluster_health reports it.
+    """
     obs: list[Observation] = []
     async with client_state.db_sessionmaker() as sess:
-        replicas = (
-            await sess.scalars(
-                sa.select(PilotReplica).where(PilotReplica.deleted_at.is_(None))
+        rows = (
+            await sess.execute(
+                sa.select(PilotReplica, PilotDeployment.cluster_name)
+                .join(
+                    PilotDeployment,
+                    PilotReplica.pilot_deployment_name == PilotDeployment.name,
+                )
+                .where(PilotReplica.deleted_at.is_(None))
             )
         ).all()
+        maintenance = await Cluster.maintenance_notices(sess)
 
-    for r in replicas:
+    for r, cluster_name in rows:
+        if cluster_name in maintenance:
+            continue
         if r.state in _BAD_REPLICA_STATES:
             msg = r.state_message or ""
             summary = f"PilotReplica {r.name}: {r.state}"
@@ -574,6 +681,7 @@ async def check_pilot_client_cert(client_state: ClientState) -> list[Observation
 CHECK_REGISTRY = [
     Check(check_cluster_health, "Clusters"),
     Check(check_schedulers, "Clusters"),
+    Check(check_pilot_starts, "Clusters"),
     Check(check_quarantined_nodes, "Clusters"),
     Check(check_static_deployment, "Deployments"),
     Check(check_pilot_deployment, "Deployments"),

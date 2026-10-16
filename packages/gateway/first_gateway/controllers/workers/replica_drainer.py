@@ -118,12 +118,20 @@ class ReplicaDrainer(Controller):
 
         # Stop the process on the pilot manager. The manager holds on-node
         # resources even for error/start_timeout replicas until told to stop:
-        if (
-            replica.pilot_job
-            and replica.pilot_job.scheduler_state == SchedulerJobState.running
-            and replica.pilot_job.manager_url
+        job = replica.pilot_job
+        if job and job.scheduled_deletion:
+            # Tearing down the pilot frees everything on it, and its manager
+            # may be unreachable (the job may still read `running`).
+            logger.info(
+                "ReplicaDrainer: parent job %s of replica %s is being torn down; "
+                "skipping stop",
+                job.name,
+                replica.name,
+            )
+        elif (
+            job and job.scheduler_state == SchedulerJobState.running and job.manager_url
         ):
-            await self._stop_on_manager(replica.pilot_job.manager_url, replica.name)
+            await self._stop_on_manager(job.manager_url, replica.name)
 
         await self._finalize_deletion(replica)
 

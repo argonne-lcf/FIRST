@@ -1,11 +1,14 @@
 """Tests for PilotJobObserver: scheduler state sync and endpoint discovery."""
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,12 +20,13 @@ from first_common.schema.base_scheduler import (
     SchedulerJobState,
 )
 from first_common.schema.pilot import AddressInfo, PilotJobStatus, PilotResources
-from first_common.schema.resources.runtime import AutoscalerModelRuntime, ModelRuntime
 from first_common.schema.types import HealthCheckResult, PilotConfig, ReplicaState
 from first_gateway.controllers.worker import Worker
-from first_gateway.controllers.workers.autoscaler import PilotAutoscaler
 from first_gateway.controllers.workers.pilot_job_observer import PilotJobObserver
-from first_gateway.controllers.workers.replica_placement import ReplicaPlacer
+from first_gateway.controllers.workers.replica_placement import (
+    SUBMISSIONS_HALTED,
+    ReplicaPlacer,
+)
 from first_gateway.controllers.workers.replica_reconciler import ReplicaReconciler
 from first_gateway.database.models import (
     AccessGroup,
@@ -409,81 +413,6 @@ async def test_graphql_known_job_omitted_from_bulk_page_uses_exact_truth(
     exact_lookup.assert_awaited_once_with("omitted.pbs")
 
 
-async def test_graphql_unready_terminal_allocation_is_charged_once(
-    db: async_sessionmaker[AsyncSession],
-) -> None:
-    """A PALS-era failure behind a synthesized head IP gets one replacement."""
-    async with db.begin() as sess:
-        await _seed_cluster(sess)
-        await _seed_deployment_parents(sess)
-        await _insert_deployment(sess, "dep-a")
-        uid = await _insert_pilot_job(
-            sess,
-            "job-inventory-failed",
-            "inventory-failed.pbs",
-            state=SchedulerJobState.running,
-        )
-        sess.add(
-            PilotReplica(
-                name="dep-a/replica/inventory-failed",
-                pilot_deployment_name="dep-a",
-                pilot_job_name="job-inventory-failed",
-                state="placed",
-            )
-        )
-
-    scheduler_status = JobStatusInfo(
-        id="inventory-failed.pbs",
-        name="__FIRST_PILOT_job-inventory-failed",
-        state=SchedulerJobState.running,
-        created_at=NOW,
-        started_at=NOW,
-        walltime_minutes=60,
-        head_node_ip_address="10.1.2.4",
-        head_node_hostname="x3002",
-    )
-    adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
-    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
-    observer = _make_observer(db)
-    get_status = cast(AsyncMock, observer.client.get_status)
-    get_status.side_effect = RuntimeError("PALS inventory failed before bind")
-    with patch.object(
-        adapter,
-        "get_job_statuses",
-        new=AsyncMock(return_value=[scheduler_status]),
-    ):
-        await observer._discover_endpoints(submitter, "polaris")
-
-    async with db() as sess:
-        job = await sess.get(PilotJob, uid)
-        assert job is not None
-        assert job.manager_url is None
-
-    terminal = JobStatusInfo(
-        id="inventory-failed.pbs",
-        name="__FIRST_PILOT_job-inventory-failed",
-        state=SchedulerJobState.exiting,
-        created_at=NOW,
-        started_at=NOW,
-        walltime_minutes=60,
-    )
-    await observer._update_job(job, terminal)
-    await observer._update_job(job, terminal)
-
-    # The first terminal transition (exiting) charges; later observations,
-    # including the job leaving the scheduler, must not charge again.
-    async with db() as sess:
-        dep = await PilotDeployment.get_by_name(sess, "dep-a")
-        assert dep.consecutive_launch_failures == 1
-
-    await observer._update_job(job, None)
-    await observer._update_job(job, None)
-
-    async with db() as sess:
-        dep = await PilotDeployment.get_by_name(sess, "dep-a")
-        assert dep.consecutive_launch_failures == 1
-
-
 async def test_orphan_scheduler_job_reaped(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -613,265 +542,6 @@ async def test_missing_exiting_job_completes_nonblocking_termination(
     assert job.deleted_at is not None
 
 
-async def test_pre_manager_terminal_jobs_count_once_per_assigned_deployment(
-    db: async_sessionmaker[AsyncSession],
-) -> None:
-    """A failed allocation is charged once, even across exiting/gone polls.
-
-    With a configured maximum of one launch failure, the first dead allocation
-    permits one replacement and the replacement's failure advances the counter
-    to two, which the autoscaler treats as over the bound.
-    """
-    async with db.begin() as sess:
-        await _seed_cluster(sess)
-        await _seed_deployment_parents(sess)
-        await _insert_deployment(sess, "dep-a")
-        await _insert_deployment(sess, "dep-b")
-        first_uid = await _insert_pilot_job(
-            sess,
-            "job-first",
-            "first.pbs",
-            state=SchedulerJobState.running,
-        )
-        sess.add_all(
-            [
-                # Two replicas from dep-a must still count as one allocation
-                # failure for that deployment.
-                PilotReplica(
-                    name="dep-a/replica/one",
-                    pilot_deployment_name="dep-a",
-                    pilot_job_name="job-first",
-                    state="placed",
-                ),
-                PilotReplica(
-                    name="dep-a/replica/two",
-                    pilot_deployment_name="dep-a",
-                    pilot_job_name="job-first",
-                    state="placed",
-                ),
-                PilotReplica(
-                    name="dep-b/replica/one",
-                    pilot_deployment_name="dep-b",
-                    pilot_job_name="job-first",
-                    state="placed",
-                ),
-            ]
-        )
-
-    async with db() as sess:
-        first_job = await sess.get(PilotJob, first_uid)
-    assert first_job is not None
-
-    observer = _make_observer(db)
-    exiting = JobStatusInfo(
-        id="first.pbs",
-        name="__FIRST_PILOT_job-first",
-        state=SchedulerJobState.exiting,
-        created_at=NOW,
-        started_at=NOW,
-        walltime_minutes=60,
-    )
-    await observer._update_job(first_job, exiting)
-    # Repeat with the intentionally stale object, then advance exiting -> gone.
-    # The locked current row is the exactly-once guard, not caller freshness.
-    await observer._update_job(first_job, exiting)
-    await observer._update_job(first_job, None)
-
-    async with db() as sess:
-        dep_a = await PilotDeployment.get_by_name(sess, "dep-a")
-        dep_b = await PilotDeployment.get_by_name(sess, "dep-b")
-        first_job_current = await sess.get(PilotJob, first_uid)
-        assert dep_a.consecutive_launch_failures == 1
-        assert dep_b.consecutive_launch_failures == 1
-        assert first_job_current is not None
-        assert first_job_current.scheduler_state == SchedulerJobState.gone.value
-
-    # A single fresh replacement allocation for dep-a fails the same way.  It
-    # is charged once and moves 1 -> 2; repeat observation remains idempotent.
-    async with db.begin() as sess:
-        second_uid = await _insert_pilot_job(
-            sess,
-            "job-replacement",
-            "replacement.pbs",
-            state=SchedulerJobState.running,
-        )
-        sess.add(
-            PilotReplica(
-                name="dep-a/replica/replacement",
-                pilot_deployment_name="dep-a",
-                pilot_job_name="job-replacement",
-                state="placed",
-            )
-        )
-
-    async with db() as sess:
-        replacement = await sess.get(PilotJob, second_uid)
-    assert replacement is not None
-    await observer._update_job(replacement, None)
-    await observer._update_job(replacement, None)
-
-    async with db() as sess:
-        dep_a = await PilotDeployment.get_by_name(sess, "dep-a")
-        dep_b = await PilotDeployment.get_by_name(sess, "dep-b")
-        assert dep_a.consecutive_launch_failures == 2
-        assert dep_a.max_consecutive_launch_failures == 1
-        assert dep_b.consecutive_launch_failures == 1
-
-
-async def test_autoscaler_latch_bounds_pre_manager_replacement_cycle(
-    db: async_sessionmaker[AsyncSession],
-) -> None:
-    """The real reconcile path cannot replace an unready pilot forever.
-
-    Each terminal pilot creates a capacity deficit, so ReplicaReconciler and
-    ReplicaPlacer produce a fresh allocation. After the replacement fails the
-    same way, an autoscaler pass lowers desired replicas to zero and the next
-    reconciliation does not create a third allocation.
-    """
-    async with db.begin() as sess:
-        await _seed_cluster(sess)
-        await _seed_deployment_parents(sess)
-        await _insert_deployment(
-            sess,
-            "dep-replacement-loop",
-            max_consecutive_launch_failures=1,
-        )
-        dep = await PilotDeployment.get_by_name(sess, "dep-replacement-loop")
-        dep.launch_spec = {"num_nodes": 1, "gpus_per_node": 4}
-        model = await Model.get_by_name(sess, "model")
-        dep_uid = dep.uid
-        model_uid = model.uid
-
-    client_state = _make_client_state(db)
-    client_state.redis_repo.get_autoscaler_model_runtime = AsyncMock(
-        return_value=AutoscalerModelRuntime()
-    )
-    client_state.redis_repo.get_model_runtime = AsyncMock(return_value=ModelRuntime())
-    client_state.redis_repo.set_autoscaler_model_runtime = AsyncMock()
-
-    reconciler = ReplicaReconciler("replica-reconciler", client_state, MagicMock())
-    placer = ReplicaPlacer("replica-placer", client_state, MagicMock())
-    autoscaler = PilotAutoscaler("pilot-autoscaler", client_state, MagicMock())
-    observer = _make_observer(db)
-
-    async def place_and_fail_next_pilot(cycle: int) -> None:
-        async with db() as sess:
-            replica = await sess.scalar(
-                select(PilotReplica)
-                .where(
-                    PilotReplica.pilot_deployment_name == "dep-replacement-loop",
-                    PilotReplica.state == ReplicaState.pending.value,
-                    PilotReplica.scheduled_deletion_at.is_(None),
-                )
-                .order_by(PilotReplica.uid.desc())
-            )
-        assert replica is not None
-
-        await placer.reconcile(replica.uid)
-
-        async with db.begin() as sess:
-            current_replica = await sess.get(PilotReplica, replica.uid)
-            assert current_replica is not None
-            assert current_replica.pilot_job_name is not None
-            job_name = current_replica.pilot_job_name
-            job = await PilotJob.get_by_name(sess, job_name)
-            job.scheduler_job_id = f"replacement-{cycle}.pbs"
-            job.scheduler_state = SchedulerJobState.running.value
-
-        async with db() as sess:
-            failed_job = await PilotJob.get_by_name(sess, job_name)
-        await observer._update_job(failed_job, None)
-
-    # The normal desired-count path creates and places the first allocation.
-    await reconciler.reconcile(dep_uid)
-    await place_and_fail_next_pilot(1)
-
-    # The first pre-manager death creates a replacement allocation.
-    await reconciler.reconcile(dep_uid)
-    await place_and_fail_next_pilot(2)
-
-    # The autoscaler's existing one-way latch closes the loop before another
-    # ReplicaReconciler pass can create a third allocation.
-    await autoscaler.reconcile(model_uid)
-    await reconciler.reconcile(dep_uid)
-
-    async with db() as sess:
-        dep = await PilotDeployment.get_by_name(sess, "dep-replacement-loop")
-        replicas = (
-            await sess.scalars(
-                select(PilotReplica).where(
-                    PilotReplica.pilot_deployment_name == "dep-replacement-loop"
-                )
-            )
-        ).all()
-        jobs = (
-            await sess.scalars(
-                select(PilotJob).where(PilotJob.cluster_name == "polaris")
-            )
-        ).all()
-
-    assert len(replicas) == 2  # no third replacement
-    assert len(jobs) == 2
-    assert dep.consecutive_launch_failures == 2
-    assert dep.max_consecutive_launch_failures == 1
-    assert dep.desired_replicas == 0
-    assert all(replica.scheduled_deletion_at is not None for replica in replicas)
-
-
-async def test_intentional_or_ready_terminal_job_is_not_charged(
-    db: async_sessionmaker[AsyncSession],
-) -> None:
-    """Only an unready, not-already-draining allocation is a launch failure."""
-    async with db.begin() as sess:
-        await _seed_cluster(sess)
-        await _seed_deployment_parents(sess)
-        await _insert_deployment(sess, "dep-a")
-        ready_uid = await _insert_pilot_job(
-            sess,
-            "job-was-ready",
-            "ready.pbs",
-            state=SchedulerJobState.running,
-            manager_url="https://10.0.0.1/control",
-        )
-        draining_uid = await _insert_pilot_job(
-            sess,
-            "job-draining",
-            "draining.pbs",
-            state=SchedulerJobState.running,
-        )
-        draining = await sess.get(PilotJob, draining_uid)
-        assert draining is not None
-        draining.scheduled_deletion_at = NOW
-        sess.add_all(
-            [
-                PilotReplica(
-                    name="dep-a/replica/ready",
-                    pilot_deployment_name="dep-a",
-                    pilot_job_name="job-was-ready",
-                    state="ready",
-                ),
-                PilotReplica(
-                    name="dep-a/replica/draining",
-                    pilot_deployment_name="dep-a",
-                    pilot_job_name="job-draining",
-                    state="placed",
-                ),
-            ]
-        )
-
-    observer = _make_observer(db)
-    async with db() as sess:
-        ready = await sess.get(PilotJob, ready_uid)
-        draining = await sess.get(PilotJob, draining_uid)
-    assert ready is not None and draining is not None
-    await observer._update_job(ready, None)
-    await observer._update_job(draining, None)
-
-    async with db() as sess:
-        dep = await PilotDeployment.get_by_name(sess, "dep-a")
-        assert dep.consecutive_launch_failures == 0
-
-
 async def test_cluster_without_pilot_system_skipped(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -887,3 +557,333 @@ async def test_cluster_without_pilot_system_skipped(
 
     observer = _make_observer(db)
     await observer._poll_all_clusters()
+
+
+# ── Pilot start failures: the per-cluster latch ─────────────────────────
+
+
+async def _cluster(db: async_sessionmaker[AsyncSession]) -> Cluster:
+    async with db() as sess:
+        return await Cluster.get_by_name(sess, "polaris")
+
+
+def _terminal(
+    job: PilotJob, state: SchedulerJobState = SchedulerJobState.exiting
+) -> JobStatusInfo:
+    assert job.scheduler_job_id is not None
+    return JobStatusInfo(
+        id=job.scheduler_job_id,
+        name=f"__FIRST_PILOT_{job.name}",
+        state=state,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+    )
+
+
+async def _unready_job(
+    db: async_sessionmaker[AsyncSession], name: str, **kwargs: Any
+) -> PilotJob:
+    async with db.begin() as sess:
+        uid = await _insert_pilot_job(
+            sess, name, f"{name}.pbs", state=SchedulerJobState.running, **kwargs
+        )
+    return await _get_job(db, uid)
+
+
+async def test_graphql_unready_terminal_allocation_counts_once(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A PALS-era failure behind a synthesized head IP counts against the
+    cluster once, not against the deployments placed on it."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_deployment_parents(sess)
+        await _insert_deployment(sess, "dep-a")
+        uid = await _insert_pilot_job(
+            sess,
+            "job-inventory-failed",
+            "inventory-failed.pbs",
+            state=SchedulerJobState.running,
+        )
+        sess.add(
+            PilotReplica(
+                name="dep-a/replica/inventory-failed",
+                pilot_deployment_name="dep-a",
+                pilot_job_name="job-inventory-failed",
+                state="placed",
+            )
+        )
+
+    adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
+    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
+    observer = _make_observer(db)
+    get_status = cast(AsyncMock, observer.client.get_status)
+    get_status.side_effect = RuntimeError("PALS inventory failed before bind")
+    scheduler_status = JobStatusInfo(
+        id="inventory-failed.pbs",
+        name="__FIRST_PILOT_job-inventory-failed",
+        state=SchedulerJobState.running,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+        head_node_ip_address="10.1.2.4",
+        head_node_hostname="x3002",
+    )
+    with patch.object(
+        adapter, "get_job_statuses", new=AsyncMock(return_value=[scheduler_status])
+    ):
+        await observer._discover_endpoints(submitter, "polaris")
+
+    job = await _get_job(db, uid)
+    assert job.manager_url is None
+
+    # The first terminal transition (exiting) counts; later observations,
+    # including the job leaving the scheduler, must not count again.
+    await observer._update_job(job, _terminal(job))
+    await observer._update_job(job, _terminal(job))
+    assert (await _cluster(db)).pilot_start_failures == 1
+    await observer._update_job(job, None)
+    await observer._update_job(job, None)
+    assert (await _cluster(db)).pilot_start_failures == 1
+
+    # The reason survives soft deletion so admins can find the failed pilot.
+    job = await _get_job(db, uid)
+    assert job.deleted_at is not None
+    assert job.failure_reason is not None
+    assert "inventory-failed.pbs" in job.failure_reason
+    assert "last scheduler state running" in job.failure_reason
+
+    async with db() as sess:
+        dep = await PilotDeployment.get_by_name(sess, "dep-a")
+    assert dep.consecutive_launch_failures == 0
+
+
+async def test_concurrent_terminal_observations_count_once(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+    job = await _unready_job(db, "job-dup")
+
+    observer = _make_observer(db)
+    await asyncio.gather(
+        observer._update_job(job, _terminal(job)),
+        observer._update_job(job, _terminal(job)),
+        observer._update_job(job, None),
+    )
+    assert (await _cluster(db)).pilot_start_failures == 1
+
+
+async def test_no_start_failure_for_intentional_ready_or_maintenance_jobs(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+    ready = await _unready_job(db, "job-ready", manager_url="https://10.0.0.1/c")
+    intentional = await _unready_job(db, "job-retired", scheduled_deletion_at=NOW)
+    maint = await _unready_job(db, "job-maint")
+
+    observer = _make_observer(db)
+    await observer._update_job(ready, None)
+    await observer._update_job(intentional, _terminal(intentional))
+    await observer._update_job(maint, _terminal(maint), in_maintenance=True)
+    await observer._update_job(maint, None, in_maintenance=True)
+
+    assert (await _cluster(db)).pilot_start_failures == 0
+    for job in (ready, intentional, maint):
+        assert (await _get_job(db, job.uid)).failure_reason is None
+    assert (await _get_job(db, maint.uid)).scheduler_state == "gone"
+
+
+async def test_threshold_warns_once_and_halts(
+    db: async_sessionmaker[AsyncSession], gateway_caplog: pytest.LogCaptureFixture
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+    observer = _make_observer(db)
+
+    with gateway_caplog.at_level(logging.WARNING):
+        for i in range(4):
+            job = await _unready_job(db, f"job-{i}")
+            await observer._update_job(job, None)
+
+    cluster = await _cluster(db)
+    assert cluster.pilot_start_failures == 4
+    assert cluster.pilot_submissions_halted(PilotConfig.model_validate(PILOT_SYSTEM))
+    halts = [
+        r for r in gateway_caplog.records if "halting pilot submissions" in r.message
+    ]
+    assert len(halts) == 1
+    assert "after 3 consecutive" in halts[0].message
+    assert "reconcile-reset Cluster.polaris" in halts[0].message
+
+
+async def _discover(
+    db: async_sessionmaker[AsyncSession], observer: PilotJobObserver, name: str
+) -> None:
+    """Publish a readyfile for running job `name` and run endpoint discovery."""
+    async with db.begin() as sess:
+        await _insert_pilot_job(
+            sess, name, f"{name}.pbs", state=SchedulerJobState.running
+        )
+    adapter = FakeSchedulerAdapter()
+    addr = AddressInfo(
+        hostname="x3001", ip="10.1.2.3", external_port=8443, control_path="/control"
+    )
+    readyfile_dir = str(Path(WORKDIR) / "readyfiles")
+    adapter.directories[readyfile_dir] = [f"{name}.ready.json"]
+    adapter.files[str(Path(readyfile_dir) / f"{name}.ready.json")] = (
+        addr.model_dump_json(),
+        0o644,
+    )
+    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
+    await observer._discover_endpoints(submitter, "polaris")
+    async with db() as sess:
+        job = await PilotJob.get_by_name(sess, name)
+    assert job.manager_url is not None
+
+
+async def test_manager_discovery_resets_counter_below_threshold_only(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await sess.execute(sa.update(Cluster).values(pilot_start_failures=2))
+    observer = _make_observer(db)
+
+    await _discover(db, observer, "job-up")
+    assert (await _cluster(db)).pilot_start_failures == 0
+
+    # Once tripped, only an admin reset clears the latch.
+    async with db.begin() as sess:
+        await sess.execute(sa.update(Cluster).values(pilot_start_failures=3))
+    await _discover(db, observer, "job-up-later")
+    assert (await _cluster(db)).pilot_start_failures == 3
+
+
+async def test_successful_poll_does_not_clear_latch(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await sess.execute(
+            sa.update(Cluster).values(pilot_start_failures=3, reconcile_failures=2)
+        )
+
+    observer = _make_observer(db)
+    with patch(
+        _PATCH_BUILD, new_callable=AsyncMock, return_value=FakeSchedulerAdapter()
+    ):
+        await observer._poll_all_clusters()
+
+    cluster = await _cluster(db)
+    assert cluster.reconcile_failures == 0
+    assert cluster.pilot_start_failures == 3
+
+
+async def test_cluster_latch_bounds_pilot_replacement_cycle(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """The real reconcile path cannot replace an unready pilot forever.
+
+    Each terminal pilot creates a capacity deficit, so ReplicaReconciler and
+    ReplicaPlacer produce a fresh allocation. Once the cluster latch trips, the
+    placer stops creating PilotJobs and the replica waits, without blaming or
+    scaling down the deployment.
+    """
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_deployment_parents(sess)
+        await _insert_deployment(sess, "dep-loop")
+        dep = await PilotDeployment.get_by_name(sess, "dep-loop")
+        dep.launch_spec = {"num_nodes": 1, "gpus_per_node": 4}
+        dep_uid = dep.uid
+
+    client_state = _make_client_state(db)
+    reconciler = ReplicaReconciler("replica-reconciler", client_state, MagicMock())
+    placer = ReplicaPlacer("replica-placer", client_state, MagicMock())
+    observer = _make_observer(db)
+
+    async def newest_pending() -> PilotReplica:
+        async with db() as sess:
+            replica = await sess.scalar(
+                select(PilotReplica)
+                .where(
+                    PilotReplica.pilot_deployment_name == "dep-loop",
+                    PilotReplica.state == ReplicaState.pending.value,
+                    PilotReplica.scheduled_deletion_at.is_(None),
+                )
+                .order_by(PilotReplica.uid.desc())
+            )
+        assert replica is not None
+        return replica
+
+    threshold = PilotConfig.model_validate(PILOT_SYSTEM)
+    for cycle in range(threshold.max_consecutive_pilot_start_failures):
+        await reconciler.reconcile(dep_uid)
+        replica = await newest_pending()
+        await placer.reconcile(replica.uid)
+        async with db.begin() as sess:
+            placed = await sess.get(PilotReplica, replica.uid)
+            assert placed is not None and placed.pilot_job_name is not None
+            job = await PilotJob.get_by_name(sess, placed.pilot_job_name)
+            job.scheduler_job_id = f"replacement-{cycle}.pbs"
+            job.scheduler_state = SchedulerJobState.running.value
+        async with db() as sess:
+            failed = await PilotJob.get_by_name(sess, job.name)
+        await observer._update_job(failed, None)
+
+    # The latch has tripped: the next replacement replica waits.
+    await reconciler.reconcile(dep_uid)
+    replica = await newest_pending()
+    await placer.reconcile(replica.uid)
+
+    async with db() as sess:
+        jobs = (
+            await sess.scalars(
+                select(PilotJob).where(PilotJob.cluster_name == "polaris")
+            )
+        ).all()
+        dep = await PilotDeployment.get_by_name(sess, "dep-loop")
+        waiting = await sess.get(PilotReplica, replica.uid)
+
+    assert len(jobs) == threshold.max_consecutive_pilot_start_failures
+    assert waiting is not None and waiting.state == ReplicaState.pending.value
+    assert waiting.state_message == SUBMISSIONS_HALTED.format(n=len(jobs))
+    assert dep.consecutive_launch_failures == 0
+    assert dep.desired_replicas == 1
+
+
+async def test_survivor_of_maintenance_shortcut_is_reaped_as_orphan(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A job the controller marked gone without the scheduler (during
+    maintenance) is terminated once the scheduler is reachable again."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _insert_pilot_job(
+            sess,
+            "job-survivor",
+            "77.pbs",
+            state=SchedulerJobState.gone,
+            scheduled_deletion_at=NOW,
+        )
+        await sess.execute(sa.update(PilotJob).values(deleted_at=NOW))
+
+    adapter = FakeSchedulerAdapter()
+    adapter.statuses = [
+        JobStatusInfo(
+            id="77.pbs",
+            name="__FIRST_PILOT_job-survivor",
+            state=SchedulerJobState.running,
+            created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            started_at=NOW,
+            walltime_minutes=60,
+        )
+    ]
+    observer = _make_observer(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await observer._poll_all_clusters()
+
+    assert adapter.terminated == ["77.pbs"]

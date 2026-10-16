@@ -49,6 +49,7 @@ class RouterConfigObserver(Worker):
     async def rebuild(self) -> list[ModelConfig]:
         async with self.client_state.db_sessionmaker() as sess:
             models = await db.Model.list(sess, load_pilot_replicas=True)
+            notices = await db.Cluster.maintenance_notices(sess)
 
         return [
             ModelConfig(
@@ -64,7 +65,7 @@ class RouterConfigObserver(Worker):
                 usage_limits=UsagePolicy.model_validate(model.usage_limits),
                 overload=OverloadPolicy.model_validate(model.overload),
                 deployments=self._build_deployments(
-                    model.pilot_deployments, model.static_deployments
+                    model.pilot_deployments, model.static_deployments, notices
                 ),
             )
             for model in sorted(models, key=lambda m: m.uid)
@@ -72,41 +73,56 @@ class RouterConfigObserver(Worker):
 
     @staticmethod
     def _build_deployments(
-        pilots: list[db.PilotDeployment], statics: list[db.StaticDeployment]
+        pilots: list[db.PilotDeployment],
+        statics: list[db.StaticDeployment],
+        maintenance_notices: dict[str, str],
     ) -> list[DeploymentConfig]:
         result = []
 
         dep: db.StaticDeployment | db.PilotDeployment
         for dep in sorted(statics, key=lambda d: d.uid):
-            if dep.health == HealthCheckResult.healthy:
-                result.append(
-                    DeploymentConfig(
-                        kind="static",
-                        name=dep.name,
-                        cluster_name=dep.cluster_name,
-                        router_params=RouterParams.model_validate(dep.router_params),
-                        prometheus_metrics_path=dep.prometheus_metrics_path,
-                        prometheus_scrape_interval_sec=dep.prometheus_scrape_interval_sec,
-                        backends=[
-                            BackendConfig(
-                                id=dep.backend_id,
-                                model_url=dep.api_url,
-                                backend_model_name=dep.upstream_model_name,
-                                api_key=dep.api_key,
-                            )
-                        ],
+            healthy = dep.health == HealthCheckResult.healthy
+            notice = maintenance_notices.get(dep.cluster_name)
+            if not (healthy or notice):
+                continue
+            backends = (
+                [
+                    BackendConfig(
+                        id=dep.backend_id,
+                        model_url=dep.api_url,
+                        backend_model_name=dep.upstream_model_name,
+                        api_key=dep.api_key,
                     )
+                ]
+                if healthy
+                else []
+            )
+            result.append(
+                DeploymentConfig(
+                    kind="static",
+                    name=dep.name,
+                    cluster_name=dep.cluster_name,
+                    router_params=RouterParams.model_validate(dep.router_params),
+                    prometheus_metrics_path=dep.prometheus_metrics_path,
+                    prometheus_scrape_interval_sec=dep.prometheus_scrape_interval_sec,
+                    backends=backends,
+                    maintenance_notice=notice,
                 )
+            )
 
         # Pilot deployments are always listed (possibly with no backends) so the
         # data plane can report a startup ETA when nothing is routable yet.
         for dep in sorted(pilots, key=lambda d: d.uid):
+            notice = maintenance_notices.get(dep.cluster_name)
             retained = [r for r in dep.replicas if not r.is_draining]
             healthy_replicas = sorted(
                 (r for r in retained if r.state == ReplicaState.ready),
                 key=lambda r: r.uid,
             )
-            incoming = [r for r in retained if r.state in _INCOMING]
+            # During maintenance, only a replica already launching on a live
+            # pilot is starting; the rest wait for maintenance to end.
+            incoming_states = {ReplicaState.launching} if notice else _INCOMING
+            incoming = [r for r in retained if r.state in incoming_states]
             result.append(
                 DeploymentConfig(
                     kind="pilot",
@@ -130,6 +146,7 @@ class RouterConfigObserver(Worker):
                         default=None,
                     ),
                     last_startup_sec=dep.last_startup_sec,
+                    maintenance_notice=notice,
                 )
             )
         return result

@@ -7,13 +7,13 @@ from sqlalchemy.orm import selectinload
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.pilot import ReplicaStartRequest
-from first_common.schema.types import ReplicaState
+from first_common.schema.types import HealthCheckResult, ReplicaState
 
-from ...database.models import PilotDeployment, PilotJob, PilotReplica
+from ...database.models import Cluster, PilotDeployment, PilotJob, PilotReplica
 from ...database.redis.pubsub import Channel
 from ...services.pilot_control import PilotControlClient
 from ...settings import ClientState
-from ..controller import Controller, StaleReconcile
+from ..controller import Controller, ExpectedReconcileFailure, StaleReconcile
 from ..wakeup import WakeupDispatcher
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 class ReplicaLauncher(Controller):
     """
     Launches placed replicas onto their PilotJobs once the job is running and its
-    manager endpoint is reachable.
+    manager endpoint is reachable. Pilots whose manager failed its last /status
+    probe are skipped until it answers again.
 
     This controller only drives the `placed -> launching` transition.
     """
@@ -64,6 +65,9 @@ class ReplicaLauncher(Controller):
                 ),
                 PilotJob.scheduler_state == SchedulerJobState.running.value,
                 PilotJob.manager_url.is_not(None),
+                PilotJob.manager_health.is_distinct_from(
+                    HealthCheckResult.unhealthy.value
+                ),
             )
         )
         return list(await sess.scalars(stmt))
@@ -98,7 +102,15 @@ class ReplicaLauncher(Controller):
             ):
                 # Job not ready yet; a pilot_job_ready wake will bring us back.
                 return
+            if job.manager_health == HealthCheckResult.unhealthy.value:
+                # The periodic tick retries once the manager answers /status.
+                return
 
+            maintenance_notice = await sess.scalar(
+                sa.select(Cluster.maintenance_notice).where(
+                    Cluster.name == job.cluster_name
+                )
+            )
             manager_url = job.manager_url
             deploy = replica.pilot_deployment
             request = ReplicaStartRequest(
@@ -110,7 +122,16 @@ class ReplicaLauncher(Controller):
                 prometheus_metrics_path=deploy.prometheus_metrics_path,
             )
 
-        resp = await self.client.start_replica(manager_url, request)
+        try:
+            resp = await self.client.start_replica(manager_url, request)
+        except httpx.TransportError as exc:
+            if not maintenance_notice:
+                raise
+            # The manager went away after its last /status probe.
+            raise ExpectedReconcileFailure(
+                f"ReplicaLauncher: could not reach pilot manager for {replica.name}: "
+                f"{exc!r}; cluster under maintenance"
+            ) from exc
 
         if resp.is_success:
             await self._mark_launching(replica.uid, replica.name)
