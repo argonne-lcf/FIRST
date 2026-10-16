@@ -15,6 +15,8 @@ _THREAD_BODY_LIMIT = 2800
 
 def _recovery_line(staged: StagedTransition) -> str:
     resource = staged.display_name or staged.key
+    if staged.owner == "check_quarantined_nodes":
+        return f"{resource}: Quarantine ended; node is eligible for startup screening"
     if staged.recovery_hint:
         return f"✅ {resource} recovered after {staged.recovery_hint}"
     return f"✅ {resource} recovered"
@@ -43,7 +45,11 @@ def build_alert_blocks(
         has_crit = any(s.severity == "crit" for s in degradations)
         header = "🚨 Health degradation" if has_crit else "⚠️ Health update"
     elif recoveries:
-        header = "✅ Recovery"
+        header = (
+            "ℹ️ Health update"
+            if all(r.owner == "check_quarantined_nodes" for r in recoveries)
+            else "✅ Recovery"
+        )
     else:
         header = "⚠️ Health update"
 

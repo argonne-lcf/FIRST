@@ -106,9 +106,7 @@ def query_gpus(
 
 
 def discover_hosts(node_file_env: str) -> list[str]:
-    node_file = os.environ.get(node_file_env)
-
-    if not node_file:
+    if not node_file_env:
         localhost = socket.gethostname()
         logger.info(
             "%s not set; assuming single-host deployment (%s)",
@@ -116,30 +114,22 @@ def discover_hosts(node_file_env: str) -> list[str]:
             localhost,
         )
         return [localhost]
-
+    node_file = os.environ.get(node_file_env)
+    if not node_file:
+        raise RuntimeError(
+            f"configured allocation node file {node_file_env} is not set"
+        )
     try:
         with open(node_file) as f:
             lines = f.readlines()
     except (FileNotFoundError, OSError) as exc:
-        localhost = socket.gethostname()
-        logger.warning(
-            "node file %s=%s not read (%s); falling back to single host %s",
-            node_file_env,
-            node_file,
-            exc,
-            localhost,
-        )
-        return [localhost]
+        raise RuntimeError(
+            f"configured allocation node file {node_file_env} cannot be read"
+        ) from exc
 
     hosts = [l.strip() for l in lines if l.strip()]
     if not hosts:
-        localhost = socket.gethostname()
-        logger.warning(
-            "node file %s was empty; falling back to single host %s",
-            node_file,
-            localhost,
-        )
-        return [localhost]
+        raise RuntimeError(f"configured allocation node file {node_file_env} is empty")
 
     return hosts
 
@@ -356,6 +346,12 @@ class ReplicaManager:
                 os.close(dir_fd)
 
     def start_replica(self, replica: ReplicaStartRequest) -> None:
+        # Reused pilots must not bypass the pending/held quarantine guard. This
+        # applies only to this new attempt; existing healthy replicas keep running.
+        # Local import avoids admission/discover_hosts' module dependency cycle.
+        from .admission import guard_quarantined_nodes
+
+        guard_quarantined_nodes(self.config, self.node_hostnames)
         requested = self._validate_request(replica.name, replica.gpu_indices)
 
         host_gpus: dict[str, list[str]] = defaultdict(list)

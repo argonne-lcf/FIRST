@@ -9,7 +9,9 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,7 +21,11 @@ _PALS_LABEL = re.compile(r"^(?P<host>\S+)\s+(?P<rank>\d+):\s?(?P<row>.*)$")
 
 
 def run_on_hosts(
-    command: list[str], hostnames: list[str], discovery: GpuDiscovery
+    command: list[str],
+    hostnames: list[str],
+    discovery: GpuDiscovery,
+    *,
+    require_completion: bool = False,
 ) -> dict[str, str]:
     """
     Return each host's stdout. A single-node pilot runs the command locally;
@@ -27,19 +33,77 @@ def run_on_hosts(
     if the command cannot be run on every host.
     """
     timeout_sec = discovery.timeout_sec
+    if not hostnames or len(deduplicate_hosts(hostnames)) != len(hostnames):
+        raise RuntimeError(
+            "host-command inventory is empty or contains duplicate hosts"
+        )
+    # Startup screening must distinguish an empty successful query (for example
+    # no GPU clients) from a rank that never ran. Inventory callers retain their
+    # existing output format; screening opts into the completion proof.
+    marker = f"FIRST_HOST_COMMAND_{uuid.uuid4().hex}" if require_completion else None
+    native_command = command
+    if marker is not None:
+        if not isinstance(discovery, SSHDiscovery):
+            executable = shutil.which(command[0])
+            if executable is None:
+                raise RuntimeError(
+                    f"required {command[0]} is unavailable on the pilot PATH"
+                )
+            command = [str(Path(executable).resolve()), *command[1:]]
+        native_command = _completed_command(command, marker)
 
-    if len(hostnames) == 1:
-        return {hostnames[0]: _run(command, timeout_sec)}
+    if len(hostnames) == 1 and (
+        not require_completion or host_matches(socket.gethostname(), hostnames[0])
+    ):
+        outputs = {hostnames[0]: _run(native_command, timeout_sec)}
 
-    if isinstance(discovery, SSHDiscovery):
+    elif isinstance(discovery, SSHDiscovery):
         with ThreadPoolExecutor(max_workers=len(hostnames)) as pool:
-            outputs = pool.map(
-                lambda host: _run(["ssh", host, shlex.join(command)], timeout_sec),
+            results = pool.map(
+                lambda host: _run(
+                    ["ssh", host, shlex.join(native_command)], timeout_sec
+                ),
                 hostnames,
             )
-            return dict(zip(hostnames, outputs))
+            outputs = dict(zip(hostnames, results))
+    else:
+        outputs = _run_pals(
+            native_command, hostnames, discovery.launcher_path, timeout_sec
+        )
 
-    return _run_pals(command, hostnames, discovery.launcher_path, timeout_sec)
+    if marker is not None:
+        return {
+            host: _completed_output(output, marker, host)
+            for host, output in outputs.items()
+        }
+    return outputs
+
+
+def _completed_command(command: list[str], marker: str) -> list[str]:
+    # No output is evidence of success only if this per-rank trailer arrives.
+    # "$@" preserves arguments without evaluating configuration as shell code.
+    script = (
+        '"$@"; result=$?; '
+        "physical_host=$(/bin/hostname -s) || exit 125; "
+        f'printf \'\\n{marker}:%s:%s\\n\' "$physical_host" "$result"; '
+        'exit "$result"'
+    )
+    return ["/bin/sh", "-c", script, "first-host-command", *command]
+
+
+def _completed_output(output: str, marker: str, host: str) -> str:
+    rows = output.splitlines()
+    matching = [row for row in rows if row.startswith(marker + ":")]
+    if len(matching) != 1 or not rows or rows[-1] != matching[0]:
+        raise RuntimeError(f"host {host!r} has no unique final command completion")
+    parts = matching[0].split(":")
+    if len(parts) != 3 or parts[2] != "0" or not host_matches(parts[1], host):
+        raise RuntimeError(f"host {host!r} has an invalid command completion")
+    rows.pop()
+    # The wrapper adds one separating newline, not a command-output row.
+    if rows and not rows[-1]:
+        rows.pop()
+    return "\n".join(rows)
 
 
 def _run(command: list[str], timeout_sec: float) -> str:
@@ -54,6 +118,8 @@ def _run(command: list[str], timeout_sec: float) -> str:
         raise RuntimeError(
             f"{command[0]} exited {result.returncode}: {diagnostics[-2000:]}"
         )
+    if len(result.stdout) > 1024 * 1024:
+        raise RuntimeError(f"{command[0]} returned excessive host-command output")
     return result.stdout
 
 

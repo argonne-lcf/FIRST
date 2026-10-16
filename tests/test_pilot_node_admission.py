@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Any
@@ -8,7 +7,7 @@ import pytest
 
 from first_common.schema.pilot import PilotRuntimeConfig
 from first_common.schema.types import PalsDiscovery, SSHDiscovery
-from first_pilot.admission import ACTIONS, NodeChecksFailed, admit_nodes, pbs_quarantine
+from first_pilot.admission import NodeChecksFailed, admit_nodes, pbs_quarantine
 from first_pilot.host_commands import run_on_hosts
 from first_pilot.node_checks import (
     CHECKS,
@@ -19,7 +18,11 @@ from first_pilot.node_checks import (
     run_node_checks,
 )
 
-HEALTHY = "0, 81559, 4, 0, 0\n1, 81559, 4, 0, 0\n"
+HEALTHY = (
+    "0, GPU-aaaaaaaa-1111-1111-1111-111111111111, 580.82.09, 81559, 81555, 0, 0\n"
+    "1, GPU-bbbbbbbb-2222-2222-2222-222222222222, 580.82.09, 81559, 81555, 0, 0\n"
+)
+MISSING = "0, GPU-cccccccc-3333-3333-3333-333333333333, 580.82.09, 81559, 51559, 0, 0\n"
 
 
 def _config(tmp_path: Path, **overrides: Any) -> PilotRuntimeConfig:
@@ -62,22 +65,23 @@ def test_gpu_checks_pass_a_healthy_node(tmp_path: Path) -> None:
 
 
 def test_gpu_count_reports_a_missing_gpu(tmp_path: Path) -> None:
-    reason = gpu_count("0, 81559, 4, 0, 0\n", _config(tmp_path))
+    reason = gpu_count(HEALTHY.splitlines()[0], _config(tmp_path))
     assert reason == "found 1 GPUs, expected 2"
 
 
 def test_gpu_memory_free_reports_memory_already_in_use(tmp_path: Path) -> None:
-    output = "0, 81559, 4, 0, 0\n1, 81559, 30000, 0, 0\n"
+    output = HEALTHY.replace("81555, 0, 0", "51559, 0, 0", 1)
     reason = gpu_memory_free(output, _config(tmp_path))
-    assert reason == "GPU 1 already has 30000 of 81559 MiB in use"
+    assert reason == "GPU 0 has 51559 MiB free; requires 77738 of 81559 MiB"
 
 
-def test_gpu_ecc_errors_reports_uncorrected_errors_and_tolerates_na(
+def test_gpu_ecc_errors_reports_uncorrected_errors_and_rejects_na(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
-    assert gpu_ecc_errors("0, 81559, 4, [N/A], [N/A]\n", config) is None
-    reason = gpu_ecc_errors("0, 81559, 4, 0, 3\n", config)
+    with pytest.raises(RuntimeError, match="malformed GPU observation"):
+        gpu_ecc_errors(HEALTHY.replace(", 0, 0", ", [N/A], [N/A]"), config)
+    reason = gpu_ecc_errors(HEALTHY.replace(", 0, 0", ", 0, 3"), config)
     assert reason == "GPU 0 has 3 uncorrected ECC errors"
 
 
@@ -90,7 +94,12 @@ def test_gpu_ecc_errors_reports_uncorrected_errors_and_tolerates_na(
 def test_run_node_checks_reports_failures_per_host(
     run: MagicMock, tmp_path: Path
 ) -> None:
-    run.return_value = {"n1": HEALTHY, "n2": "0, 81559, 30000, 0, 0\n"}
+    def output(command: list[str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        if command[1].startswith("--query-compute-apps"):
+            return {"n1": "", "n2": ""}
+        return {"n1": HEALTHY, "n2": MISSING}
+
+    run.side_effect = output
 
     failures = run_node_checks(
         ["gpu_count", "gpu_memory_free"], ["n1", "n2"], _config(tmp_path)
@@ -98,12 +107,12 @@ def test_run_node_checks_reports_failures_per_host(
 
     assert failures == {
         "n2": [
-            "gpu_count: found 1 GPUs, expected 2",
-            "gpu_memory_free: GPU 0 already has 30000 of 81559 MiB in use",
+            "gpu_count: found 1 GPUs, expected 2 in both observations",
+            "gpu_memory_free: GPU 0 has 51559 MiB free; requires 77738 of 81559 MiB in both observations with no GPU clients",
         ]
     }
-    # Both checks use the same command, so it is launched only once.
-    run.assert_called_once()
+    # The GPU checks share two coherent samples, each with a GPU-client query.
+    assert run.call_count == 4
 
 
 def test_run_node_checks_rejects_unknown_names(tmp_path: Path) -> None:
@@ -185,7 +194,9 @@ def test_admit_nodes_passes_healthy_nodes(
 
     admit_nodes(config)
 
-    run.assert_called_once_with(["gpu_count"], ["n1", "n2"], config)
+    assert run.call_count == 1
+    assert run.call_args.args == (["gpu_count"], ["n1", "n2"], config)
+    assert run.call_args.kwargs == {"evidence": {}}
 
 
 @patch("first_pilot.admission.run_node_checks")
@@ -200,11 +211,16 @@ def test_admit_nodes_acts_on_each_bad_node_then_refuses_to_start(
     )
     action = MagicMock()
 
-    with patch.dict(ACTIONS, {"pbs_quarantine": action}):
+    with (
+        patch.dict("first_pilot.admission.ACTIONS", {"pbs_quarantine": action}),
+        patch("first_pilot.admission.guard_quarantined_nodes", return_value=None),
+    ):
         with pytest.raises(NodeChecksFailed, match="n2"):
             admit_nodes(config)
 
-    action.assert_called_once_with("n2", config)
+    assert action.call_count == 1
+    assert action.call_args.args == ("n2", config)
+    assert action.call_args.kwargs["reason"] == "gpu_count"
 
 
 @patch("first_pilot.admission.run_node_checks", return_value={"n1": ["bad"]})
@@ -212,9 +228,19 @@ def test_admit_nodes_refuses_to_start_even_if_the_action_fails(
     _run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _nodefile(tmp_path, monkeypatch, "n1")
-    config = _config(tmp_path, num_nodes=1, node_admission={"checks": ["gpu_count"]})
+    config = _config(
+        tmp_path,
+        num_nodes=1,
+        node_admission={"checks": ["gpu_count"], "on_failure": "pbs_quarantine"},
+    )
 
-    with patch.dict(ACTIONS, {"exit": MagicMock(side_effect=RuntimeError("boom"))}):
+    with (
+        patch.dict(
+            "first_pilot.admission.ACTIONS",
+            {"pbs_quarantine": MagicMock(side_effect=RuntimeError("boom"))},
+        ),
+        patch("first_pilot.admission.guard_quarantined_nodes", return_value=None),
+    ):
         with pytest.raises(NodeChecksFailed):
             admit_nodes(config)
 
@@ -230,72 +256,7 @@ def test_a_new_check_is_registered_by_name() -> None:
         assert CHECKS["kernel"].evaluate("5.14\n", MagicMock()) == "unexpected kernel"
 
 
-# ---------------------------------------------------------------------------
-# PBS quarantine
-# ---------------------------------------------------------------------------
-
-
-def _fake_pbs(existing_job_names: list[str]) -> MagicMock:
-    """A stand-in for first_pilot.admission._pbs that records the qsub call."""
-    jobs = {f"{i}.pbs": {"Job_Name": name} for i, name in enumerate(existing_job_names)}
-
-    def pbs(command: list[str]) -> str:
-        if command[0] == "qstat":
-            return json.dumps({"Jobs": jobs})
-        return "99.pbs\n"
-
-    return MagicMock(side_effect=pbs)
-
-
-def _qsub_calls(pbs: MagicMock) -> list[list[str]]:
-    return [c.args[0] for c in pbs.call_args_list if c.args[0][0] == "qsub"]
-
-
-def test_pbs_quarantine_parks_an_exclusive_sleep_job_on_the_node(
-    tmp_path: Path,
-) -> None:
-    pbs = _fake_pbs(["first_dev_tara_v2_pilot-1"])
-
-    with patch("first_pilot.admission._pbs", pbs):
-        pbs_quarantine("x4820c7s3b1n0.lab.example", _config(tmp_path))
-
-    assert _qsub_calls(pbs) == [
-        [
-            "qsub",
-            *("-N", "first_quar_x4820c7s3b1n0"),
-            *("-q", "prod"),
-            *("-A", "TestAcct"),
-            *("-l", "select=1:host=x4820c7s3b1n0"),
-            *("-l", "place=exclhost"),
-            *("-l", "walltime=168:00:00"),
-            *("-j", "oe"),
-            *("-o", "/dev/null"),
-            *("--", "/bin/sleep", "infinity"),
-        ]
-    ]
-
-
-def test_pbs_quarantine_skips_a_node_that_is_already_quarantined(
-    tmp_path: Path,
-) -> None:
-    pbs = _fake_pbs(["first_quar_n1"])
-
-    with patch("first_pilot.admission._pbs", pbs):
-        pbs_quarantine("n1", _config(tmp_path))
-
-    assert _qsub_calls(pbs) == []
-
-
-def test_pbs_quarantine_stops_at_the_configured_limit(tmp_path: Path) -> None:
-    pbs = _fake_pbs(["first_quar_n1", "first_quar_n2"])
-    config = _config(tmp_path, node_admission={"max_quarantined_nodes": 2})
-
-    with patch("first_pilot.admission._pbs", pbs):
-        pbs_quarantine("n3", config)
-
-    assert _qsub_calls(pbs) == []
-
-
+# Native PBS identity/resource cases live in test_pilot_native_quarantine.py.
 def test_pbs_quarantine_requires_queue_and_account(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="queue and account"):
         pbs_quarantine("n1", _config(tmp_path, queue=None))

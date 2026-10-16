@@ -268,7 +268,7 @@ GpuDiscovery = Annotated[
 ]
 
 
-# Scheduler job name of a quarantine job: this prefix plus the short hostname.
+# Discovery prefix only; native PBS metadata establishes quarantine identity.
 QUARANTINE_JOB_PREFIX = "first_quar_"
 
 
@@ -281,11 +281,18 @@ class NodeAdmission(BaseModel):
     the gateway's ordinary retry submits a replacement job.
 
     - `exit`: do nothing more; the scheduler may hand the node out again.
-    - `pbs_quarantine`: first park a sleep job on the node so it cannot.
+    - `pbs_quarantine`: first submit an exclusive waiting job on the node.
+      PBS keeps the node allocated once that job runs; retries do not wait.
     """
 
     checks: list[str] = []
     on_failure: Literal["exit", "pbs_quarantine"] = "exit"
+    environment: Literal["dev", "prod"] | None = None
+    # Round the required free fraction up to MiB, then add this reserve.
+    # Sites can select their admission policy without changing GPU checks.
+    minimum_free_memory_fraction: float = Field(0.95, gt=0, le=1)
+    memory_reserve_mib: int = Field(256, ge=0)
+    # Configure these within the site's PBS walltime and quarantine budget.
     quarantine_walltime_min: int = Field(7 * 24 * 60, ge=1)
     # Stop quarantining beyond this many nodes: a bad check or system image
     # must not be able to take the whole cluster out of service.
@@ -330,7 +337,9 @@ class PilotConfig(BaseModel):
     @model_validator(mode="after")
     def quarantine_jobs_are_not_pilot_jobs(self) -> Self:
         # The orphan reaper terminates unknown jobs carrying job_name_prefix.
-        if QUARANTINE_JOB_PREFIX.startswith(self.job_name_prefix):
+        if QUARANTINE_JOB_PREFIX.startswith(
+            self.job_name_prefix
+        ) or self.job_name_prefix.startswith(QUARANTINE_JOB_PREFIX):
             raise ValueError(
                 f"job_name_prefix {self.job_name_prefix!r} would claim quarantine "
                 f"jobs ({QUARANTINE_JOB_PREFIX}*) as pilot jobs"
