@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -36,6 +37,9 @@ DEFAULT_CAPABILITIES: dict[str, Any] = {
     "context_window_tokens": 65536,
     "input_modalities": ["text"],
 }
+
+# Prefix for provider IDs generated for opencode and pi.
+PROVIDER_PREFIX = "alcf-inference-service-"
 
 
 class ConfigLoadError(RuntimeError):
@@ -126,7 +130,7 @@ def _group_by_framework(
 
 
 def _provider_key(cluster_name: str, framework: str) -> str:
-    return f"alcf-inference-service-{cluster_name}-{framework}"
+    return f"{PROVIDER_PREFIX}{cluster_name}-{framework}"
 
 
 def _provider_name(cluster_name: str, framework: str) -> str:
@@ -346,15 +350,13 @@ def generate_codex_model_configs(
                     logger.info(f"Created {profile_path}")
 
 
-def edit_opencode(
+def _edit_opencode_v1(
+    config: dict[str, Any],
     base_url: URL,
     api_key: str,
     model_infos: dict[str, list[dict[str, Any]]],
 ) -> None:
-    path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
-    config = _load_json_config(path)
     token_helper = _token_helper_command()
-
     providers = config.get("provider", {})
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
@@ -424,6 +426,135 @@ def edit_opencode(
     if token_helper:
         plugins.append([OPENCODE_PLUGIN_PACKAGE, {"tokenHelper": token_helper}])
     config["plugin"] = plugins
+
+
+def _edit_opencode_v2(
+    config: dict[str, Any],
+    base_url: URL,
+    api_key: str,
+    model_infos: dict[str, list[dict[str, Any]]],
+) -> None:
+    token_helper = _token_helper_command()
+    providers = config.get("providers", {})
+    for cluster_name, models in model_infos.items():
+        for framework, group in _group_by_framework(models).items():
+            entries = {}
+            for model in group:
+                caps = _merge_capabilities(model)
+                entry: dict[str, Any] = {}
+
+                if name := model.get("display_name"):
+                    entry["name"] = name
+
+                capabilities: dict[str, Any] = {
+                    "tools": bool(caps.get("tool_calling", {}).get("supported")),
+                }
+                if inputs := caps.get("input_modalities"):
+                    capabilities["input"] = inputs
+
+                if reasoning := caps.get("reasoning"):
+                    if reasoning.get("supported", False):
+                        controls: dict[str, Any] = {"supported": True}
+                        if lvls := reasoning.get("effort_levels"):
+                            controls["effort"] = lvls
+                        capabilities["reasoning"] = controls
+
+                    if effort := reasoning.get("default_effort"):
+                        entry.setdefault("settings", {})["reasoningEffort"] = effort
+
+                    if reasoning.get("separate_output", False):
+                        entry.setdefault("compatibility", {})["reasoningField"] = (
+                            "reasoning_content"
+                        )
+
+                entry["capabilities"] = capabilities
+
+                if ctx := caps.get("context_window_tokens"):
+                    entry["limit"] = {"context": ctx}
+
+                if m_id := model.get("id"):
+                    entries[m_id] = entry
+
+            providers[_provider_key(cluster_name, framework)] = {
+                "name": _provider_name(cluster_name, framework),
+                "package": "@opencode/ai/providers/openai-compatible",
+                "settings": {
+                    "baseURL": f"{base_url}{cluster_name}/{framework}/v1",
+                    "apiKey": "alcf-ai-auto-refresh" if token_helper else api_key,
+                    "headerTimeout": False,
+                    "chunkTimeout": False,
+                },
+                "headers": {
+                    "X-ALCF-Session-ID": "{env:ALCF_SESSION_ID}",
+                },
+                "models": entries,
+            }
+
+    legacy_providers = config.get("provider")
+    if isinstance(legacy_providers, dict):
+        for key in [k for k in legacy_providers if k.startswith(PROVIDER_PREFIX)]:
+            del legacy_providers[key]
+        if not legacy_providers:
+            del config["provider"]
+
+    config["providers"] = providers
+
+    # opencode installs this npm plugin itself; it injects a refreshed token.
+    plugins = [
+        p
+        for p in config.get("plugins", [])
+        if (p if isinstance(p, str) else p.get("package")) != OPENCODE_PLUGIN_PACKAGE
+    ]
+    if token_helper:
+        plugins.append(
+            {
+                "package": OPENCODE_PLUGIN_PACKAGE,
+                "options": {"tokenHelper": token_helper},
+            }
+        )
+    config["plugins"] = plugins
+
+    legacy_plugins = config.get("plugin")
+    if isinstance(legacy_plugins, list):
+        kept = [
+            p
+            for p in legacy_plugins
+            if (p if isinstance(p, str) else p[0]) != OPENCODE_PLUGIN_PACKAGE
+        ]
+        if kept:
+            config["plugin"] = kept
+        else:
+            del config["plugin"]
+
+
+def edit_opencode(
+    base_url: URL,
+    api_key: str,
+    model_infos: dict[str, list[dict[str, Any]]],
+) -> None:
+    path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
+    config = _load_json_config(path)
+
+    try:
+        opencode = shutil.which("opencode")
+        if opencode is None:
+            raise RuntimeError("opencode CLI is not installed")
+        output = subprocess.check_output([opencode, "--version"], text=True).strip()
+        match = re.search(r"\d+(?:\.\d+)+", output)
+        if match is None:
+            raise ValueError(f"unrecognized version output: {output!r}")
+        supports_v2 = tuple(map(int, match.group().split("."))) >= (2,)
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as err:
+        logger.warning(
+            f"Could not detect the installed opencode version ({err}); writing "
+            "the V1 configuration schema, which OpenCode 2 also reads."
+        )
+        supports_v2 = False
+
+    if supports_v2:
+        _edit_opencode_v2(config, base_url, api_key, model_infos)
+    else:
+        _edit_opencode_v1(config, base_url, api_key, model_infos)
 
     _write_json_config(path, config)
 
