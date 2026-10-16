@@ -6,6 +6,7 @@ from first_common.schema.resources.runtime import (
     Severity,
     StagedTransition,
 )
+from first_gateway.controllers.workers.health_alerter.types import DigestRow
 
 _SEVERITY_ICON: dict[Severity, str] = {"crit": "🔴", "warn": "🟡", "info": "ℹ️"}
 _SEVERITY_RANK: list[Severity] = ["crit", "warn", "info"]
@@ -30,10 +31,17 @@ def _render_grouped(lines_by_group: dict[AlertGroup, list[str]]) -> str:
         out.append(f"*{group}*")
         out.extend([f"  • {line}" for line in lines_by_group[group]])
 
-    text = "\n".join(out)
+    return _truncate("\n".join(out))
+
+
+def _truncate(text: str) -> str:
     if len(text) > 2900:
         text = text[:2900] + "\n…(truncated)"
     return text
+
+
+def _mrkdwn(text: str) -> dict[str, Any]:
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
 
 def build_alert_blocks(
@@ -81,31 +89,51 @@ def build_alert_blocks(
     return blocks
 
 
+def _digest_section(
+    title: str, rows: list[DigestRow], child: str, issues: int
+) -> dict[str, Any]:
+    """`*Title* (N total, ...)` then one `• name: status (Child: counts)` line each."""
+    health = f"{issues} open issue(s)" if issues else "all healthy"
+    lines = [f"*{title}* ({len(rows)} total, {health})"]
+    for row in sorted(rows, key=lambda r: r.name):
+        line = f"• {row.name}: {row.status}"
+        if row.counts is not None:
+            counts = ", ".join(f"{n} {s}" for s, n in sorted(row.counts.items()))
+            line += f" ({child}: {counts or 'none'})"
+        lines.append(line)
+    return _mrkdwn(_truncate("\n".join(lines)))
+
+
 def build_digest_blocks(
-    resource_counts: dict[str, tuple[int, int]],
+    clusters: list[DigestRow],
+    deployments: list[DigestRow],
+    issues_by_group: dict[str, int],
     current_degradations: dict[str, str],
 ) -> list[dict[str, Any]]:
+    # Pilot Job / Replica issues roll up into their parent's open-issue count.
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
             "text": {"type": "plain_text", "text": "📊 Daily Health Digest"},
         },
+        _digest_section(
+            "Clusters",
+            clusters,
+            "Pilot Jobs",
+            issues_by_group.get("Clusters", 0) + issues_by_group.get("Pilot Jobs", 0),
+        ),
+        _digest_section(
+            "Deployments",
+            deployments,
+            "Pilot Replicas",
+            issues_by_group.get("Deployments", 0)
+            + issues_by_group.get("Pilot Replicas", 0),
+        ),
     ]
-    lines: list[str] = []
-    for category, (total, issues) in resource_counts.items():
-        if issues > 0:
-            lines.append(f"*{category}*: {total} total, {issues} open issue(s)")
-        else:
-            lines.append(f"*{category}*: {total} total, all healthy")
-
     if current_degradations:
-        lines.append("")
-        lines.append("*Current degradations:*")
-        for line in sorted(current_degradations.values()):
-            lines.append(f"  • {line}")
-
-    text = "\n".join(lines) or "All systems healthy."
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+        lines = ["*Current degradations*"]
+        lines.extend(f"• {line}" for line in sorted(current_degradations.values()))
+        blocks.append(_mrkdwn(_truncate("\n".join(lines))))
     return blocks
 
 

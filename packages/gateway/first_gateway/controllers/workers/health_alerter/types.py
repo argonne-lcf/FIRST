@@ -59,3 +59,16 @@ class FlushPlan:
 
     degradations: list[StagedTransition]  # status != ""
     recoveries: list[StagedTransition]  # status == ""
+
+
+@dataclass
+class DigestRow:
+    """One named resource line in the daily digest.
+
+    `counts` maps child state -> count (pilot jobs for a cluster, replicas for
+    a pilot deployment); None when the resource has no children (static).
+    """
+
+    name: str
+    status: str
+    counts: dict[str, int] | None = None

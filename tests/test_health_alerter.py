@@ -583,6 +583,84 @@ async def test_daily_digest(db: async_sessionmaker[AsyncSession], redis: Redis) 
         assert not _digest_posted(mock_post)
 
 
+async def test_daily_digest_names_clusters_and_deployments(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """Digest lists every cluster/deployment by name with live status counts."""
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(Cluster(name="empty-cl", health_check={"url": "", "debounce": 2}))
+        # Truthy pilot_system marks a pilot-enabled cluster; contents unused here.
+        sess.add(
+            Cluster(
+                name="idle-pilot-cl",
+                health_check={"url": "", "debounce": 2},
+                pilot_system={"scheduler": "pbs"},
+            )
+        )
+        sess.add(_sd("sd1", HealthCheckResult.healthy.value))
+        sess.add(
+            PilotDeployment(
+                name="pd1",
+                cluster_name="cl",
+                model_name="mdl",
+                launch_template_name=LAUNCH_TEMPLATE_NAME,
+                router_params={},
+                scaling_strategy=None,
+                min_replicas=0,
+                max_replicas=3,
+                launch_spec={},
+                state=PilotDeploymentState.healthy.value,
+                prometheus_scrape_interval_sec=30,
+            )
+        )
+        for i, (job_state, deleted) in enumerate(
+            [
+                (SchedulerJobState.running, False),
+                (SchedulerJobState.running, False),
+                (SchedulerJobState.queued, False),
+                (SchedulerJobState.running, True),  # soft-deleted: not counted
+            ]
+        ):
+            sess.add(
+                PilotJob(
+                    name=f"cl/pilot-job/{i}",
+                    cluster_name="cl",
+                    walltime_min=60,
+                    num_nodes=1,
+                    gpus_per_node=4,
+                    scheduler_state=job_state.value,
+                    deleted_at=datetime.now(timezone.utc) if deleted else None,
+                )
+            )
+        await sess.flush()
+        for i, replica_state in enumerate(
+            [ReplicaState.ready, ReplicaState.ready, ReplicaState.launching]
+        ):
+            sess.add(
+                PilotReplica(
+                    name=f"pd1/replica/{i}",
+                    pilot_deployment_name="pd1",
+                    state=replica_state.value,
+                )
+            )
+
+    blocks = await alerter._build_daily_digest([], {})
+    text = "\n".join(b["text"]["text"] for b in blocks)
+
+    assert text.splitlines() == [
+        "📊 Daily Health Digest",
+        "*Clusters* (3 total, all healthy)",
+        "• cl: unknown (Pilot Jobs: 1 queued, 2 running)",
+        "• empty-cl: unknown",
+        "• idle-pilot-cl: unknown (Pilot Jobs: none)",
+        "*Deployments* (2 total, all healthy)",
+        "• pd1: healthy (Pilot Replicas: 1 launching, 2 ready)",
+        "• sd1: healthy",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Slack Web API + threading tests
 # ---------------------------------------------------------------------------

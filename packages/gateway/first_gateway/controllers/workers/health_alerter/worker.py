@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import traceback
+from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar
@@ -26,6 +27,7 @@ from first_gateway.controllers.workers.health_alerter.slack import (
 )
 from first_gateway.controllers.workers.health_alerter.types import (
     CheckResult,
+    DigestRow,
     FlushPlan,
     Observation,
 )
@@ -42,12 +44,13 @@ SLACK_POST_URL = "https://slack.com/api/chat.postMessage"
 logger = logging.getLogger(__name__)
 
 
-async def _count(sess: Any, model: Any, *, soft_deletable: bool = False) -> int:
-    """Count rows for daily digest"""
-    stmt = sa.select(sa.func.count()).select_from(model)
-    if soft_deletable:
-        stmt = stmt.where(model.deleted_at.is_(None))
-    return int((await sess.scalar(stmt)) or 0)
+def _count_by(model: Any, parent_col: Any, state_col: Any) -> Any:
+    """Live (not soft-deleted) row counts grouped by (parent, state)."""
+    return (
+        sa.select(parent_col, state_col, sa.func.count())
+        .where(model.deleted_at.is_(None))
+        .group_by(parent_col, state_col)
+    )
 
 
 def advance(
@@ -378,26 +381,53 @@ class HealthAlerter(Worker):
     async def _build_daily_digest(
         self, observed: list[Observation], committed: dict[str, CommittedAlert]
     ) -> list[dict[str, Any]]:
-        """Snapshot: per-group totals + this tick's open issues (reuses checks)."""
+        """Snapshot: every cluster/deployment by name with child status counts,
+        plus this tick's open issues (reuses checks) and committed degradations."""
+        job_counts: dict[str, dict[str, int]] = defaultdict(dict)
+        replica_counts: dict[str, dict[str, int]] = defaultdict(dict)
         async with self.client_state.db_sessionmaker() as sess:
-            totals = {
-                "Clusters": await _count(sess, Cluster),
-                "Deployments": await _count(sess, StaticDeployment)
-                + await _count(sess, PilotDeployment),
-                "Pilot Jobs": await _count(sess, PilotJob, soft_deletable=True),
-                "Pilot Replicas": await _count(sess, PilotReplica, soft_deletable=True),
-            }
+            for cluster_name, state, n in await sess.execute(
+                _count_by(PilotJob, PilotJob.cluster_name, PilotJob.scheduler_state)
+            ):
+                job_counts[cluster_name][state] = n
+            for dep_name, state, n in await sess.execute(
+                _count_by(
+                    PilotReplica, PilotReplica.pilot_deployment_name, PilotReplica.state
+                )
+            ):
+                replica_counts[dep_name][state] = n
 
-        issues_by_group: dict[str, int] = {}
+            # Omit job counts for clusters that never run pilot jobs.
+            clusters = [
+                DigestRow(
+                    name,
+                    health,
+                    job_counts.get(name) or ({} if pilot_system else None),
+                )
+                for name, health, pilot_system in await sess.execute(
+                    sa.select(Cluster.name, Cluster.health, Cluster.pilot_system)
+                )
+            ]
+            deployments = [
+                DigestRow(name, state, replica_counts[name])
+                for name, state in await sess.execute(
+                    sa.select(PilotDeployment.name, PilotDeployment.state)
+                )
+            ] + [
+                DigestRow(name, health)
+                for name, health in await sess.execute(
+                    sa.select(StaticDeployment.name, StaticDeployment.health)
+                )
+            ]
+
+        issues_by_group: dict[str, int] = defaultdict(int)
         for o in observed:
-            issues_by_group[o.group] = issues_by_group.get(o.group, 0) + 1
+            issues_by_group[o.group] += 1
 
-        resource_counts = {
-            group: (total, issues_by_group.get(group, 0))
-            for group, total in totals.items()
-        }
         current_degradations = {
             k: (ca.summary or f"{ca.display_name or k}: {ca.status}")
             for k, ca in committed.items()
         }
-        return build_digest_blocks(resource_counts, current_degradations)
+        return build_digest_blocks(
+            clusters, deployments, issues_by_group, current_degradations
+        )
