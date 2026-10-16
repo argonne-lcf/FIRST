@@ -1,13 +1,14 @@
 import json
 from pathlib import Path
 from subprocess import CompletedProcess
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
-from first_common.schema.pilot import PilotRuntimeConfig
+from first_common.schema.pilot import GpuInfo, PilotRuntimeConfig
 from first_common.schema.types import NodeAdmission, PalsDiscovery, SSHDiscovery
 from first_pilot.admission import (
     ACTIONS,
@@ -15,21 +16,21 @@ from first_pilot.admission import (
     admit_nodes,
     pbs_quarantine,
 )
+from first_pilot.gpu_inventory import parse_gpus
 from first_pilot.host_commands import run_on_hosts
 from first_pilot.node_checks import (
     CHECKS,
     gpu_count,
     gpu_ecc_errors,
     gpu_memory_free,
-    node_check,
     run_node_checks,
 )
 
-HEALTHY = (
-    "0, GPU-aaaaaaaa-1111-1111-1111-111111111111, 580.82.09, 81559, 81555, 0, 0\n"
-    "1, GPU-bbbbbbbb-2222-2222-2222-222222222222, 580.82.09, 81559, 81555, 0, 0\n"
-)
-MISSING = "0, GPU-cccccccc-3333-3333-3333-333333333333, 580.82.09, 81559, 51559, 0, 0\n"
+from .fixtures.nvidia_smi import gpu_row, gpu_rows
+
+A100 = {"memory_total_mib": 81559, "memory_free_mib": 81555}
+HEALTHY = gpu_rows(2, host="n1", **A100)
+MISSING = gpu_row(0, host="n2", **{**A100, "memory_free_mib": 51559})
 
 
 def _config(tmp_path: Path, **overrides: Any) -> PilotRuntimeConfig:
@@ -66,30 +67,37 @@ def _nodefile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *hosts: str) -> N
 
 def test_gpu_checks_pass_a_healthy_node(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    assert gpu_count(HEALTHY, config) is None
-    assert gpu_memory_free(HEALTHY, config) is None
-    assert gpu_ecc_errors(HEALTHY, config) is None
+    gpus = parse_gpus(HEALTHY)
+    assert gpu_count(gpus, config) == {}
+    assert gpu_memory_free(gpus, config) == {}
+    assert gpu_ecc_errors(gpus, config) == {}
 
 
 def test_gpu_count_reports_a_missing_gpu(tmp_path: Path) -> None:
-    reason = gpu_count(HEALTHY.splitlines()[0], _config(tmp_path))
-    assert reason == "found 1 GPUs, expected 2"
+    faults = gpu_count(parse_gpus(gpu_row(0, host="n1", **A100)), _config(tmp_path))
+    assert faults == {None: "found 1 GPUs, expected 2"}
 
 
 def test_gpu_memory_free_reports_memory_already_in_use(tmp_path: Path) -> None:
-    output = HEALTHY.replace("81555, 0, 0", "51559, 0, 0", 1)
-    reason = gpu_memory_free(output, _config(tmp_path))
-    assert reason == "GPU 0 has 51559 MiB free; requires 77738 of 81559 MiB"
+    output = HEALTHY.replace("81555", "51559", 1)
+    faults = gpu_memory_free(parse_gpus(output), _config(tmp_path))
+    assert faults == {"0": "GPU 0 has 51559 MiB free; requires 77738 of 81559 MiB"}
 
 
 def test_gpu_ecc_errors_reports_uncorrected_errors_and_rejects_na(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
-    with pytest.raises(RuntimeError, match="malformed GPU observation"):
-        gpu_ecc_errors(HEALTHY.replace(", 0, 0", ", [N/A], [N/A]"), config)
-    reason = gpu_ecc_errors(HEALTHY.replace(", 0, 0", ", 0, 3"), config)
-    assert reason == "GPU 0 has 3 uncorrected ECC errors"
+    unavailable = parse_gpus(gpu_rows(2, ecc_uncorrected_aggregate=None))
+    with pytest.raises(RuntimeError, match="does not report"):
+        gpu_ecc_errors(unavailable, config)
+    faults = gpu_ecc_errors(
+        parse_gpus(gpu_rows(2, ecc_uncorrected_aggregate=3)), config
+    )
+    assert faults == {
+        "0": "GPU 0 has 3 uncorrected ECC errors",
+        "1": "GPU 1 has 3 uncorrected ECC errors",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +105,7 @@ def test_gpu_ecc_errors_reports_uncorrected_errors_and_rejects_na(
 # ---------------------------------------------------------------------------
 
 
-@patch("first_pilot.node_checks.run_on_hosts")
+@patch("first_pilot.gpu_inventory.run_on_hosts")
 def test_run_node_checks_reports_failures_per_host(
     run: MagicMock, tmp_path: Path
 ) -> None:
@@ -127,39 +135,67 @@ def test_run_node_checks_rejects_unknown_names(tmp_path: Path) -> None:
         run_node_checks(["no_such_check"], ["n1"], _config(tmp_path))
 
 
+MARKER = "FIRST_HOST_COMMAND_testnonce"
+_testnonce = patch(
+    "first_pilot.host_commands.uuid.uuid4",
+    return_value=SimpleNamespace(hex="testnonce"),
+)
+
+
+def _completed(host: str, output: str) -> str:
+    return f"{output}\n{MARKER}:{host}:0\n"
+
+
+@_testnonce
+@patch("first_pilot.host_commands.socket.gethostname", return_value="n1")
 @patch("first_pilot.host_commands.subprocess.run")
 def test_run_on_hosts_runs_locally_on_a_single_node(
-    run: MagicMock, tmp_path: Path
+    run: MagicMock, _hostname: MagicMock, _uuid: MagicMock
 ) -> None:
-    run.return_value = CompletedProcess([], 0, stdout="out\n", stderr="")
+    run.return_value = CompletedProcess(
+        [], 0, stdout=_completed("n1", "out\n"), stderr=""
+    )
 
-    assert run_on_hosts(["uname", "-r"], ["n1"], SSHDiscovery()) == {"n1": "out\n"}
-    assert run.call_args.args[0] == ["uname", "-r"]
+    assert run_on_hosts(["uname", "-r"], ["n1"], SSHDiscovery()) == {"n1": "out"}
+    command = run.call_args.args[0]
+    assert command[:2] == ["/bin/sh", "-c"]
+    assert command[-2:] == ["uname", "-r"]
 
 
+@_testnonce
 @patch("first_pilot.host_commands.subprocess.run")
 def test_run_on_hosts_uses_ssh_for_ssh_discovery(
-    run: MagicMock, tmp_path: Path
+    run: MagicMock, _uuid: MagicMock
 ) -> None:
     run.side_effect = lambda command, **_: CompletedProcess(
-        command, 0, stdout=f"from {command[1]}\n", stderr=""
+        command, 0, stdout=_completed(command[1], f"from {command[1]}\n"), stderr=""
     )
 
     outputs = run_on_hosts(["uname", "-r"], ["n1", "n2"], SSHDiscovery())
 
-    assert outputs == {"n1": "from n1\n", "n2": "from n2\n"}
+    assert outputs == {"n1": "from n1", "n2": "from n2"}
     assert run.call_args.args[0][0] == "ssh"
-    assert run.call_args.args[0][2] == "uname -r"
+    assert run.call_args.args[0][2].endswith(" uname -r")
 
 
-@patch("first_pilot.host_commands.shutil.which", return_value="/usr/bin/uname")
+@_testnonce
+@patch(
+    "first_pilot.host_commands.shutil.which",
+    side_effect=lambda name: name if name.startswith("/") else "/usr/bin/" + name,
+)
 @patch("first_pilot.host_commands._require_executable", return_value="/opt/mpiexec")
 @patch("first_pilot.host_commands.subprocess.run")
 def test_run_on_hosts_splits_pals_output_by_rank(
-    run: MagicMock, _require: MagicMock, _which: MagicMock
+    run: MagicMock, _require: MagicMock, _which: MagicMock, _uuid: MagicMock
 ) -> None:
     run.return_value = CompletedProcess(
-        [], 0, stdout="n2 1: second\nn1 0: first\nn1 0: more\n", stderr=""
+        [],
+        0,
+        stdout=(
+            f"n2 1: second\nn1 0: first\nn1 0: more\n"
+            f"n2 1: {MARKER}:n2:0\nn1 0: {MARKER}:n1:0\n"
+        ),
+        stderr="",
     )
     discovery = PalsDiscovery(launcher_path=Path("/opt/mpiexec"))
 
@@ -167,6 +203,7 @@ def test_run_on_hosts_splits_pals_output_by_rank(
 
     assert outputs == {"n1": "first\nmore", "n2": "second"}
     assert run.call_args.args[0][0] == "/opt/mpiexec"
+    assert "/usr/bin/uname" in run.call_args.args[0]
 
 
 @patch("first_pilot.host_commands.subprocess.run")
@@ -244,15 +281,20 @@ def test_a_failing_action_does_not_change_the_screen_result(
             admit_nodes(config)
 
 
-def test_a_new_check_is_registered_by_name() -> None:
-    with patch.dict(CHECKS):
+@patch("first_pilot.node_checks.time.sleep")
+@patch("first_pilot.gpu_inventory.run_on_hosts", return_value={"n1": HEALTHY})
+def test_a_new_check_is_registered_by_name(
+    _run: MagicMock, _sleep: MagicMock, tmp_path: Path
+) -> None:
+    def driver_pinned(
+        gpus: list[GpuInfo], config: PilotRuntimeConfig
+    ) -> dict[str | None, str]:
+        return {None: "unexpected driver"} if gpus[0].driver_version != "1.0" else {}
 
-        @node_check("kernel", command=["uname", "-r"])
-        def kernel(output: str, config: PilotRuntimeConfig) -> str | None:
-            return None if output.strip() == "6.4.0" else "unexpected kernel"
+    with patch.dict(CHECKS, {"driver_pinned": driver_pinned}):
+        failures = run_node_checks(["driver_pinned"], ["n1"], _config(tmp_path))
 
-        assert CHECKS["kernel"].command == ("uname", "-r")
-        assert CHECKS["kernel"].evaluate("5.14\n", MagicMock()) == "unexpected kernel"
+    assert failures == {"n1": ["driver_pinned: unexpected driver in both observations"]}
 
 
 # ---------------------------------------------------------------------------
@@ -402,16 +444,52 @@ def test_pbs_quarantine_deletes_queued_quarantines_of_passing_nodes(
     assert _calls(pbs, "qsub") == []
 
 
-def test_pbs_quarantine_requires_queue_and_account(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="queue and account"):
-        config = _config(
-            tmp_path,
-            queue=None,
-            node_admission={"on_failure": "pbs_quarantine", "environment": "dev"},
-        )
-        pbs_quarantine(config, ["n1"], {"n1": ["bad"]}, None)
-
-
 def test_pbs_quarantine_requires_an_environment() -> None:
     with pytest.raises(ValidationError, match="requires environment"):
         NodeAdmission(on_failure="pbs_quarantine")
+
+
+@pytest.mark.parametrize("field", ["queue", "account"])
+def test_runtime_config_requires_the_pilot_queue_and_account(
+    field: str, tmp_path: Path
+) -> None:
+    values = _config(tmp_path).model_dump(exclude={field})
+    with pytest.raises(ValidationError, match=field):
+        PilotRuntimeConfig.model_validate(values)
+
+
+def test_pbs_quarantine_sanitizes_informational_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PBS_JOBID", "7.pbs,X=1")
+    pbs = _fake_pbs({})
+
+    with patch("first_pilot.admission._pbs", pbs):
+        pbs_quarantine(
+            _quarantine_config(tmp_path),
+            ["n1"],
+            {"n1": ["odd,check: a, b", "gpu_count: x"]},
+            "/w/my evidence,'1'.json",
+        )
+
+    (qsub,) = _calls(pbs, "qsub")
+    variables = qsub[qsub.index("-v") + 1].split(",")
+    assert variables == [
+        "FIRST_QUAR_ENV=dev",
+        "FIRST_QUAR_HOST=n1",
+        "FIRST_QUAR_SOURCE=7.pbs_X_1",
+        "FIRST_QUAR_REASON=odd_check+gpu_count",
+        "FIRST_QUAR_EVIDENCE=/w/my_evidence__1_.json",
+    ]
+
+
+def test_pbs_quarantine_refuses_a_host_it_cannot_identify(tmp_path: Path) -> None:
+    pbs = _fake_pbs({})
+
+    with patch("first_pilot.admission._pbs", pbs):
+        with pytest.raises(ValueError, match="cannot quarantine host"):
+            pbs_quarantine(
+                _quarantine_config(tmp_path), ["n1,n2"], {"n1,n2": ["bad"]}, None
+            )
+
+    assert _calls(pbs, "qsub") == []

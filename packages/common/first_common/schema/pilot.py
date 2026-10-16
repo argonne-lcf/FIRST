@@ -136,13 +136,28 @@ class AddressInfo(BaseModel):
 
 class GpuInfo(BaseModel):
     """
-    Information about a GPU resource managed by a pilot.
+    One GPU managed by a pilot, as `nvidia-smi --query-gpu` last reported it.
+
+    The optional fields are None where the GPU does not report them (nvidia-smi
+    prints "[N/A]").
     """
 
-    index: str
-    name: str
-    memory_total_mib: int | None
-    memory_used_mib: int | None
+    index: str = Field(pattern=r"^[0-9]+$")
+    name: str = Field(min_length=1)
+    memory_total_mib: int = Field(gt=0)
+    memory_used_mib: int = Field(ge=0)
+    memory_free_mib: int | None = Field(None, ge=0)
+    uuid: str | None = Field(None, min_length=1)
+    driver_version: str | None = Field(None, min_length=1)
+    ecc_uncorrected_volatile: int | None = Field(None, ge=0)
+    ecc_uncorrected_aggregate: int | None = Field(None, ge=0)
+    pstate: str | None = None  # P0 (maximum performance) to P12 (minimum)
+    temperature_c: int | None = None
+    utilization_gpu_pct: int | None = Field(None, ge=0, le=100)
+    utilization_memory_pct: int | None = Field(None, ge=0, le=100)
+    power_draw_w: float | None = Field(None, ge=0)
+    # Bitmask of nvidia-smi clocks_throttle_reasons, e.g. "0x0000000000000004"
+    clocks_throttle_reasons: str | None = None
 
 
 class HostGpus(BaseModel):
@@ -160,6 +175,7 @@ class PilotResources(BaseModel):
     """
 
     hosts: list[HostGpus] = []
+    observed_at: datetime | None = None
 
 
 class PilotJobStatus(BaseModel):
@@ -196,8 +212,8 @@ class PilotRuntimeConfig(BaseSettings):
     gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)
     node_admission: NodeAdmission = Field(default_factory=NodeAdmission)
     # The pilot job's own queue and account, reused for quarantine jobs.
-    queue: str | None = None
-    account: str | None = None
+    queue: str
+    account: str
     num_nodes: int = Field(ge=1)
     gpus_per_node: int = Field(ge=1)
     job_name: str

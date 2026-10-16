@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import pwd
+import re
 import subprocess
 import time
 import uuid
@@ -31,6 +32,10 @@ from .replica_manager import discover_hosts
 logger = logging.getLogger(__name__)
 
 _PBS_TIMEOUT_SEC = 30.0
+
+# qsub -v separates variables with commas and gives quotes and whitespace
+# special meaning; anything else outside this set is replaced in a value.
+_QSUB_UNSAFE = re.compile(r"[^A-Za-z0-9_.:/@+-]")
 
 
 class NodeChecksFailed(RuntimeError):
@@ -111,8 +116,6 @@ def pbs_quarantine(
     its job is deleted (`qdel`) or reaches its walltime; the next pilot to land
     there checks it again.
     """
-    if not config.queue or not config.account:
-        raise ValueError("pbs_quarantine requires the pilot's queue and account")
     environment = config.node_admission.environment
     assert environment is not None  # NodeAdmission validates this
 
@@ -148,7 +151,9 @@ def _submit_quarantine(
     reasons: list[str],
     evidence: str | None,
 ) -> str:
-    assert config.queue and config.account
+    if _QSUB_UNSAFE.search(host) or _QSUB_UNSAFE.search(environment):
+        raise ValueError(f"cannot quarantine host {host!r} in {environment!r}")
+
     variables = {
         "ENV": environment,
         "HOST": host,
@@ -157,8 +162,6 @@ def _submit_quarantine(
         "REASON": "+".join(reason.split(":", 1)[0] for reason in reasons),
         "EVIDENCE": evidence or "",
     }
-    if any("," in value for value in variables.values()):
-        raise ValueError(f"qsub -v values cannot contain commas: {variables}")
     walltime_min = config.node_admission.quarantine_walltime_min
     qsub = [
         "qsub",
@@ -170,7 +173,10 @@ def _submit_quarantine(
         *("-l", f"walltime={walltime_min // 60}:{walltime_min % 60:02}:00"),
         *(
             "-v",
-            ",".join(f"{QUARANTINE_VAR_PREFIX}{k}={v}" for k, v in variables.items()),
+            ",".join(
+                f"{QUARANTINE_VAR_PREFIX}{name}={_QSUB_UNSAFE.sub('_', value)}"
+                for name, value in variables.items()
+            ),
         ),
         *("-j", "oe"),
         *("-o", "/dev/null"),
