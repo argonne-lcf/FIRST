@@ -154,7 +154,7 @@ def advance(
 class HealthAlerter(Worker):
     """Emits Slack health alerts (degradations, recoveries, daily digest)."""
 
-    poll_interval = 30.0
+    poll_interval = 120.0
     wakeup_channels: ClassVar[list[Any]] = []
 
     DEBOUNCE_S = 110.0
