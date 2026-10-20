@@ -434,6 +434,7 @@ fn partitions_to_parquet(
             let prompt_estimates = pull_prompt_estimates(app)?;
             let merged = write_merged_request_metrics(
                 dataset_dir,
+                large_requests,
                 streaming_metrics,
                 prompt_estimates,
                 request_metrics,
@@ -790,11 +791,17 @@ fn heal_request_metrics(
         ScanArgsParquet::default(),
     )?;
 
-    // the counts the payloads carry, looked up only for the requests that need
-    // them: those whose row the stream left blank, and those it never wrote
+    // the requests that need a payload: those whose row is blank and those it
+    // never wrote. A row counts as carrying its counts only when all three are
+    // present -- rows with a total and no split need the split too
     let counted = metrics
         .clone()
-        .filter(col("total_tokens").is_not_null())
+        .filter(
+            col("prompt_tokens")
+                .is_not_null()
+                .and(col("completion_tokens").is_not_null())
+                .and(col("total_tokens").is_not_null()),
+        )
         .select([col("request_id")])
         .collect()?;
     let counted: Vec<&str> = counted
@@ -1007,14 +1014,36 @@ fn pull_prompt_estimates(app: &Path) -> anyhow::Result<DataFrame> {
     )?)
 }
 
+/// Merge the streaming estimations into the metrics rows, with the payloads'
+/// own usage taking priority: a measured count fills before an estimated one.
 fn write_merged_request_metrics(
     dataset_dir: &Path,
+    large_requests: &Path,
     streaming_metrics: DataFrame,
     prompt_estimates: DataFrame,
     request_metrics: &Path,
     request_log: &Path,
 ) -> anyhow::Result<PathBuf> {
     let lines = latest_lines(request_metrics, "request_metrics")?;
+
+    // only the requests missing a count get their payloads read
+    let blank = lines
+        .clone()
+        .filter(
+            col("prompt_tokens")
+                .is_null()
+                .or(col("completion_tokens").is_null())
+                .or(col("total_tokens").is_null()),
+        )
+        .select([col("request_id")])
+        .collect()?;
+    let blank: Vec<String> = blank
+        .column("request_id")?
+        .str()?
+        .no_null_iter()
+        .map(str::to_string)
+        .collect();
+    let usage = pull_payload_usage(large_requests, &blank)?.lazy();
 
     // access_log->request_log mapping
     let mapping = LazyFrame::scan_parquet(
@@ -1041,8 +1070,19 @@ fn write_merged_request_metrics(
             col("timestamp_compute_response").alias("est_timestamp_compute_response"),
         ]);
 
-    // merge the estimations into the rows their stream left blank
+    // the payload's usage is measured, so it fills before the estimates
     let merged = lines
+        .join_builder()
+        .with(usage)
+        .how(JoinType::Left)
+        .on([col("request_id")])
+        .finish()
+        .with_columns([
+            col("prompt_tokens").fill_null(col("prompt_tokens_right")),
+            col("completion_tokens").fill_null(col("completion_tokens_right")),
+            col("total_tokens").fill_null(col("total_tokens_right")),
+        ])
+        // the estimations fill the rows the payloads left blank
         .join_builder()
         .with(streaming_metrics)
         .how(JoinType::Left)
