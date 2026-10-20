@@ -288,10 +288,12 @@ class PilotJobObserver(Worker):
                 logger.info(f"PilotJob {current.name}: {prev_state} -> {target_state}")
 
             if start_failure:
-                await self._record_pilot_start_failure(sess, current)
+                await self._record_pilot_start_failure(sess, current, prev_state)
 
     @staticmethod
-    async def _record_pilot_start_failure(sess: AsyncSession, job: PilotJob) -> None:
+    async def _record_pilot_start_failure(
+        sess: AsyncSession, job: PilotJob, prev_state: str
+    ) -> None:
         """Count a pilot that ended before publishing its manager endpoint.
 
         Blames the cluster: a pilot that never came up usually points at the
@@ -299,7 +301,8 @@ class PilotJobObserver(Worker):
         submissions on the cluster halt until an admin resets it.
         """
         job.failure_reason = (
-            f"Pilot job died ({job.scheduler_state}) before its manager came up"
+            f"Pilot job {job.scheduler_job_id} died ({job.scheduler_state}) "
+            f"before its manager came up; last scheduler state {prev_state}"
         )
         row = (
             await sess.execute(
@@ -415,11 +418,15 @@ class PilotJobObserver(Worker):
                 )
                 if result.rowcount == 0:  # type: ignore[attr-defined]
                     continue
-                # A pilot came up: the failure streak is over
+                # A pilot came up: the failure streak is over, unless the latch
+                # has tripped. Only an admin reset clears a tripped latch.
+                threshold = submitter.pilot_config.max_consecutive_pilot_start_failures
                 await sess.execute(
                     sa.update(Cluster)
                     .where(
-                        Cluster.name == cluster_name, Cluster.pilot_start_failures > 0
+                        Cluster.name == cluster_name,
+                        Cluster.pilot_start_failures > 0,
+                        Cluster.pilot_start_failures < threshold,
                     )
                     .values(pilot_start_failures=0)
                 )

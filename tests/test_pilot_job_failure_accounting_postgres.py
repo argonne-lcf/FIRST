@@ -254,8 +254,10 @@ class PilotFailureAccountingPostgresTests(fence_tests.ReplicaInsertionPostgresTe
         job = await self.job()
         record = self.observer._record_pilot_start_failure
 
-        async def fail_after_count(session: AsyncSession, current: PilotJob) -> None:
-            await record(session, current)
+        async def fail_after_count(
+            session: AsyncSession, current: PilotJob, prev_state: str
+        ) -> None:
+            await record(session, current, prev_state)
             raise RuntimeError("injected precommit failure")
 
         with patch.object(
