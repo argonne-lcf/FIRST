@@ -45,6 +45,25 @@ pub fn schema_of(stream: &str) -> Option<Schema> {
             ("authorized_groups", String),
             ("user.id", String),
         ],
+        // The transport's line matched onto the access row it followed,
+        // carrying the final status and end time that row lacks
+        "access_log_transport" => vec![
+            ("id", String),
+            ("status_code", Int64),
+            ("timestamp_response", String),
+        ],
+        // Uvicorn's own access line: the request's facts at the transport,
+        // with no id. The only record of a streamed response's final status.
+        "uvicorn.access" => vec![
+            ("path", String),
+            ("method", String),
+            ("client_addr", String),
+            ("status_code", Int64),
+            ("http_version", String),
+            // the envelope's own time: uvicorn writes this line as the response's
+            // last byte goes out, which is the end time a streamed row lacks
+            ("timestamp", String),
+        ],
         // BatchLog
         "batch_log" => vec![
             ("id", String),
