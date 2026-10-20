@@ -7,7 +7,8 @@ from typing import Any, TypedDict
 import typer
 from alcf_tokens.auth import AuthError
 from alcf_tokens.cli import cli as auth_cli
-from alcf_tokens.cli import get_token
+from alcf_tokens.cli import get_token, login
+from alcf_tokens.globus_transfer_utils import COLLECTION_ALIASES
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from rich import print
 from rich.console import Console
@@ -37,6 +38,25 @@ cli.add_typer(
 )
 cli.add_typer(sam3_cli, name="sam3", help="Use the SAM3 image segmentation service")
 cli.add_typer(agent_cli, name="agent", help="Utilities to quick-configure agents")
+
+
+@auth_cli.command("login")
+def login_override(
+    authorize_transfer: list[str] = typer.Option(
+        default=[],
+        help=(
+            "A Globus collection UUID (or alias) to authorize transfer against. "
+            "Repeat the flag to authorize multiple collections. "
+            "Append :data_access to a UUID to request the data_access dependency if needed, "
+            "and/or :https to authorize direct HTTPS uploads and downloads on the collection. "
+            f"Known aliases: {', '.join(sorted(COLLECTION_ALIASES))}."
+        ),
+    ),
+) -> None:
+    """
+    Alias for `alcf-tokens login inference`
+    """
+    return login(service="inference", authorize_transfer=authorize_transfer)
 
 
 @auth_cli.command("get-access-token")
