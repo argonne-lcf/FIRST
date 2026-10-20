@@ -140,7 +140,8 @@ def build_digest_blocks(
 def _fenced(label: str, body: str) -> str:
     body = body.strip()
     if len(body) > _THREAD_BODY_LIMIT:
-        body = body[:_THREAD_BODY_LIMIT] + "\n…(truncated)"
+        # Keep the tail: a traceback's innermost frames and exception come last.
+        body = "…(truncated)\n" + body[-_THREAD_BODY_LIMIT:]
     return f"*{label}*\n```\n{body}\n```"
 
 

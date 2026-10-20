@@ -1,21 +1,25 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import sqlalchemy as sa
 from fastapi import APIRouter
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.errors import AccessDenied, BadPilotRequest, FirstError
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.resources.read import (
     AccessGroup,
     ClusterDetail,
+    ClusterHealth,
     ClusterSummary,
     LaunchTemplate,
     ModelSummary,
     PilotDeploymentDetail,
     PilotDeploymentSummary,
     PilotJob,
+    PilotJobFailure,
     PilotReplica,
     ResourceHealth,
     StaticDeploymentDetail,
@@ -183,32 +187,65 @@ async def get_cluster(sess: DbSession, name: str, repo: RedisRepo) -> ClusterDet
     )
 
 
+# How far back SystemHealth.failed_pilot_jobs reaches, beyond current streaks.
+_FAILED_PILOT_JOB_WINDOW = timedelta(days=1)
+
+
 @admin_router.get("/system-health", response_model=SystemHealth)
 async def get_system_health(sess: DbSession) -> SystemHealth:
     """
     One-glance operational snapshot: the health/state and any reconcile error
-    of every operational resource, grouped by type.  Admin-only.
+    of every operational resource, grouped by type, plus pilot jobs that died
+    before their manager came up.  Admin-only.
     """
+
+    def health_cols(model: type[db.ResourceRow], status_col: Any) -> list[Any]:
+        return [
+            model.name,
+            model.uid,
+            status_col.label("status"),
+            model.reconcile_failures,
+            model.reconcile_last_error,
+            model.reconcile_last_traceback,
+            model.reconcile_retry_at,
+        ]
 
     async def fetch(
         model: type[db.ResourceRow], status_col: sa.orm.Mapped[str], *where: Any
     ) -> list[ResourceHealth]:
-        return [  # type: ignore[var-annotated]
+        return [
             ResourceHealth.model_validate(row, from_attributes=True)
             for row in await sess.execute(
-                sa.select(
-                    model.name,
-                    model.uid,
-                    status_col.label("status"),
-                    model.reconcile_failures,
-                    model.reconcile_last_error,
-                    model.reconcile_retry_at,
-                ).where(*where)
+                sa.select(*health_cols(model, status_col)).where(*where)
             )
         ]
 
+    clusters: list[ClusterHealth] = []
+    for row in await sess.execute(
+        sa.select(
+            *health_cols(db.Cluster, db.Cluster.health),
+            db.Cluster.pilot_start_failures,
+            db.Cluster.pilot_system,
+        )
+    ):
+        max_failures = (
+            PilotConfig.model_validate(
+                row.pilot_system
+            ).max_consecutive_pilot_start_failures
+            if row.pilot_system is not None
+            else None
+        )
+        clusters.append(
+            ClusterHealth.model_validate(
+                {
+                    **row._asdict(),
+                    "max_consecutive_pilot_start_failures": max_failures,
+                }
+            )
+        )
+
     return SystemHealth(
-        clusters=await fetch(db.Cluster, db.Cluster.health),
+        clusters=clusters,
         static_deployments=await fetch(db.StaticDeployment, db.StaticDeployment.health),
         pilot_deployments=await fetch(db.PilotDeployment, db.PilotDeployment.state),
         pilot_jobs=await fetch(
@@ -217,7 +254,40 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
         pilot_replicas=await fetch(
             db.PilotReplica, db.PilotReplica.state, db.PilotReplica.deleted_at.is_(None)
         ),
+        failed_pilot_jobs=await _failed_pilot_jobs(sess, clusters),
     )
+
+
+async def _failed_pilot_jobs(
+    sess: AsyncSession, clusters: list[ClusterHealth]
+) -> list[PilotJobFailure]:
+    """Pilot jobs with a failure_reason: ended within the window, or part of a
+    cluster's current start failure streak. Newest first."""
+    failed = db.PilotJob.failure_reason.is_not(None)
+    recent = (
+        await sess.scalars(
+            sa.select(db.PilotJob).where(
+                failed,
+                db.PilotJob.deleted_at
+                > datetime.now(timezone.utc) - _FAILED_PILOT_JOB_WINDOW,
+            )
+        )
+    ).all()
+    by_uid = {j.uid: j for j in recent}
+    for c in clusters:
+        if c.pilot_start_failures == 0:
+            continue
+        streak = await sess.scalars(
+            sa.select(db.PilotJob)
+            .where(failed, db.PilotJob.cluster_name == c.name)
+            .order_by(db.PilotJob.uid.desc())
+            .limit(c.pilot_start_failures)
+        )
+        by_uid.update((j.uid, j) for j in streak)
+    return [
+        PilotJobFailure.model_validate(j, from_attributes=True)
+        for _, j in sorted(by_uid.items(), reverse=True)
+    ]
 
 
 @admin_router.get("/router-config", response_model=RouterConfig)

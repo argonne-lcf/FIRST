@@ -754,7 +754,8 @@ async def test_degradation_with_detail_posts_thread(
                 num_nodes=1,
                 gpus_per_node=4,
                 reconcile_failures=3,
-                reconcile_last_error="short tail\nfull multiline\ndetail body here",
+                reconcile_last_error="boom (in PilotJobController.reconcile)",
+                reconcile_last_traceback="Traceback ...\ndetail body here",
             )
         )
 

@@ -43,6 +43,10 @@ export type AccessGroup = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -162,10 +166,18 @@ export type ClusterDetail = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Pilot Start Failures
+   */
+  pilot_start_failures?: number;
   /**
    * Pilot Jobs
    */
@@ -195,6 +207,52 @@ export type ClusterEndpointSummary = {
   frameworks: {
     [key: string]: FrameworkSummary;
   };
+};
+
+/**
+ * ClusterHealth
+ *
+ * A cluster's ResourceHealth plus its pilot start failure streak.  New pilot
+ * submissions halt once `pilot_start_failures` reaches
+ * `max_consecutive_pilot_start_failures` (None without a pilot system).
+ */
+export type ClusterHealth = {
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Uid
+   */
+  uid: number;
+  /**
+   * Status
+   */
+  status: string;
+  /**
+   * Reconcile Failures
+   */
+  reconcile_failures?: number;
+  /**
+   * Reconcile Last Error
+   */
+  reconcile_last_error?: string | null;
+  /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
+   * Reconcile Retry At
+   */
+  reconcile_retry_at?: string | null;
+  /**
+   * Pilot Start Failures
+   */
+  pilot_start_failures?: number;
+  /**
+   * Max Consecutive Pilot Start Failures
+   */
+  max_consecutive_pilot_start_failures?: number | null;
 };
 
 /**
@@ -236,10 +294,18 @@ export type ClusterSummary = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Pilot Start Failures
+   */
+  pilot_start_failures?: number;
   /**
    * Slug
    *
@@ -355,6 +421,10 @@ export type DeploymentConfig = {
    * Last Startup Sec
    */
   last_startup_sec?: number | null;
+  /**
+   * Maintenance Notice
+   */
+  maintenance_notice?: string | null;
 };
 
 /**
@@ -717,6 +787,10 @@ export type LaunchTemplate = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -862,6 +936,8 @@ export type ModelRuntime = {
  * endpoints the model supports.
  *
  * Embeds a summary of deployments currently specified for this model.
+ * `maintenance_notices` maps the name of each cluster hosting this model that
+ * is under maintenance to its notice.
  */
 export type ModelSummary = {
   /**
@@ -918,6 +994,10 @@ export type ModelSummary = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -929,6 +1009,12 @@ export type ModelSummary = {
    * Static Deployments
    */
   static_deployments: Array<StaticDeploymentSummary>;
+  /**
+   * Maintenance Notices
+   */
+  maintenance_notices?: {
+    [key: string]: string;
+  };
   runtime?: ModelRuntime;
   /**
    * Slug
@@ -939,6 +1025,50 @@ export type ModelSummary = {
    * obtain a bijective mapping (~ is disallowed in name but slug-safe).
    */
   readonly slug: string;
+};
+
+/**
+ * NodeAdmission
+ *
+ * Node screening the pilot performs at startup, before serving anything.
+ *
+ * `checks` names entries in `first_pilot.node_checks`. If any node fails a
+ * check, the pilot applies `on_failure` to each failing node and exits, so
+ * the gateway's ordinary retry submits a replacement job.
+ *
+ * - `exit`: do nothing more; the scheduler may hand the node out again.
+ * - `pbs_quarantine`: first submit an exclusive waiting job on the node.
+ * PBS keeps the node allocated once that job runs; retries do not wait.
+ */
+export type NodeAdmission = {
+  /**
+   * Checks
+   */
+  checks?: Array<string>;
+  /**
+   * On Failure
+   */
+  on_failure?: "exit" | "pbs_quarantine";
+  /**
+   * Environment
+   */
+  environment?: "dev" | "prod" | null;
+  /**
+   * Minimum Free Memory Fraction
+   */
+  minimum_free_memory_fraction?: number;
+  /**
+   * Memory Reserve Mib
+   */
+  memory_reserve_mib?: number;
+  /**
+   * Quarantine Walltime Min
+   */
+  quarantine_walltime_min?: number;
+  /**
+   * Max Quarantined Nodes
+   */
+  max_quarantined_nodes?: number;
 };
 
 /**
@@ -1089,6 +1219,10 @@ export type PilotConfig = {
    */
   max_concurrent_jobs?: number;
   /**
+   * Max Consecutive Pilot Start Failures
+   */
+  max_consecutive_pilot_start_failures?: number;
+  /**
    * Max Num Nodes
    */
   max_num_nodes: number;
@@ -1138,6 +1272,7 @@ export type PilotConfig = {
     | ({
         method: "pals";
       } & PalsDiscovery);
+  node_admission?: NodeAdmission;
   /**
    * Submit Script Preamble
    */
@@ -1222,6 +1357,10 @@ export type PilotDeploymentDetail = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -1302,6 +1441,10 @@ export type PilotDeploymentSummary = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -1374,6 +1517,10 @@ export type PilotJob = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -1424,6 +1571,10 @@ export type PilotJob = {
    * Deleted At
    */
   deleted_at?: string | null;
+  /**
+   * Failure Reason
+   */
+  failure_reason?: string | null;
   runtime?: PilotJobRuntime | null;
   /**
    * Slug
@@ -1434,6 +1585,35 @@ export type PilotJob = {
    * obtain a bijective mapping (~ is disallowed in name but slug-safe).
    */
   readonly slug: string;
+};
+
+/**
+ * PilotJobFailure
+ *
+ * A pilot job that died before its manager came up.
+ */
+export type PilotJobFailure = {
+  /**
+   * Name
+   */
+  name: string;
+  /**
+   * Uid
+   */
+  uid: number;
+  /**
+   * Cluster Name
+   */
+  cluster_name: string;
+  scheduler_state: SchedulerJobState;
+  /**
+   * Failure Reason
+   */
+  failure_reason: string;
+  /**
+   * Deleted At
+   */
+  deleted_at?: string | null;
 };
 
 /**
@@ -1476,6 +1656,10 @@ export type PilotReplica = {
    * Reconcile Last Error
    */
   reconcile_last_error?: string | null;
+  /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
   /**
    * Reconcile Retry At
    */
@@ -1591,6 +1775,10 @@ export type ResourceHealth = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -1605,7 +1793,9 @@ export type ResourceHealth = {
  * information about all model instances that are running and routeable.
  * Pilot deployments are listed even when they have no routable backend
  * (an empty `backends` list) so that their cold-start hints are available
- * to the data plane; only static deployments are omitted when unhealthy.
+ * to the data plane; static deployments are omitted when unhealthy, unless
+ * their cluster is under maintenance (then listed without backends so the
+ * notice reaches the caller).
  *
  * The apiserver is the sole reader of the RouterConfig: it uses this
  * live-updating configuration snapshot to route incoming traffic to model backends.
@@ -1784,6 +1974,10 @@ export type StaticDeploymentDetail = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -1862,6 +2056,10 @@ export type StaticDeploymentSummary = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -1882,12 +2080,16 @@ export type StaticDeploymentSummary = {
  *
  * One-glance operational snapshot: the health/state of every operational
  * resource, grouped by type, with reconcile errors bundled in.
+ *
+ * `failed_pilot_jobs` lists pilot jobs that died before their manager came up:
+ * those ended in the last day, plus each cluster's current start failure
+ * streak; newest first.
  */
 export type SystemHealth = {
   /**
    * Clusters
    */
-  clusters: Array<ResourceHealth>;
+  clusters: Array<ClusterHealth>;
   /**
    * Static Deployments
    */
@@ -1904,6 +2106,10 @@ export type SystemHealth = {
    * Pilot Replicas
    */
   pilot_replicas: Array<ResourceHealth>;
+  /**
+   * Failed Pilot Jobs
+   */
+  failed_pilot_jobs?: Array<PilotJobFailure>;
 };
 
 /**
@@ -2109,6 +2315,10 @@ export type AccessGroupWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -2152,10 +2362,18 @@ export type ClusterDetailWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Pilot Start Failures
+   */
+  pilot_start_failures?: number;
   /**
    * Pilot Jobs
    */
@@ -2201,10 +2419,18 @@ export type ClusterSummaryWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Pilot Start Failures
+   */
+  pilot_start_failures?: number;
 };
 
 /**
@@ -2279,6 +2505,10 @@ export type LaunchTemplateWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -2293,6 +2523,8 @@ export type LaunchTemplateWritable = {
  * endpoints the model supports.
  *
  * Embeds a summary of deployments currently specified for this model.
+ * `maintenance_notices` maps the name of each cluster hosting this model that
+ * is under maintenance to its notice.
  */
 export type ModelSummaryWritable = {
   /**
@@ -2349,6 +2581,10 @@ export type ModelSummaryWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -2360,6 +2596,12 @@ export type ModelSummaryWritable = {
    * Static Deployments
    */
   static_deployments: Array<StaticDeploymentSummaryWritable>;
+  /**
+   * Maintenance Notices
+   */
+  maintenance_notices?: {
+    [key: string]: string;
+  };
   runtime?: ModelRuntime;
 };
 
@@ -2429,6 +2671,10 @@ export type PilotDeploymentDetailWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -2482,6 +2728,10 @@ export type PilotDeploymentSummaryWritable = {
    * Reconcile Last Error
    */
   reconcile_last_error?: string | null;
+  /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
   /**
    * Reconcile Retry At
    */
@@ -2546,6 +2796,10 @@ export type PilotJobWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -2596,6 +2850,10 @@ export type PilotJobWritable = {
    * Deleted At
    */
   deleted_at?: string | null;
+  /**
+   * Failure Reason
+   */
+  failure_reason?: string | null;
   runtime?: PilotJobRuntime | null;
 };
 
@@ -2632,6 +2890,10 @@ export type PilotReplicaWritable = {
    * Reconcile Last Error
    */
   reconcile_last_error?: string | null;
+  /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
   /**
    * Reconcile Retry At
    */
@@ -2741,6 +3003,10 @@ export type StaticDeploymentDetailWritable = {
    */
   reconcile_last_error?: string | null;
   /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
+  /**
    * Reconcile Retry At
    */
   reconcile_retry_at?: string | null;
@@ -2809,6 +3075,10 @@ export type StaticDeploymentSummaryWritable = {
    * Reconcile Last Error
    */
   reconcile_last_error?: string | null;
+  /**
+   * Reconcile Last Traceback
+   */
+  reconcile_last_traceback?: string | null;
   /**
    * Reconcile Retry At
    */

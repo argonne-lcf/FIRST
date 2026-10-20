@@ -10,6 +10,7 @@ import {
   PilotStateIndicator,
 } from "@/components/ClusterStatus";
 import { FieldValueTable } from "@/components/FieldValueTable";
+import { ReconcileBanner } from "@/components/ReconcileBanner";
 import { ReplicaCards } from "@/components/ReplicaCards";
 import { ResourceHeader } from "@/components/ResourceHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -141,11 +142,12 @@ function PilotDeploymentDetail({ name }: { name: string }) {
         state={deployment.state}
         desiredReplicas={deployment.desired_replicas}
       />
+      <ReconcileBanner resource={deployment} />
       <ReplicaGrid deployment={deployment} />
       <DetailsCard
         title="Details"
         obj={deployment}
-        omit={["kind", "name", "uid", "replicas"]}
+        omit={["kind", "name", "uid", "replicas", "reconcile_last_traceback"]}
         order={PILOT_FIELD_ORDER}
       />
     </DetailShell>
@@ -175,7 +177,7 @@ function StaticDeploymentDetail({ name }: { name: string }) {
       <DetailsCard
         title="Details"
         obj={deployment}
-        omit={["kind", "name", "uid"]}
+        omit={["kind", "name", "uid", "reconcile_last_traceback"]}
         order={STATIC_FIELD_ORDER}
       />
     </DetailShell>

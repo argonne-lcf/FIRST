@@ -57,6 +57,7 @@ class ResourceMeta(BaseModel):
     created_at: datetime
     reconcile_failures: int = 0
     reconcile_last_error: str | None = None
+    reconcile_last_traceback: str | None = None
     reconcile_retry_at: datetime | None = None
 
     @computed_field  # type: ignore[prop-decorator]
@@ -252,17 +253,45 @@ class ResourceHealth(BaseModel):
     status: str
     reconcile_failures: int = 0
     reconcile_last_error: str | None = None
+    reconcile_last_traceback: str | None = None
     reconcile_retry_at: datetime | None = None
+
+
+class ClusterHealth(ResourceHealth):
+    """
+    A cluster's ResourceHealth plus its pilot start failure streak.  New pilot
+    submissions halt once `pilot_start_failures` reaches
+    `max_consecutive_pilot_start_failures` (None without a pilot system).
+    """
+
+    pilot_start_failures: int = 0
+    max_consecutive_pilot_start_failures: int | None = None
+
+
+class PilotJobFailure(BaseModel):
+    """A pilot job that died before its manager came up."""
+
+    name: str
+    uid: int
+    cluster_name: str
+    scheduler_state: SchedulerJobState
+    failure_reason: str
+    deleted_at: datetime | None = None
 
 
 class SystemHealth(BaseModel):
     """
     One-glance operational snapshot: the health/state of every operational
     resource, grouped by type, with reconcile errors bundled in.
+
+    `failed_pilot_jobs` lists pilot jobs that died before their manager came up:
+    those ended in the last day, plus each cluster's current start failure
+    streak; newest first.
     """
 
-    clusters: list[ResourceHealth]
+    clusters: list[ClusterHealth]
     static_deployments: list[ResourceHealth]
     pilot_deployments: list[ResourceHealth]
     pilot_jobs: list[ResourceHealth]
     pilot_replicas: list[ResourceHealth]
+    failed_pilot_jobs: list[PilotJobFailure] = []

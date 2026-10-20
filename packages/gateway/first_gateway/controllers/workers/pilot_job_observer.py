@@ -53,6 +53,7 @@ class PilotJobObserver(Worker):
     """
 
     poll_interval = 10.0
+    failure_site_passthrough = frozenset({"_rpc"})
 
     def __init__(
         self,
@@ -140,7 +141,9 @@ class PilotJobObserver(Worker):
                         "%s: poll failed for cluster %s", self.name, cluster.name
                     )
                 async with self.client_state.db_sessionmaker.begin() as sess:
-                    await Cluster.record_failure(sess, cluster.uid, e)
+                    await Cluster.record_failure(
+                        sess, cluster.uid, e, self.failure_site(e)
+                    )
                     await self._mark_cluster_health(
                         sess, cluster, HealthCheckResult.unhealthy
                     )

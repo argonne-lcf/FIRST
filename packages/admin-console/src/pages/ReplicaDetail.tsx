@@ -190,7 +190,13 @@ export function ReplicaDetail() {
         <CardContent>
           <FieldValueTable
             obj={replica}
-            omit={["kind", "name", "uid", "runtime"]}
+            omit={[
+              "kind",
+              "name",
+              "uid",
+              "runtime",
+              "reconcile_last_traceback",
+            ]}
           />
         </CardContent>
       </Card>

@@ -132,4 +132,6 @@ class Controller(Worker):
 
     async def _record_failure(self, uid: int, exc: Exception) -> None:
         async with self.client_state.db_sessionmaker.begin() as sess:
-            await self.resource_type.record_failure(sess, uid, exc)
+            await self.resource_type.record_failure(
+                sess, uid, exc, self.failure_site(exc)
+            )

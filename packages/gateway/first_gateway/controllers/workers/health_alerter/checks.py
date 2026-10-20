@@ -427,7 +427,7 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
                     summary=summary,
                     display_name=f"PilotJob {j.name}",
                     recovery_hint=f"{n} reconcile failures",
-                    detail=j.reconcile_last_error or "",
+                    detail=j.reconcile_last_traceback or "",
                     severity="crit",
                 )
             )
@@ -519,7 +519,7 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
                     summary=summary,
                     display_name=f"PilotReplica {r.name}",
                     recovery_hint=f"{n} reconcile failures",
-                    detail=r.reconcile_last_error or "",
+                    detail=r.reconcile_last_traceback or "",
                     severity="crit",
                 )
             )

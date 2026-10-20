@@ -586,7 +586,13 @@ async def test_reconcile_records_structured_teardown_message(
     assert replica.reconcile_last_error == (
         "Pilot manager could not stop replica "
         f"{replica.name}: model process group survived SIGKILL"
+        " (in ReplicaDrainer._stop_on_manager)"
     )
+    tb = replica.reconcile_last_traceback
+    assert tb is not None
+    assert tb.startswith("Traceback (most recent call last):")
+    assert "in _stop_on_manager" in tb
+    assert tb.rstrip().endswith("model process group survived SIGKILL")
 
 
 # ── reconcile: ready eligibility gate ────────────────────────────────────

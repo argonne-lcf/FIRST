@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
+import { CircleX } from "lucide-react";
 import { type GpuInfo, type HostGpus, type PilotJob } from "@/lib/client";
 import { clusterQueries } from "@/queries/cluster";
 import { Breadcrumb } from "@/components/Breadcrumb";
@@ -284,6 +285,13 @@ export function PilotJobDetail() {
         </Badge>
       </ResourceHeader>
 
+      {job.failure_reason && (
+        <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+          <CircleX className="mt-0.5 size-4 shrink-0" />
+          <p>{job.failure_reason}</p>
+        </div>
+      )}
+
       <ReconcileBanner resource={job} />
 
       <ResourcesGrid job={job} />
@@ -307,6 +315,7 @@ export function PilotJobDetail() {
               "assigned_replicas",
               "resources",
               "runtime",
+              "reconcile_last_traceback",
             ]}
           />
         </CardContent>

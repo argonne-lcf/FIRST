@@ -887,3 +887,30 @@ async def test_survivor_of_maintenance_shortcut_is_reaped_as_orphan(
         await observer._poll_all_clusters()
 
     assert adapter.terminated == ["77.pbs"]
+
+
+async def test_failed_poll_records_site_and_traceback(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A failed scheduler poll names the observer method it failed in."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+
+    adapter = FakeSchedulerAdapter()
+    adapter.get_job_statuses = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionError("scheduler down")
+    )
+    observer = _make_observer(db)
+    with patch(_PATCH_BUILD, new_callable=AsyncMock, return_value=adapter):
+        await observer._poll_all_clusters()
+
+    cluster = await _cluster(db)
+    assert cluster.reconcile_failures == 1
+    assert (
+        cluster.reconcile_last_error
+        == "scheduler down (in PilotJobObserver._poll_cluster)"
+    )
+    assert cluster.reconcile_last_traceback is not None
+    assert cluster.reconcile_last_traceback.rstrip().endswith(
+        "ConnectionError: scheduler down"
+    )

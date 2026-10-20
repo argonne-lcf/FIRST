@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import traceback
 from abc import ABC, abstractmethod
 from time import monotonic
 from typing import ClassVar, NamedTuple
@@ -44,6 +45,9 @@ class HeartbeatStatus(NamedTuple):
 class Worker(ABC):
     poll_interval: ClassVar[float] = 10.0
     wakeup_channels: ClassVar[list[Channel]] = []
+    # Pass-through helper methods (e.g. an RPC timeout wrapper) that
+    # failure_site() looks past to name the method that called them.
+    failure_site_passthrough: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(
         self,
@@ -65,6 +69,19 @@ class Worker(ABC):
         self._heartbeats: list[Heartbeat] = []
         self.run_task: asyncio.Task[None] | None = None
         wakeup_dispatcher.subscribe(self._wake_event, self.wakeup_channels)
+
+    def failure_site(self, exc: BaseException) -> str:
+        """`<WorkerClass>.<method>` of this worker's innermost method that
+        `exc` propagated through: where in the worker the failure happened."""
+        method = "?"
+        for frame, _ in traceback.walk_tb(exc.__traceback__):
+            name = frame.f_code.co_name
+            if (
+                name not in self.failure_site_passthrough
+                and frame.f_locals.get("self") is self
+            ):
+                method = name
+        return f"{type(self).__name__}.{method}"
 
     async def wait_for_wake(self) -> None:
         """Sleep for up to poll_interval or when any wakeup_channels notification arrives"""

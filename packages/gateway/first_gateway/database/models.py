@@ -1,4 +1,5 @@
 import secrets
+import traceback
 from datetime import datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Self
@@ -86,6 +87,8 @@ class ResourceRow(Base):
     __abstract__ = True
     _BACKOFF_BASE: ClassVar[float] = 10.0
     _MAX_BACKOFF_SEC: ClassVar[float] = 3600.0
+    # Keep the tail (innermost frames and the exception) of long tracebacks.
+    _TRACEBACK_LIMIT: ClassVar[int] = 16_000
 
     name: Mapped[ResourceName] = mapped_column(sa.Text(), unique=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -95,6 +98,9 @@ class ResourceRow(Base):
 
     reconcile_failures: Mapped[int] = mapped_column(default=0)
     reconcile_last_error: Mapped[str | None] = mapped_column(sa.Text(), default=None)
+    reconcile_last_traceback: Mapped[str | None] = mapped_column(
+        sa.Text(), default=None
+    )
     reconcile_retry_at: Mapped[DateTimeOrNone]
 
     def __init_subclass__(cls, **kw: Any) -> None:
@@ -116,6 +122,7 @@ class ResourceRow(Base):
             .values(
                 reconcile_failures=0,
                 reconcile_last_error=None,
+                reconcile_last_traceback=None,
                 reconcile_retry_at=None,
             )
         )
@@ -128,18 +135,31 @@ class ResourceRow(Base):
                     .values(
                         reconcile_failures=0,
                         reconcile_last_error=None,
+                        reconcile_last_traceback=None,
                         reconcile_retry_at=None,
                     )
                 )
 
     @classmethod
-    async def record_failure(cls, sess: AsyncSession, uid: int, exc: Exception) -> None:
+    async def record_failure(
+        cls, sess: AsyncSession, uid: int, exc: Exception, site: str
+    ) -> None:
+        """Count a failed reconcile of row `uid` and back off its next attempt.
+
+        `site` names where it failed (`<Worker>.<method>`, see
+        `Worker.failure_site`); it is appended to the one-line error, while the
+        full traceback is kept separately for diagnosis.
+        """
+        tb = "".join(traceback.format_exception(exc))
+        if len(tb) > cls._TRACEBACK_LIMIT:
+            tb = "…(truncated)\n" + tb[-cls._TRACEBACK_LIMIT :]
         await sess.execute(
             sa.update(cls)
             .where(cls.uid == uid)
             .values(
                 reconcile_failures=cls.reconcile_failures + 1,
-                reconcile_last_error=str(exc) or type(exc).__name__,
+                reconcile_last_error=f"{str(exc) or type(exc).__name__} (in {site})",
+                reconcile_last_traceback=tb,
                 reconcile_retry_at=sa.func.now()
                 + sa.func.least(
                     cls._BACKOFF_BASE * sa.func.power(2, cls.reconcile_failures),

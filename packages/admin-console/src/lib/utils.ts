@@ -50,3 +50,22 @@ export function formatSince(iso: string | null | undefined): string {
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
 }
+
+/**
+ * Compact time remaining until an ISO timestamp, relative to `now` (ms), e.g.
+ * "in 4m 12s"; "due" once it has passed, "—" when absent.
+ */
+export function formatUntil(
+  iso: string | null | undefined,
+  now: number = Date.now(),
+): string {
+  if (!iso) return "—";
+  const seconds = Math.round((new Date(iso).getTime() - now) / 1000);
+  if (seconds <= 0) return "due";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `in ${h}h ${m}m`;
+  if (m > 0) return `in ${m}m ${s}s`;
+  return `in ${s}s`;
+}
