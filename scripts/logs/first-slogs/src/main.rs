@@ -33,6 +33,10 @@ enum Command {
         /// Names of log files to skip
         #[arg(long)]
         skip: Vec<String>,
+
+        /// Directory of large request payloads
+        #[arg(long)]
+        large_requests: PathBuf,
     },
     /// Bundle the large requests of every request_log partition in the dataset dir into squashfs images
     DumpLarge {
@@ -161,7 +165,11 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Parse { logs, skip } => parse::parse_logs(&args.dataset_dir, &logs, &skip),
+        Command::Parse {
+            logs,
+            skip,
+            large_requests,
+        } => parse::parse_logs(&args.dataset_dir, &logs, &skip, &large_requests),
         Command::DumpLarge { large_requests } => {
             parse::dump_large(&large_requests, &args.dataset_dir)
         }
