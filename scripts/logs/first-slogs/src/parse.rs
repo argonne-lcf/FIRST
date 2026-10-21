@@ -402,7 +402,18 @@ fn match_transport(
             col("id"),
             col("transport_status").alias("status_code"),
             col("timestamp").alias("timestamp_response"),
-        ]);
+        ])
+        // every uvicorn line matched its nearest access row, so an access
+        // row the lines after its own response also matched carries several:
+        // keep the earliest, the line closest to the row's own request
+        .sort(["timestamp_response"], SortMultipleOptions::default())
+        .unique_stable(
+            Some(Selector::ByName {
+                names: vec!["id".into()].into(),
+                strict: true,
+            }),
+            UniqueKeepStrategy::First,
+        );
 
     to_parquet(
         dataset_dir,
