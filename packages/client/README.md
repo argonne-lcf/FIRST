@@ -257,6 +257,23 @@ uvx alcf-ai@latest version
 
 ## SDK usage
 
+The HTTP client allows 900 seconds of inactivity per response read, including
+silent model prefill; connect, write and connection-pool waits remain 10 seconds.
+This is not a total request deadline. The CLI's `chat --timeout` controls how
+long to wait through a **cold start**, not this HTTP read limit. If configuring
+the HTTP timeout explicitly, use the supported constructor argument:
+
+```python
+from httpx import Timeout
+from alcf_ai import InferenceClient
+
+client = InferenceClient(timeout=Timeout(10.0, read=900.0))
+```
+
+A gateway, proxy or another SDK can still impose a shorter timeout. One measured
+655-second prefill fits this budget; concurrent long prefills need separate
+qualification and are not guaranteed to finish prefill before it expires.
+
 ```bash
 uv run --with alcf-ai python
 ```

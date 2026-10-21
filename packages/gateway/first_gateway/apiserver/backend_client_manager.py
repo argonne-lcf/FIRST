@@ -44,7 +44,9 @@ SOCKET_OPTS = [
     (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
 ]
 
-STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=60.0, pool=5.0)
+# Long prefills can be silent before the first SSE chunk. This is a per-read
+# inactivity limit, not an end-to-end request deadline.
+STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
 UNARY_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
 
 KEEPALIVE_EXPIRY = 30.0

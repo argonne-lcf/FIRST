@@ -139,9 +139,9 @@ LIMITS = httpx.Limits(
 # connect: 5s fail fast on firewall issue or mTLS timeout
 # write: 60s to upload large prompt body
 # pool: 5s to wait if all connections are currently in use for the backend
-# streaming read: 120s to wait for first token response
-# unary read: 15 minutes to wait for a large non-streaming response
-STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=60.0, pool=5.0)
+# read: 900s of upstream inactivity, including a silent long prefill
+# (the timeout applies to each read, not the total request duration)
+STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
 
 # STREAM_TIMEOUT is the default; apply timeout=UNARY_TIMEOUT per-request for non-streaming invocations
 UNARY_TIMEOUT  = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
@@ -171,6 +171,29 @@ async def lifespan(app):
     for c in CLIENTS.values():
         await c.aclose()           # drains pools cleanly on worker shutdown
 ```
+
+The 900-second read budget applies both before the first upstream response data
+and between later reads. A stream making progress can run longer than 900
+seconds; this is not an end-to-end deadline. FIRST does not inject heartbeat
+events into the model's SSE stream. A measured single long prefill taking about
+655 seconds fits this budget, but four concurrent long prefills are not
+guaranteed to produce data within it.
+
+The `alcf-ai` SDK also defaults to a 900-second HTTP read inactivity limit; its
+10-second connect/write/pool values are unchanged. The CLI's `chat --timeout`
+controls cold-start waiting, not the HTTP timeout. Callers using another SDK or
+an explicit shorter timeout must configure it separately.
+
+The Dev frontdoor (`deploy/nginx.conf`) and Production host example
+(`deploy/nginx.prod.conf.example`) allow 16 MiB request bodies and use 900-second
+proxy read/send and downstream send inactivity limits. Their existing connect
+timeout is unchanged. These templates are not evidence of deployed settings:
+inspect the selected Compose mounts and running host/edge configurations before
+applying them. An outside proxy or client can impose a shorter limit. The
+compute-side proxy retains its 32 MiB body allowance and 920-second read budget.
+Neither these settings nor the HTTP client change extends backend-client
+retirement or replica-drain grace periods; deploy/restart only when idle or with
+separately coordinated draining.
 
 ## Streaming Requests
 

@@ -1,8 +1,12 @@
 import asyncio
+from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 
+from first_common.schema.endpoints.llm import OpenAIChatCompletionsPayload
 from first_gateway.apiserver import backend_client_manager as bcm
+from first_gateway.apiserver.inference import InferenceService
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -70,3 +74,69 @@ async def test_recreated_client_stays_open_for_grace_period(
         assert not new.is_closed
     finally:
         await manager.close_all()
+
+
+@pytest.mark.parametrize("kind", ["static", "pilot"])
+async def test_backend_stream_request_allows_long_prefill(
+    pilot_mtls_settings: None, kind: str
+) -> None:
+    config = _config("https://backend.example/v1")
+    config.models[0].deployments[0] = (
+        config.models[0].deployments[0].model_copy(update={"kind": kind})
+    )
+    manager = bcm.BackendClientManager(Settings())
+    try:
+        await manager.on_config_swap(config)
+        client = manager.get("b1")
+        assert client is not None
+        expected = {"connect": 5.0, "read": 900.0, "write": 60.0, "pool": 5.0}
+        assert client.timeout.as_dict() == expected
+        request = client.build_request(
+            "POST", "chat/completions", json={"stream": True}
+        )
+        assert request.extensions["timeout"] == expected
+    finally:
+        await manager.close_all()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_inference_request_uses_long_read_budget(
+    stream: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inspect real httpx request extensions; no timed sleep or upstream socket."""
+    observed: list[dict[str, float | None]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        observed.append(request.extensions["timeout"])
+        if stream:
+            return httpx.Response(200, stream=httpx.ByteStream(b"data: [DONE]\n\n"))
+        return httpx.Response(200, json={"choices": [], "usage": {}})
+
+    config = _config("https://backend.example/v1")
+    model = config.models[0]
+    deployment = model.deployments[0]
+    backend = deployment.backends[0]
+    service = InferenceService.__new__(InferenceService)
+    service.request_id = "long-prefill-test"
+    service.admission_controller = AsyncMock()
+    monkeypatch.setattr(service, "_record_token_stats", AsyncMock())
+    monkeypatch.setattr(service, "_emit_inference_log", Mock())
+    payload = OpenAIChatCompletionsPayload(model="m", messages=[], stream=stream)
+    # Unary must override a deliberately short client default; streaming uses
+    # the same default as the manager's actual client tested above.
+    default = bcm.STREAM_TIMEOUT if stream else httpx.Timeout(0.01)
+    async with httpx.AsyncClient(
+        base_url=backend.model_url,
+        transport=httpx.MockTransport(upstream),
+        timeout=default,
+    ) as client:
+        if stream:
+            response = await service._handle_streaming(
+                client, payload, model, deployment, backend
+            )
+            assert [chunk async for chunk in response.body_iterator] == [
+                b"data: [DONE]\n\n"
+            ]
+        else:
+            await service._handle_unary(client, payload, model, deployment, backend)
+    assert observed == [{"connect": 5.0, "read": 900.0, "write": 60.0, "pool": 5.0}]

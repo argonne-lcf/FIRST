@@ -182,6 +182,12 @@ def test_chat_completions_unary_posts_to_federated_route(
         "openai/gpt-oss-120b", [{"role": "user", "content": "yo"}], temperature=0.1
     )
     assert body["choices"][0]["message"]["content"] == "hi"
+    assert gateway.requests[-1].extensions["timeout"] == {
+        "connect": 10.0,
+        "read": 900.0,
+        "write": 10.0,
+        "pool": 10.0,
+    }
     assert gateway.last_json == {
         "model": "openai/gpt-oss-120b",
         "messages": [{"role": "user", "content": "yo"}],
@@ -218,6 +224,12 @@ def test_streaming_yields_events_and_sets_stream_flag(
         headers={"content-type": "text/event-stream"},
     )
     events = list(sdk_client.inference.responses("m", "hi", stream=True))
+    assert gateway.requests[-1].extensions["timeout"] == {
+        "connect": 10.0,
+        "read": 900.0,
+        "write": 10.0,
+        "pool": 10.0,
+    }
     assert gateway.last_json["stream"] is True
     text = "".join(
         d[1] for e in events if (d := stream_delta("responses", e)) is not None
