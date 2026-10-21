@@ -93,6 +93,30 @@ cd /home/webportal/inference-gateway
 - V1's adapter cache has a 60 s TTL, so a reconciled restriction can take up to
   a minute to apply.
 
+### Long-context requests and V1 limits
+
+`FirstV2Endpoint` allows up to **900 seconds without upstream response data**
+for both unary and streaming inference. This is a read-inactivity timeout, not
+a total request duration limit; connect/pool waits remain 5 seconds and writes
+60 seconds. Check the gateway's frontdoor body/read limits too. Final streaming
+logs and token accounting run after the stream finishes, errors or is closed,
+not while a long prefill is still running.
+
+Public V1 requests do **not** inherit V2's TPM, token-burst or per-user
+concurrency policy. V1 has its own finite model/user TPM limits, but no token
+burst field or per-user in-flight concurrency limit. Inspect the actual V1 rows
+from the V1 checkout before changing limits:
+
+```sh
+.venv/bin/python manage.py shell -c 'from resource_server_async.models import Endpoint; print(list(Endpoint.objects.filter(cluster="tara").values("endpoint_slug", "tpm_model", "tpm_user")))'
+```
+
+The bridge preserves TPM on existing rows, but deletes a row when its last
+healthy backend disappears. A recreated row uses V1's defaults, so inspect and
+apply the approved finite limits after endpoint creation as well. Do not set
+TPM to zero (unlimited). Allow the 60-second adapter-cache TTL for a DB limit
+change to take effect; clearing all caches/sessions is unnecessary.
+
 ### Operations
 
 ```sh
