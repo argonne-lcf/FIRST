@@ -27,8 +27,9 @@ DEFAULT_BASE_URL = os.environ.get(
     "inference_base_url", "https://inference-api.alcf.anl.gov"
 )
 
-# LLM completions can legitimately take minutes; only the connect phase is short.
-DEFAULT_TIMEOUT = Timeout(10.0, read=600.0)
+# Long prefills can be silent; keep connect/write/pool waits short while allowing
+# up to 900 seconds of inactivity per response read.
+DEFAULT_TIMEOUT = Timeout(10.0, read=900.0)
 
 
 class AutoGlobusAuth(Auth):
