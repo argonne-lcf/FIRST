@@ -29,8 +29,9 @@ from ..schemas.endpoints import (
 
 log = logging.getLogger(__name__)
 
-# Bridge backends can serve long generations; match the DirectAPI default.
-_REQUEST_TIMEOUT = 120
+# Large-context pilot requests can spend several minutes in prefill. This is a
+# read-inactivity limit, not a total request/stream duration limit.
+_REQUEST_TIMEOUT = 900
 
 
 class FirstV2EndpointConfig(BaseModel):
@@ -71,7 +72,9 @@ class FirstV2Endpoint(DirectAPIEndpoint):
             check_hostname=self._cfg.check_hostname,
         )
         self._client = httpx.AsyncClient(
-            timeout=_REQUEST_TIMEOUT,
+            timeout=httpx.Timeout(
+                connect=5.0, read=_REQUEST_TIMEOUT, write=60.0, pool=5.0
+            ),
             headers={"Content-Type": "application/json"},
             verify=verify,
             proxy=self._cfg.proxy_url or None,
@@ -146,6 +149,12 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         log.info(f"Making First V2 API call for model {self.model} (stream=True)")
 
         streaming_state = new_streaming_state()
+        try:
+            # Capture the request's logs before the lazy response outlives its
+            # ContextVar scope. An unconsumed response needs no final-log task.
+            context = get_request_context()
+        except LookupError:
+            context = None
 
         async def sse_generator() -> AsyncGenerator[str, None]:
             try:
@@ -168,12 +177,12 @@ class FirstV2Endpoint(DirectAPIEndpoint):
                 yield "data: [DONE]\n\n"
             finally:
                 self._finalize_stream(streaming_state)
-
-        try:
-            context = get_request_context()
-            asyncio.create_task(self._update_streaming_log(context, streaming_state))
-        except LookupError:
-            pass
+                if context is not None:
+                    # Start accounting only once the stream ends, not while a
+                    # valid long prefill/stream could exceed the logger's wait.
+                    asyncio.create_task(
+                        self._update_streaming_log(context, streaming_state)
+                    )
 
         response = StreamingHttpResponse(
             streaming_content=sse_generator(), content_type="text/event-stream"

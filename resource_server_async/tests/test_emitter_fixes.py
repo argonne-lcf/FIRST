@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -421,8 +422,8 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
             result = await endpoint.submit_streaming_task(
                 {"model_params": {"model": "model"}}
             )
-
-        streamed = [chunk async for chunk in result.response]
+            create_task.assert_not_called()
+            streamed = [chunk async for chunk in result.response]
 
         create_task.assert_called_once()
         final_log = create_task.call_args.args[0]
@@ -475,6 +476,89 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
         self.assertTrue(streaming_state["completed"])
         self.assertEqual(streaming_state["chunks"], [f"data: {CONTENT_BODY}"])
         self.assertEqual(streaming_state["content"], "hi")
+
+    async def test_final_log_uses_context_captured_before_lazy_consumption(
+        self,
+    ) -> None:
+        endpoint = object.__new__(FirstV2Endpoint)
+        endpoint._cfg = FirstV2EndpointConfig(
+            model_urls=["https://v2.example"], backend_model_name="backend-model"
+        )
+        setattr(endpoint, "_BaseEndpoint__model", "model")
+        context = make_context()
+        context.request_log = Mock(emit_metrics=AsyncMock())
+        final_log = AsyncMock()
+        endpoint._update_streaming_log = final_log
+
+        @asynccontextmanager
+        async def fake_stream(*args: object, **kwargs: object):
+            async def aiter_text() -> AsyncGenerator[str, None]:
+                yield USAGE_CHUNK
+
+            yield SimpleNamespace(status_code=200, aiter_text=aiter_text)
+
+        endpoint._client = SimpleNamespace(stream=fake_stream)
+        token = _request_context.set(context)
+        try:
+            result = await endpoint.submit_streaming_task({"model_params": {}})
+        finally:
+            _request_context.reset(token)
+
+        with patch.object(first_v2.asyncio, "create_task") as create_task:
+            final_log.assert_not_called()
+            self.assertEqual(
+                [chunk async for chunk in result.response], [USAGE_CHUNK.encode()]
+            )
+            create_task.assert_called_once()
+            await create_task.call_args.args[0]
+
+        captured_context, state = final_log.call_args.args
+        self.assertIs(captured_context, context)
+        self.assertTrue(state["completed"])
+        self.assertEqual(state["usage"], USAGE_TOKENS)
+
+    async def test_final_log_is_scheduled_after_stream_error_or_cancellation(
+        self,
+    ) -> None:
+        for error in (ValueError("upstream failed"), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__):
+                endpoint = object.__new__(FirstV2Endpoint)
+                endpoint._cfg = FirstV2EndpointConfig(
+                    model_urls=["https://v2.example"],
+                    backend_model_name="backend-model",
+                )
+                setattr(endpoint, "_BaseEndpoint__model", "model")
+                final_log = AsyncMock()
+                endpoint._update_streaming_log = final_log
+
+                @asynccontextmanager
+                async def fake_stream(*args: object, **kwargs: object):
+                    raise error
+                    yield  # pragma: no cover
+
+                endpoint._client = SimpleNamespace(stream=fake_stream)
+                with (
+                    patch.object(
+                        first_v2, "get_request_context", return_value=make_context()
+                    ),
+                    patch.object(first_v2.asyncio, "create_task") as create_task,
+                ):
+                    result = await endpoint.submit_streaming_task({"model_params": {}})
+                    create_task.assert_not_called()
+                    if isinstance(error, asyncio.CancelledError):
+                        with self.assertRaises(asyncio.CancelledError):
+                            _ = [chunk async for chunk in result.response]
+                    else:
+                        chunks = [chunk async for chunk in result.response]
+                        self.assertIn(b"upstream failed", chunks[0])
+                        self.assertEqual(chunks[-1], b"data: [DONE]\n\n")
+                    create_task.assert_called_once()
+                    await create_task.call_args.args[0]
+
+                state = final_log.call_args.args[1]
+                self.assertTrue(state["completed"])
+                if isinstance(error, ValueError):
+                    self.assertEqual(state["error"], "upstream failed")
 
 
 class StreamingUsageOptInTests(SimpleTestCase):
