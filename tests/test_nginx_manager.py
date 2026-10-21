@@ -63,6 +63,8 @@ def _runtime_config(tmp_path: Path) -> PilotRuntimeConfig:
         job_name="test-pilot",
         walltime_min=60,
         network_interfaces=["hsn0", "hsn1"],
+        queue="prod",
+        account="TestAcct",
     )
 
 

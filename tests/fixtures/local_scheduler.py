@@ -24,6 +24,8 @@ from first_common.schema.base_scheduler import (
     SchedulerJobState,
 )
 
+from .nvidia_smi import gpu_rows
+
 logger = logging.getLogger(__name__)
 
 # We avoid the bash script PilotSubmitter renders (`uvx first-pilot@...`)
@@ -158,12 +160,14 @@ class LocalSchedulerAdapter(SchedulerAdapter):
             tracked.terminate()
 
 
-_FAKE_NVIDIA_SMI = """\
+_MOCK_GPUS = gpu_rows(
+    2, host="mock", name="MockGPU", memory_total_mib=81920, memory_free_mib=81920
+)
+_FAKE_NVIDIA_SMI = f"""\
 #!/bin/sh
 # Test fixture: emits a fixed 2-GPU CSV, ignoring all flags.
 cat <<EOF
-0, MockGPU, 81920, 0
-1, MockGPU, 81920, 0
+{_MOCK_GPUS}
 EOF
 """
 
