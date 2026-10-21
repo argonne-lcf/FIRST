@@ -20,7 +20,8 @@ use polars::{
         AsOfOptions, AsofStrategy, DataType, ExtraColumnsPolicy, FileWriteFormat, IntoLazy,
         JoinType, LazyFileListReader, LazyFrame, LazyJsonLineReader, MatchToSchemaPerColumn,
         MissingColumnsPolicy, MissingColumnsPolicyOrExpr, Null, ParquetWriteOptions, PlRefPath,
-        ScanArgsParquet, Schema, SinkDestination, SinkTarget, SortMultipleOptions, UnifiedSinkArgs,
+        ScanArgsParquet, Schema, Selector, SinkDestination, SinkTarget, SortMultipleOptions,
+        UnifiedSinkArgs,
         UpcastOrForbid, by_name, col, lit,
     },
 };
@@ -408,6 +409,91 @@ fn match_transport(
         &partition(log, dataset_dir, "access_log_transport", &date_dirs(log)),
         matched,
     )
+}
+
+/// Fill the status a metrics row is missing from the uvicorn line its
+/// request's access row matched. The emitter writes the status only on the
+/// request's final request_log line, and the rows that carry none -- the
+/// emitter bug's class, responses the gateway never finalized -- have none
+/// anywhere of their own: the transport match's line is the one record of
+/// what the server actually sent.
+fn heal_metrics_status(
+    request_log: &Path,
+    transport: &Path,
+    request_metrics: &Path,
+) -> anyhow::Result<()> {
+    let scan = |path: &Path| -> anyhow::Result<LazyFrame> {
+        Ok(LazyFrame::scan_parquet(
+            PlRefPath::try_from_path(path)?,
+            ScanArgsParquet {
+                // the hive dirs around a partition must not add their
+                // year/month/day columns to the frame
+                hive_options: HiveOptions::new_disabled(),
+                ..Default::default()
+            },
+        )?)
+    };
+    let mut metrics = scan(request_metrics)?;
+    let Some(status) = metrics.collect_schema()?.get("status_code").cloned() else {
+        return Ok(()); // nothing to fill
+    };
+
+    // the request's access row to the uvicorn line matched onto it
+    let statuses = scan(request_log)?
+        .select([col("id").alias("request_id"), col("access_log_id")])
+        .join_builder()
+        .with(
+            scan(transport)?.select([
+                col("id").alias("access_log_id"),
+                col("status_code").alias("transport_status"),
+            ]),
+        )
+        .on([col("access_log_id")])
+        .how(JoinType::Inner)
+        .finish()
+        // a request cannot reach here twice; the guard keeps a fan-out from
+        // duplicating metrics rows whatever the partitions hold
+        .unique(
+            Some(Selector::ByName {
+                names: vec!["request_id".into()].into(),
+                strict: true,
+            }),
+            UniqueKeepStrategy::Any,
+        )
+        .select([col("request_id"), col("transport_status")]);
+
+    // fill only what the row itself does not carry, and drop the columns
+    // the join brought in so the parquet keeps its schema
+    let columns: Vec<_> = metrics
+        .clone()
+        .collect_schema()?
+        .iter_names()
+        .map(|name| col(name.to_string()))
+        .collect();
+    let healed = metrics
+        .join_builder()
+        .with(statuses)
+        .how(JoinType::Left)
+        .on([col("request_id")])
+        .finish()
+        .with_columns([col("status_code")
+            .fill_null(col("transport_status").cast(status))])
+        .select(columns);
+
+    // the rename keeps the path valid for a reader that is not watching
+    let tmp = request_metrics.with_extension("tmp");
+    healed
+        .sink(
+            SinkDestination::File {
+                target: SinkTarget::Path(PlRefPath::try_from_path(&tmp)?),
+            },
+            FileWriteFormat::Parquet(ParquetWriteOptions::default().into()),
+            UnifiedSinkArgs::default(),
+        )?
+        .with_streaming(true)
+        .collect()?;
+    fs::rename(&tmp, request_metrics)?;
+    Ok(())
 }
 
 fn partitions_to_parquet(
@@ -1269,6 +1355,14 @@ fn parse_log(dataset_dir: &Path, log: &Path, large_requests: &Path) -> anyhow::R
         partitions.get("access_log"),
     ) {
         let transport = match_transport(dataset_dir, log, uvicorn_access, access_log)?;
+        // a metrics row the emitter never finalized carries no status of its
+        // own; the uvicorn line just matched onto the request's access row is
+        // the one record of what the server sent
+        if let (Some(request_log), Some(request_metrics)) =
+            (partitions.get("request_log"), partitions.get("request_metrics"))
+        {
+            heal_metrics_status(request_log, &transport, request_metrics)?;
+        }
         println!("Outputted frame {}", transport.display());
     }
     for partition in partitions.values() {
@@ -1293,4 +1387,74 @@ pub fn dump_large(large_requests: &Path, dataset_dir: &Path) -> anyhow::Result<(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sink(path: &Path, frame: DataFrame) -> anyhow::Result<()> {
+        frame
+            .lazy()
+            .sink(
+                SinkDestination::File {
+                    target: SinkTarget::Path(PlRefPath::try_from_path(path)?),
+                },
+                FileWriteFormat::Parquet(ParquetWriteOptions::default().into()),
+                UnifiedSinkArgs::default(),
+            )?
+            .with_streaming(true)
+            .collect()?;
+        Ok(())
+    }
+
+    #[test]
+    fn heal_metrics_status_fills_only_the_missing_statuses() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join("first-slogs-heal-metrics-status");
+        fs::create_dir_all(&dir)?;
+
+        let request_log = dir.join("request_log.parquet");
+        sink(
+            &request_log,
+            df!(
+                "id" => ["a", "b", "c"],
+                "access_log_id" => ["A", "B", "C"],
+            )?,
+        )?;
+
+        let transport = dir.join("access_log_transport.parquet");
+        sink(
+            &transport,
+            df!(
+                "id" => ["A", "B", "C"],
+                "status_code" => [Some(200i64), Some(429i64), Some(502i64)],
+            )?,
+        )?;
+
+        let request_metrics = dir.join("request_metrics.parquet");
+        sink(
+            &request_metrics,
+            df!(
+                "request_id" => ["a", "b", "c"],
+                "status_code" => [None, Some(200i64), None],
+            )?,
+        )?;
+
+        heal_metrics_status(&request_log, &transport, &request_metrics)?;
+
+        let healed = LazyFrame::scan_parquet(
+            PlRefPath::try_from_path(&request_metrics)?,
+            ScanArgsParquet::default(),
+        )?
+        .sort(["request_id"], SortMultipleOptions::default())
+        .collect()?;
+        let statuses = healed.column("status_code")?.i64()?;
+
+        // a filled from its transport line, b keeps the status it carries
+        // rather than taking the transport's 429, c filled from its own
+        assert_eq!(statuses.get(0), Some(200));
+        assert_eq!(statuses.get(1), Some(200));
+        assert_eq!(statuses.get(2), Some(502));
+        Ok(())
+    }
 }
