@@ -123,6 +123,8 @@ class StaticDeploymentSummary(ResourceMeta, spec.StaticDeploymentSpec):
 
     kind: Literal["StaticDeployment"] = "StaticDeployment"
     health: HealthCheckResult
+    # Why the latest health check failed; None while healthy
+    health_detail: str | None = None
 
 
 class StaticDeploymentDetail(StaticDeploymentSummary):
@@ -225,6 +227,8 @@ class ClusterSummary(ResourceMeta, spec.ClusterSpec):
 
     kind: Literal["Cluster"] = "Cluster"
     health: HealthCheckResult
+    # Why the latest health check failed; None while healthy
+    health_detail: str | None = None
     # New pilot submissions halt at pilot_system's
     # max_consecutive_pilot_start_failures.
     pilot_start_failures: int = 0
@@ -245,12 +249,15 @@ class ResourceHealth(BaseModel):
     A single resource's health/state plus any reconcile error from the control
     plane.  `status` carries the resource's health or state enum value verbatim
     (e.g. HealthCheckResult, PilotDeploymentState, or ReplicaState); callers
-    interpret criticality per resource type.
+    interpret criticality per resource type.  `health_detail` explains the
+    latest failed health check of a Cluster or StaticDeployment (None while
+    healthy and for other resource types).
     """
 
     name: str
     uid: int
     status: str
+    health_detail: str | None = None
     reconcile_failures: int = 0
     reconcile_last_error: str | None = None
     reconcile_last_traceback: str | None = None

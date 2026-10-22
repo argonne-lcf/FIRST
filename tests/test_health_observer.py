@@ -9,6 +9,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from first_common.health import HealthCheckOutcome
 from first_common.schema.types import HealthCheckResult
 from first_gateway import Settings
 from first_gateway.controllers.workers.health_observer import HealthObserver
@@ -95,7 +96,9 @@ async def test_cluster_health_transition(
 
     observer = _observer(db, redis)
     with patch(
-        _PATCH_TARGET, new_callable=AsyncMock, return_value=HealthCheckResult.healthy
+        _PATCH_TARGET,
+        new_callable=AsyncMock,
+        return_value=HealthCheckOutcome(HealthCheckResult.healthy),
     ):
         await observer._poll()
 
@@ -116,7 +119,9 @@ async def test_static_deployment_health_transition(
 
     observer = _observer(db, redis)
     with patch(
-        _PATCH_TARGET, new_callable=AsyncMock, return_value=HealthCheckResult.healthy
+        _PATCH_TARGET,
+        new_callable=AsyncMock,
+        return_value=HealthCheckOutcome(HealthCheckResult.healthy),
     ):
         await observer._poll()
 
@@ -141,7 +146,9 @@ async def test_unhealthy_debounced(
 
     observer = _observer(db, redis)
     with patch(
-        _PATCH_TARGET, new_callable=AsyncMock, return_value=HealthCheckResult.unhealthy
+        _PATCH_TARGET,
+        new_callable=AsyncMock,
+        return_value=HealthCheckOutcome(HealthCheckResult.unhealthy),
     ):
         await observer._poll()
         async with db() as sess:
@@ -170,7 +177,9 @@ async def test_no_write_when_health_unchanged(
 
     observer = _observer(db, redis)
     with patch(
-        _PATCH_TARGET, new_callable=AsyncMock, return_value=HealthCheckResult.healthy
+        _PATCH_TARGET,
+        new_callable=AsyncMock,
+        return_value=HealthCheckOutcome(HealthCheckResult.healthy),
     ):
         await observer._poll()
 
@@ -194,11 +203,11 @@ async def test_recovery_clears_debounce(
         )
 
     observer = _observer(db, redis)
-    mock = AsyncMock(return_value=HealthCheckResult.unhealthy)
+    mock = AsyncMock(return_value=HealthCheckOutcome(HealthCheckResult.unhealthy))
     with patch(_PATCH_TARGET, mock):
         await observer._poll()
 
-    mock.return_value = HealthCheckResult.healthy
+    mock.return_value = HealthCheckOutcome(HealthCheckResult.healthy)
     with patch(_PATCH_TARGET, mock):
         await observer._poll()
 
@@ -207,7 +216,9 @@ async def test_recovery_clears_debounce(
     assert cluster.health == HealthCheckResult.healthy.value
 
     with patch(
-        _PATCH_TARGET, new_callable=AsyncMock, return_value=HealthCheckResult.unhealthy
+        _PATCH_TARGET,
+        new_callable=AsyncMock,
+        return_value=HealthCheckOutcome(HealthCheckResult.unhealthy),
     ):
         await observer._poll()
         async with db() as sess:
@@ -233,3 +244,41 @@ async def test_heartbeat_beats(
             pass
 
     assert not observer.check_heartbeat().timed_out
+
+
+async def test_health_detail_persisted_and_cleared(
+    db: async_sessionmaker[AsyncSession],
+    redis: Redis,
+) -> None:
+    async with db.begin() as sess:
+        sess.add(
+            Cluster(
+                name="cl-detail",
+                health_check={"url": "http://x/health", "debounce": 1},
+                health=HealthCheckResult.healthy.value,
+            )
+        )
+
+    async def health_detail() -> tuple[str, str | None]:
+        async with db() as sess:
+            cluster = (await sess.scalars(select(Cluster))).one()
+        return cluster.health, cluster.health_detail
+
+    observer = _observer(db, redis)
+    mock = AsyncMock(
+        return_value=HealthCheckOutcome(HealthCheckResult.unhealthy, "HTTP 503")
+    )
+    with patch(_PATCH_TARGET, mock):
+        await observer._poll()
+        assert await health_detail() == ("unhealthy", "HTTP 503")
+
+        # The latest reason replaces a stale one while still unhealthy
+        mock.return_value = HealthCheckOutcome(
+            HealthCheckResult.unhealthy, "Request failed: ConnectError"
+        )
+        await observer._poll()
+        assert await health_detail() == ("unhealthy", "Request failed: ConnectError")
+
+        mock.return_value = HealthCheckOutcome(HealthCheckResult.healthy)
+        await observer._poll()
+        assert await health_detail() == ("healthy", None)

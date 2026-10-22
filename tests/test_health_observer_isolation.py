@@ -10,6 +10,7 @@ import pytest
 from httpx import Client, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from first_common.health import HealthCheckOutcome
 from first_common.schema.types import HealthCheckResult, SecretRef
 from first_gateway.controllers.workers.health_observer import HealthObserver
 from first_gateway.database.models import Cluster, StaticDeployment
@@ -56,17 +57,17 @@ async def test_missing_secret_does_not_block_healthy_neighbor_or_log_credentials
             observer._check(broken), observer._check(healthy)
         )
 
+    detail = "Could not resolve api_key env_var://TEST_MISSING_HEALTH_KEY (ValueError)"
     assert tuple(results) == (
-        ("StaticDeployment", 1, HealthCheckResult.unhealthy),
-        ("StaticDeployment", 2, HealthCheckResult.healthy),
+        ("StaticDeployment", 1, HealthCheckResult.unhealthy, detail),
+        ("StaticDeployment", 2, HealthCheckResult.healthy, None),
     )
     request = cast(MagicMock, observer.health_client.request)
     request.assert_called_once()
     assert request.call_args.kwargs["url"] == healthy.health_check["url"]
     assert "StaticDeployment model-1" in caplog.text
-    assert "uid=1" in caplog.text and "ValueError" in caplog.text
+    assert "uid=1" in caplog.text and detail in caplog.text
     assert "secret-sentinel" not in caplog.text
-    assert "TEST_MISSING_HEALTH_KEY" not in caplog.text
     assert all(record.exc_info is None for record in caplog.records)
 
 
@@ -79,14 +80,15 @@ async def test_invalid_configuration_is_debounced_without_leaking_validation_inp
 
     assert await observer._check(broken) is None
     assert await observer._check(broken) is None
-    assert await observer._check(broken) == (
-        "StaticDeployment",
-        1,
-        HealthCheckResult.unhealthy,
-    )
+    result = await observer._check(broken)
+    assert result is not None
+    assert result[:3] == ("StaticDeployment", 1, HealthCheckResult.unhealthy)
+    assert result[3] is not None
+    assert result[3].startswith("Invalid health_check configuration: url: ")
     cast(MagicMock, observer.health_client.request).assert_not_called()
-    assert "ValidationError" in caplog.text
+    assert "Invalid health_check configuration" in caplog.text
     assert "config-secret-sentinel" not in caplog.text
+    assert "config-secret-sentinel" not in result[3]
 
 
 async def test_check_exception_preserves_debounce_and_recovery() -> None:
@@ -99,13 +101,15 @@ async def test_check_exception_preserves_debounce_and_recovery() -> None:
             "StaticDeployment",
             1,
             HealthCheckResult.unhealthy,
+            "Unexpected RuntimeError while checking health",
         )
         check.side_effect = None
-        check.return_value = HealthCheckResult.healthy
+        check.return_value = HealthCheckOutcome(HealthCheckResult.healthy)
         assert await observer._check(resource) == (
             "StaticDeployment",
             1,
             HealthCheckResult.healthy,
+            None,
         )
         assert not observer.fail_counts
         check.side_effect = RuntimeError("check failed again")
@@ -118,10 +122,10 @@ async def test_check_does_not_swallow_cancellation(
     observer = _observer()
     entered = asyncio.Event()
 
-    async def wait_for_cancel(*_args: object) -> HealthCheckResult:
+    async def wait_for_cancel(*_args: object) -> HealthCheckOutcome:
         entered.set()
         await asyncio.Event().wait()
-        return HealthCheckResult.healthy
+        return HealthCheckOutcome(HealthCheckResult.healthy)
 
     with patch(_CHECK, side_effect=wait_for_cancel):
         task = asyncio.create_task(observer._check(_resource(1)))
@@ -175,3 +179,27 @@ async def test_poll_writes_both_bad_and_healthy_resource_transitions() -> None:
         "healthy": [2],
         "unhealthy": [1],
     }
+    assert {update["health"]: update["health_detail"] for update in updates} == {
+        "healthy": None,
+        "unhealthy": "Could not resolve api_key "
+        "env_var://TEST_MISSING_HEALTH_KEY (ValueError)",
+    }
+
+
+async def test_first_failure_logs_warning_repeats_log_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    observer = _observer()
+    resource = _resource(1, debounce=5)
+    outcome = HealthCheckOutcome(HealthCheckResult.unhealthy, "HTTP 503")
+    caplog.set_level(logging.DEBUG, logger="first_gateway")
+    with patch(_CHECK, new_callable=AsyncMock, return_value=outcome):
+        for _ in range(3):
+            await observer._check(resource)
+
+    failures = [r for r in caplog.records if "HTTP 503" in r.getMessage()]
+    assert [r.levelno for r in failures] == [
+        logging.WARNING,
+        logging.DEBUG,
+        logging.DEBUG,
+    ]

@@ -50,6 +50,7 @@ def upgrade() -> None:
             "pilot_system", postgresql.JSONB(astext_type=sa.Text()), nullable=True
         ),
         sa.Column("health", sa.String(), nullable=False),
+        sa.Column("health_detail", sa.Text(), nullable=True),
         sa.Column(
             "pilot_start_failures",
             sa.Integer(),
@@ -309,6 +310,7 @@ def upgrade() -> None:
         sa.Column("prometheus_metrics_path", sa.String(), nullable=True),
         sa.Column("prometheus_scrape_interval_sec", sa.Integer(), nullable=False),
         sa.Column("health", sa.String(), nullable=False),
+        sa.Column("health_detail", sa.Text(), nullable=True),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column(
             "created_at",

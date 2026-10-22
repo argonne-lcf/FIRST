@@ -175,6 +175,10 @@ export type ClusterDetail = {
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   /**
+   * Health Detail
+   */
+  health_detail?: string | null;
+  /**
    * Pilot Start Failures
    */
   pilot_start_failures?: number;
@@ -229,6 +233,10 @@ export type ClusterHealth = {
    * Status
    */
   status: string;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
   /**
    * Reconcile Failures
    */
@@ -302,6 +310,10 @@ export type ClusterSummary = {
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
   /**
    * Pilot Start Failures
    */
@@ -1802,7 +1814,9 @@ export type ReplicaState =
  * A single resource's health/state plus any reconcile error from the control
  * plane.  `status` carries the resource's health or state enum value verbatim
  * (e.g. HealthCheckResult, PilotDeploymentState, or ReplicaState); callers
- * interpret criticality per resource type.
+ * interpret criticality per resource type.  `health_detail` explains the
+ * latest failed health check of a Cluster or StaticDeployment (None while
+ * healthy and for other resource types).
  */
 export type ResourceHealth = {
   /**
@@ -1817,6 +1831,10 @@ export type ResourceHealth = {
    * Status
    */
   status: string;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
   /**
    * Reconcile Failures
    */
@@ -1943,9 +1961,12 @@ export type ScriptParameter = {
 };
 
 /**
- * StagingAreaPrepared
+ * StagingArea
+ *
+ * A per-user directory on the gateway's Globus data-staging collection, with
+ * an ACL granting that user read/write access.
  */
-export type StagingAreaPrepared = {
+export type StagingArea = {
   /**
    * Collection Id
    */
@@ -2033,6 +2054,10 @@ export type StaticDeploymentDetail = {
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
   runtime?: BackendRuntime;
   /**
    * Slug
@@ -2115,6 +2140,10 @@ export type StaticDeploymentSummary = {
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
   /**
    * Slug
    *
@@ -2422,6 +2451,10 @@ export type ClusterDetailWritable = {
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
   /**
+   * Health Detail
+   */
+  health_detail?: string | null;
+  /**
    * Pilot Start Failures
    */
   pilot_start_failures?: number;
@@ -2478,6 +2511,10 @@ export type ClusterSummaryWritable = {
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
   /**
    * Pilot Start Failures
    */
@@ -3062,6 +3099,10 @@ export type StaticDeploymentDetailWritable = {
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
   runtime?: BackendRuntime;
 };
 
@@ -3135,6 +3176,10 @@ export type StaticDeploymentSummaryWritable = {
    */
   reconcile_retry_at?: string | null;
   health: HealthCheckResult;
+  /**
+   * Health Detail
+   */
+  health_detail?: string | null;
 };
 
 export type HealthHealthGetData = {
@@ -3647,6 +3692,23 @@ export type ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses =
 export type ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponse =
   ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses[keyof ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses];
 
+export type EnsureStagingAreaDataV1StagingPutData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/data/v1/staging";
+};
+
+export type EnsureStagingAreaDataV1StagingPutResponses = {
+  /**
+   * Successful Response
+   */
+  200: StagingArea;
+};
+
+export type EnsureStagingAreaDataV1StagingPutResponse =
+  EnsureStagingAreaDataV1StagingPutResponses[keyof EnsureStagingAreaDataV1StagingPutResponses];
+
 export type WhoamiResourceServerWhoamiGetData = {
   body?: never;
   path?: never;
@@ -3758,7 +3820,7 @@ export type EnsureStagingAreaResourceServerStagingPutResponses = {
   /**
    * Successful Response
    */
-  200: StagingAreaPrepared;
+  200: StagingArea;
 };
 
 export type EnsureStagingAreaResourceServerStagingPutResponse =

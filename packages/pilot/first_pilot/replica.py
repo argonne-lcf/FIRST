@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from httpx import Client, HTTPTransport
 
 from first_common.errors import ReplicaTeardownError
-from first_common.health import perform_health_check_sync
+from first_common.health import HealthCheckOutcome, perform_health_check_sync
 from first_common.schema.types import (
     GpuClaim,
     HealthCheckResult,
@@ -230,6 +230,7 @@ class Replica:
         self.consecutive_health_ok = 0
         self.consecutive_health_fail = 0
         self._unhealthy_since: float | None = None
+        self._health_detail = ""
 
         self._health_params = self.launch_spec.health_check.model_copy()
         # Pilot-side policy floor, not a schema rule: the gateway legitimately
@@ -342,10 +343,10 @@ class Replica:
         )
         return render_script(template, context)
 
-    def _check_health(self) -> HealthCheckResult:
+    def _check_health(self) -> HealthCheckOutcome:
         if not self._health_params.url:
             # No health endpoint -> trust the process: alive == healthy.
-            return HealthCheckResult.healthy
+            return HealthCheckOutcome(HealthCheckResult.healthy)
 
         return perform_health_check_sync(self._health_client, self._health_params)
 
@@ -395,7 +396,7 @@ class Replica:
             self._handle_process_exit(rc)
             return True
 
-        health = self._check_health()
+        health, self._health_detail = self._check_health()
         self._record_health(health)
         return self._advance_state(health)
 
@@ -435,7 +436,10 @@ class Replica:
 
         elif self.state == ReplicaState.ready:
             if not healthy and self.consecutive_health_fail >= self._health_debounce:
-                logger.warning(msg := f"replica {self.name} became unhealthy")
+                logger.warning(
+                    msg
+                    := f"replica {self.name} became unhealthy: {self._health_detail}"
+                )
                 self.state_message = msg
                 self.state = ReplicaState.unhealthy
                 self._unhealthy_since = time.monotonic()

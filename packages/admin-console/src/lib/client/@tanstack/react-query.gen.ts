@@ -19,6 +19,7 @@ import {
   deploymentTasksDeploymentsDeploymentSlugV1TasksPost,
   embeddingsFederatedV1EmbeddingsPost,
   embeddingsResourceServerClusterFrameworkV1EmbeddingsPost,
+  ensureStagingAreaDataV1StagingPut,
   ensureStagingAreaResourceServerStagingPut,
   getClusterCatalogV1ClustersNameGet,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGet,
@@ -70,6 +71,8 @@ import type {
   EmbeddingsFederatedV1EmbeddingsPostError,
   EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData,
   EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostError,
+  EnsureStagingAreaDataV1StagingPutData,
+  EnsureStagingAreaDataV1StagingPutResponse,
   EnsureStagingAreaResourceServerStagingPutData,
   EnsureStagingAreaResourceServerStagingPutResponse,
   GetClusterCatalogV1ClustersNameGetData,
@@ -807,6 +810,37 @@ export const listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetOptions = (
       listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetQueryKey(options),
   });
 
+/**
+ * Ensure Staging Area
+ *
+ * Idempotently create a Globus staging area for the caller: a per-user
+ * directory on the data-staging collection with a read/write ACL, for moving
+ * inputs to (and results from) the clusters serving task models.
+ */
+export const ensureStagingAreaDataV1StagingPutMutation = (
+  options?: Partial<Options<EnsureStagingAreaDataV1StagingPutData>>,
+): UseMutationOptions<
+  EnsureStagingAreaDataV1StagingPutResponse,
+  DefaultError,
+  Options<EnsureStagingAreaDataV1StagingPutData>
+> => {
+  const mutationOptions: UseMutationOptions<
+    EnsureStagingAreaDataV1StagingPutResponse,
+    DefaultError,
+    Options<EnsureStagingAreaDataV1StagingPutData>
+  > = {
+    mutationFn: async (fnOptions) => {
+      const { data } = await ensureStagingAreaDataV1StagingPut({
+        ...options,
+        ...fnOptions,
+        throwOnError: true,
+      });
+      return data;
+    },
+  };
+  return mutationOptions;
+};
+
 export const whoamiResourceServerWhoamiGetQueryKey = (
   options?: Options<WhoamiResourceServerWhoamiGetData>,
 ) => createQueryKey("whoamiResourceServerWhoamiGet", options);
@@ -929,7 +963,7 @@ export const clusterModelsResourceServerClusterModelsGetOptions = (
 /**
  * Ensure Staging Area
  *
- * Idempotently create a Globus staging area for the caller.
+ * Idempotently create a Globus staging area for the caller (see /data/v1).
  */
 export const ensureStagingAreaResourceServerStagingPutMutation = (
   options?: Partial<Options<EnsureStagingAreaResourceServerStagingPutData>>,

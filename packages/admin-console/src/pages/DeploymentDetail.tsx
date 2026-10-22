@@ -173,11 +173,20 @@ function StaticDeploymentDetail({ name }: { name: string }) {
       >
         <HealthIndicator health={deployment.health} />
       </ResourceHeader>
-      <HealthDescription health={deployment.health} />
+      <HealthDescription
+        health={deployment.health}
+        detail={deployment.health_detail}
+      />
       <DetailsCard
         title="Details"
         obj={deployment}
-        omit={["kind", "name", "uid", "reconcile_last_traceback"]}
+        omit={[
+          "kind",
+          "name",
+          "uid",
+          "reconcile_last_traceback",
+          "health_detail",
+        ]}
         order={STATIC_FIELD_ORDER}
       />
     </DetailShell>

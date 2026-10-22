@@ -1,3 +1,4 @@
+import { CircleX } from "lucide-react";
 import {
   type HealthCheckResult,
   type PilotDeploymentState,
@@ -54,8 +55,30 @@ const HEALTH_DESCRIPTION: Record<HealthCheckResult, string> = {
     "The configured health check is failing; see Health Observer logs for details.",
 };
 
-/** Muted one-line explanation of a health check result. */
-export function HealthDescription({ health }: { health: HealthCheckResult }) {
+/**
+ * Muted one-line explanation of a health check result; a failing check with a
+ * known reason is shown as a destructive banner with that reason instead.
+ */
+export function HealthDescription({
+  health,
+  detail,
+}: {
+  health: HealthCheckResult;
+  detail?: string | null;
+}) {
+  if (health === "unhealthy" && detail) {
+    return (
+      <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+        <CircleX className="mt-0.5 size-4 shrink-0" />
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="font-medium">Health check failing</p>
+          <p className="font-mono text-xs break-words whitespace-pre-wrap">
+            {detail}
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <p className="text-xs text-muted-foreground">
       {HEALTH_DESCRIPTION[health]}

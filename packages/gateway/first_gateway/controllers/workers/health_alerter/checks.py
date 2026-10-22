@@ -98,7 +98,13 @@ async def check_cluster_health(client_state: ClientState) -> list[Observation]:
     at info level instead: its faults are expected.
     """
     async with client_state.db_sessionmaker() as sess:
-        q = sa.select(Cluster.uid, Cluster.name, Cluster.health_check, Cluster.health)
+        q = sa.select(
+            Cluster.uid,
+            Cluster.name,
+            Cluster.health_check,
+            Cluster.health,
+            Cluster.health_detail,
+        )
         clusters = (await sess.execute(q)).all()
         maintenance = await Cluster.maintenance_notices(sess)
 
@@ -122,6 +128,7 @@ async def check_cluster_health(client_state: ClientState) -> list[Observation]:
                     summary=f"Cluster {c.name}: health check failing{_probe_hint(c.health_check)}",
                     display_name=f"Cluster {c.name}",
                     severity="crit",
+                    detail=c.health_detail or "",
                     debounce_s=_DEBOUNCE_S,
                 )
             )
@@ -312,6 +319,7 @@ async def check_static_deployment(client_state: ClientState) -> list[Observation
             StaticDeployment.uid,
             StaticDeployment.name,
             StaticDeployment.health_check,
+            StaticDeployment.health_detail,
             StaticDeployment.cluster_name,
         ).where(StaticDeployment.health == HealthCheckResult.unhealthy.value)
         deps = (await sess.execute(q)).all()
@@ -324,6 +332,7 @@ async def check_static_deployment(client_state: ClientState) -> list[Observation
             summary=f"StaticDeployment {d.name}: health check failing{_probe_hint(d.health_check)}",
             display_name=f"StaticDeployment {d.name}",
             severity="crit",
+            detail=d.health_detail or "",
             debounce_s=_DEBOUNCE_S,
         )
         for d in deps
@@ -480,6 +489,11 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
         if r.state in _BAD_REPLICA_STATES:
             msg = r.state_message or ""
             summary = f"PilotReplica {r.name}: {r.state}"
+            if len(msg) > 300:
+                detail = msg
+                msg = msg[:300]
+            else:
+                detail = None
             if msg:
                 summary = f"{summary} — {msg}"
             obs.append(
@@ -489,6 +503,7 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
                     summary=summary,
                     display_name=f"PilotReplica {r.name}",
                     recovery_hint=r.state,
+                    detail=detail,
                     severity="crit",
                 )
             )

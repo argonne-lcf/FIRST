@@ -199,11 +199,16 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
     before their manager came up.  Admin-only.
     """
 
-    def health_cols(model: type[db.ResourceRow], status_col: Any) -> list[Any]:
+    def health_cols(
+        model: type[db.ResourceRow], status_col: Any, detail_col: Any = None
+    ) -> list[Any]:
         return [
             model.name,
             model.uid,
             status_col.label("status"),
+            (detail_col if detail_col is not None else sa.null()).label(
+                "health_detail"
+            ),
             model.reconcile_failures,
             model.reconcile_last_error,
             model.reconcile_last_traceback,
@@ -211,19 +216,22 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
         ]
 
     async def fetch(
-        model: type[db.ResourceRow], status_col: sa.orm.Mapped[str], *where: Any
+        model: type[db.ResourceRow],
+        status_col: sa.orm.Mapped[str],
+        *where: Any,
+        detail_col: Any = None,
     ) -> list[ResourceHealth]:
         return [
             ResourceHealth.model_validate(row, from_attributes=True)
             for row in await sess.execute(
-                sa.select(*health_cols(model, status_col)).where(*where)
+                sa.select(*health_cols(model, status_col, detail_col)).where(*where)
             )
         ]
 
     clusters: list[ClusterHealth] = []
     for row in await sess.execute(
         sa.select(
-            *health_cols(db.Cluster, db.Cluster.health),
+            *health_cols(db.Cluster, db.Cluster.health, db.Cluster.health_detail),
             db.Cluster.pilot_start_failures,
             db.Cluster.pilot_system,
         )
@@ -246,7 +254,11 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
 
     return SystemHealth(
         clusters=clusters,
-        static_deployments=await fetch(db.StaticDeployment, db.StaticDeployment.health),
+        static_deployments=await fetch(
+            db.StaticDeployment,
+            db.StaticDeployment.health,
+            detail_col=db.StaticDeployment.health_detail,
+        ),
         pilot_deployments=await fetch(db.PilotDeployment, db.PilotDeployment.state),
         pilot_jobs=await fetch(
             db.PilotJob, db.PilotJob.manager_health, db.PilotJob.deleted_at.is_(None)

@@ -308,7 +308,10 @@ export function ClusterDetail() {
         )}
       </div>
 
-      <HealthDescription health={cluster.health} />
+      <HealthDescription
+        health={cluster.health}
+        detail={cluster.health_detail}
+      />
 
       {cluster.pilot_system != null && (
         <PilotJobsTable cluster={cluster} clusterSlug={clusterSlug} />

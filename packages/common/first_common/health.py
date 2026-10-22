@@ -1,32 +1,57 @@
 import asyncio
-import logging
 import re
 import time
+from typing import NamedTuple
 
-from httpx import Client, HTTPError, Timeout
+from httpx import Client, HTTPError, Response, Timeout
 
 from first_common.schema.types import HealthCheckParams, HealthCheckResult
 
-logger = logging.getLogger(__name__)
+_BODY_EXCERPT_CHARS = 500
+
+
+class HealthCheckOutcome(NamedTuple):
+    """
+    A health check result plus a human-readable reason when it is not healthy.
+
+    `detail` never carries the resolved api_key: callers may log it or persist
+    it for alerting.
+    """
+
+    result: HealthCheckResult
+    detail: str = ""
 
 
 async def perform_health_check(
     client: Client, params: HealthCheckParams
-) -> HealthCheckResult:
+) -> HealthCheckOutcome:
     return await asyncio.to_thread(perform_health_check_sync, client, params)
 
 
 def perform_health_check_sync(
     client: Client,
     params: HealthCheckParams,
-) -> HealthCheckResult:
-    health = HealthCheckResult.unknown
+) -> HealthCheckOutcome:
+    if not params.url:
+        return HealthCheckOutcome(HealthCheckResult.unknown)
+
+    try:
+        secret = params.api_key.resolve().get_secret_value() if params.api_key else ""
+    except Exception as exc:
+        # The ref names where the secret lives, not the secret itself. The
+        # exception text is omitted in case a resolver echoes what it found.
+        return HealthCheckOutcome(
+            HealthCheckResult.unhealthy,
+            f"Could not resolve api_key {params.api_key} ({type(exc).__name__})",
+        )
+
+    outcome = HealthCheckOutcome(HealthCheckResult.unknown)
 
     for attempt in range(params.attempts_per_check):
-        health = _check_once(client, params)
+        outcome = _check_once(client, params, secret)
 
         if (
-            health == HealthCheckResult.unhealthy
+            outcome.result == HealthCheckResult.unhealthy
             and attempt < params.attempts_per_check - 1
         ):
             time.sleep(params.attempt_delay)
@@ -34,19 +59,13 @@ def perform_health_check_sync(
 
         break
 
-    return health
+    return outcome
 
 
-def _check_once(client: Client, params: HealthCheckParams) -> HealthCheckResult:
-    if not params.url:
-        return HealthCheckResult.unknown
-
-    if params.api_key:
-        headers = {
-            "Authorization": f"Bearer {params.api_key.resolve().get_secret_value()}"
-        }
-    else:
-        headers = None
+def _check_once(
+    client: Client, params: HealthCheckParams, secret: str
+) -> HealthCheckOutcome:
+    headers = {"Authorization": f"Bearer {secret}"} if secret else None
 
     try:
         resp = client.request(
@@ -57,20 +76,37 @@ def _check_once(client: Client, params: HealthCheckParams) -> HealthCheckResult:
             json=params.json_body,
         )
     except HTTPError as exc:
-        logger.warning(f"Request error for health check to {params.url!r}: {exc}")
-        return HealthCheckResult.unhealthy
+        reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        return _unhealthy(f"Request failed: {reason}", secret)
 
-    if not params.status_range[0] <= resp.status_code <= params.status_range[1]:
-        logger.warning(
-            f"Health check {params.url!r} status code {resp.status_code} out of range"
+    lo, hi = params.status_range
+    if not lo <= resp.status_code <= hi:
+        return _unhealthy(
+            f"HTTP {resp.status_code} (expected {lo}-{hi}){_body_excerpt(resp)}",
+            secret,
         )
-        return HealthCheckResult.unhealthy
 
     if params.match_pattern:
         if not re.search(params.match_pattern, resp.content.decode(errors="ignore")):
-            logger.warning(
-                f"Health check {params.url!r} response body did not find {params.match_pattern=!r}"
+            return _unhealthy(
+                f"Response body did not match {params.match_pattern!r}"
+                f"{_body_excerpt(resp)}",
+                secret,
             )
-            return HealthCheckResult.unhealthy
 
-    return HealthCheckResult.healthy
+    return HealthCheckOutcome(HealthCheckResult.healthy)
+
+
+def _unhealthy(detail: str, secret: str) -> HealthCheckOutcome:
+    if secret:
+        detail = detail.replace(secret, "<redacted>")
+    return HealthCheckOutcome(HealthCheckResult.unhealthy, detail)
+
+
+def _body_excerpt(resp: Response) -> str:
+    body = resp.content.decode(errors="replace").strip()
+    if not body:
+        return ""
+    if len(body) > _BODY_EXCERPT_CHARS:
+        body = body[:_BODY_EXCERPT_CHARS] + "…"
+    return f": {body}"

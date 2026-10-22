@@ -268,7 +268,14 @@ function StatusDialog({
                   {...linkFor(r)}
                   className="flex items-center gap-2 rounded-md px-1 py-1.5 text-sm hover:bg-muted"
                 >
-                  <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{r.name}</span>
+                    {r.health_detail && (
+                      <span className="block truncate font-mono text-xs text-muted-foreground">
+                        {r.health_detail}
+                      </span>
+                    )}
+                  </span>
                   <span className="font-mono text-xs text-muted-foreground">
                     #{r.uid}
                   </span>
@@ -449,6 +456,56 @@ function ReconcileBackoff({ backoffs }: { backoffs: Backoff[] }) {
   );
 }
 
+/** A resource failing its health check, tagged with its kind and detail link. */
+type HealthFailure = {
+  kind: string;
+  resource: ResourceHealth;
+  link: LinkProps;
+};
+
+/**
+ * Clusters and static deployments failing their health check, each with the
+ * reason from the latest probe. Resources in reconcile backoff are left to
+ * that card.
+ */
+function HealthCheckFailures({ failures }: { failures: HealthFailure[] }) {
+  if (failures.length === 0) return null;
+  return (
+    <Card className="border-destructive/30">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-destructive">
+          <CircleX className="size-5" />
+          Failing health checks
+        </CardTitle>
+        <CardDescription>
+          {failures.length} resource{failures.length === 1 ? "" : "s"} failing
+          health checks, with the reason from the latest probe.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="divide-y divide-border">
+          {failures.map(({ kind, resource: r, link }) => (
+            <li key={`${kind}-${r.uid}`} className="space-y-1 py-2">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline">{kind}</Badge>
+                <Link
+                  {...link}
+                  className="min-w-0 truncate text-sm hover:underline"
+                >
+                  {r.name}
+                </Link>
+              </div>
+              <p className="font-mono text-xs break-words whitespace-pre-wrap text-muted-foreground">
+                {r.health_detail}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
 /** Failed pilot jobs listed per cluster before the rest are elided. */
 const MAX_FAILED_JOBS_SHOWN = 5;
 
@@ -623,6 +680,17 @@ export function Health() {
       a.resource.name.localeCompare(b.resource.name),
   );
 
+  const healthFailures: HealthFailure[] = GROUPS.flatMap((g) =>
+    data[g.key]
+      .filter(
+        (r) =>
+          r.status === "unhealthy" &&
+          r.health_detail &&
+          (r.reconcile_failures ?? 0) === 0,
+      )
+      .map((r) => ({ kind: g.kind, resource: r, link: g.linkFor(r) })),
+  );
+
   return (
     <div className="space-y-6">
       <OverallBanner overall={overall} />
@@ -637,6 +705,7 @@ export function Health() {
           />
         ))}
       </div>
+      <HealthCheckFailures failures={healthFailures} />
       <ReconcileBackoff backoffs={backoffs} />
       <PilotStartFailures clusters={data.clusters} failedJobs={failedJobs} />
     </div>

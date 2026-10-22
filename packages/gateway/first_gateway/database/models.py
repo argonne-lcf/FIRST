@@ -326,6 +326,8 @@ class Cluster(ResourceRow):
     pilot_system: Mapped[DictJsonbOrNone]
 
     health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
+    # Why the latest health check failed; None while healthy
+    health_detail: Mapped[str | None] = mapped_column(sa.Text(), default=None)
 
     # Consecutive jobs that died before the manager came up
     pilot_start_failures: Mapped[int] = mapped_column(
@@ -398,6 +400,8 @@ class StaticDeployment(ResourceRow):
 
     health_check: Mapped[DictJsonb]
     health: Mapped[str] = mapped_column(default=HealthCheckResult.unknown.value)
+    # Why the latest health check failed; None while healthy
+    health_detail: Mapped[str | None] = mapped_column(sa.Text(), default=None)
 
     prometheus_metrics_path: Mapped[str | None]
     prometheus_scrape_interval_sec: Mapped[int]

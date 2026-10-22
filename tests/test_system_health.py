@@ -50,6 +50,8 @@ async def test_system_health_reports_backoff_and_pilot_start_failures(
         await sess.execute(
             sa.update(Cluster).values(
                 pilot_start_failures=2,
+                health="unhealthy",
+                health_detail="Scheduler poll failed: boom",
                 reconcile_failures=3,
                 reconcile_last_error="boom (in PilotJobObserver._poll_cluster)",
                 reconcile_last_traceback="Traceback ...\nConnectionError: boom",
@@ -68,6 +70,10 @@ async def test_system_health_reports_backoff_and_pilot_start_failures(
     )
     assert cluster["reconcile_last_traceback"].endswith("ConnectionError: boom")
     assert cluster["reconcile_retry_at"] is not None
+    assert cluster["status"] == "unhealthy"
+    assert cluster["health_detail"] == "Scheduler poll failed: boom"
+
+    assert all(j["health_detail"] is None for j in health["pilot_jobs"])
 
     assert [j["name"] for j in health["pilot_jobs"]] == ["alive"]
     failed = health["failed_pilot_jobs"]

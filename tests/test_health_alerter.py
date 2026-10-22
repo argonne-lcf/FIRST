@@ -816,11 +816,14 @@ async def test_check_cluster_health(
                 name="cl-bad",
                 health_check={"url": "", "debounce": 2},
                 health=HealthCheckResult.unhealthy.value,
+                health_detail="HTTP 503 (expected 200-299): not ready",
             )
         )
 
     obs = await check_cluster_health(alerter.client_state)
-    assert [o for o in obs if o.status == "unhealthy"]
+    unhealthy = [o for o in obs if o.status == "unhealthy"]
+    assert unhealthy
+    assert unhealthy[0].detail == "HTTP 503 (expected 200-299): not ready"
 
 
 async def test_check_cluster_health_maintenance_is_info(

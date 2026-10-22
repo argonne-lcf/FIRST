@@ -145,7 +145,10 @@ class PilotJobObserver(Worker):
                         sess, cluster.uid, e, self.failure_site(e)
                     )
                     await self._mark_cluster_health(
-                        sess, cluster, HealthCheckResult.unhealthy
+                        sess,
+                        cluster,
+                        HealthCheckResult.unhealthy,
+                        f"Scheduler poll failed: {str(e) or type(e).__name__}",
                     )
             else:
                 if (
@@ -436,13 +439,20 @@ class PilotJobObserver(Worker):
             )
 
     async def _mark_cluster_health(
-        self, sess: AsyncSession, cluster: Cluster, health: HealthCheckResult
+        self,
+        sess: AsyncSession,
+        cluster: Cluster,
+        health: HealthCheckResult,
+        detail: str | None = None,
     ) -> None:
         await sess.execute(
             sa.update(Cluster)
             .where(
                 Cluster.uid == cluster.uid,
-                Cluster.health.is_distinct_from(health.value),
+                sa.or_(
+                    Cluster.health.is_distinct_from(health.value),
+                    Cluster.health_detail.is_distinct_from(detail),
+                ),
             )
-            .values(health=health.value)
+            .values(health=health.value, health_detail=detail)
         )

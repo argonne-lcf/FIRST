@@ -8,9 +8,12 @@ from typing import Any, AsyncGenerator
 
 import httpx
 import pytest
+import sqlalchemy as sa
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_gateway import Settings
+from first_gateway.database.models import Cluster, StaticDeployment
 from first_gateway.database.redis.keys import Keys
 
 from .fixtures.auth import ADMIN_TOKEN, auth_header
@@ -89,6 +92,24 @@ async def test_list_static_deployments_runtime(
     rt = sds[0]["runtime"]
     assert rt["inflight"] == 10
     assert rt["cooldown_errors"] == 4
+
+
+async def test_catalog_reports_health_detail(
+    client: httpx.AsyncClient,
+    baseline: None,
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Cluster and StaticDeployment listings explain a failing health check."""
+    async with db.begin() as sess:
+        for model in (Cluster, StaticDeployment):
+            await sess.execute(
+                sa.update(model).values(health="unhealthy", health_detail="HTTP 503")
+            )
+
+    for path in ("/catalog/v1/clusters", "/catalog/v1/deployments/static"):
+        resp = await client.get(path, headers=auth_header(ADMIN_TOKEN))
+        assert resp.status_code == 200
+        assert {r["health_detail"] for r in resp.json()} == {"HTTP 503"}
 
 
 async def test_get_pilot_deployment_replica_runtime(

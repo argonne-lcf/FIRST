@@ -42,6 +42,8 @@ import type {
   EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData,
   EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostErrors,
   EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostResponses,
+  EnsureStagingAreaDataV1StagingPutData,
+  EnsureStagingAreaDataV1StagingPutResponses,
   EnsureStagingAreaResourceServerStagingPutData,
   EnsureStagingAreaResourceServerStagingPutResponses,
   GetClusterCatalogV1ClustersNameGetData,
@@ -651,6 +653,32 @@ export const listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGet = <
   });
 
 /**
+ * Ensure Staging Area
+ *
+ * Idempotently create a Globus staging area for the caller: a per-user
+ * directory on the data-staging collection with a read/write ACL, for moving
+ * inputs to (and results from) the clusters serving task models.
+ */
+export const ensureStagingAreaDataV1StagingPut = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<EnsureStagingAreaDataV1StagingPutData, ThrowOnError>,
+): RequestResult<
+  EnsureStagingAreaDataV1StagingPutResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).put<
+    EnsureStagingAreaDataV1StagingPutResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/data/v1/staging",
+    ...options,
+  });
+
+/**
  * Whoami
  */
 export const whoamiResourceServerWhoamiGet = <
@@ -754,7 +782,7 @@ export const clusterModelsResourceServerClusterModelsGet = <
 /**
  * Ensure Staging Area
  *
- * Idempotently create a Globus staging area for the caller.
+ * Idempotently create a Globus staging area for the caller (see /data/v1).
  */
 export const ensureStagingAreaResourceServerStagingPut = <
   ThrowOnError extends boolean = false,
