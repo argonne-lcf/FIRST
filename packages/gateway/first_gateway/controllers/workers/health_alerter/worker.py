@@ -169,7 +169,7 @@ class HealthAlerter(Worker):
         *,
         restart_backoff: float = 1.0,
         max_backoff: float = 30.0,
-        heartbeat_timeout: float = 120.0,
+        heartbeat_timeout: float = 300.0,
     ) -> None:
         super().__init__(
             name,
