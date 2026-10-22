@@ -814,7 +814,7 @@ def configure(
             "-m",
             help="Default model for the agent configuration (codex and claude)",
         ),
-    ] = "inkling-bf16",
+    ] = "muse-spark-bf16",
     cluster: Annotated[
         str,
         typer.Option(
