@@ -32,8 +32,14 @@ ALLOWLIST: dict[str, list[str]] = {
     "minerva": [
         "nemotron-3-ultra",
         "inkling-bf16",
-        "gpt-oss-120b",
         "muse-spark-bf16",
+        "beam-1.0-bf16",
+    ],
+    "tara": [
+        "openai/gpt-oss-20b",
+        "nemotron-35-super-vl",
+        "inkling-bf16",
+        "nemotron-3-ultra",
     ],
 }
 
