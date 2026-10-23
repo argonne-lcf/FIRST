@@ -178,11 +178,25 @@ fn parquet_of(dataset_dir: &Path, partition: &Path) -> anyhow::Result<PathBuf> {
     Ok(parquet)
 }
 
+/// The metrics partition's ndjson path that belongs beside a request_log
+/// parquet: the same input file's day, the metrics stream's name. The heal
+/// names its output after it, and `parquet_of` turns it into the parquet
+/// path the day's metrics rows belong at.
+fn metrics_naming_path_of(request_log: &Path) -> PathBuf {
+    let mut p = request_log.to_path_buf();
+    p.set_extension("ndjson");
+    let s = p
+        .to_string_lossy()
+        .replace("/request_log/", "/ndjson/request_metrics/");
+    PathBuf::from(s.replace(".request_log.ndjson", ".request_metrics.ndjson"))
+}
+
 /// Map `path` iff it has no `.ndjson` partitions in `dataset_dir` yet or any of
 /// them is older than the log itself (strict comparison).
 fn mmap_if_stale(path: &Path, dataset_dir: &Path) -> io::Result<Option<Mmap>> {
     let file = File::open(path)?;
     let log_mtime = file.metadata()?.mtime();
+
 
     let dated = date_dirs(path);
     let mut written = false;
@@ -563,6 +577,35 @@ fn partitions_to_parquet(
         };
 
         partitions.insert("request_metrics", request_metrics);
+    } else if let Some(request_log) = partitions.get("request_log") {
+        // the day's logs hold requests but no metrics lines at all -- the
+        // metrics writer was not running yet, the era's first days were like
+        // this. Every request is never-finalized, so synthesize a metrics row
+        // for each from its own text, exactly as the heal does for the days
+        // that wrote some: an empty metrics frame carries the schema, and the
+        // heal fills it with the synthesized rows
+        let naming = metrics_naming_path_of(request_log);
+        let empty = LazyFrame::scan_parquet(PlRefPath::try_from_path(request_log)?, ScanArgsParquet::default())?
+            .select([
+                col("id").alias("request_id"),
+                col("cluster"),
+                col("framework"),
+                col("model"),
+                col("timestamp_compute_request"),
+                col("timestamp_compute_response"),
+                col("status_code"),
+                lit(Null {}).cast(DataType::Int64).alias("prompt_tokens"),
+                lit(Null {}).cast(DataType::Int64).alias("completion_tokens"),
+                lit(Null {}).cast(DataType::Int64).alias("total_tokens"),
+                lit(Null {}).cast(DataType::Float64).alias("response_time_sec"),
+                lit(Null {}).cast(DataType::Float64).alias("throughput_tokens_per_sec"),
+            ])
+            .limit(0);
+        let empty_path = to_parquet(dataset_dir, &naming, empty)?;
+        partitions.insert(
+            "request_metrics",
+            heal_request_metrics(dataset_dir, large_requests, &empty_path, request_log, &naming)?,
+        );
     }
 
     Ok(partitions)
