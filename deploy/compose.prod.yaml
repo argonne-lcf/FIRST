@@ -17,6 +17,8 @@ services:
     # Publish only on loopback; host nginx proxy_passes here.
     ports:
       - "127.0.0.1:7000:7000"
+    volumes:
+      - prompt_records_prod:/app/prompt-records
 
   controller-manager:
     env_file: *prod-env
@@ -48,4 +50,6 @@ volumes:
   prometheus_data_prod:
     external: true
   grafana_data_prod:
+    external: true
+  prompt_records_prod:
     external: true

@@ -6,8 +6,10 @@ observes the real ``http.response.start``/``http.response.body`` messages, and
 emits a :class:`ResponseLog` after the response is sent.
 
 It buffers a response body ONLY for error responses (``status_code >= 400``,
-which are small); success bodies — unary and streaming alike — are never
-buffered here (their content is persisted by ``InferenceService``).
+which are small, and are inlined but never spilled to disk); success bodies —
+unary and streaming alike — are never buffered here, so a 2xx ResponseLog
+always has ``body=None`` (inference content is persisted by
+``InferenceService``).
 """
 
 import time
@@ -62,28 +64,27 @@ class ResponseLogMiddleware:
             # An uncaught exception propagates un-statused (ServerErrorMiddleware,
             # which emits the 500, is above us). Log our own ResponseLog(500) so
             # the request_id is preserved, then re-raise.
-            self._emit(scope, cid, 500, t0, streaming=False, raw_body=None)
+            self._emit(cid, 500, t0, streaming=False, raw_body=None)
             raise
         else:
             if scope["path"] not in _SKIP_PATHS:
                 raw = bytes(error_body) if status_code >= 400 else None
-                self._emit(scope, cid, status_code, t0, streaming, raw)
+                self._emit(cid, status_code, t0, streaming, raw)
         finally:
             _request_id_ctx.reset(token)
 
     @staticmethod
     def _emit(
-        scope: Scope,
         cid: str,
         status_code: int,
         t0: float,
         streaming: bool,
         raw_body: bytes | None,
     ) -> None:
-        storage_dir = scope["app"].state.client_state.settings.prompt_storage_dir
+        # No storage_dir: error bodies are inlined when small, never spilled.
         ResponseLog(
             request_id=cid,
             status_code=status_code,
             duration_ms=(time.perf_counter() - t0) * 1000,
             streaming=streaming,
-        ).emit(raw_body=raw_body, storage_dir=storage_dir)
+        ).emit(raw_body=raw_body)

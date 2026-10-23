@@ -9,9 +9,14 @@ middleware and stored in a contextvar):
 
 Each event's ``emit()`` writes one lean JSONL line (non-blocking, via the
 QueueHandler). When a body is large (>= ``INLINE_BODY_LIMIT`` bytes) it is not
-inlined: the full raw bytes are written to a date-partitioned file under
-``storage_dir`` on a worker thread (fire-and-forget), and the JSONL line carries
-``body=None`` + ``body_stored=True``.
+inlined: if a ``storage_dir`` is given, the full raw bytes are written to a
+date-partitioned file under it on a worker thread (fire-and-forget), and the
+JSONL line carries ``body=None`` + ``body_stored=True``. Without a
+``storage_dir`` the large body is dropped.
+
+``body=None`` + ``body_stored=False`` therefore means the body was not captured
+(the event carried none, or it was too large to inline with nowhere to spill);
+an empty body is ``body=""``. Only inference traffic spills to disk.
 """
 
 import asyncio
@@ -60,17 +65,24 @@ async def _write_body_file(path: Path, raw: bytes) -> None:
 
 
 def _store_body(
-    raw: bytes, subdir: str, request_id: str, timestamp: datetime, storage_dir: Path
+    raw: bytes,
+    subdir: str,
+    request_id: str,
+    timestamp: datetime,
+    storage_dir: Path | None,
 ) -> tuple[str | None, bool]:
     """Apply the inline-vs-file decision.
 
     Small bodies are decoded and returned inline. Large bodies are scheduled for
     a fire-and-forget threaded write to
     ``{storage_dir}/{subdir}/YYYY/MM/DD/{request_id}.json`` (UTC date from
-    ``timestamp``) and returned as ``(None, True)``.
+    ``timestamp``) and returned as ``(None, True)``, or dropped as
+    ``(None, False)`` when there is no ``storage_dir``.
     """
     if len(raw) < INLINE_BODY_LIMIT:
         return raw.decode(errors="replace"), False
+    if storage_dir is None:
+        return None, False
 
     path = storage_dir / subdir / timestamp.strftime("%Y/%m/%d") / f"{request_id}.json"
     task = asyncio.create_task(_write_body_file(path, raw))
@@ -84,7 +96,7 @@ class _StructuredLog(BaseModel):
     timestamp, and lean-JSONL emit + large-body persistence logic."""
 
     # Subdirectory under storage_dir for large-body files ("large-requests" or
-    # "large-responses"). Empty for events that never carry a body.
+    # "large-responses"). Empty for events that never spill a body.
     _body_subdir: ClassVar[str] = ""
 
     # Unique per *emitted event* (never reused across retries or event types).
@@ -105,11 +117,10 @@ class _StructuredLog(BaseModel):
         """Emit the lean JSONL line; persist a large body to disk if needed.
 
         ``raw_body`` is the captured body bytes for this event (or ``None`` when
-        the event carries no body). ``storage_dir`` is required whenever a body
-        may need off-lining (i.e. whenever ``raw_body`` is not None).
+        the event carries no body). ``storage_dir`` is where a large body is
+        spilled; pass ``None`` to inline small bodies only and drop large ones.
         """
         if raw_body is not None:
-            assert storage_dir is not None, "storage_dir required to store a body"
             self.body, self.body_stored = _store_body(
                 raw_body,
                 self._body_subdir,
@@ -143,9 +154,9 @@ class RequestLog(_StructuredLog):
 
 
 class ResponseLog(_StructuredLog):
-    """An HTTP response was sent (emitted in the ASGI middleware)."""
-
-    _body_subdir: ClassVar[str] = "large-responses"
+    """An HTTP response was sent (emitted in the ASGI middleware). Carries only
+    small error bodies; never spills to disk (inference content is carried by
+    :class:`InferenceLog`)."""
 
     stream: Literal["response"] = "response"
 

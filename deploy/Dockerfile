@@ -39,6 +39,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Compose bind-mounts file secrets with their host uid and mode unchanged.
 ARG APP_UID=900
 RUN useradd -m -u ${APP_UID} app
+# Large inference bodies spill here (Settings.prompt_storage_dir). Compose mounts
+# a named volume over it; an empty volume is seeded with this dir's ownership.
+RUN mkdir -p /app/prompt-records && chown app:app /app/prompt-records
 USER app
 EXPOSE 7000
 CMD [".venv/bin/gunicorn", \

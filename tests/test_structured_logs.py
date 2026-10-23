@@ -6,6 +6,8 @@ from typing import Any, Iterator
 
 import httpx
 import pytest
+from fastapi.dependencies.utils import get_flat_dependant
+from fastapi.routing import APIRoute
 
 from first_common.schema.structured_logs import (
     INLINE_BODY_LIMIT,
@@ -16,6 +18,8 @@ from first_common.schema.structured_logs import (
 )
 from first_gateway.apiserver.api import app
 from first_gateway.apiserver.context import _request_id_ctx, get_request_id
+from first_gateway.apiserver.dependencies import _INFERENCE_PATH_PREFIXES
+from first_gateway.apiserver.inference import InferenceService
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -80,12 +84,23 @@ async def test_large_body_written_to_file(tmp_path: Path) -> None:
     assert written.read_bytes() == raw
 
 
-async def test_large_response_body_uses_responses_dir(tmp_path: Path) -> None:
-    log = ResponseLog(
+async def test_large_inference_body_uses_responses_dir(tmp_path: Path) -> None:
+    log = InferenceLog(
         request_id="rid-resp",
-        status_code=500,
-        duration_ms=1.5,
-        streaming=False,
+        user_id="u",
+        endpoint="chat/completions",
+        model="m",
+        deployment="d",
+        cluster="c",
+        backend_id="b",
+        backend_model_url="http://x/v1",
+        latency_sec=0.5,
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        reasoning_tokens=None,
     )
     raw = b"e" * (INLINE_BODY_LIMIT + 1)
     log.emit(raw_body=raw, storage_dir=tmp_path)
@@ -94,6 +109,27 @@ async def test_large_response_body_uses_responses_dir(tmp_path: Path) -> None:
     files = list(tmp_path.rglob("*.json"))
     assert len(files) == 1
     assert files[0].parent.parent.parent.parent.name == "large-responses"
+
+
+async def test_large_body_dropped_without_storage_dir() -> None:
+    log = ResponseLog(
+        request_id="rid-drop", status_code=500, duration_ms=1.5, streaming=False
+    )
+    log.emit(raw_body=b"e" * (INLINE_BODY_LIMIT + 1))
+
+    assert log.body is None
+    assert log.body_stored is False
+    assert not _background_tasks
+
+
+async def test_small_body_inlined_without_storage_dir() -> None:
+    log = ResponseLog(
+        request_id="rid-err", status_code=404, duration_ms=1.5, streaming=False
+    )
+    log.emit(raw_body=b'{"detail":"nope"}')
+
+    assert log.body == '{"detail":"nope"}'
+    assert log.body_stored is False
 
 
 # --------------------------------------------------------------------------
@@ -315,3 +351,36 @@ async def test_three_events_share_request_id_streaming(
     assert by_stream["request"]["username"] == "user@anl.gov"
     # The request body was small -> inlined.
     assert json.loads(by_stream["request"]["body"])["model"] == "open/model"
+
+
+async def test_non_inference_request_body_not_logged(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    resp = await client.get("/whoami", headers=auth_header(USER_TOKEN))
+    assert resp.status_code == 200
+    await asyncio.sleep(0.05)
+
+    by_stream = {r["stream"]: r for r in capture_events}
+    assert by_stream["request"]["path"] == "/whoami"
+    assert by_stream["request"]["body"] is None
+    assert by_stream["request"]["body_stored"] is False
+    assert by_stream["response"]["body"] is None
+
+
+def test_inference_routes_match_body_logging_prefixes() -> None:
+    """Every route using InferenceService must fall under a prefix whose request
+    bodies get_auth_user logs; otherwise its bodies are silently not logged."""
+    inference_paths = [
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        and any(
+            dep.call is InferenceService
+            for dep in get_flat_dependant(route.dependant).dependencies
+        )
+    ]
+    assert inference_paths
+    unmatched = [
+        p for p in inference_paths if not p.startswith(_INFERENCE_PATH_PREFIXES)
+    ]
+    assert unmatched == []

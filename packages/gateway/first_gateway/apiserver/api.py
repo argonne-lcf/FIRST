@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -26,6 +27,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     settings = Settings()
     config_logging(settings.log_level)
+
+    settings.prompt_storage_dir.mkdir(parents=True, exist_ok=True)
+    if not os.access(settings.prompt_storage_dir, os.W_OK | os.X_OK):
+        raise PermissionError(
+            f"prompt_storage_dir {settings.prompt_storage_dir.resolve()} is not writable"
+        )
+
     async with settings.build_clients() as client_state:
         app.state.client_state = client_state
         backend_client_manager = BackendClientManager(client_state.settings)

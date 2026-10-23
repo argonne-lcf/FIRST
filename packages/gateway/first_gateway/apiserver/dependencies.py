@@ -75,6 +75,11 @@ async def get_redis_pubsub(state: AppState) -> _RedisPubSub:
 RedisPubSub = Annotated[_RedisPubSub, Depends(get_redis_pubsub)]
 
 
+# Route prefixes of the inference routers (routes/inference.py, v1_compat.py).
+# Only these requests have their bodies logged and spilled to disk when large.
+_INFERENCE_PATH_PREFIXES = ("/federated/", "/deployments/", "/resource_server/")
+
+
 async def get_auth_user(
     request: Request,
     state: AppState,
@@ -83,7 +88,11 @@ async def get_auth_user(
     """
     Returns UserAuthEvent if and only if the user is authenticated. Raises Unauthorized otherwise.
     """
-    raw_body = await request.body()  #  Cached on request._body
+    if request.url.path.startswith(_INFERENCE_PATH_PREFIXES):
+        raw_body = await request.body()  #  Cached on request._body
+        storage_dir = state.settings.prompt_storage_dir
+    else:
+        raw_body, storage_dir = None, None
     origin_ip = request.headers.get("X-Forwarded-For")
     if not origin_ip and request.client is not None:
         origin_ip = request.client.host
@@ -100,7 +109,7 @@ async def get_auth_user(
             path=request.url.path,
             origin_ip=origin_ip,
             content_length=int(content_length) if content_length else None,
-        ).emit(raw_body=raw_body, storage_dir=state.settings.prompt_storage_dir)
+        ).emit(raw_body=raw_body, storage_dir=storage_dir)
         raise
 
     RequestLog(
@@ -117,7 +126,7 @@ async def get_auth_user(
         path=request.url.path,
         origin_ip=origin_ip,
         content_length=int(content_length) if content_length else None,
-    ).emit(raw_body=raw_body, storage_dir=state.settings.prompt_storage_dir)
+    ).emit(raw_body=raw_body, storage_dir=storage_dir)
 
     return user
 
