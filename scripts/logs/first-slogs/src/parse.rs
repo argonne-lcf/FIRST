@@ -546,6 +546,18 @@ fn partitions_to_parquet(
                 request_log,
                 request_metrics,
             )?
+        } else if let Some(request_log) = partitions.get("request_log") {
+            // no app lines, so no estimation lines to stream a metrics row from:
+            // the pool and the row's own text are still enough to fill the blanks
+            // and to synthesize what the stream never wrote at all
+            let plain = ndjson_to_parquet(dataset_dir, request_metrics)?;
+            heal_request_metrics(
+                dataset_dir,
+                large_requests,
+                &plain,
+                request_log,
+                request_metrics,
+            )?
         } else {
             ndjson_to_parquet(dataset_dir, request_metrics)?
         };
