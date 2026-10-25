@@ -60,13 +60,12 @@ _BAD_REPLICA_STATES = {
 }
 
 # PilotDeployment states worth alerting on, and their severity. States absent
-# from this map (healthy, starting) are omitted; recovery is by absence.
+# from this map (healthy, starting, offline) are omitted; recovery is by absence.
 _PILOT_DEPLOYMENT_SEVERITY: dict[str, Severity] = {
     PilotDeploymentState.failed.value: "crit",
     PilotDeploymentState.degraded.value: "warn",
     PilotDeploymentState.stopping.value: "info",
     PilotDeploymentState.awaiting_capacity.value: "info",
-    PilotDeploymentState.offline.value: "info",
 }
 
 

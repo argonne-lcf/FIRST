@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.health import HealthCheckOutcome
 from first_common.schema.types import HealthCheckResult, SecretRef
+from first_gateway.controllers.worker import Heartbeat
 from first_gateway.controllers.workers.health_observer import HealthObserver
 from first_gateway.database.models import Cluster, StaticDeployment
 
@@ -30,6 +31,7 @@ def _observer() -> HealthObserver:
     observer.fail_counts = defaultdict(int)
     observer.health_client = MagicMock(spec=Client)
     observer.health_client.request.return_value = Response(200)
+    observer.hb = Heartbeat("health.poll", timeout=240.0)
     return observer
 
 

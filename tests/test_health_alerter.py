@@ -588,7 +588,8 @@ async def test_daily_digest(db: async_sessionmaker[AsyncSession], redis: Redis) 
 async def test_daily_digest_names_clusters_and_deployments(
     db: async_sessionmaker[AsyncSession], redis: Redis
 ) -> None:
-    """Digest lists every cluster/deployment by name with live status counts."""
+    """Digest lists every cluster by name with live status counts, and every
+    deployment grouped by state (healthy first, offline last)."""
     alerter = _make_alerter(db, redis)
     async with db.begin() as sess:
         await _seed_parents(sess)
@@ -602,21 +603,26 @@ async def test_daily_digest_names_clusters_and_deployments(
             )
         )
         sess.add(_sd("sd1", HealthCheckResult.healthy.value))
-        sess.add(
-            PilotDeployment(
-                name="pd1",
-                cluster_name="cl",
-                model_name="mdl",
-                launch_template_name=LAUNCH_TEMPLATE_NAME,
-                router_params={},
-                scaling_strategy=None,
-                min_replicas=0,
-                max_replicas=3,
-                launch_spec={},
-                state=PilotDeploymentState.healthy.value,
-                prometheus_scrape_interval_sec=30,
+        sess.add(_sd("sd2", HealthCheckResult.unhealthy.value))
+        for name, state in [
+            ("pd1", PilotDeploymentState.healthy),
+            ("pd2", PilotDeploymentState.offline),
+        ]:
+            sess.add(
+                PilotDeployment(
+                    name=name,
+                    cluster_name="cl",
+                    model_name="mdl",
+                    launch_template_name=LAUNCH_TEMPLATE_NAME,
+                    router_params={},
+                    scaling_strategy=None,
+                    min_replicas=0,
+                    max_replicas=3,
+                    launch_spec={},
+                    state=state.value,
+                    prometheus_scrape_interval_sec=30,
+                )
             )
-        )
         for i, (job_state, deleted) in enumerate(
             [
                 (SchedulerJobState.running, False),
@@ -657,9 +663,13 @@ async def test_daily_digest_names_clusters_and_deployments(
         "• cl: unknown (Pilot Jobs: 1 queued, 2 running)",
         "• empty-cl: unknown",
         "• idle-pilot-cl: unknown (Pilot Jobs: none)",
-        "*Deployments* (2 total, all healthy)",
-        "• pd1: healthy (Pilot Replicas: 1 launching, 2 ready)",
-        "• sd1: healthy",
+        "*2 Healthy Deployments*",
+        "• pd1 (Replicas: 1 launching, 2 ready)",
+        "• sd1 (StaticDeployment)",
+        "*1 Unhealthy Deployment*",
+        "• sd2 (StaticDeployment)",
+        "*1 Offline Deployment*",
+        "• pd2",
     ]
 
 

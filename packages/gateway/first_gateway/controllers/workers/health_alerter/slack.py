@@ -104,13 +104,41 @@ def _digest_section(
     return _mrkdwn(_truncate("\n".join(lines)))
 
 
+def _deployment_sections(rows: list[DigestRow]) -> list[dict[str, Any]]:
+    """One `*N State Deployments*` section per state (healthy first, offline
+    last), each listing `• name (detail)`; empty states are skipped."""
+    by_state: dict[str, list[DigestRow]] = defaultdict(list)
+    for row in rows:
+        by_state[row.status].append(row)
+
+    def order(state: str) -> tuple[int, str]:
+        return ({"healthy": 0, "offline": 2}.get(state, 1), state)
+
+    sections = []
+    for state in sorted(by_state, key=order):
+        group = by_state[state]
+        noun = "Deployment" if len(group) == 1 else "Deployments"
+        label = state.replace("_", " ").title()
+        lines = [f"*{len(group)} {label} {noun}*"]
+        for row in sorted(group, key=lambda r: r.name):
+            if row.counts is None:
+                lines.append(f"• {row.name} (StaticDeployment)")
+            elif state == "offline":
+                lines.append(f"• {row.name}")
+            else:
+                counts = ", ".join(f"{n} {s}" for s, n in sorted(row.counts.items()))
+                lines.append(f"• {row.name} (Replicas: {counts or 'none'})")
+        sections.append(_mrkdwn(_truncate("\n".join(lines))))
+    return sections
+
+
 def build_digest_blocks(
     clusters: list[DigestRow],
     deployments: list[DigestRow],
     issues_by_group: dict[str, int],
     current_degradations: dict[str, str],
 ) -> list[dict[str, Any]]:
-    # Pilot Job / Replica issues roll up into their parent's open-issue count.
+    # Pilot Job issues roll up into their parent cluster's open-issue count.
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
@@ -122,13 +150,7 @@ def build_digest_blocks(
             "Pilot Jobs",
             issues_by_group.get("Clusters", 0) + issues_by_group.get("Pilot Jobs", 0),
         ),
-        _digest_section(
-            "Deployments",
-            deployments,
-            "Pilot Replicas",
-            issues_by_group.get("Deployments", 0)
-            + issues_by_group.get("Pilot Replicas", 0),
-        ),
+        *_deployment_sections(deployments),
     ]
     if current_degradations:
         lines = ["*Current degradations*"]

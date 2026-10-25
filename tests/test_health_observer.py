@@ -51,12 +51,15 @@ def _observer(
     *,
     heartbeat_timeout: float = 120.0,
 ) -> HealthObserver:
-    return HealthObserver(
+    observer = HealthObserver(
         "health",
         _make_client_state(db, redis),
         MagicMock(),
         heartbeat_timeout=heartbeat_timeout,
     )
+    # run() registers this; tests that drive _poll() directly need it too.
+    observer.hb = observer.register_heartbeat("poll")
+    return observer
 
 
 async def _seed_parents(sess: AsyncSession) -> None:
