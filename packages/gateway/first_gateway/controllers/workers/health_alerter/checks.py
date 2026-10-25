@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable
 
 import sqlalchemy as sa
 from cryptography import x509
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy.orm import load_only, selectinload
 
 from first_common.schema.resources.runtime import AlertGroup, Severity
@@ -493,7 +493,7 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
                 detail = msg
                 msg = msg[:300]
             else:
-                detail = None
+                detail = ""
             if msg:
                 summary = f"{summary} — {msg}"
             obs.append(
@@ -560,6 +560,17 @@ async def check_db_liveness(client_state: ClientState) -> list[Observation]:
     return obs
 
 
+def _health_reason(resp: Response) -> str:
+    """The apiserver's JSON ``detail``, else the tail of a non-JSON body."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return _error_tail(resp.text)
+    if isinstance(body, dict) and isinstance(body.get("detail"), str):
+        return _error_tail(body["detail"])
+    return ""
+
+
 async def check_host(client_state: ClientState) -> list[Observation]:
     obs: list[Observation] = []
     gateway_url = client_state.settings.gateway_health_url
@@ -568,12 +579,16 @@ async def check_host(client_state: ClientState) -> list[Observation]:
         try:
             resp = await http.get(gateway_url)
             if resp.status_code >= 300:
+                summary = f"Gateway /health returned {resp.status_code}"
+                if reason := _health_reason(resp):
+                    summary = f"{summary}: {reason}"
                 obs.append(
                     Observation(
                         key="gateway_health",
                         status="unreachable",
-                        summary=f"Gateway /health returned {resp.status_code}",
+                        summary=summary,
                         display_name="Gateway /health",
+                        detail=resp.text[:2000],
                         severity="crit",
                     )
                 )

@@ -8,6 +8,8 @@ exercise the auth logic end to end.
 import httpx
 import pytest
 
+from first_gateway.apiserver.api import app
+
 from .fixtures.auth import ADMIN_TOKEN, INVALID_TOKEN, USER_TOKEN, auth_header
 
 
@@ -15,6 +17,19 @@ async def test_health_is_public(client: httpx.AsyncClient) -> None:
     resp = await client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+async def test_health_reports_router_config_failure(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = app.state.router_config_manager
+    monkeypatch.setattr(manager, "_apply_failed", True)
+    resp = await client.get("/health")
+    assert resp.status_code == 503
+    assert resp.json() == {
+        "status": "degraded",
+        "detail": "RouterConfig failed to apply",
+    }
 
 
 @pytest.mark.parametrize("token", [ADMIN_TOKEN, USER_TOKEN])

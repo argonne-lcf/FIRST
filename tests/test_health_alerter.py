@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import sqlalchemy as sa
 from pydantic import SecretStr
@@ -34,6 +35,7 @@ from first_gateway import Settings
 from first_gateway.controllers.workers.health_alerter.checks import (
     CHECK_REGISTRY,
     Check,
+    _health_reason,
     check_cluster_health,
     check_db_liveness,
     check_pilot_client_cert,
@@ -1297,3 +1299,12 @@ async def test_check_pilot_client_cert_expiry(
     client_state.settings.pilot_client_crt_file.write_text(crt)
     [obs] = await check_pilot_client_cert(client_state)
     assert (obs.status, obs.severity) == ("expiring", "warn")
+
+
+def test_health_reason_prefers_json_detail() -> None:
+    resp = httpx.Response(
+        503, json={"status": "degraded", "detail": "RouterConfig failed to apply"}
+    )
+    assert _health_reason(resp) == "RouterConfig failed to apply"
+    assert _health_reason(httpx.Response(502, text="<h1>502 Bad Gateway</h1>"))
+    assert _health_reason(httpx.Response(500, json={"status": "x"})) == ""

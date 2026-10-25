@@ -23,6 +23,10 @@ class RouterConfigManager:
     Swap callbacks registered via ``add_swap_callback`` are called after every
     successful config swap, in registration order. In particular, this is used
     to manage the httpx AsyncClient of each healthy backend.
+
+    ``health_problem`` reports a short, public-safe reason while the latest
+    config failed to apply or the periodic reload is failing; the apiserver
+    /health endpoint surfaces it so the health alerter pages on it.
     """
 
     POLL_INTERVAL_S = 30.0
@@ -33,6 +37,8 @@ class RouterConfigManager:
         self._current = RouterConfig()
         self._task: asyncio.Task[None] | None = None
         self._swap_callbacks: list[SwapCallback] = []
+        self._apply_failed = False
+        self._load_failed = False
 
     def add_swap_callback(self, cb: SwapCallback) -> None:
         # Register async callback functions to be executed after _swap
@@ -42,18 +48,27 @@ class RouterConfigManager:
     def current(self) -> RouterConfig:
         return self._current
 
+    @property
+    def health_problem(self) -> str | None:
+        if self._apply_failed:
+            return "RouterConfig failed to apply"
+        if self._load_failed:
+            return "RouterConfig failed to load"
+        return None
+
     async def _swap(self, cfg: RouterConfig) -> None:
         # Both drivers read Redis independently; guard against a slow in-flight
         # load overwriting a newer config that already landed.
         if cfg.version > self._current.version:
             self._current = cfg
+            failed = False
             for cb in self._swap_callbacks:
                 try:
                     await cb(cfg)
                 except Exception:
-                    logger.warning(
-                        "RouterConfigManager swap callback failed", exc_info=True
-                    )
+                    failed = True
+                    logger.exception("RouterConfigManager swap callback failed")
+            self._apply_failed = failed
 
     async def start(self) -> None:
         initial = await RouterConfig.load(self._redis)
@@ -77,11 +92,15 @@ class RouterConfigManager:
         while True:
             await asyncio.sleep(self.POLL_INTERVAL_S)
             try:
-                await self._swap(await RouterConfig.load(self._redis))
+                cfg = await RouterConfig.load(self._redis)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.warning("RouterConfig poll failed", exc_info=True)
+                self._load_failed = True
+                logger.exception("RouterConfig poll failed")
+            else:
+                self._load_failed = False
+                await self._swap(cfg)
 
     async def _subscribe_loop(self) -> None:
         while True:

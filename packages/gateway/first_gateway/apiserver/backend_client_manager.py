@@ -79,16 +79,27 @@ class BackendClientManager:
             for backend in deployment.backends
         }
 
-        # Backends that should be added or updated
-        for backend_id, (backend, deployment) in incoming.items():
-            if self._should_recreate(backend_id, backend, deployment):
-                logger.info(f"Swap client for {backend_id}: config updated")
-                old_client = self._clients.pop(backend_id)
-                _run_background(self._drain_client(old_client))
+        # Backends that should be added or updated. One bad backend (e.g. an
+        # unresolvable api_key) must not block the others; a failed update
+        # keeps serving with the previous client.
+        failed: list[str] = []
+        client: httpx.AsyncClient | None
 
-            if backend_id not in self._clients:
-                self._clients[backend_id] = self._create_client(backend, deployment)
-                self._configs[backend_id] = (backend, deployment)
+        for backend_id, (backend, deployment) in incoming.items():
+            recreate = self._should_recreate(backend_id, backend, deployment)
+            if backend_id in self._clients and not recreate:
+                continue
+            try:
+                client = self._create_client(backend, deployment)
+            except Exception:
+                logger.exception(f"Failed to create client for backend {backend_id}")
+                failed.append(backend_id)
+                continue
+            if recreate:
+                logger.info(f"Swap client for {backend_id}: config updated")
+                _run_background(self._drain_client(self._clients[backend_id]))
+            self._clients[backend_id] = client
+            self._configs[backend_id] = (backend, deployment)
 
         # Backends that should be removed
         for backend_id in set(self._clients) - incoming.keys():
@@ -97,6 +108,9 @@ class BackendClientManager:
             self._configs.pop(backend_id, None)
             if client:
                 _run_background(self._drain_client(client))
+
+        if failed:
+            raise RuntimeError(f"Failed to create clients for backends: {failed}")
 
     def _should_recreate(
         self, backend_id: str, backend: BackendConfig, deployment: DeploymentConfig

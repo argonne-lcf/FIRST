@@ -1,8 +1,12 @@
-from fastapi import APIRouter, Depends
+from typing import cast
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
 from first_common.schema.auth import UserAuthEvent
 
 from ..dependencies import AuthUser, get_admin_user, get_auth_user
+from ..router_config_manager import RouterConfigManager
 from . import catalog, inference, staging, v1_compat
 
 # Allows public access:
@@ -16,9 +20,12 @@ admin = APIRouter(dependencies=[Depends(get_admin_user)])
 
 
 @anon.get("/health")
-async def health() -> dict[str, str]:
-    """Liveness probe"""
-    return {"status": "ok"}
+async def health(request: Request) -> JSONResponse:
+    """Health probe: 503 with a short public-safe reason when degraded."""
+    manager = cast(RouterConfigManager, request.app.state.router_config_manager)
+    if problem := manager.health_problem:
+        return JSONResponse({"status": "degraded", "detail": problem}, status_code=503)
+    return JSONResponse({"status": "ok"})
 
 
 @auth.get("/whoami", response_model=UserAuthEvent)

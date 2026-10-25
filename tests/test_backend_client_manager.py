@@ -140,3 +140,50 @@ async def test_inference_request_uses_long_read_budget(
         else:
             await service._handle_unary(client, payload, model, deployment, backend)
     assert observed == [{"connect": 5.0, "read": 900.0, "write": 60.0, "pool": 5.0}]
+
+
+async def test_bad_backend_does_not_block_others(
+    pilot_mtls_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FIRST_TEST_UNSET_KEY", raising=False)
+    cfg = _config("http://good/v1")
+    backends = cfg.models[0].deployments[0].backends
+    backends.insert(
+        0,
+        BackendConfig(
+            id="bad",
+            model_url="http://bad/v1",
+            backend_model_name="upstream",
+            api_key="env_var://FIRST_TEST_UNSET_KEY",
+        ),
+    )
+    manager = bcm.BackendClientManager(Settings())
+    try:
+        with pytest.raises(RuntimeError, match="bad"):
+            await manager.on_config_swap(cfg)
+        assert manager.get("b1") is not None
+        assert manager.get("bad") is None
+    finally:
+        await manager.close_all()
+
+
+async def test_failed_update_keeps_previous_client(
+    pilot_mtls_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FIRST_TEST_UNSET_KEY", raising=False)
+    manager = bcm.BackendClientManager(Settings())
+    try:
+        await manager.on_config_swap(_config("http://old/v1"))
+        old = manager.get("b1")
+        assert old is not None
+
+        cfg = _config("http://old/v1")
+        cfg.models[0].deployments[0].backends[
+            0
+        ].api_key = "env_var://FIRST_TEST_UNSET_KEY"
+        with pytest.raises(RuntimeError):
+            await manager.on_config_swap(cfg)
+        assert manager.get("b1") is old
+        assert not old.is_closed
+    finally:
+        await manager.close_all()
