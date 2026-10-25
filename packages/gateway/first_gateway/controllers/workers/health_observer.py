@@ -29,7 +29,7 @@ class HealthObserver(Worker):
     streak; repeats are logged at DEBUG.
     """
 
-    poll_interval = 30.0
+    poll_interval = 120.0
 
     def __init__(
         self,
@@ -39,7 +39,7 @@ class HealthObserver(Worker):
         *,
         restart_backoff: float = 1.0,
         max_backoff: float = 30.0,
-        heartbeat_timeout: float = 120.0,
+        heartbeat_timeout: float = 240.0,
     ) -> None:
         super().__init__(
             name,
@@ -53,9 +53,9 @@ class HealthObserver(Worker):
         self.health_client = Client()
 
     async def run(self) -> None:
-        hb = self.register_heartbeat("poll")
+        self.hb = self.register_heartbeat("poll")
         while True:
-            hb.beat()
+            self.hb.beat()
             await self._poll()
             await self.wait_for_wake()
 
@@ -125,6 +125,7 @@ class HealthObserver(Worker):
             result = HealthCheckResult.unhealthy
             detail = _describe_exception(exc)
 
+        self.hb.beat()
         key = (resource.kind, resource.uid)
 
         if result == HealthCheckResult.unhealthy:
