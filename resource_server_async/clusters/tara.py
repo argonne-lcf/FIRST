@@ -45,7 +45,7 @@ class TaraCluster(BaseCluster):
         )
 
     @override
-    async def get_jobs(self, _auth: UserPydantic | None) -> JobsByStatus:
+    async def get_jobs(self, auth: UserPydantic | None) -> JobsByStatus:
         return await sync_to_async(self._load_status)()
 
     def _load_status(self) -> JobsByStatus:
