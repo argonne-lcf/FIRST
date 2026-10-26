@@ -100,7 +100,7 @@ def test_configure_opencode_merges_into_existing_config(
         "medium": {"reasoningEffort": "medium"},
         "high": {"reasoningEffort": "high"},
     }
-    assert gpt["interleaved"] == {"field": "reasoning_content"}
+    assert gpt["interleaved"] == {"field": "reasoning"}
     gemma = provider["models"]["google/gemma-4-31B-it"]
     assert gemma["limit"]["context"] == 131072 and "tool_call" not in gemma
 
@@ -409,7 +409,7 @@ def test_opencode_v2_model_entry() -> None:
             "reasoning": {"supported": True, "effort": ["low", "high"]},
         },
         "settings": {"reasoningEffort": "high"},
-        "compatibility": {"reasoningField": "reasoning_content"},
+        "compatibility": {"reasoningField": "reasoning"},
         "limit": {"context": 1000},
     }
 

@@ -300,7 +300,7 @@ def opencode_model_entry(model: AgentModel) -> dict[str, Any]:
                 lvl: {"reasoningEffort": lvl} for lvl in caps.reasoning.effort_levels
             }
         if caps.reasoning.separate_output:
-            entry["interleaved"] = {"field": "reasoning_content"}
+            entry["interleaved"] = {"field": "reasoning"}
     return entry
 
 
@@ -319,7 +319,7 @@ def opencode_v2_model_entry(model: AgentModel) -> dict[str, Any]:
         if caps.reasoning.default_effort:
             entry["settings"] = {"reasoningEffort": caps.reasoning.default_effort}
         if caps.reasoning.separate_output:
-            entry["compatibility"] = {"reasoningField": "reasoning_content"}
+            entry["compatibility"] = {"reasoningField": "reasoning"}
     entry["capabilities"] = capabilities
     if model.context_window:
         entry["limit"] = {"context": model.context_window}
