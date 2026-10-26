@@ -1,6 +1,7 @@
 import os
 import re
 import shlex
+import ssl
 from enum import Enum
 from http import HTTPMethod
 from pathlib import Path
@@ -19,6 +20,7 @@ from dotenv import dotenv_values
 from jinja2 import Environment, StrictUndefined, TemplateError, TemplateSyntaxError
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     GetCoreSchemaHandler,
     ImportString,
@@ -86,6 +88,47 @@ class HealthCheckParams(BaseModel):
     attempts_per_check: int = 2
     attempt_delay: float = 0.1
     debounce: int = 3
+
+
+class MTLSClientConfig(BaseModel):
+    """
+    A client certificate set for calling an externally-managed upstream that
+    requires mutual TLS. Unrelated to the pilot CA and pilot client identities.
+
+    The paths must exist at the same absolute paths inside both the
+    `inference-gateway` and `controller-manager` containers (conventionally
+    /run/secrets/upstream/<set>/{ca.crt,client.crt,client.key}).
+    Rotating certificates requires restarting both services.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ca_file: str
+    cert_file: str
+    key_file: str
+
+    @field_validator("ca_file", "cert_file", "key_file")
+    @classmethod
+    def must_be_absolute(cls, v: str) -> str:
+        if not os.path.isabs(v):
+            raise ValueError(f"{v!r} must be an absolute path inside the containers")
+        return v
+
+    def ssl_context(self) -> ssl.SSLContext:
+        """Trust only `ca_file` and present the client cert; verify hostnames."""
+        try:
+            ctx = ssl.create_default_context(cafile=self.ca_file)
+            ctx.load_cert_chain(self.cert_file, self.key_file)
+        except OSError as exc:  # includes ssl.SSLError
+            # Neither carries file contents, so the message is safe to persist
+            raise MTLSLoadError(
+                f"Could not load mTLS certificate set {self.cert_file!r}: {exc}"
+            ) from exc
+        return ctx
+
+
+class MTLSLoadError(Exception):
+    """An `MTLSClientConfig` file is missing, unreadable, or invalid."""
 
 
 class HealthCheckResult(str, Enum):

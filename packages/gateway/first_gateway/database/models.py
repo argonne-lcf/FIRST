@@ -279,7 +279,7 @@ class Model(ResourceRow):
     overload: Mapped[DictJsonb] = mapped_column(default=dict)
     demand_signal: Mapped[DictJsonb] = mapped_column(default=dict)
     max_model_len: Mapped[int | None]
-    display_name: Mapped[str | None]
+    display_name: Mapped[str | None] = mapped_column(sa.Text())
     capabilities: Mapped[DictJsonb] = mapped_column(default=dict)
 
     access_group: Mapped[AccessGroup] = relationship(lazy="raise")
@@ -394,6 +394,7 @@ class StaticDeployment(ResourceRow):
 
     api_url: Mapped[str]
     api_key: Mapped[str | None]
+    mtls: Mapped[DictJsonbOrNone]
     upstream_model_name: Mapped[str]
 
     router_params: Mapped[DictJsonb]

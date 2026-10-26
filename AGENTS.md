@@ -1,6 +1,8 @@
 # Dev Tools
 - Use the Makefile shortcuts (mypy, format, lint/lint-fix, test, db-up/db-down, compose-up/compose-down)
 - Verify changes with make mypy/format/lint/test
+- Prod is deployed: every schema change is a new Alembic revision. Never edit an existing revision (including the initial schema).
+- Change the models in `first_gateway/database/models.py`, then `make db-up` and `make migration m="short description"` to autogenerate a revision against a scratch database.
 
 # Project layout
 - This is a uv workspace

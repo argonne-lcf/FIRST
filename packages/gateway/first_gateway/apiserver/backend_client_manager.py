@@ -120,6 +120,7 @@ class BackendClientManager:
             current_backend, current_deployment = self._configs[backend_id]
             if (
                 current_backend.api_key != backend.api_key
+                or current_backend.mtls != backend.mtls
                 or current_backend.model_url != backend.model_url
                 or current_deployment.kind != deployment.kind
                 or current_deployment.router_params.max_backend_concurrency
@@ -153,7 +154,11 @@ class BackendClientManager:
             keepalive_expiry=KEEPALIVE_EXPIRY,
         )
 
-        verify = self._ctx if deployment.kind == "pilot" else True
+        verify: SSLContext | bool = True
+        if deployment.kind == "pilot":
+            verify = self._ctx
+        elif backend.mtls:
+            verify = backend.mtls.ssl_context()
         transport = httpx.AsyncHTTPTransport(
             verify=verify,
             retries=2,

@@ -27,6 +27,9 @@ services:
         target: pilot_client.crt
       - source: router_key
         target: pilot_client.key
+    volumes: &upstream-mtls
+      # StaticDeployment mTLS certificate sets (see the note under `secrets:`)
+      - ../pki/upstream:/run/secrets/upstream:ro
     networks:
       - gateway
     restart: unless-stopped
@@ -51,6 +54,7 @@ services:
         target: pilot_client.crt
       - source: control_key
         target: pilot_client.key
+    volumes: *upstream-mtls
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,6 +139,7 @@ services:
       - gateway
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../pki/upstream:/run/secrets/upstream:ro
     secrets:
       - source: pilot_ca
         target: pilot_ca.crt
@@ -170,6 +175,14 @@ networks:
 # Each service mounts the CA plus exactly one client identity, always at
 # /run/secrets/pilot_{ca.crt,client.crt,client.key}; the pilot authorizes
 # requests by the client cert's CN. No CA key is mounted anywhere.
+#
+# StaticDeployment mTLS (externally-managed upstreams; unrelated to the pilot
+# CA) is a directory mount rather than per-file secrets, so adding a
+# certificate set needs no compose change. Place one directory per set:
+#   pki/upstream/<set>/{ca.crt,client.crt,client.key}
+# It appears at /run/secrets/upstream/<set>/ in inference-gateway,
+# controller-manager and prometheus; reference those paths in the spec's
+# `mtls` field. Ownership: see docs/deployment/docker.md.
 secrets:
   pilot_ca:
     file: ../pki/ca.crt

@@ -19,6 +19,7 @@ from first_common.schema.resources.spec import (
     PilotDeploymentSpec,
     StaticDeploymentSpec,
 )
+from first_common.schema.types import MTLSLoadError
 from first_gateway.database import models
 
 
@@ -77,6 +78,20 @@ def validate_resources(
             template.resolve(spec.launch_spec, model.max_model_len)
         except ValueError as exc:
             raise InvalidSpecError(f"PilotDeployment.{deployment.name}: {exc}") from exc
+
+    # Certificate paths name files inside the controller and gateway
+    # containers; check them here, where the controller can see its mounts.
+    for deployment in by_kind["StaticDeployment"]:
+        spec = deployment.spec
+        assert isinstance(spec, StaticDeploymentSpec)
+        if spec.mtls is None:
+            continue
+        try:
+            spec.mtls.ssl_context()
+        except MTLSLoadError as exc:
+            raise InvalidSpecError(
+                f"StaticDeployment.{deployment.name}: {exc}"
+            ) from exc
 
     # Return Grouped by Kind
     return by_kind

@@ -29,6 +29,7 @@ install-dev: sync
 .PHONY: pki  # a pki/ directory exists, so the target must be phony
 pki: sync
 	uv run pilot-certmanager standard --dir pki
+	mkdir -p pki/upstream  # StaticDeployment mTLS sets, mounted by compose
 
 # The compose shortcuts below read COMPOSE_FILE / COMPOSE_PROJECT_NAME from .env.
 # For local dev, .env should contain:
@@ -44,6 +45,11 @@ db-up:
 
 db-down:
 	docker compose down postgres redis
+
+# Autogenerate a migration for model changes (needs `make db-up`). Never edit
+# an already-applied revision: prod runs them via `make prod-migrate`.
+migration: sync
+	uv run python scripts/new_migration.py "$(m)"
 
 db-reset:
 	@echo "This wipes the DEV database and redis volumes (first_postgres-dev, first_redis-dev)."

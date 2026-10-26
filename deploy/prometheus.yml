@@ -19,3 +19,18 @@ scrape_configs:
       key_file: /run/secrets/pilot_client.key
       # PILOT_SERVER_SAN: only the pilot server cert carries this name.
       server_name: first-pilot.internal
+
+  # One job per StaticDeployment mTLS certificate set (pki/upstream/<set>/):
+  # Prometheus applies a single tls_config per job, and the discovery endpoint
+  # lists only the backends presenting `mtls_cert_file`.
+  #
+  # - job_name: upstream-mtls-<set>
+  #   proxy_from_environment: true
+  #   http_sd_configs:
+  #     - url: http://controller-manager:9100/discovery/v1/prometheus?mtls_cert_file=/run/secrets/upstream/<set>/client.crt
+  #       refresh_interval: 1m
+  #       proxy_from_environment: true
+  #   tls_config:
+  #     ca_file: /run/secrets/upstream/<set>/ca.crt
+  #     cert_file: /run/secrets/upstream/<set>/client.crt
+  #     key_file: /run/secrets/upstream/<set>/client.key

@@ -7,7 +7,12 @@ from httpx import Client
 from pydantic import ValidationError
 
 from first_common.health import perform_health_check
-from first_common.schema.types import HealthCheckParams, HealthCheckResult
+from first_common.schema.types import (
+    HealthCheckParams,
+    HealthCheckResult,
+    MTLSClientConfig,
+    MTLSLoadError,
+)
 
 from ...database.models import Cluster, StaticDeployment
 from ...settings import ClientState
@@ -51,6 +56,8 @@ class HealthObserver(Worker):
         )
         self.fail_counts: dict[tuple[str, int], int] = defaultdict(int)
         self.health_client = Client()
+        # One client per StaticDeployment mTLS certificate set
+        self.mtls_clients: dict[MTLSClientConfig, Client] = {}
 
     async def run(self) -> None:
         self.hb = self.register_heartbeat("poll")
@@ -116,7 +123,8 @@ class HealthObserver(Worker):
             params = HealthCheckParams.model_validate(resource.health_check)
             if not params.url:
                 return None
-            result, detail = await perform_health_check(self.health_client, params)
+            client = self._client_for(resource)
+            result, detail = await perform_health_check(client, params)
         except Exception as exc:
             # A bad secret/configuration belongs to this resource, not the
             # entire poll. Never log raw exception text or config: either can
@@ -159,6 +167,14 @@ class HealthObserver(Worker):
 
         return *key, result, detail or None
 
+    def _client_for(self, resource: Cluster | StaticDeployment) -> Client:
+        if not isinstance(resource, StaticDeployment) or not resource.mtls:
+            return self.health_client
+        mtls = MTLSClientConfig.model_validate(resource.mtls)
+        if mtls not in self.mtls_clients:
+            self.mtls_clients[mtls] = Client(verify=mtls.ssl_context())
+        return self.mtls_clients[mtls]
+
 
 def _describe_exception(exc: Exception) -> str:
     """A credential-safe description of an exception raised by a health check."""
@@ -169,4 +185,6 @@ def _describe_exception(exc: Exception) -> str:
             for err in exc.errors(include_input=False, include_url=False)
         )
         return f"Invalid health_check configuration: {problems}"
+    if isinstance(exc, MTLSLoadError):
+        return str(exc)
     return f"Unexpected {type(exc).__name__} while checking health"

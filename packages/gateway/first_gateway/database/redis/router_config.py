@@ -6,6 +6,7 @@ from pydantic import BaseModel, field_validator
 from redis.asyncio import Redis
 
 from first_common.schema.types import (
+    MTLSClientConfig,
     OverloadPolicy,
     RouterParams,
     UsagePolicy,
@@ -20,6 +21,8 @@ class BackendConfig(BaseModel):
     model_url: str
     backend_model_name: str
     api_key: str | None
+    # Client certificate set for static upstreams that require mutual TLS
+    mtls: MTLSClientConfig | None = None
 
 
 class DeploymentConfig(BaseModel):

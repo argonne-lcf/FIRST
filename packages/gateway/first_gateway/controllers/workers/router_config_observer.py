@@ -2,6 +2,7 @@ import logging
 
 from first_common.schema.types import (
     HealthCheckResult,
+    MTLSClientConfig,
     OverloadPolicy,
     ReplicaState,
     RouterParams,
@@ -92,6 +93,11 @@ class RouterConfigObserver(Worker):
                         model_url=dep.api_url,
                         backend_model_name=dep.upstream_model_name,
                         api_key=dep.api_key,
+                        mtls=(
+                            MTLSClientConfig.model_validate(dep.mtls)
+                            if dep.mtls
+                            else None
+                        ),
                     )
                 ]
                 if healthy

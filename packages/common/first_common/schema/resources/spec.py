@@ -16,6 +16,7 @@ from ..types import (
     DemandSignalConfig,
     DemandThresholdStrategy,
     HealthCheckParams,
+    MTLSClientConfig,
     OverloadPolicy,
     PilotConfig,
     ResolvedLaunchSpec,
@@ -115,6 +116,11 @@ class StaticDeploymentSpec(ResourceSpec):
 
     The deployment is "static" in the sense that we do nothing to start or scale
     the model.
+
+    Set `mtls` when the upstream requires a client certificate: it secures
+    requests to `api_url` and the `health_check` URL.  Metrics are scraped by
+    Prometheus, which needs a scrape job per certificate set (see
+    deploy/prometheus.yml).
     """
 
     cluster_name: ResourceName
@@ -122,6 +128,7 @@ class StaticDeploymentSpec(ResourceSpec):
 
     api_url: str
     api_key: SecretRef | None = None
+    mtls: MTLSClientConfig | None = None
     upstream_model_name: str
 
     router_params: RouterParams = RouterParams()
