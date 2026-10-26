@@ -16,7 +16,7 @@ services:
         required: true
     # Publish only on loopback; host nginx proxy_passes here.
     ports:
-      - "127.0.0.1:7000:7000"
+      - "127.0.0.1:7001:7000"
     volumes:
       - prompt_records_prod:/app/prompt-records
 
