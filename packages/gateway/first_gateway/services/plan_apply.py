@@ -169,21 +169,28 @@ async def apply_plan(
             "The actual plan has diverged from the approved plan. Please try again."
         )
 
+    # Add, then update, then delete (children before parents), flushing between
+    # stages so a resource repointed from a deleted parent to a new one is
+    # already referencing the new parent when the old row goes away.
     with sess.no_autoflush:
-        for delete_resource in actual_plan.to_delete:
-            cls = models.resource_registry[delete_resource.kind]
-            obj = await cls.get_by_name(sess, delete_resource.name)
-            await obj.delete(sess)
-
         for new_resource in actual_plan.to_add:
             cls = models.resource_registry[new_resource.kind]
             cls.create_from_spec(sess, new_resource.name, new_resource.spec)
+    await sess.flush()
 
+    with sess.no_autoflush:
         for patch_resource in actual_plan.to_update:
             cls = models.resource_registry[patch_resource.kind]
             obj = await cls.get_by_name(sess, patch_resource.name)
             obj.apply_patch(patch_resource.patch)
             await cls.reset_reconcile_state(sess, obj.uid, cascade=True)
             models.reset_failure_latches(obj)
+    await sess.flush()
+
+    for delete_resource in reversed(actual_plan.to_delete):
+        cls = models.resource_registry[delete_resource.kind]
+        obj = await cls.get_by_name(sess, delete_resource.name)
+        await obj.delete(sess)
+        await sess.flush()
 
     return config_version

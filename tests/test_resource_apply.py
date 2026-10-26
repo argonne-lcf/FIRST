@@ -185,6 +185,47 @@ async def test_updates(
     assert result.uid == baseline_plan.previous_version + 2
 
 
+async def test_move_deployments_to_new_model_and_delete_old(
+    control_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    baseline_plan: ResourceChangePlan,
+) -> None:
+    """Repointing deployments at a new Model while deleting the old one in a
+    single apply must not null out the deployments' model_name."""
+    from first_gateway.database.models import PilotDeployment, StaticDeployment
+
+    old_name, new_name = "meta-llama/llama-3-8b", "meta-llama/llama-3-8b-v2"
+    resources = []
+    for r in _load("baseline"):
+        if r.kind == "Model":
+            r = r.model_copy(update={"name": new_name})
+        elif r.kind in ("StaticDeployment", "PilotDeployment"):
+            r = r.model_copy(
+                update={"spec": r.spec.model_copy(update={"model_name": new_name})}
+            )
+        resources.append(r)
+
+    plan = await _plan(control_client, resources)
+    assert [(r.kind, r.name) for r in plan.to_delete] == [("Model", old_name)]
+    assert [(r.kind, r.name) for r in plan.to_add] == [("Model", new_name)]
+    assert {r.name for r in plan.to_update} == {
+        "sophia/static/llama-3-8b",
+        "sophia/pilot/llama-3-8b",
+    }
+
+    await _apply(control_client, resources, plan)
+
+    pilot = await PilotDeployment.get_by_name(db_session, "sophia/pilot/llama-3-8b")
+    static = await StaticDeployment.get_by_name(db_session, "sophia/static/llama-3-8b")
+    assert pilot.model_name == new_name
+    assert static.model_name == new_name
+
+    plan2 = await _plan(control_client, resources)
+    assert plan2.to_add == []
+    assert plan2.to_delete == []
+    assert plan2.to_update == []
+
+
 async def test_invalid_reference(control_client: httpx.AsyncClient) -> None:
     """A resource referencing a nonexistent parent returns 400."""
     resources = _load("invalid_ref")

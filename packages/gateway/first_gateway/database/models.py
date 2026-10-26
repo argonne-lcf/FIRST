@@ -284,10 +284,10 @@ class Model(ResourceRow):
 
     access_group: Mapped[AccessGroup] = relationship(lazy="raise")
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(
-        back_populates="model", lazy="raise"
+        back_populates="model", lazy="raise", passive_deletes="all"
     )
     static_deployments: Mapped[list["StaticDeployment"]] = relationship(
-        back_populates="model", lazy="raise"
+        back_populates="model", lazy="raise", passive_deletes="all"
     )
 
     @classmethod
@@ -338,10 +338,10 @@ class Cluster(ResourceRow):
         back_populates="cluster", cascade="all, delete-orphan", lazy="raise"
     )
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(
-        back_populates="cluster", lazy="raise"
+        back_populates="cluster", lazy="raise", passive_deletes="all"
     )
     static_deployments: Mapped[list["StaticDeployment"]] = relationship(
-        back_populates="cluster", lazy="raise"
+        back_populates="cluster", lazy="raise", passive_deletes="all"
     )
 
     @property
