@@ -192,7 +192,7 @@ class AgentConfigurationTests(unittest.TestCase):
             model["variants"],
             {level: {"reasoningEffort": level} for level in ("low", "medium", "high")},
         )
-        self.assertEqual(model["interleaved"], {"field": "reasoning_content"})
+        self.assertEqual(model["interleaved"], {"field": "reasoning"})
         self.assertEqual(
             config["plugin"],
             ["other-plugin", [agent.OPENCODE_PLUGIN_PACKAGE, {"tokenHelper": HELPER}]],
@@ -235,7 +235,7 @@ class AgentConfigurationTests(unittest.TestCase):
             },
         )
         self.assertEqual(model["settings"]["reasoningEffort"], "high")
-        self.assertEqual(model["compatibility"]["reasoningField"], "reasoning_content")
+        self.assertEqual(model["compatibility"]["reasoningField"], "reasoning")
         self.assertEqual(
             config["plugins"],
             [
