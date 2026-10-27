@@ -14,7 +14,11 @@ from typing import NamedTuple
 from cryptography import x509
 from jinja2 import Template
 
-from first_common.schema.pilot import PilotClientRole, PilotRuntimeConfig
+from first_common.schema.pilot import (
+    PilotClientRole,
+    PilotRuntimeConfig,
+    pilot_server_name,
+)
 from first_common.schema.types import RESOURCE_NAME_PATTERN, normalize_proxy_path
 
 logger = logging.getLogger(__name__)
@@ -199,6 +203,27 @@ def check_server_cert_expiry(
             f"Pilot server certificate expires at {not_after.isoformat()}, before "
             f"the end of the {walltime_min} minute walltime ({job_end.isoformat()}). "
             "Re-issue the pilot certificates before submitting this job."
+        )
+
+
+def check_server_cert_name(server_crt: str, cluster: str) -> None:
+    """
+    Refuse to start a pilot whose server certificate does not name its cluster:
+    the gateway would reject every handshake with it.
+    """
+    expected = pilot_server_name(cluster)
+    cert = x509.load_pem_x509_certificate(server_crt.encode())
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        names = san.value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        names = []
+    if expected not in names:
+        raise RuntimeError(
+            f"Pilot server certificate names {names}, not {expected!r}: it was "
+            f"not issued for cluster {cluster!r}. Stage the certificate from "
+            f"`pilot-certmanager pilot-server {cluster}` in this cluster's "
+            "pilot runtime config."
         )
 
 

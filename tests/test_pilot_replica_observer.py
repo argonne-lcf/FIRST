@@ -115,7 +115,8 @@ def _make_observer(
     observer = PilotReplicaObserver.__new__(PilotReplicaObserver)
     Worker.__init__(observer, "pilot-replica-observer", cs, MagicMock())
     client = PilotControlClient.__new__(PilotControlClient)
-    client._client = httpx.AsyncClient(transport=transport)
+    mock_http = httpx.AsyncClient(transport=transport)
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
     observer.client = client
     observer._status_cooldown = {}
     observer.hb = observer.register_heartbeat("poll")

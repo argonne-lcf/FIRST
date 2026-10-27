@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await admission_controller.stop()
             await router_config_manager.stop()
             await backend_client_manager.close_all()
+            await app.state.pilot_control_client.aclose()
             drain_logs()
 
 

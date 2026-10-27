@@ -21,7 +21,12 @@ from first_common.schema.pilot import (
 )
 
 from .admission import admit_nodes
-from .nginx_manager import NginxManager, ReplicaUpstream, check_server_cert_expiry
+from .nginx_manager import (
+    NginxManager,
+    ReplicaUpstream,
+    check_server_cert_expiry,
+    check_server_cert_name,
+)
 from .replica_manager import ReplicaManager
 
 logger = logging.getLogger(__name__)
@@ -55,6 +60,7 @@ class _PilotManager:
     def __init__(self, config: PilotRuntimeConfig, nginx_tmpdir: Path) -> None:
         self.config = config
         check_server_cert_expiry(config.server_crt, config.walltime_min)
+        check_server_cert_name(config.server_crt, config.cluster)
         interface_ips = resolve_interface_ips(config.network_interfaces)
         self.nginx = NginxManager(self.config, nginx_tmpdir, interface_ips)
         self.replica_manager = ReplicaManager(self.config)

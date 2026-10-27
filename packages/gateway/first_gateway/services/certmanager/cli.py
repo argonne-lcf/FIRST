@@ -1,14 +1,15 @@
 """Manage self-signed certificates for mTLS on disk.
 
 Workflow:
-    pilot-certmanager standard --dir pki    # CA (if absent) + pilot server + all client roles
-    pilot-certmanager ca --name "FIRST CA"  # self-signed Root CA (default 10 years)
-    pilot-certmanager server first-pilot    # server cert signed by the CA (default 1 year)
-    pilot-certmanager client first-control  # client cert signed by the CA (default 1 year)
+    pilot-certmanager standard --cluster tara --dir pki  # CA (if absent) + per-cluster pilot server + all client roles
+    pilot-certmanager ca --name "FIRST CA"               # self-signed Root CA (default 10 years)
+    pilot-certmanager pilot-server tara                  # pilot server cert for one cluster (default 1 year)
+    pilot-certmanager client first-control               # client cert signed by the CA (default 1 year)
 
-Certs are written as ``<dir>/<cn>.crt`` and ``<dir>/<cn>.key``. Re-running
-``server`` / ``client`` / ``standard`` re-issues the leaf certs against the
-existing CA. Requires OpenSSL 3.x.
+Client certs are written as ``<dir>/<cn>.{crt,key}``; pilot server certs as
+``<dir>/pilot-server-<cluster>.{crt,key}``. Re-running ``pilot-server`` /
+``client`` / ``standard`` re-issues the leaf certs against the existing CA.
+Requires OpenSSL 3.x.
 """
 
 import re
@@ -17,7 +18,12 @@ from typing import Annotated
 
 import typer
 
-from first_common.schema.pilot import PILOT_SERVER_CN, PilotClientRole
+from first_common.schema.pilot import (
+    PILOT_CLUSTER_NAME_PATTERN,
+    PILOT_SERVER_CN,
+    PilotClientRole,
+    pilot_server_name,
+)
 
 from . import (
     OpenSSLError,
@@ -80,12 +86,18 @@ def _issue_to_disk(
     cn: str,
     directory: Path,
     days: int,
+    san_dns: list[str] | None = None,
+    base: str | None = None,
 ) -> None:
     ca_cert_pem, ca_key_pem = _load_ca(directory)
     try:
-        if kind == "Server":
+        if san_dns is not None:
             cert_pem, key_pem = generate_server_cert(
-                cn=cn, ca_cert_pem=ca_cert_pem, ca_key_pem=ca_key_pem, days=days
+                cn=cn,
+                san_dns=san_dns,
+                ca_cert_pem=ca_cert_pem,
+                ca_key_pem=ca_key_pem,
+                days=days,
             )
         else:
             cert_pem, key_pem = generate_client_cert(
@@ -95,27 +107,44 @@ def _issue_to_disk(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
-    base = _slug(cn)
+    base = base or _slug(cn)
     key_path = directory / f"{base}.key"
     crt_path = directory / f"{base}.crt"
     _write(key_path, key_pem, mode=0o600)
     _write(crt_path, cert_pem, mode=0o644)
+    sans = f", SAN {', '.join(san_dns)}" if san_dns else ""
     typer.secho(
-        f"✓ {kind} cert: {crt_path}  (key: {key_path}, {days} days)",
+        f"✓ {kind} cert: {crt_path}  (key: {key_path}, {days} days{sans})",
         fg=typer.colors.GREEN,
     )
 
 
-@app.command()
-def server(
-    cn: Annotated[
-        str, typer.Argument(help="Server hostname / identity, e.g. api.internal.")
-    ],
+def _issue_pilot_server(cluster: str, *, directory: Path, days: int) -> None:
+    if not re.fullmatch(PILOT_CLUSTER_NAME_PATTERN, cluster):
+        typer.secho(
+            f"Cluster name {cluster!r} is not a DNS label.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    _issue_to_disk(
+        kind="Pilot server",
+        cn=PILOT_SERVER_CN,
+        directory=directory,
+        days=days,
+        san_dns=[pilot_server_name(cluster)],
+        base=f"pilot-server-{cluster}",
+    )
+
+
+@app.command("pilot-server")
+def pilot_server(
+    cluster: Annotated[str, typer.Argument(help="Cluster name, e.g. tara.")],
     directory: DirOpt = Path("pki"),
     days: Annotated[int, typer.Option(help="Validity in days.")] = 365,
 ) -> None:
-    """Issue a server certificate (serverAuth) signed by the CA (default 1 year)."""
-    _issue_to_disk(kind="Server", cn=cn, directory=directory, days=days)
+    """Issue a pilot server certificate for one cluster (default 1 year)."""
+    _issue_pilot_server(cluster, directory=directory, days=days)
 
 
 @app.command()
@@ -132,16 +161,23 @@ def client(
 
 @app.command()
 def standard(
+    cluster: Annotated[
+        list[str],
+        typer.Option(
+            "--cluster", help="Pilot cluster to issue a server cert for (repeat)."
+        ),
+    ],
     directory: DirOpt = Path("pki"),
     ca_name: Annotated[
         str, typer.Option(help="CA common name, if a CA must be created.")
     ] = "FIRST Pilot CA",
     days: Annotated[int, typer.Option(help="Leaf validity in days.")] = 365,
 ) -> None:
-    """Issue the pilot server cert and one client cert per role (CA if absent)."""
+    """Issue one pilot server cert per cluster and one client cert per role (CA if absent)."""
     if not (directory / "ca.crt").exists():
         ca(name=ca_name, directory=directory)
-    _issue_to_disk(kind="Server", cn=PILOT_SERVER_CN, directory=directory, days=days)
+    for name in cluster:
+        _issue_pilot_server(name, directory=directory, days=days)
     for role in PilotClientRole:
         _issue_to_disk(kind="Client", cn=role.value, directory=directory, days=days)
 

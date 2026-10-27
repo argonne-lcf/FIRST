@@ -143,6 +143,7 @@ async def test_submit_places_script_and_submits_by_path(
     for assignment in (
         "PILOT_CONFIG_FILE=/opt/test/pilot-config.yaml",
         "PILOT_JOB_NAME=alpha-7",
+        "PILOT_CLUSTER=testcluster",
         "PILOT_EXTERNAL_PORT=8443",
         "PILOT_NUM_NODES=2",
         "PILOT_GPUS_PER_NODE=4",

@@ -322,7 +322,7 @@ async def test_graphql_head_ip_requires_live_manager_status(
         await observer._discover_endpoints(submitter, "polaris")
 
     candidate = "https://10.1.2.3:8443/control/"
-    get_status.assert_awaited_with(candidate)
+    get_status.assert_awaited_with(candidate, cluster_name="polaris")
     async with db() as sess:
         job = await sess.get(PilotJob, uid)
         assert job is not None

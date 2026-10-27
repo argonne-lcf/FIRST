@@ -1,3 +1,4 @@
+import re
 from typing import Any, NamedTuple
 
 from pydantic import (
@@ -8,11 +9,12 @@ from pydantic import (
     model_validator,
 )
 
+from ..pilot import PILOT_CLUSTER_NAME_PATTERN
 from ..types import (
     RESOURCE_NAME_PATTERN,
     ResourceName,
 )
-from .spec import ResourceSpec
+from .spec import ClusterSpec, ResourceSpec
 
 
 class ResourceManifest(BaseModel):
@@ -57,7 +59,19 @@ class ResourceManifest(BaseModel):
                 f"known: {sorted(ResourceSpec.registry)}"
             )
 
-        return {**data, "spec": spec_cls.model_validate(data.get("spec"))}
+        spec = spec_cls.model_validate(data.get("spec"))
+        if (
+            isinstance(spec, ClusterSpec)
+            and spec.pilot_system is not None
+            and not re.fullmatch(PILOT_CLUSTER_NAME_PATTERN, data.get("name", ""))
+        ):
+            raise ValueError(
+                "A Cluster with a pilot_system must be named by a DNS label "
+                "(lowercase letters, digits, and inner hyphens, at most 63 "
+                f"characters); it is part of the pilot TLS name: {data.get('name')!r}"
+            )
+
+        return {**data, "spec": spec}
 
 
 class ResourceRef(BaseModel):

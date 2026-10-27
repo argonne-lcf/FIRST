@@ -112,6 +112,7 @@ class ReplicaLauncher(Controller):
                 )
             )
             manager_url = job.manager_url
+            cluster_name = job.cluster_name
             deploy = replica.pilot_deployment
             request = ReplicaStartRequest(
                 name=replica.name,
@@ -123,7 +124,9 @@ class ReplicaLauncher(Controller):
             )
 
         try:
-            resp = await self.client.start_replica(manager_url, request)
+            resp = await self.client.start_replica(
+                manager_url, request, cluster_name=cluster_name
+            )
         except httpx.TransportError as exc:
             if not maintenance_notice:
                 raise
@@ -141,7 +144,9 @@ class ReplicaLauncher(Controller):
             # A previous attempt's request likely succeeded on the backend even
             # though we never saw the response. Confirm the replica is really
             # registered before declaring victory.
-            await self._handle_conflict(replica.uid, replica.name, manager_url)
+            await self._handle_conflict(
+                replica.uid, replica.name, manager_url, cluster_name
+            )
             return
 
         if resp.status_code == 400:
@@ -177,9 +182,13 @@ class ReplicaLauncher(Controller):
         logger.info("ReplicaLauncher: launched replica %s", replica_name)
 
     async def _handle_conflict(
-        self, replica_uid: int, replica_name: str, manager_url: str
+        self,
+        replica_uid: int,
+        replica_name: str,
+        manager_url: str,
+        cluster_name: str,
     ) -> None:
-        status = await self.client.get_status(manager_url)
+        status = await self.client.get_status(manager_url, cluster_name=cluster_name)
         if not any(r.name == replica_name for r in status.replicas):
             # 409 but the replica isn't actually there — inconsistent. Raise so
             # the next reconcile re-attempts a clean start.

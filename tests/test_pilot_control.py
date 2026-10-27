@@ -86,9 +86,10 @@ def test_control_requests_are_audited_with_the_authenticated_subject() -> None:
 
 def _make_client(handler: object) -> PilotControlClient:
     client = PilotControlClient.__new__(PilotControlClient)
-    client._client = httpx.AsyncClient(
+    mock_http = httpx.AsyncClient(
         transport=httpx.MockTransport(handler)  # type: ignore[arg-type]
     )
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
     return client
 
 
@@ -110,7 +111,9 @@ async def test_retries_transient_transport_error_then_succeeds(
         return httpx.Response(200)
 
     client = _make_client(handler)
-    resp = await client._request("POST", "https://mgr/stop-replica/r0")
+    resp = await client._request(
+        "POST", "https://mgr/stop-replica/r0", cluster_name="alpha"
+    )
 
     assert resp.status_code == 200
     assert calls["n"] == 2
@@ -133,7 +136,7 @@ async def test_retries_transient_5xx_then_succeeds(
         return httpx.Response(200)
 
     client = _make_client(handler)
-    resp = await client._request("GET", "https://mgr/status")
+    resp = await client._request("GET", "https://mgr/status", cluster_name="alpha")
 
     assert resp.status_code == 200
     assert calls["n"] == 3
@@ -155,7 +158,7 @@ async def test_gives_up_and_raises_after_persistent_transport_error(
 
     client = _make_client(handler)
     with pytest.raises(httpx.ConnectError):
-        await client._request("GET", "https://mgr/status")
+        await client._request("GET", "https://mgr/status", cluster_name="alpha")
 
     assert calls["n"] == 3
 
@@ -179,7 +182,9 @@ async def test_failed_attempts_log_no_warning(
         "DEBUG", logger="first_gateway.services.pilot_control"
     ):
         with pytest.raises(httpx.ConnectError):
-            await client._request("GET", "https://mgr/start-replica")
+            await client._request(
+                "GET", "https://mgr/start-replica", cluster_name="alpha"
+            )
 
     records = [
         r
@@ -201,7 +206,7 @@ async def test_retryable_status_logs_no_warning(
     with gateway_caplog.at_level(
         "DEBUG", logger="first_gateway.services.pilot_control"
     ):
-        resp = await client._request("GET", "https://mgr/logs/r0")
+        resp = await client._request("GET", "https://mgr/logs/r0", cluster_name="alpha")
 
     assert resp.status_code == 503
     records = [
@@ -221,7 +226,7 @@ async def test_get_status_makes_one_attempt_on_transport_error() -> None:
 
     client = _make_client(handler)
     with pytest.raises(httpx.ConnectTimeout):
-        await client.get_status("https://mgr")
+        await client.get_status("https://mgr", cluster_name="alpha")
 
     assert calls["n"] == 1
 
@@ -239,7 +244,9 @@ async def test_4xx_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
         return httpx.Response(409)
 
     client = _make_client(handler)
-    resp = await client._request("POST", "https://mgr/start-replica")
+    resp = await client._request(
+        "POST", "https://mgr/start-replica", cluster_name="alpha"
+    )
 
     assert resp.status_code == 409
     assert calls["n"] == 1

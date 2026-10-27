@@ -44,6 +44,7 @@ def config(tmp_path: Path) -> PilotRuntimeConfig:
             "num_nodes": 2,
             "gpus_per_node": 2,
             "job_name": "test-pilot",
+            "cluster": "alpha",
             "walltime_min": 60,
             "network_interfaces": ["lo"],
             "queue": "prod",

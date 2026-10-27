@@ -6,10 +6,13 @@ scrape_configs:
     static_configs:
       - targets: ["controller-manager:9100"]
 
-  - job_name: model-backends
+  # One job per pilot cluster: each cluster's pilots carry their own TLS server
+  # name (first_common.schema.pilot.pilot_server_name), and Prometheus applies
+  # a single server_name per job. A new pilot cluster needs its own job here.
+  - job_name: pilot-tara
     proxy_from_environment: true
     http_sd_configs:
-      - url: http://controller-manager:9100/discovery/v1/prometheus
+      - url: http://controller-manager:9100/discovery/v1/prometheus?pilot_cluster=tara
         refresh_interval: 1m
         proxy_from_environment: true
     tls_config:
@@ -17,8 +20,27 @@ scrape_configs:
       ca_file: /run/secrets/pilot_ca.crt
       cert_file: /run/secrets/pilot_client.crt
       key_file: /run/secrets/pilot_client.key
-      # PILOT_SERVER_SAN: only the pilot server cert carries this name.
-      server_name: first-pilot.internal
+      server_name: tara.first-pilot.internal
+
+  - job_name: pilot-sophia
+    proxy_from_environment: true
+    http_sd_configs:
+      - url: http://controller-manager:9100/discovery/v1/prometheus?pilot_cluster=sophia
+        refresh_interval: 1m
+        proxy_from_environment: true
+    tls_config:
+      ca_file: /run/secrets/pilot_ca.crt
+      cert_file: /run/secrets/pilot_client.crt
+      key_file: /run/secrets/pilot_client.key
+      server_name: sophia.first-pilot.internal
+
+  # Static backends without mTLS (the discovery endpoint with no parameters).
+  - job_name: static-backends
+    proxy_from_environment: true
+    http_sd_configs:
+      - url: http://controller-manager:9100/discovery/v1/prometheus
+        refresh_interval: 1m
+        proxy_from_environment: true
 
   # One job per StaticDeployment mTLS certificate set (pki/upstream/<set>/):
   # Prometheus applies a single tls_config per job, and the discovery endpoint

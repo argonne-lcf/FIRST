@@ -72,7 +72,8 @@ def _make_controller(
     ctrl = ReplicaLauncher.__new__(ReplicaLauncher)
     Worker.__init__(ctrl, "replica-launcher", cs, MagicMock())
     client = PilotControlClient.__new__(PilotControlClient)
-    client._client = httpx.AsyncClient(transport=_make_transport(handler))
+    mock_http = httpx.AsyncClient(transport=_make_transport(handler))
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
     ctrl.client = client
     return ctrl
 

@@ -1120,7 +1120,8 @@ async def test_maintenance_shortcut_drains_replicas_without_remote_calls(
     drainer = ReplicaDrainer.__new__(ReplicaDrainer)
     Worker.__init__(drainer, "drainer", client_state, MagicMock())
     client = PilotControlClient.__new__(PilotControlClient)
-    client._client = httpx.AsyncClient(transport=httpx.MockTransport(no_calls))
+    mock_http = httpx.AsyncClient(transport=httpx.MockTransport(no_calls))
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
     drainer.client = client
     async with db() as sess:
         replica = await PilotReplica.get_by_name(sess, "test-deployment/replica/lost")

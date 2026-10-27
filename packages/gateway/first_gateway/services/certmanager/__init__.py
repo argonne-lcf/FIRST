@@ -4,8 +4,6 @@ import tempfile
 from pathlib import Path
 from shutil import which
 
-from first_common.schema.pilot import PILOT_SERVER_SAN
-
 
 class OpenSSLError(RuntimeError):
     """openssl is missing or a subprocess invocation failed."""
@@ -76,17 +74,18 @@ def _issue_leaf_pem(
     ca_key_pem: str,
     days: int,
     eku: str,
+    san_dns: list[str] | None = None,
 ) -> tuple[str, str]:
     """Issue a leaf cert signed by the given CA. Returns ``(cert_pem, key_pem)``."""
     key_pem = gen_key_pem()
     # Random 159-bit positive serial — keeps each issued cert unique without
     # needing a persistent serial counter on disk.
     serial_hex = f"0x{secrets.randbits(159):x}"
-    # Only the pilot server cert carries the SAN (Prometheus' server_name);
-    # client identities are distinguished by CN alone.
+    # Only pilot server certs carry SANs (the name clients verify); client
+    # identities are distinguished by CN alone.
     san = []
-    if eku == "serverAuth":
-        san = ["-addext", f"subjectAltName=DNS:{PILOT_SERVER_SAN}"]
+    if san_dns:
+        san = ["-addext", "subjectAltName=" + ",".join(f"DNS:{n}" for n in san_dns)]
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         key_path = d / "leaf.key"
@@ -150,15 +149,22 @@ def generate_client_cert(
 def generate_server_cert(
     *,
     cn: str,
+    san_dns: list[str],
     ca_cert_pem: str,
     ca_key_pem: str,
     days: int = 365,
 ) -> tuple[str, str]:
-    """Issue a serverAuth leaf cert. Returns ``(cert_pem, key_pem)``."""
+    """
+    Issue a serverAuth leaf cert with DNS SANs `san_dns`. Returns
+    ``(cert_pem, key_pem)``.
+    """
+    if not san_dns:
+        raise ValueError("a server certificate needs at least one DNS SAN")
     return _issue_leaf_pem(
         cn=cn,
         ca_cert_pem=ca_cert_pem,
         ca_key_pem=ca_key_pem,
         days=days,
         eku="serverAuth",
+        san_dns=san_dns,
     )

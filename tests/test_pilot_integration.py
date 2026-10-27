@@ -13,6 +13,7 @@ import asyncio
 import json
 import re
 import socket
+import ssl
 import sys
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -47,7 +48,7 @@ from tests.fixtures.local_scheduler import (
     LocalSchedulerAdapter,
     make_mock_pilot_env,
 )
-from tests.fixtures.pki import PilotPKI
+from tests.fixtures.pki import PILOT_TEST_CLUSTER, PilotPKI
 
 pytestmark = [
     pytest.mark.skipif(which("nginx") is None, reason="nginx not installed"),
@@ -122,11 +123,15 @@ def workdir(request: pytest.FixtureRequest) -> Iterator[Path]:
 
 @pytest.fixture
 def pilot_config(workdir: Path, pilot_pki: PilotPKI) -> PilotConfig:
+    return _make_pilot_config(workdir, pilot_pki, PILOT_TEST_CLUSTER)
+
+
+def _make_pilot_config(workdir: Path, pilot_pki: PilotPKI, cluster: str) -> PilotConfig:
     external_port = _free_port_window(2)
     # The cluster's pre-staged runtime config: just the CA and server cert;
     # the submitter supplies everything job-specific as PILOT_* overrides.
-    config_path = workdir / "pilot-config.yaml"
-    config_path.write_text(yaml.safe_dump(pilot_pki.runtime_config()))
+    config_path = workdir / f"pilot-config-{cluster}.yaml"
+    config_path.write_text(yaml.safe_dump(pilot_pki.runtime_config(cluster)))
     return PilotConfig.model_validate(
         {
             "scheduler_adapter": (
@@ -171,14 +176,14 @@ def submitter(
     return PilotSubmitter(pilot_config, scheduler)
 
 
-def _make_pilot_job(name: str) -> PilotJob:
+def _make_pilot_job(name: str, cluster: str = PILOT_TEST_CLUSTER) -> PilotJob:
     return PilotJob(
         kind="PilotJob",
         name=name,
         uid=1,
         created_at=datetime.now(timezone.utc),
         scheduler_job_id="",
-        cluster_name="testcluster",
+        cluster_name=cluster,
         scheduler_state=SchedulerJobState.pending_submit,
         manager_url="",
         manager_health=HealthCheckResult.unknown,
@@ -220,9 +225,12 @@ async def _wait_for_jsonl(
 
 
 async def _submit_and_wait_ready(
-    submitter: PilotSubmitter, scheduler: LocalSchedulerAdapter, name: str
+    submitter: PilotSubmitter,
+    scheduler: LocalSchedulerAdapter,
+    name: str,
+    cluster: str = PILOT_TEST_CLUSTER,
 ) -> AddressInfo:
-    result = await submitter.submit(_make_pilot_job(name))
+    result = await submitter.submit(_make_pilot_job(name, cluster))
     assert result.job_name.endswith(name)
 
     # Sees QUEUED before the pilot writes its readyfile, RUNNING after.
@@ -531,3 +539,47 @@ async def test_authorization_matrix(
         assert all(r["uri"].startswith("/control/") for r in records)
         access_log = (workdir / "audit" / "gamma.access.log").read_text()
         assert "POST /replicas/r0/v1/chat/completions HTTP/1.1" in access_log
+
+
+async def test_server_name_pins_cluster(
+    workdir: Path, scheduler: LocalSchedulerAdapter, pilot_pki: PilotPKI
+) -> None:
+    """
+    A pilot is accepted only by clients of its own cluster: a server certificate
+    from another cluster (same CA) fails the handshake, before any request.
+    """
+    submitter = PilotSubmitter(
+        _make_pilot_config(workdir, pilot_pki, "beta"), scheduler
+    )
+    addr = await _submit_and_wait_ready(submitter, scheduler, "delta", "beta")
+    # Dialed by IP, as the gateway does; the name is never resolved.
+    base_url = f"https://{addr.ip}:{addr.external_port}"
+    control = pilot_pki.clients[PilotClientRole.control]
+
+    async def status(ctx: ssl.SSLContext) -> httpx.Response:
+        async with httpx.AsyncClient(verify=ctx, base_url=base_url) as client:
+            return await client.get("/control/status")
+
+    assert (await status(pilot_pki.client_context(control, "beta"))).is_success
+
+    # Another cluster's context: the beta certificate does not name alpha.
+    with pytest.raises(
+        httpx.ConnectError,
+        match=r"Hostname mismatch.*'alpha\.first-pilot\.internal'",
+    ):
+        await status(pilot_pki.client_context(control, "alpha"))
+
+    # A missed call site with an unpinned context fails closed: the
+    # certificate has no IP SAN.
+    plain = ssl.create_default_context(cafile=pilot_pki.ca_crt)
+    plain.load_cert_chain(control.crt, control.key)
+    with pytest.raises(httpx.ConnectError, match="certificate verify failed"):
+        await status(plain)
+
+    # Neither failed handshake reached NGINX's request log.
+    assert (await status(pilot_pki.client_context(control, "beta"))).is_success
+    records = await _wait_for_jsonl(
+        workdir / "audit" / "delta.control-access.jsonl",
+        lambda records: len(records) >= 2,
+    )
+    assert [r["status"] for r in records] == [200, 200]

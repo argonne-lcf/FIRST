@@ -326,7 +326,9 @@ async def tail_replica_logs(
         and replica.state
         in (ReplicaState.launching, ReplicaState.ready, ReplicaState.unhealthy)
     ):
-        return await pilot_control.get_logs(job.manager_url, replica.name)
+        return await pilot_control.get_logs(
+            job.manager_url, replica.name, cluster_name=job.cluster_name
+        )
 
     # If job is history, we'll have to read the log file:
     if replica.log_path:

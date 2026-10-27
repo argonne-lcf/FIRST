@@ -115,7 +115,8 @@ def _make_controller(
     ctrl = ReplicaDrainer.__new__(ReplicaDrainer)
     Worker.__init__(ctrl, "replica-drainer", cs, MagicMock())
     client = PilotControlClient.__new__(PilotControlClient)
-    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    mock_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
     ctrl.client = client
     return ctrl
 
@@ -123,30 +124,30 @@ def _make_controller(
 async def test_stop_on_manager_surfaces_structured_teardown_message() -> None:
     ctrl = ReplicaDrainer.__new__(ReplicaDrainer)
     client = PilotControlClient.__new__(PilotControlClient)
-    client._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(_teardown_incomplete)
-    )
+    mock_http = httpx.AsyncClient(transport=httpx.MockTransport(_teardown_incomplete))
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
     ctrl.client = client
     try:
         with pytest.raises(
             httpx.HTTPStatusError,
             match="model process group survived SIGKILL",
         ):
-            await ctrl._stop_on_manager(MANAGER_URL, "replica-a")
+            await ctrl._stop_on_manager(MANAGER_URL, "replica-a", "alpha")
     finally:
-        await client._client.aclose()
+        await mock_http.aclose()
 
 
 async def test_stop_on_manager_uses_text_fallback_for_malformed_error() -> None:
     ctrl = ReplicaDrainer.__new__(ReplicaDrainer)
     client = PilotControlClient.__new__(PilotControlClient)
-    client._client = httpx.AsyncClient(transport=httpx.MockTransport(_server_error))
+    mock_http = httpx.AsyncClient(transport=httpx.MockTransport(_server_error))
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
     ctrl.client = client
     try:
         with pytest.raises(httpx.HTTPStatusError, match="pilot unavailable"):
-            await ctrl._stop_on_manager(MANAGER_URL, "replica-a")
+            await ctrl._stop_on_manager(MANAGER_URL, "replica-a", "alpha")
     finally:
-        await client._client.aclose()
+        await mock_http.aclose()
 
 
 # ── Seed helpers ────────────────────────────────────────────────────────

@@ -24,11 +24,13 @@ test: sync
 install-dev: sync
 	pre-commit install
 
-# Local dev pilot mTLS identities: CA (if absent), pilot server, and one client
-# cert per role. Compose mounts these as secrets (see deploy/compose.yaml).
+# Local dev pilot mTLS identities: CA (if absent), one pilot server cert per
+# cluster, and one client cert per role. Compose mounts the client certs as
+# secrets (see deploy/compose.yaml).
+PILOT_CLUSTERS ?= tara sophia
 .PHONY: pki  # a pki/ directory exists, so the target must be phony
 pki: sync
-	uv run pilot-certmanager standard --dir pki
+	uv run pilot-certmanager standard --dir pki $(foreach c,$(PILOT_CLUSTERS),--cluster $(c))
 	mkdir -p pki/upstream  # StaticDeployment mTLS sets, mounted by compose
 
 # The compose shortcuts below read COMPOSE_FILE / COMPOSE_PROJECT_NAME from .env.

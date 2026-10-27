@@ -185,7 +185,9 @@ class PilotReplicaObserver(Worker):
         cooldown = self._status_cooldown.get(job.uid)
         try:
             assert job.manager_url is not None
-            status = await self.client.get_status(job.manager_url)
+            status = await self.client.get_status(
+                job.manager_url, cluster_name=job.cluster_name
+            )
         except Exception:
             await self._record_status_failure(job, cooldown, expected=expected)
             return
@@ -504,7 +506,9 @@ class PilotReplicaObserver(Worker):
 
             logger.warning("Reaping orphan replica %s on job %s", ri.name, job.name)
             try:
-                resp = await self.client.stop_replica(job.manager_url, ri.name)
+                resp = await self.client.stop_replica(
+                    job.manager_url, ri.name, cluster_name=job.cluster_name
+                )
                 resp.raise_for_status()
             except Exception:
                 logger.exception(

@@ -131,7 +131,7 @@ class ReplicaDrainer(Controller):
         elif (
             job and job.scheduler_state == SchedulerJobState.running and job.manager_url
         ):
-            await self._stop_on_manager(job.manager_url, replica.name)
+            await self._stop_on_manager(job.manager_url, replica.name, job.cluster_name)
 
         await self._finalize_deletion(replica)
 
@@ -149,8 +149,12 @@ class ReplicaDrainer(Controller):
         )
         return runtime.inflight == 0
 
-    async def _stop_on_manager(self, manager_url: str, replica_name: str) -> None:
-        resp = await self.client.stop_replica(manager_url, replica_name)
+    async def _stop_on_manager(
+        self, manager_url: str, replica_name: str, cluster_name: str
+    ) -> None:
+        resp = await self.client.stop_replica(
+            manager_url, replica_name, cluster_name=cluster_name
+        )
         if resp.status_code == 404:
             # Already gone on the manager (double-delete); nothing to free there.
             logger.info(

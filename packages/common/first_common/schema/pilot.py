@@ -28,7 +28,14 @@ from .types import (
 )
 
 PILOT_SERVER_CN = "first-pilot"
-PILOT_SERVER_SAN = "first-pilot.internal"
+PILOT_SERVER_DOMAIN = "first-pilot.internal"
+# Pilot cluster names become a DNS label in pilot_server_name.
+PILOT_CLUSTER_NAME_PATTERN = r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+
+
+def pilot_server_name(cluster_name: str) -> str:
+    """TLS name every pilot server certificate on `cluster_name` carries."""
+    return f"{cluster_name}.{PILOT_SERVER_DOMAIN}"
 
 
 class PilotClientRole(StrEnum):
@@ -45,6 +52,7 @@ class PilotClientRole(StrEnum):
 _JOB_ENV_OVERRIDE_FIELDS = frozenset(
     {
         "job_name",
+        "cluster",
         "external_port",
         "nginx_path",
         "ip_allowlist",
@@ -217,6 +225,9 @@ class PilotRuntimeConfig(BaseSettings):
     num_nodes: int = Field(ge=1)
     gpus_per_node: int = Field(ge=1)
     job_name: str
+    # The cluster this pilot runs on; its server certificate must name it (see
+    # pilot_server_name).
+    cluster: str
     # Scheduler walltime; the server certificate must outlive it.
     walltime_min: int = Field(ge=1)
 

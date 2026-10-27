@@ -66,7 +66,7 @@ class BackendClientManager:
     def __init__(self, settings: Settings) -> None:
         self._clients: dict[str, httpx.AsyncClient] = {}
         self._configs: dict[str, tuple[BackendConfig, DeploymentConfig]] = {}
-        self._ctx: SSLContext = pilot_ssl_context(settings)
+        self._settings = settings
 
     def get(self, backend_id: str) -> httpx.AsyncClient | None:
         return self._clients.get(backend_id)
@@ -123,6 +123,7 @@ class BackendClientManager:
                 or current_backend.mtls != backend.mtls
                 or current_backend.model_url != backend.model_url
                 or current_deployment.kind != deployment.kind
+                or current_deployment.cluster_name != deployment.cluster_name
                 or current_deployment.router_params.max_backend_concurrency
                 != deployment.router_params.max_backend_concurrency
             ):
@@ -156,7 +157,7 @@ class BackendClientManager:
 
         verify: SSLContext | bool = True
         if deployment.kind == "pilot":
-            verify = self._ctx
+            verify = pilot_ssl_context(self._settings, deployment.cluster_name)
         elif backend.mtls:
             verify = backend.mtls.ssl_context()
         transport = httpx.AsyncHTTPTransport(

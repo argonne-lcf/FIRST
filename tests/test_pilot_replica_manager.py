@@ -433,6 +433,7 @@ def test_runtime_config_loads_public_fields_from_environment(
     monkeypatch.setenv("PILOT_CA_CRT", "environment-must-not-replace-static-secret")
     monkeypatch.setenv("PILOT_NETWORK_INTERFACES", '["eth0"]')
     monkeypatch.setenv("PILOT_JOB_NAME", "test-pilot")
+    monkeypatch.setenv("PILOT_CLUSTER", "alpha")
     monkeypatch.setenv("PILOT_EXTERNAL_PORT", "19443")
     monkeypatch.setenv("PILOT_NGINX_PATH", "/opt/test/nginx")
     monkeypatch.setenv("PILOT_IP_ALLOWLIST", '["192.0.2.10/32"]')
@@ -456,6 +457,7 @@ def test_runtime_config_loads_public_fields_from_environment(
 
     assert config.ca_crt == "ca"
     assert config.job_name == "test-pilot"
+    assert config.cluster == "alpha"
     assert config.external_port == 19443
     assert config.nginx_path == Path("/opt/test/nginx")
     assert config.ip_allowlist == ["192.0.2.10/32"]

@@ -61,6 +61,7 @@ def _runtime_config(tmp_path: Path) -> PilotRuntimeConfig:
         num_nodes=1,
         gpus_per_node=1,
         job_name="test-pilot",
+        cluster="alpha",
         walltime_min=60,
         network_interfaces=["hsn0", "hsn1"],
         queue="prod",

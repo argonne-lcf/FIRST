@@ -396,7 +396,7 @@ async def test_launcher_sends_resolved_spec_to_pilot(
     try:
         await controller.reconcile(uid)
     finally:
-        await controller.client._client.aclose()
+        await controller.client._client_for("alpha").aclose()
 
     [request] = seen
     assert request.proxy_paths == ["/v1/chat"]  # no metrics path set

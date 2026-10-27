@@ -391,7 +391,9 @@ class PilotJobObserver(Worker):
 
             # Do not wake ReplicaLauncher until control API is live
             try:
-                await self.client.get_status(addr.control_url)
+                await self.client.get_status(
+                    addr.control_url, cluster_name=cluster_name
+                )
             except Exception as exc:
                 logger.info(
                     "Job %s pilot manager is not ready at %s: %r",

@@ -20,6 +20,7 @@ class PrometheusTarget(BaseModel):
 async def prometheus_service_discovery(
     state: AppState,
     mtls_cert_file: str | None = None,
+    pilot_cluster: str | None = None,
 ) -> list[PrometheusTarget]:
     """Prometheus HTTP Service Discovery endpoint for live model backends.
 
@@ -31,9 +32,10 @@ async def prometheus_service_discovery(
     unique, non-recycling backend id rather than the (shared) address.
 
     Prometheus sets one `tls_config` per scrape job, so each mTLS certificate
-    set needs its own job: `mtls_cert_file` selects the backends presenting that
-    client cert. Without it, only pilot backends and static backends without
-    mTLS are listed.
+    set and each pilot cluster (whose pilots carry their own TLS server name)
+    needs its own job. `pilot_cluster` selects only the pilot backends on that
+    cluster; `mtls_cert_file` selects the static backends presenting that
+    client cert. With neither, only static backends without mTLS are listed.
 
     Returns HTTP 200 with an empty list when there are no targets.  The whole
     target list is returned on every scrape; Prometheus keeps its cached list
@@ -49,6 +51,11 @@ async def prometheus_service_discovery(
             if not dep.backends or not dep.prometheus_metrics_path:
                 continue
             path = dep.prometheus_metrics_path.lstrip("/")
+            if dep.kind == "pilot":
+                if dep.cluster_name != pilot_cluster:
+                    continue
+            elif pilot_cluster is not None:
+                continue
             for backend in dep.backends:
                 cert_file = backend.mtls.cert_file if backend.mtls else None
                 if cert_file != mtls_cert_file:
