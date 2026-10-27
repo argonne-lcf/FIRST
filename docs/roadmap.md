@@ -159,11 +159,17 @@ We should then be able to stand up an internal Grafana dashboard against this.  
 provide a wealth of up-to-date performance information across all deployed models and is
 definitely worth spending the time to get stood up.
 
-### Log export pipeline to DuckDB + archival
+### Log export pipeline to ClickHouse + archival
 
-- We want a cron job that pushes local .jsonl logs to an external analytics storage to reclaim space
-- The structured logs should be split on the `stream` key and ETL'd into DuckDB tables to facilitate rapid analytics over long historical datasets
-- The DuckDB datastore can be used to create a dashboard over log queries.  The types of queries answered by this dashboard are less about current system performance/health and more about historical usage trends (e.g. most popular models in 2026; how many tokens generated on Sophia)
+The pipeline is designed in
+[Structured Logging & ClickHouse](architecture/structured-logging-clickhouse.md):
+Vector ships the gateway's JSONL off VM1 to ClickHouse on VM2 — and, separately,
+to the S3 raw archive — where Grafana and a usage API read it. A deployable
+sample lives in `deploy/analytics/`. This supersedes the DuckDB sketch that used
+to be here.
+
+Offline analysis of the existing V1 log corpus — split on `stream`, loaded into
+columnar tables — is the separate tooling under `scripts/logs/`.
 
 ### Batch system
 

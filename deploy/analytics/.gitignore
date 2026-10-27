@@ -1,0 +1,7 @@
+# Never commit credentials or generated certificates from the sample.
+.env
+**/.env
+**/certs/*.key
+**/certs/*.crt
+**/certs/*.csr
+**/certs/*.srl
