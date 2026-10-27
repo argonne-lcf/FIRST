@@ -124,7 +124,7 @@ export type Options<
 /**
  * Health
  *
- * Liveness probe
+ * Health probe: 503 with a short public-safe reason when degraded.
  */
 export const healthHealthGet = <ThrowOnError extends boolean = false>(
   options?: Options<HealthHealthGetData, ThrowOnError>,

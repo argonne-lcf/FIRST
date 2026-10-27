@@ -51,6 +51,11 @@ def aggregate_state(dep: PilotDeployment) -> PilotDeploymentState:
     incoming = [r for r in retained if r.state in IN_FLIGHT]
     unhealthy = [r for r in retained if r.state == ReplicaState.unhealthy]
 
+    # 0. Launch-failure breaker tripped: the autoscaler pins desired to 0, so
+    # report it instead of letting the drain read as an intentional offline.
+    if dep.consecutive_launch_failures > dep.max_consecutive_launch_failures:
+        return PilotDeploymentState.halted
+
     # 1. Routable capacity exists
     if serving:
         return (

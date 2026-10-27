@@ -102,6 +102,8 @@ export function PilotStateDescription({
     starting: "Nothing is serving yet, but capacity is on the way.",
     stopping: "Teardown is underway.",
     failed: "All replicas are unhealthy or launches are failing.",
+    halted:
+      "Too many consecutive launch failures; held at 0 replicas until reset.",
     awaiting_capacity: "No replicas created yet.",
     offline: "Desired replicas = 0; no live replicas.",
   };
@@ -127,6 +129,7 @@ const PILOT_STATE_ORDER = [
   "stopping",
   "awaiting_capacity",
   "failed",
+  "halted",
   "offline",
 ] as const;
 

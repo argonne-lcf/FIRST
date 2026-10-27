@@ -151,6 +151,7 @@ _PILOT_STATE_BUCKET = {
     PilotDeploymentState.awaiting_capacity.value: "queued",
     PilotDeploymentState.stopping.value: "stopped",
     PilotDeploymentState.failed.value: "stopped",
+    PilotDeploymentState.halted.value: "stopped",
     PilotDeploymentState.offline.value: "stopped",
 }
 _STATIC_HEALTH_BUCKET = {

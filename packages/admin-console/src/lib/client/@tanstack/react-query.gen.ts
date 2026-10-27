@@ -86,7 +86,6 @@ import type {
   GetSystemHealthCatalogV1SystemHealthGetData,
   GetSystemHealthCatalogV1SystemHealthGetResponse,
   HealthHealthGetData,
-  HealthHealthGetResponse,
   HealthResourceServerHealthGetData,
   HealthResourceServerHealthGetResponse,
   ListAccessGroupsCatalogV1AccessGroupsGetData,
@@ -174,15 +173,15 @@ export const healthHealthGetQueryKey = (
 /**
  * Health
  *
- * Liveness probe
+ * Health probe: 503 with a short public-safe reason when degraded.
  */
 export const healthHealthGetOptions = (
   options?: Options<HealthHealthGetData>,
 ) =>
   queryOptions<
-    HealthHealthGetResponse,
+    unknown,
     DefaultError,
-    HealthHealthGetResponse,
+    unknown,
     ReturnType<typeof healthHealthGetQueryKey>
   >({
     queryFn: async ({ queryKey, signal }) => {

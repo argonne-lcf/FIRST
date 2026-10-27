@@ -154,6 +154,8 @@ class PilotDeploymentState(str, Enum):
     starting = "starting"
     stopping = "stopping"
     failed = "failed"
+    # Launch-failure circuit breaker tripped; held at 0 until an operator resets
+    halted = "halted"
     awaiting_capacity = "awaiting_capacity"
     offline = "offline"
 

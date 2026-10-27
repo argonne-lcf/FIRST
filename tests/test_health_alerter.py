@@ -1113,6 +1113,37 @@ async def test_check_pilot_deployment_state(
     assert state_obs[0].severity == "crit"
 
 
+async def test_check_pilot_deployment_halted(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(
+            PilotDeployment(
+                name="pd1",
+                cluster_name="cl",
+                model_name="mdl",
+                launch_template_name=LAUNCH_TEMPLATE_NAME,
+                router_params={},
+                scaling_strategy=None,
+                min_replicas=0,
+                max_replicas=2,
+                launch_spec={},
+                state=PilotDeploymentState.halted.value,
+                consecutive_launch_failures=4,
+                prometheus_scrape_interval_sec=30,
+            )
+        )
+
+    obs = await check_pilot_deployment(alerter.client_state)
+    state_obs = [o for o in obs if "/state" in o.key]
+    assert len(state_obs) == 1
+    assert state_obs[0].severity == "crit"
+    assert "4 consecutive launch failures" in state_obs[0].summary
+    assert "reconcile-reset PilotDeployment.pd1" in state_obs[0].detail
+
+
 async def test_check_pilot_job_reconcile(
     db: async_sessionmaker[AsyncSession], redis: Redis
 ) -> None:

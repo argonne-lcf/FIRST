@@ -53,6 +53,7 @@ const HEALTH: Record<string, Severity> = {
 const PILOT_STATE: Record<string, Severity> = {
   healthy: "ok",
   failed: "critical",
+  halted: "critical",
   degraded: "warning",
   starting: "info",
   stopping: "info",

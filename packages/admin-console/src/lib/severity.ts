@@ -7,6 +7,7 @@ export const STATE_SEVERITY: Record<DeploymentState, Severity> = {
   healthy: "ok",
   unhealthy: "critical",
   failed: "critical",
+  halted: "critical",
   degraded: "warning",
   starting: "warning",
   stopping: "warning",

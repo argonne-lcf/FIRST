@@ -71,6 +71,7 @@ _STATE_STYLES = {
     "unknown": "dim",
     "unhealthy": "red",
     "failed": "red",
+    "halted": "red",
     "error": "red",
     "start_timeout": "red",
 }

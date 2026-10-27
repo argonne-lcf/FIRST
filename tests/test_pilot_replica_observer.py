@@ -1150,6 +1150,33 @@ async def test_deployment_state_offline(
     assert dep.state == PilotDeploymentState.offline.value
 
 
+async def test_deployment_state_halted_wins_over_draining(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A tripped launch-failure breaker reports halted, not stopping/offline."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await sess.execute(
+            sa.update(PilotDeployment)
+            .where(PilotDeployment.name == "pd")
+            .values(
+                consecutive_launch_failures=PilotDeployment.max_consecutive_launch_failures
+                + 1
+            )
+        )
+
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json())}
+    )
+    observer = _make_observer(db, transport)
+    await observer.poll()
+
+    dep = await _get_deployment(db)
+    assert dep.desired_replicas == 0
+    assert dep.state == PilotDeploymentState.halted.value
+
+
 # ── Startup duration (last placed -> ready) ───────────────────────────
 
 

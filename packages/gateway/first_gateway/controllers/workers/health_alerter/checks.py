@@ -63,6 +63,7 @@ _BAD_REPLICA_STATES = {
 # from this map (healthy, starting, offline) are omitted; recovery is by absence.
 _PILOT_DEPLOYMENT_SEVERITY: dict[str, Severity] = {
     PilotDeploymentState.failed.value: "crit",
+    PilotDeploymentState.halted.value: "crit",
     PilotDeploymentState.degraded.value: "warn",
     PilotDeploymentState.stopping.value: "info",
     PilotDeploymentState.awaiting_capacity.value: "info",
@@ -350,6 +351,7 @@ async def check_pilot_deployment(client_state: ClientState) -> list[Observation]
                         PilotDeployment.name,
                         PilotDeployment.state,
                         PilotDeployment.cluster_name,
+                        PilotDeployment.consecutive_launch_failures,
                     ),
                     selectinload(PilotDeployment.replicas).load_only(
                         PilotReplica.deleted_at,
@@ -366,7 +368,25 @@ async def check_pilot_deployment(client_state: ClientState) -> list[Observation]
         # Losing replicas is expected while the cluster is under maintenance.
         if d.state == PilotDeploymentState.degraded and d.cluster_name in maintenance:
             sev = None
-        if sev is not None:
+        if d.state == PilotDeploymentState.halted:
+            obs.append(
+                Observation(
+                    key=f"pilotdeployment/{d.uid}/state",
+                    status=d.state,
+                    summary=(
+                        f"PilotDeployment {d.name}: halted after "
+                        f"{d.consecutive_launch_failures} consecutive launch "
+                        "failures; scaled to 0"
+                    ),
+                    display_name=f"PilotDeployment {d.name}",
+                    severity="crit",
+                    detail=(
+                        "Reset with `first-admin reconcile-reset "
+                        f"PilotDeployment.{d.name}` or by re-applying the deployment."
+                    ),
+                )
+            )
+        elif sev is not None:
             obs.append(
                 Observation(
                     key=f"pilotdeployment/{d.uid}/state",
