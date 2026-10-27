@@ -28,7 +28,7 @@ from first_common.schema.types import (
     MTLSLoadError,
 )
 from first_gateway.apiserver import backend_client_manager as bcm
-from first_gateway.apiserver.routes import discovery
+from first_gateway.controllers.routes import discovery
 from first_gateway.controllers.workers.health_observer import HealthObserver
 from first_gateway.controllers.workers.router_config_observer import (
     RouterConfigObserver,

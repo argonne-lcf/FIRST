@@ -11,14 +11,14 @@ from first_common.schema.resources.read import (
     PilotDeploymentSummary,
 )
 
-from ...database import models as db
-from ...database.redis.pubsub import Channel
-from ...services.plan_apply import apply_plan, create_plan
-from ..dependencies import (
+from ...apiserver.dependencies import (
     AdminUser,
     DbSession,
     RedisPubSub,
 )
+from ...database import models as db
+from ...database.redis.pubsub import Channel
+from ...services.plan_apply import apply_plan, create_plan
 
 admin_router = APIRouter(prefix="/control/v1")
 

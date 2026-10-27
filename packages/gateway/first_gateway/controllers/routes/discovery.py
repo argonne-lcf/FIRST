@@ -3,8 +3,8 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from ...apiserver.dependencies import AppState
 from ...database.redis.router_config import RouterConfig
-from ..dependencies import AppState
 
 router = APIRouter(prefix="/discovery/v1")
 

@@ -21,8 +21,8 @@ from prometheus_client import make_asgi_app
 
 from ..apiserver.dependencies import get_admin_user
 from ..apiserver.error_handlers import register_error_handlers
-from ..apiserver.routes import control, discovery
 from ..settings import ClientState
+from .routes import control, discovery
 from .worker import Worker
 
 logger = logging.getLogger(__name__)
