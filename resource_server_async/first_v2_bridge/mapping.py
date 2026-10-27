@@ -42,6 +42,7 @@ class DesiredEndpoint:
     allowed_globus_groups: list[str]
     allowed_domains: list[str]
     config: dict[str, Any] = field(default_factory=dict)
+    unlimited_tpm: bool = False
 
 
 def _resolve_prefix(
@@ -118,6 +119,7 @@ def _build_desired_endpoint(
         endpoint_adapter=ENDPOINT_ADAPTER,
         allowed_globus_groups=list(model.allowed_groups),
         allowed_domains=list(model.allowed_domains),
+        unlimited_tpm=f"{cluster}/{framework}" in bridge_settings.unlimited_tpm_targets,
         config={
             "model_urls": model_urls,
             "backend_model_name": backend_model_name,

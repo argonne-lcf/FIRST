@@ -38,6 +38,7 @@ Here are the new environment variables for the V2-V1 bridge.
 | `FIRST_V2_PROXY_URL`        | *(unset → direct)* | SOCKS/HTTP proxy to reach backends, e.g. `socks5h://localhost:1080`. `socks5h://` requires httpx ≥ 0.28 (pinned in `uv.lock`). |
 | `FIRST_V2_CHECK_HOSTNAME`   | `false` | TLS hostname verification. Off because backends are reached by IP (mirrors V2's own client). |
 | `FIRST_V2_POLL_INTERVAL_SEC`| `10`    | Seconds between reconcile ticks. |
+| `FIRST_V2_UNLIMITED_TPM_TARGETS` | *(empty)* | Comma-separated exact `cluster/framework` targets whose bridge-managed model/user TPM must be zero, e.g. `tara/api`. All other endpoints retain existing TPM values or normal creation defaults. |
 
 The cert/proxy values are baked into each managed `Endpoint`'s `config` at
 reconcile time, so the gateway process reads them from the DB row at request
@@ -103,7 +104,7 @@ logs and token accounting run after the stream finishes, errors or is closed,
 not while a long prefill is still running.
 
 Public V1 requests do **not** inherit V2's TPM, token-burst or per-user
-concurrency policy. V1 has its own finite model/user TPM limits, but no token
+concurrency policy. V1 has its own model/user TPM limits, but no token
 burst field or per-user in-flight concurrency limit. Inspect the actual V1 rows
 from the V1 checkout before changing limits:
 
@@ -111,11 +112,36 @@ from the V1 checkout before changing limits:
 .venv/bin/python manage.py shell -c 'from resource_server_async.models import Endpoint; print(list(Endpoint.objects.filter(cluster="tara").values("endpoint_slug", "tpm_model", "tpm_user")))'
 ```
 
-The bridge preserves TPM on existing rows, but deletes a row when its last
-healthy backend disappears. A recreated row uses V1's defaults, so inspect and
-apply the approved finite limits after endpoint creation as well. Do not set
-TPM to zero (unlimited). Allow the 60-second adapter-cache TTL for a DB limit
-change to take effect; clearing all caches/sessions is unnecessary.
+By default, the bridge preserves TPM on existing rows, but deletes a row when
+its last healthy backend disappears. A recreated row then uses V1's normal
+defaults (`tpm_model=100000`, `tpm_user=60000`), not any former manual values.
+
+Where policy explicitly disables both per-model and per-user/model TPM, opt
+in only the intended bridge target in the existing gateway/bridge `.env`:
+
+```sh
+FIRST_V2_UNLIMITED_TPM_TARGETS=tara/api
+```
+
+Once this code and setting are deployed, restart **only the bridge** to load
+the setting (`sudo systemctl restart first_v2_bridge.service`). Every reconcile
+tick then writes both TPM columns as zero for its `tara/api` rows, including
+new or recreated rows. It does not make database defaults globally unlimited,
+change other clusters/frameworks, or affect rows not managed by the bridge.
+Removing the opt-in does not restore old manual values; deliberately set the
+approved limits if policy changes again.
+
+Zero disables TPM rejection, not token recording or request/usage accounting.
+The gateway's independent global per-user request throttle
+(`RATE_LIMIT_PER_SEC_PER_USER`, default 10 requests/second), authentication,
+access controls and timeouts remain in effect. This setting does not add V2's
+concurrency gate to the public V1 path.
+
+Allow the 60-second adapter-cache TTL after the last DB update for a limit
+change to take effect in existing gateway workers. No gateway/model restart
+or clearing of caches/sessions is necessary for a TPM-row update. Verify the
+actual target rows after a bridge tick; a V2 catalog apply alone does not
+change these separate V1 limits.
 
 ### Operations
 

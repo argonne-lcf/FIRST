@@ -95,18 +95,24 @@ class Command(BaseCommand):
 
         created = updated = 0
         for slug, d in desired_by_slug.items():
+            defaults = {
+                "id": d.pk,
+                "cluster": d.cluster,
+                "framework": d.framework,
+                "model": d.model,
+                "endpoint_adapter": d.endpoint_adapter,
+                "allowed_globus_groups": d.allowed_globus_groups,
+                "allowed_domains": d.allowed_domains,
+                "config": repr(d.config),
+            }
+            if d.unlimited_tpm:
+                # Include both on every tick, including endpoint recreation.
+                # Omitting them otherwise preserves existing manual TPM values
+                # and the normal model defaults for newly created endpoints.
+                defaults.update(tpm_model=0, tpm_user=0)
             _, was_created = Endpoint.objects.update_or_create(
                 endpoint_slug=slug,
-                defaults={
-                    "id": d.pk,
-                    "cluster": d.cluster,
-                    "framework": d.framework,
-                    "model": d.model,
-                    "endpoint_adapter": d.endpoint_adapter,
-                    "allowed_globus_groups": d.allowed_globus_groups,
-                    "allowed_domains": d.allowed_domains,
-                    "config": repr(d.config),
-                },
+                defaults=defaults,
             )
             if was_created:
                 created += 1
