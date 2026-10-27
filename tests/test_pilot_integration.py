@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 import sys
 import time
@@ -269,6 +270,9 @@ async def test_submit_brings_endpoint_online(
         assert any(g.name == "MockGPU" for h in status.resources.hosts for g in h.gpus)
 
 
+FORGED_REQUEST_ID = "f" * 32
+
+
 async def _start_mock_replica(client: httpx.AsyncClient, name: str) -> None:
     """POST /start-replica for a mock replica and wait until it is ready."""
     start_req = {
@@ -294,7 +298,10 @@ async def _start_mock_replica(client: httpx.AsyncClient, name: str) -> None:
         "supported_endpoints": ["chat/completions"],
         "prometheus_metrics_path": "/metrics",
     }
-    r = await client.post("/start-replica", json=start_req)
+    # A forged correlation ID: NGINX must replace it with its own.
+    r = await client.post(
+        "/start-replica", json=start_req, headers={"X-Request-ID": FORGED_REQUEST_ID}
+    )
     assert r.status_code == 200, r.text
 
     async def _ready() -> bool:
@@ -355,6 +362,20 @@ async def test_replica_lifecycle(
     control_dn = f"CN={PilotClientRole.control.value}"
     assert all(record["client_dn"] == control_dn for record in access)
     assert all(record["uri"].startswith("/control/") for record in access)
+
+    # One key joins who called (audit line) to what ran (pilot log).
+    (start,) = [r for r in access if r["request"] == start_request]
+    request_id = start["request_id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", request_id)
+    pilot_log = "".join(
+        log.read_text() for log in workdir.rglob("*.log") if log.is_file()
+    )
+    assert re.search(
+        rf"starting replica r0 on uds .*request_id={request_id}\)", pilot_log
+    )
+    assert FORGED_REQUEST_ID not in pilot_log
+    audit_text = (workdir / "audit" / "beta.control-access.jsonl").read_text()
+    assert FORGED_REQUEST_ID not in audit_text
 
 
 # Where a request ended up. Each "allowed" outcome is identified positively by

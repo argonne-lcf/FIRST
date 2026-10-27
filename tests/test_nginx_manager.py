@@ -153,6 +153,16 @@ def test_rendered_config_authorizes_by_client_role(manager: NginxManager) -> Non
         assert "allow 192.0.2.10/32;" in _block(rendered, location)
 
 
+def test_control_requests_carry_nginx_request_id(manager: NginxManager) -> None:
+    rendered = manager.render_config([])
+
+    audit_format = rendered.split("log_format control_audit", 1)[1].split(";", 1)[0]
+    assert '"request_id":"$request_id"' in audit_format
+    # The control API sees only NGINX's own ID, never a caller-supplied one.
+    control = _block(rendered, "location /control/")
+    assert "proxy_set_header X-Request-ID $request_id;" in control
+
+
 def _replica_request(**overrides: object) -> ReplicaStartRequest:
     fields: dict[str, object] = {
         "name": "m/replica/0",

@@ -48,6 +48,7 @@ _conf_template_str = """
         }
         log_format control_audit escape=json
             '{"time":"$time_iso8601"'
+            ',"request_id":"$request_id"'
             ',"remote_addr":"$remote_addr"'
             ',"client_dn":"$ssl_client_s_dn"'
             ',"client_verify":"$ssl_client_verify"'
@@ -132,6 +133,9 @@ _conf_template_str = """
                 allow 127.0.0.1;
                 deny all;
                 proxy_pass http://control_api/;
+                # Correlates the audit line with the pilot's replica logs.
+                # Replaces, never appends to, any caller-supplied value.
+                proxy_set_header X-Request-ID $request_id;
                 # Let the controller's 180s stop read deadline expire first.
                 proxy_read_timeout 185s;
             }

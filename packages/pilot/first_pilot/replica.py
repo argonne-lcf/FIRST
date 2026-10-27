@@ -196,6 +196,7 @@ class Replica:
         launch_spec: ResolvedLaunchSpec,
         workdir: Path,
         proxy_paths: Sequence[str] = (),
+        request_id: str | None = None,
     ) -> None:
         self.name = name
         self.proxy_paths = tuple(proxy_paths)
@@ -258,10 +259,11 @@ class Replica:
         # Everything fallible is set up above: once the model process exists,
         # nothing below may raise and orphan it.
         logger.info(
-            "starting replica %s on uds %s (workdir=%s)",
+            "starting replica %s on uds %s (workdir=%s, request_id=%s)",
             self.name,
             self.uds,
             workdir,
+            request_id or "-",
         )
         try:
             self.proc = subprocess.Popen(

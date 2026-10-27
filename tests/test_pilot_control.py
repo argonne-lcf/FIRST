@@ -298,7 +298,7 @@ def test_start_replica_rolls_back_when_nginx_reload_fails() -> None:
         manager.start_replica(SimpleNamespace(name="r0"))  # type: ignore[arg-type]
 
     assert "rollback incomplete" not in str(exc_info.value)
-    replica_manager.stop_replica.assert_called_once_with("r0")
+    replica_manager.stop_replica.assert_called_once_with("r0", None)
 
 
 def test_start_replica_reports_incomplete_rollback_as_start_error() -> None:
@@ -321,7 +321,7 @@ def test_stop_replica_tolerates_nginx_reload_failure() -> None:
 
     manager.stop_replica("r0")
 
-    replica_manager.stop_replica.assert_called_once_with("r0")
+    replica_manager.stop_replica.assert_called_once_with("r0", None)
 
 
 def test_concurrent_reloads_apply_snapshots_in_order() -> None:

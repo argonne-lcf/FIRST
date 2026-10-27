@@ -284,7 +284,9 @@ class ReplicaManager:
             if dir_fd is not None:
                 os.close(dir_fd)
 
-    def start_replica(self, replica: ReplicaStartRequest) -> None:
+    def start_replica(
+        self, replica: ReplicaStartRequest, request_id: str | None = None
+    ) -> None:
         requested = self._validate_request(replica.name, replica.gpu_indices)
 
         host_gpus: dict[str, list[str]] = defaultdict(list)
@@ -327,6 +329,7 @@ class ReplicaManager:
                 launch_spec=replica.launch_spec,
                 workdir=workdir,
                 proxy_paths=replica.proxy_paths,
+                request_id=request_id,
             )
         except Exception as e:
             logger.exception(
@@ -343,13 +346,15 @@ class ReplicaManager:
         with self._lock:
             self._replicas[replica.name] = r
 
-    def stop_replica(self, replica_name: str) -> None:
+    def stop_replica(self, replica_name: str, request_id: str | None = None) -> None:
         with self._lock:
             replica = self._replicas.get(replica_name)
             if replica is None or replica is _RESERVED:
                 raise NotFound(f"Replica {replica_name!r} is not registered")
 
-        logger.info("stopping replica %s", replica_name)
+        logger.info(
+            "stopping replica %s (request_id=%s)", replica_name, request_id or "-"
+        )
         # Replica.stop serializes concurrent callers. Keep the object and its
         # claims addressable until it reports authoritative process-group
         # absence; an exception is intentionally retryable.

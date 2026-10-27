@@ -92,12 +92,14 @@ class _PilotManager:
     def _replica_url(self, name: str) -> str:
         return f"{self._endpoint.base_url}/replicas/{name}/"
 
-    def start_replica(self, replica: ReplicaStartRequest) -> None:
+    def start_replica(
+        self, replica: ReplicaStartRequest, request_id: str | None = None
+    ) -> None:
         """
         Start a replica and route it through NGINX, or fail with nothing left
         running.
         """
-        self.replica_manager.start_replica(replica)
+        self.replica_manager.start_replica(replica, request_id)
         try:
             self._reload_nginx()
         except Exception as e:
@@ -106,7 +108,7 @@ class _PilotManager:
             )
             message = f"NGINX reload failed for replica {replica.name}: {e}"
             try:
-                self.replica_manager.stop_replica(replica.name)
+                self.replica_manager.stop_replica(replica.name, request_id)
             except Exception as stop_exc:
                 # Still registered (terminating) and holding its GPUs until a
                 # later stop-replica succeeds.
@@ -114,8 +116,8 @@ class _PilotManager:
                 message += f"; rollback incomplete: {stop_exc}"
             raise ReplicaStartError(message) from e
 
-    def stop_replica(self, replica_name: str) -> None:
-        self.replica_manager.stop_replica(replica_name)
+    def stop_replica(self, replica_name: str, request_id: str | None = None) -> None:
+        self.replica_manager.stop_replica(replica_name, request_id)
         try:
             self._reload_nginx()
         except Exception:
@@ -189,13 +191,15 @@ PilotManager = Annotated[_PilotManager, Depends(get_manager)]
 
 
 @app.post("/start-replica")
-def start_replica(replica: ReplicaStartRequest, manager: PilotManager) -> None:
-    manager.start_replica(replica)
+def start_replica(
+    replica: ReplicaStartRequest, request: Request, manager: PilotManager
+) -> None:
+    manager.start_replica(replica, request.headers.get("x-request-id"))
 
 
 @app.post("/stop-replica/{replica_name:path}")
-def stop_replica(replica_name: str, manager: PilotManager) -> None:
-    manager.stop_replica(replica_name)
+def stop_replica(replica_name: str, request: Request, manager: PilotManager) -> None:
+    manager.stop_replica(replica_name, request.headers.get("x-request-id"))
 
 
 @app.get("/status", response_model=PilotJobStatus)
