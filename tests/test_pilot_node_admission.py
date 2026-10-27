@@ -203,7 +203,9 @@ def test_run_on_hosts_splits_pals_output_by_rank(
 
     assert outputs == {"n1": "first\nmore", "n2": "second"}
     assert run.call_args.args[0][0] == "/opt/mpiexec"
-    assert "/usr/bin/uname" in run.call_args.args[0]
+    # Ubuntu 26.04's /usr/bin/uname is a symlink into the coreutils multicall
+    # tree, so assert the path resolve() gives, not the name the mock returns.
+    assert str(Path("/usr/bin/uname").resolve()) in run.call_args.args[0]
 
 
 @patch("first_pilot.host_commands.subprocess.run")
