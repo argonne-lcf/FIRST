@@ -1,11 +1,11 @@
 """Trimmed, duplicated copy of V2's RouterConfig parser.
 
-Only the fields the bridge reads are modeled. extra="ignore" drops the many
-V2 fields we don't care about.
+Only the fields the bridge reads are modeled. Usage-policy overrides and other
+unmodeled fields are intentionally ignored by this temporary V1 bridge.
 """
 
 import redis
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # The single JSON blob key written by the V2 control plane.
 ROUTER_CONFIG_KEY = "router-cfg"
@@ -51,6 +51,18 @@ class DeploymentConfig(BaseModel):
     backends: list[BackendConfig] = []
 
 
+class TPMLimits(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tpm: int = Field(strict=True, ge=0)
+
+
+class UsageLimits(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    default: TPMLimits
+
+
 class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -58,6 +70,7 @@ class ModelConfig(BaseModel):
     aliases: list[str] = []
     allowed_groups: list[str]
     allowed_domains: list[str]
+    usage_limits: UsageLimits
     deployments: list[DeploymentConfig] = []
 
 

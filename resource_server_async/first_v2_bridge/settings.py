@@ -23,14 +23,6 @@ class BridgeSettings:
         self.trust_env = False
         self.poll_interval_sec = int(os.environ.get("FIRST_V2_POLL_INTERVAL_SEC", "10"))
         self.prefix_map: PrefixMap = _default_prefix_map()
-        # Opt in by exact cluster/framework; other endpoints retain their TPM.
-        self.unlimited_tpm_targets = {
-            target.strip()
-            for target in os.environ.get("FIRST_V2_UNLIMITED_TPM_TARGETS", "").split(
-                ","
-            )
-            if target.strip()
-        }
 
 
 def _env_bool(name: str, default: bool) -> bool:

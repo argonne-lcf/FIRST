@@ -104,12 +104,10 @@ class Command(BaseCommand):
                 "allowed_globus_groups": d.allowed_globus_groups,
                 "allowed_domains": d.allowed_domains,
                 "config": repr(d.config),
+                # V2 TPM is per user/model, not a shared model-wide quota.
+                "tpm_model": 0,
+                "tpm_user": d.tpm_user,
             }
-            if d.unlimited_tpm:
-                # Include both on every tick, including endpoint recreation.
-                # Omitting them otherwise preserves existing manual TPM values
-                # and the normal model defaults for newly created endpoints.
-                defaults.update(tpm_model=0, tpm_user=0)
             _, was_created = Endpoint.objects.update_or_create(
                 endpoint_slug=slug,
                 defaults=defaults,

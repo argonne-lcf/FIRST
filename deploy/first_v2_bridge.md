@@ -38,7 +38,6 @@ Here are the new environment variables for the V2-V1 bridge.
 | `FIRST_V2_PROXY_URL`        | *(unset → direct)* | SOCKS/HTTP proxy to reach backends, e.g. `socks5h://localhost:1080`. `socks5h://` requires httpx ≥ 0.28 (pinned in `uv.lock`). |
 | `FIRST_V2_CHECK_HOSTNAME`   | `false` | TLS hostname verification. Off because backends are reached by IP (mirrors V2's own client). |
 | `FIRST_V2_POLL_INTERVAL_SEC`| `10`    | Seconds between reconcile ticks. |
-| `FIRST_V2_UNLIMITED_TPM_TARGETS` | *(empty)* | Comma-separated exact `cluster/framework` targets whose bridge-managed model/user TPM must be zero, e.g. `tara/api`. All other endpoints retain existing TPM values or normal creation defaults. |
 
 The cert/proxy values are baked into each managed `Endpoint`'s `config` at
 reconcile time, so the gateway process reads them from the DB row at request
@@ -72,10 +71,11 @@ journalctl -u first_v2_bridge.service -f
 #   first_v2_bridge tick: version=12 desired=1 created=0 updated=1 deleted=0
 ```
 
-### One-shot dry run
+### One reconcile tick (writes)
 
-Before enabling the service, confirm connectivity and reconciliation with a
-single tick:
+The following runs real reconciliation and can create, update and delete
+bridge-managed rows. It is **not a dry run**. Review the model defaults and
+expected endpoint changes before using it:
 
 ```sh
 cd /home/webportal/inference-gateway
@@ -103,45 +103,53 @@ a total request duration limit; connect/pool waits remain 5 seconds and writes
 logs and token accounting run after the stream finishes, errors or is closed,
 not while a long prefill is still running.
 
-Public V1 requests do **not** inherit V2's TPM, token-burst or per-user
-concurrency policy. V1 has its own model/user TPM limits, but no token
-burst field or per-user in-flight concurrency limit. Inspect the actual V1 rows
-from the V1 checkout before changing limits:
+The temporary bridge uses this same, deliberately limited mapping in every
+environment and cluster:
 
-```sh
-.venv/bin/python manage.py shell -c 'from resource_server_async.models import Endpoint; print(list(Endpoint.objects.filter(cluster="tara").values("endpoint_slug", "tpm_model", "tpm_user")))'
-```
+| V1 field | Source |
+| --- | --- |
+| `tpm_model` | Always `0`: V2 has no corresponding aggregate model-wide TPM cap. |
+| `tpm_user` | `usage_limits.default.tpm` from that model in V2's Redis RouterConfig, including `0`. |
 
-By default, the bridge preserves TPM on existing rows, but deletes a row when
-its last healthy backend disappears. A recreated row then uses V1's normal
-defaults (`tpm_model=100000`, `tpm_user=60000`), not any former manual values.
+User-ID, username and group overrides are intentionally ignored. V1 does not
+attempt to reproduce V2's per-user policy resolution. A limited default stays
+limited for every V1 user even if a V2 override exempts one user; an unlimited
+default stays unlimited even if a V2 override restricts one user. V1 retains its
+existing completed-token window, not V2's GCRA reservations or bursts. V2 RPM,
+token-burst and per-user concurrency policies are not added to the public V1
+path. Authentication and access-group/domain checks are separate and unchanged.
 
-Where policy explicitly disables both per-model and per-user/model TPM, opt
-in only the intended bridge target in the existing gateway/bridge `.env`:
+Set unlimited TPM in the **model entry**, not in bridge code or environment
+variables: `usage_limits.default.tpm: 0`. Set `rpm: 0` there too when native V2
+request-rate limits should be disabled. Preserve the entry's other admission
+settings and access controls. A Model resource shared by multiple clusters has
+one default policy for all those routes; review that scope before changing it.
+There is no cluster-specific TPM branch, opt-in setting, manual SQL procedure or
+request-time override resolver in the bridge.
 
-```sh
-FIRST_V2_UNLIMITED_TPM_TARGETS=tara/api
-```
-
-Once this code and setting are deployed, restart **only the bridge** to load
-the setting (`sudo systemctl restart first_v2_bridge.service`). Every reconcile
-tick then writes both TPM columns as zero for its `tara/api` rows, including
-new or recreated rows. It does not make database defaults globally unlimited,
-change other clusters/frameworks, or affect rows not managed by the bridge.
-Removing the opt-in does not restore old manual values; deliberately set the
-approved limits if policy changes again.
+Every normal reconcile writes both TPM values on creation, update and
+recreation. An endpoint that disappears with its last healthy backend is
+recreated with the current V2 default, not V1's database defaults or an old
+manual value. Unrelated legacy adapters and global database defaults are not
+changed. The model's default TPM must be a nonnegative integer fitting V1's
+signed SQL integer column (at most `2147483647`); a missing, malformed or
+unrepresentable default fails the tick before endpoint writes. Overrides are
+not parsed and cannot change that projection.
 
 Zero disables TPM rejection, not token recording or request/usage accounting.
 The gateway's independent global per-user request throttle
-(`RATE_LIMIT_PER_SEC_PER_USER`, default 10 requests/second), authentication,
-access controls and timeouts remain in effect. This setting does not add V2's
-concurrency gate to the public V1 path.
+(`RATE_LIMIT_PER_SEC_PER_USER`, default 10 requests/second), frontdoor security
+throttles, authentication, access controls and timeouts remain in effect.
 
 Allow the 60-second adapter-cache TTL after the last DB update for a limit
 change to take effect in existing gateway workers. No gateway/model restart
-or clearing of caches/sessions is necessary for a TPM-row update. Verify the
-actual target rows after a bridge tick; a V2 catalog apply alone does not
-change these separate V1 limits.
+or clearing of caches/sessions is necessary for a TPM-row update. Deploying new
+bridge code requires a bridge-only restart, not a gateway or model restart.
+Check V2's effective RouterConfig before deployment, and after a reconcile tick
+and cache expiry use the normal authenticated `GET /resource_server/{cluster}/models`
+route. Positive defaults appear in `rate_limit_token_per_minute_per_user`;
+zero-valued TPM metadata keys are absent. This verifies the gateway's cached
+endpoint configuration without submitting inference or exhausting a quota.
 
 ### Operations
 

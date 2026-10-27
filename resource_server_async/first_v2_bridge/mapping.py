@@ -41,8 +41,8 @@ class DesiredEndpoint:
     endpoint_adapter: str
     allowed_globus_groups: list[str]
     allowed_domains: list[str]
+    tpm_user: int
     config: dict[str, Any] = field(default_factory=dict)
-    unlimited_tpm: bool = False
 
 
 def _resolve_prefix(
@@ -110,6 +110,12 @@ def _build_desired_endpoint(
     backend_model_name: str,
     bridge_settings: BridgeSettings,
 ) -> DesiredEndpoint:
+    # The temporary bridge uses only the default per-user TPM; it deliberately
+    # does not reproduce V2's user/group override matching.
+    tpm_user = model.usage_limits.default.tpm
+    if tpm_user > 2**31 - 1:
+        raise ValueError(f"{cluster}/{model.name} TPM exceeds V1's SQL integer column")
+
     return DesiredEndpoint(
         pk=deterministic_pk(cluster, model.name),
         endpoint_slug=slugify(f"{cluster} {framework} {model.name.lower()}"),
@@ -119,7 +125,7 @@ def _build_desired_endpoint(
         endpoint_adapter=ENDPOINT_ADAPTER,
         allowed_globus_groups=list(model.allowed_groups),
         allowed_domains=list(model.allowed_domains),
-        unlimited_tpm=f"{cluster}/{framework}" in bridge_settings.unlimited_tpm_targets,
+        tpm_user=tpm_user,
         config={
             "model_urls": model_urls,
             "backend_model_name": backend_model_name,
