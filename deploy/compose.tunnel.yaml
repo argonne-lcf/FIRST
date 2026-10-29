@@ -36,16 +36,16 @@ services:
   inference-gateway:
     environment:
       - ALL_PROXY=socks5h://tunnel:1080
-      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway,minerva-login-01.minerva.alcf.anl.gov
 
   controller-manager:
     environment:
       - ALL_PROXY=socks5h://tunnel:1080
-      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway,minerva-login-01.minerva.alcf.anl.gov
 
   prometheus:
     environment:
       - ALL_PROXY=socks5h://tunnel:1080
       - HTTPS_PROXY=socks5h://tunnel:1080
       - HTTP_PROXY=socks5h://tunnel:1080
-      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway,minerva-login-01.minerva.alcf.anl.gov

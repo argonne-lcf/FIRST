@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import socket
+import urllib.request
 from collections.abc import Coroutine
 from ssl import SSLContext
 
@@ -30,6 +31,17 @@ def _run_background(coro: Coroutine[None, None, None]) -> None:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_on_done)
+
+
+def _egress_proxy(url: str) -> str | None:
+    """The env-configured egress proxy for `url`, or None if NO_PROXY exempts it.
+
+    An explicit transport `proxy` bypasses httpx's own NO_PROXY handling.
+    """
+    proxy = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY")
+    if proxy and not urllib.request.proxy_bypass(httpx.URL(url).host):
+        return proxy
+    return None
 
 
 # To accomodate different OS platform (MacOS/Linux)
@@ -165,7 +177,7 @@ class BackendClientManager:
             retries=2,
             limits=limits,
             http2=False,
-            proxy=os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY"),
+            proxy=_egress_proxy(backend.model_url),
             socket_options=SOCKET_OPTS,
         )
 

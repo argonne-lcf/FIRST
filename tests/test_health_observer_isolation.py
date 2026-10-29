@@ -93,6 +93,21 @@ async def test_invalid_configuration_is_debounced_without_leaking_validation_inp
     assert "config-secret-sentinel" not in result[3]
 
 
+async def test_unexpected_exception_names_its_module() -> None:
+    class ProtocolError(Exception):
+        pass
+
+    observer = _observer()
+    with patch(_CHECK, new_callable=AsyncMock) as check:
+        check.side_effect = ProtocolError("secret-sentinel")
+        result = await observer._check(_resource(1, debounce=1))
+    assert result is not None
+    assert result[3] == (
+        f"Unexpected {__name__}.test_unexpected_exception_names_its_module"
+        ".<locals>.ProtocolError while checking health"
+    )
+
+
 async def test_check_exception_preserves_debounce_and_recovery() -> None:
     observer = _observer()
     resource = _resource(1, debounce=2)

@@ -9,6 +9,17 @@ from first_common.schema.types import HealthCheckParams, HealthCheckResult
 
 _BODY_EXCERPT_CHARS = 500
 
+# httpx does not wrap SOCKS handshake failures (e.g. the proxy closing the
+# connection when it cannot reach the upstream) in HTTPError. socksio is only
+# present where httpx[socks] is installed.
+_REQUEST_ERRORS: tuple[type[Exception], ...] = (HTTPError,)
+try:
+    from socksio import SOCKSError
+
+    _REQUEST_ERRORS += (SOCKSError,)
+except ImportError:  # pragma: no cover
+    pass
+
 
 class HealthCheckOutcome(NamedTuple):
     """
@@ -75,8 +86,11 @@ def _check_once(
             timeout=Timeout(params.read_timeout, connect=params.connect_timeout),
             json=params.json_body,
         )
-    except HTTPError as exc:
-        reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    except _REQUEST_ERRORS as exc:
+        name = type(exc).__name__
+        if not isinstance(exc, HTTPError):
+            name = f"SOCKS proxy {name}"
+        reason = f"{name}: {exc}" if str(exc) else name
         return _unhealthy(f"Request failed: {reason}", secret)
 
     lo, hi = params.status_range

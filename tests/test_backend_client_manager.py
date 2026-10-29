@@ -187,3 +187,27 @@ async def test_failed_update_keeps_previous_client(
         assert not old.is_closed
     finally:
         await manager.close_all()
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://login.cluster-a.example:9443/models/m", None),
+        ("https://other.example/v1", "socks5h://tunnel:1080"),
+        ("http://localhost:8000/v1", None),
+    ],
+)
+def test_egress_proxy_honours_no_proxy(
+    monkeypatch: pytest.MonkeyPatch, url: str, expected: str | None
+) -> None:
+    for var in ("HTTPS_PROXY", "https_proxy", "no_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ALL_PROXY", "socks5h://tunnel:1080")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,login.cluster-a.example")
+    assert bcm._egress_proxy(url) == expected
+
+
+def test_egress_proxy_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    assert bcm._egress_proxy("https://other.example/v1") is None

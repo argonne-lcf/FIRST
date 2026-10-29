@@ -4,6 +4,7 @@ from typing import Callable
 
 import pytest
 from httpx import Client, ConnectError, MockTransport, Request, Response
+from socksio import ProtocolError
 
 from first_common.health import HealthCheckOutcome, perform_health_check_sync
 from first_common.schema.types import HealthCheckParams, HealthCheckResult
@@ -68,6 +69,24 @@ def test_request_error_redacts_resolved_secret(
         HealthCheckResult.unhealthy,
         "Request failed: ConnectError: refused with Bearer <redacted>",
     )
+
+
+def test_socks_proxy_error_is_a_request_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def handler(req: Request) -> Response:
+        nonlocal calls
+        calls += 1
+        raise ProtocolError("Malformed reply")
+
+    outcome = _check(handler, monkeypatch, attempts_per_check=2)
+    assert outcome == HealthCheckOutcome(
+        HealthCheckResult.unhealthy,
+        "Request failed: SOCKS proxy ProtocolError: Malformed reply",
+    )
+    assert calls == 2
 
 
 def test_body_echoing_secret_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:

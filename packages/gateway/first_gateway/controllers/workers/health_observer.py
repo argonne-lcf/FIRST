@@ -187,4 +187,8 @@ def _describe_exception(exc: Exception) -> str:
         return f"Invalid health_check configuration: {problems}"
     if isinstance(exc, MTLSLoadError):
         return str(exc)
-    return f"Unexpected {type(exc).__name__} while checking health"
+    name = type(exc).__qualname__
+    if (module := type(exc).__module__) != "builtins":
+        # Disambiguates common names such as ProtocolError
+        name = f"{module}.{name}"
+    return f"Unexpected {name} while checking health"
