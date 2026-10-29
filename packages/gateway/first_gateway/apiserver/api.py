@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     can reach it via request.app.state.client_state.
     """
     settings = Settings()
-    config_logging(settings.log_level)
+    config_logging(settings.log_level, settings.log_levels)
 
     settings.prompt_storage_dir.mkdir(parents=True, exist_ok=True)
     if not os.access(settings.prompt_storage_dir, os.W_OK | os.X_OK):

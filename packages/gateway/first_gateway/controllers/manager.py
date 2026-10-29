@@ -137,7 +137,7 @@ class ControllerManager:
 
 async def main() -> None:
     settings = Settings()
-    config_logging(settings.log_level)
+    config_logging(settings.log_level, settings.log_levels)
     logger.info("Initializing controller manager")
 
     async with settings.build_clients() as client_state:
