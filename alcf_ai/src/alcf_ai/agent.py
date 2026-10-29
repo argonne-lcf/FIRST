@@ -30,7 +30,7 @@ ALLOWLIST: dict[str, list[str]] = {
     # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
     # "metis": ["gpt-oss-120b"],
     "minerva": [
-        "nemotron-3-ultra",
+        "mistral-large-4-nvfp4",
         "inkling-bf16",
         "muse-spark-bf16",
         "beam-1.0-bf16",
