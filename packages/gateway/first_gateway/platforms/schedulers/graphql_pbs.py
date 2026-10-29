@@ -1,11 +1,12 @@
 import base64
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Self
 
-from httpx import AsyncClient
+from httpx import AsyncClient, HTTPError
 
 from first_common.schema.base_scheduler import (
     JobStatusInfo,
@@ -47,10 +48,33 @@ _HSN_RESOURCE_NAME = "hsn_ips"
 _PBS_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _STATUS_PAGE_SIZE = 500
 _STATUS_MAX_PAGES = 10
+_OPERATION_NAME = re.compile(r"\b(?:query|mutation)\s+(\w+)")
 _EXEC_VNODE_PART = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,254})"
     r"(?::[A-Za-z_][A-Za-z0-9_.-]*=[^():+\s=]+)+"
 )
+
+
+class _ThrottledWarning:
+    def __init__(self, interval_sec: float) -> None:
+        self.interval_sec = interval_sec
+        self._next_at = 0.0
+        self._suppressed = 0
+
+    def __call__(self, msg: str, *args: Any) -> None:
+        now = time.monotonic()
+        if now < self._next_at:
+            self._suppressed += 1
+            return
+        if self._suppressed:
+            msg += " (%d similar warnings suppressed in the last %ds)"
+            args = (*args, self._suppressed, self.interval_sec)
+        logger.warning(msg, *args)
+        self._suppressed = 0
+        self._next_at = now + self.interval_sec
+
+
+_warn_unresolved_head = _ThrottledWarning(interval_sec=10)
 
 
 def _parse_epoch_micros(raw: int | None) -> datetime | None:
@@ -130,7 +154,12 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
             head_ip = _head_node_ip(head)
             head_hostname = head.get("hostname") or None
         elif machines:
-            logger.warning("Cannot resolve execution head for PBS job %s", job_id)
+            _warn_unresolved_head(
+                "Cannot resolve execution head for PBS job %s: extension=%r machines=%r",
+                job_id,
+                node.get("extension"),
+                [(m.get("name"), m.get("hostname")) for m in machines],
+            )
 
     return JobStatusInfo(
         id=job_id,
@@ -189,7 +218,34 @@ class GraphQLPBSAdapter(SchedulerAdapter):
         request: dict[str, Any] = {"query": query}
         if variables is not None:
             request["variables"] = variables
-        resp = await self.client.post(self.url, json=request)
+        match = _OPERATION_NAME.search(query)
+        operation = match.group(1) if match else "<anonymous>"
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "GraphQL request %s -> %s: variables=%s query=%s",
+                operation,
+                self.url,
+                variables,
+                " ".join(query.split()),
+            )
+        start = time.monotonic()
+        try:
+            resp = await self.client.post(self.url, json=request)
+        except HTTPError:
+            logger.debug(
+                "GraphQL request %s failed after %.3fs",
+                operation,
+                time.monotonic() - start,
+                exc_info=True,
+            )
+            raise
+        logger.debug(
+            "GraphQL response %s: HTTP %d in %.3fs: %s",
+            operation,
+            resp.status_code,
+            time.monotonic() - start,
+            resp.text,
+        )
         resp.raise_for_status()
         body: dict[str, Any] = resp.json()
         if body.get("errors"):

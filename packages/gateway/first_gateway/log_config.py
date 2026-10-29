@@ -133,9 +133,16 @@ LOGGING: dict[str, Any] = {
 }
 
 
-def config_logging(log_level: str) -> None:
+def config_logging(log_level: str, overrides: dict[str, str] | None = None) -> None:
+    """Set every configured logger to `log_level`, then apply per-logger `overrides`."""
     for logger in LOGGING["loggers"].values():
         logger["level"] = log_level
+    for name, level in (overrides or {}).items():
+        LOGGING["loggers"][name] = {
+            "handlers": ["queue"],
+            "level": level,
+            "propagate": False,
+        }
     logging.config.dictConfig(LOGGING)
     listener = logging.getHandlerByName("queue").listener  # type: ignore[union-attr]
     listener.start()
