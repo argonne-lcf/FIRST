@@ -5,8 +5,14 @@
 venv/
 env/
 
+# Node (admin-console builds on the host; its dist is bind-mounted into nginx)
+**/node_modules/
+**/.playwright-mcp/
+
 # Python cache
-__pycache__/
+**/__pycache__/
+.mypy_cache/
+.ruff_cache/
 *.py[cod]
 *$py.class
 *.so
