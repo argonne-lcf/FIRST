@@ -74,7 +74,7 @@ class _ThrottledWarning:
         self._next_at = now + self.interval_sec
 
 
-_warn_unresolved_head = _ThrottledWarning(interval_sec=10)
+_warn_unresolved_head = _ThrottledWarning(interval_sec=60)
 
 
 def _parse_epoch_micros(raw: int | None) -> datetime | None:

@@ -109,10 +109,10 @@ class Settings(BaseSettings):
 
     prompt_storage_dir: Path = Path("prompt-records")
     log_level: str = "INFO"
-    # Per-logger levels applied on top of log_level, e.g.
-    # FIRST_LOG_LEVELS='{"first_gateway.platforms.schedulers.graphql_pbs": "INFO"}'
+    # Per-logger overrides (for selective debugging):
+    # FIRST_LOG_LEVELS='{"first_gateway.platforms.schedulers.graphql_pbs": "DEBUG"}'
     log_levels: dict[str, str] = {
-        "first_gateway.platforms.schedulers.graphql_pbs": "DEBUG",
+        "first_gateway.platforms.schedulers.graphql_pbs": "INFO",
     }
 
     db_url: SecretStr
