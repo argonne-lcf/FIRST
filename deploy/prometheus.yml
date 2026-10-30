@@ -56,3 +56,30 @@ scrape_configs:
   #     ca_file: /run/secrets/upstream/<set>/ca.crt
   #     cert_file: /run/secrets/upstream/<set>/client.crt
   #     key_file: /run/secrets/upstream/<set>/client.key
+
+  # Direct per-instance Minerva discovery; do not scrape its logical deployments.
+  # Discovery and target scrapes each need their own verified mTLS identity.
+  - job_name: minerva-vllm
+    scheme: https
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    honor_labels: false
+    follow_redirects: false
+    http_sd_configs:
+      - url: https://minerva-login-01.minerva.alcf.anl.gov:9443/discovery/v1/prometheus
+        refresh_interval: 15s
+        follow_redirects: false
+        tls_config:
+          ca_file: /run/secrets/upstream/minerva/ca.crt
+          cert_file: /run/secrets/upstream/minerva/client.crt
+          key_file: /run/secrets/upstream/minerva/client.key
+          server_name: minerva-login-01.minerva.alcf.anl.gov
+          insecure_skip_verify: false
+          min_version: TLS13
+    tls_config:
+      ca_file: /run/secrets/upstream/minerva/ca.crt
+      cert_file: /run/secrets/upstream/minerva/client.crt
+      key_file: /run/secrets/upstream/minerva/client.key
+      server_name: minerva-login-01.minerva.alcf.anl.gov
+      insecure_skip_verify: false
+      min_version: TLS13
