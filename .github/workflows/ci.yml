@@ -13,7 +13,8 @@ concurrency:
 jobs:
   checks:
     name: Checks & Tests
-    runs-on: ubuntu-latest
+    # Python 3.12.6 has no Ubuntu 26.04 build; keep the checks runner compatible.
+    runs-on: ubuntu-24.04
 
     services:
       postgres:
