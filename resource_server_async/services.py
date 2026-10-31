@@ -97,6 +97,23 @@ def _prepare_openai_request(
     return control, outbound, prompt
 
 
+def _adapt_mistral_developer_role(
+    payload: dict[str, Any], openai_endpoint: OpenAIEndpoint
+) -> None:
+    """Map OpenAI's developer role to Mistral's supported system role."""
+    field = "messages" if openai_endpoint == "chat/completions" else "input"
+    messages = payload.get(field)
+    if not isinstance(messages, list):
+        return
+
+    payload[field] = [
+        {**message, "role": "system"}
+        if isinstance(message, dict) and message.get("role") == "developer"
+        else message
+        for message in messages
+    ]
+
+
 async def get_all_endpoints(
     user: UserPydantic, cluster: BaseCluster
 ) -> list[BaseEndpoint]:
@@ -326,6 +343,8 @@ async def submit_openai_inference_request(
     # Keep endpoint aliases useful for routing, but make the backend and logs use
     # the canonical model selected by FIRST.
     outbound["model"] = endpoint.model
+    if endpoint.model.lower().startswith("mistral-"):
+        _adapt_mistral_developer_role(outbound, openai_endpoint)
 
     # Block access if the user is not allowed to use the endpoint
     endpoint.check_permission(context.user)

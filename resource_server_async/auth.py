@@ -26,6 +26,23 @@ from resource_server_async.schemas.structured_logs import UserPydantic
 log = logging.getLogger(__name__)
 
 
+def get_access_token_header(request: HttpRequest) -> str | None:
+    """Return the bearer credential, allowing Anthropic's key header on Messages.
+
+    Both accepted forms still carry a Globus access token and go through the
+    same introspection and authorization checks.
+    """
+    authorization = request.headers.get("Authorization")
+    if authorization:
+        return authorization
+
+    if request.path.rstrip("/").endswith("/v1/messages"):
+        api_key = request.headers.get("x-api-key")
+        if api_key:
+            return f"Bearer {api_key}"
+    return None
+
+
 @dataclass
 class ATVResponse:
     """
@@ -389,7 +406,7 @@ async def validate_access_token(request: HttpRequest) -> ATVResponse:
     """
 
     # Make sure the request is authenticated
-    auth_header = request.headers.get("Authorization")
+    auth_header = get_access_token_header(request)
     if not auth_header:
         raise Unauthorized(
             "Missing ('Authorization': 'Bearer <your-access-token>') in request headers."
