@@ -299,8 +299,17 @@ async def submit_openai_inference_request(
             f"framework {framework} not available on cluster {cluster.cluster_name}."
         )
 
-    # Verify that the openAI endpoint is available by the cluster
-    if openai_endpoint not in cluster.openai_endpoints:
+    # Token-count routes use the same model endpoint capability as their
+    # corresponding generation API and are forwarded only through direct APIs.
+    token_count_parent = {
+        "messages/count_tokens": "messages",
+        "responses/input_tokens": "responses",
+    }.get(openai_endpoint)
+    endpoint_is_available = openai_endpoint in cluster.openai_endpoints or (
+        token_count_parent is not None
+        and token_count_parent in cluster.openai_endpoints
+    )
+    if not endpoint_is_available:
         raise UnsupportedEndpoint(
             f"{openai_endpoint!r} not available on cluster {cluster.cluster_name!r}"
         )
@@ -308,6 +317,10 @@ async def submit_openai_inference_request(
     endpoint = await BaseEndpoint.load_adapter(
         cluster.cluster_name, framework, requested_model
     )
+    if token_count_parent is not None and not isinstance(endpoint, DirectAPIEndpoint):
+        raise UnsupportedEndpoint(
+            f"{openai_endpoint!r} requires a DirectAPI-backed endpoint."
+        )
     logger.debug(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
     )
@@ -371,10 +384,12 @@ async def submit_openai_inference_request(
     # If streaming, meaning that the StreamingHttpResponse object will be returned directly ...
     if isinstance(task_response, SubmitStreamingTaskResponse):
         # Return StreamingHttpResponse object directly
-        return task_response.response
+        response = task_response.response
+        return response
     # If not streaming, return the complete response and automate database operations
     else:
-        return task_response.result
+        result = task_response.result
+        return result
 
 
 async def submit_batch(

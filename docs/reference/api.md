@@ -89,3 +89,16 @@ For detailed API documentation, refer to the [OpenAI API Reference](https://plat
 ## Request Parameters
 
 See the [User Guide](../user-guide/index.md#request-parameters) for detailed parameter documentation.
+
+### Token Counting
+
+For direct API-backed models whose cluster enables `messages` or `responses`,
+FIRST forwards token-count requests to the corresponding model-server endpoint:
+
+```http
+POST /{cluster}/{framework}/v1/messages/count_tokens
+POST /{cluster}/{framework}/v1/responses/input_tokens
+```
+
+The model server determines the tokenizer and returned token count. A backend
+that does not implement these endpoints returns its own error response.
