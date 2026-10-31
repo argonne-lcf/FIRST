@@ -3,7 +3,11 @@ from typing import Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field
 
 OpenAIEndpoint: TypeAlias = Literal[
-    "chat/completions", "completions", "embeddings", "responses", "messages"
+    "chat/completions",
+    "completions",
+    "embeddings",
+    "responses",
+    "messages",
 ]
 CompletionInput: TypeAlias = str | list[str] | list[int] | list[list[int]]
 
