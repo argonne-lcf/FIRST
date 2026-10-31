@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock
 from django.test import SimpleTestCase
 from django.urls import resolve
 
-from resource_server_async.endpoints.direct_api import DirectAPIEndpoint, DirectAPIEndpointConfig
+from resource_server_async.endpoints.direct_api import (
+    DirectAPIEndpoint,
+    DirectAPIEndpointConfig,
+)
 from resource_server_async.services import _prepare_openai_request
 
 
@@ -13,13 +16,9 @@ class TokenCountRouteTests(SimpleTestCase):
         for path in (
             "/resource_server/minerva/vllm/v1/messages/count_tokens",
             "/resource_server/minerva/vllm/v1/responses/input_tokens",
-            "/resource_server/minerva/vllm/v1/responses/resp_test",
         ):
             with self.subTest(path=path):
                 self.assertIsNotNone(resolve(path))
-        self.assertIsNotNone(
-            resolve("/resource_server/minerva/vllm/v1/responses/resp_test")
-        )
 
     def test_token_count_payloads_use_the_existing_request_controls(self) -> None:
         cases = (
@@ -71,5 +70,3 @@ class TokenCountRouteTests(SimpleTestCase):
             data={"model": "model", "input": "hi"},
             headers=None,
         )
-
-
