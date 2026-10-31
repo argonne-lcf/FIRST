@@ -249,24 +249,25 @@ class DirectAPIEndpoint(BaseEndpoint):
         state["completed"] = True
 
     @staticmethod
-    def _sse_error_chunk(model: str, endpoint: str, message: str) -> str:
-        """Return an API error event, never assistant answer text."""
-        error = {"type": "api_error", "message": message}
-        if endpoint == "messages":
-            payload = {"type": "error", "error": error}
-            return f"event: error\ndata: {json.dumps(payload)}\n\n"
-        if endpoint == "responses":
-            failed = {
-                "type": "response.failed",
-                "response": {
-                    "object": "response",
-                    "model": model,
-                    "status": "failed",
-                    "error": error,
-                },
-            }
-            return f"event: response.failed\ndata: {json.dumps(failed)}\n\n"
-        return f"data: {json.dumps({'error': error})}\n\ndata: [DONE]\n\n"
+    def _sse_error_chunk(model: str, message: str) -> str:
+        """Return an OpenAI-compatible SSE error frame."""
+        chunk = {
+            "id": "chatcmpl-api-error",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": f"\n\n[ERROR] {message}",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        return f"data: {json.dumps(chunk)}\n\n"
 
     async def _submit_streaming_task_with_headers(
         self,
@@ -287,46 +288,27 @@ class DirectAPIEndpoint(BaseEndpoint):
 
         streaming_state = new_streaming_state()
 
-        # Read the first upstream frame before returning a streaming response.
-        # This lets HTTP-level upstream errors keep their real status instead of
-        # becoming a 200 SSE response with an error-looking assistant message.
-        upstream = self.__get_stream_chunks(url, request_data, captured_headers)
-        try:
-            first_chunk = await anext(upstream)
-        except StopAsyncIteration:
-            first_chunk = ""
-
         # SSE generator
         async def sse_generator() -> AsyncGenerator[str, None]:
             """Stream SSE chunks from API."""
 
             # For each streaming chunk ...
             try:
-                if first_chunk:
-                    streaming_state["total_chunks"] += 1
-                    self._collect_streaming_chunk(streaming_state, first_chunk)
-                    yield first_chunk
-                async for chunk in upstream:
+                async for chunk in self.__get_stream_chunks(
+                    url, request_data, captured_headers
+                ):
                     if chunk:
                         # Send chunk
                         streaming_state["total_chunks"] += 1
                         self._collect_streaming_chunk(streaming_state, chunk)
                         yield chunk  # Pass through SSE format
 
-            # Transport failures after the first frame cannot change the HTTP
-            # status, so terminate using the endpoint's SSE error format.
+            # Send error as OpenAI streaming chunk format (compatible with OpenAI clients)
             except Exception as e:
                 error_str = str(e)
                 streaming_state["error"] = error_str
-                # Keep transport details (which may contain internal hostnames)
-                # in server logs only. Once SSE headers are sent, report a
-                # protocol error event and stop the stream.
-                log.exception("Upstream stream failed for %s", self.endpoint_slug)
-                yield self._sse_error_chunk(
-                    self.model,
-                    endpoint,
-                    "The upstream inference request failed while streaming.",
-                )
+                yield self._sse_error_chunk(self.model, error_str)
+                yield "data: [DONE]\n\n"
             finally:
                 self._finalize_stream(streaming_state)
 
@@ -378,14 +360,10 @@ class DirectAPIEndpoint(BaseEndpoint):
                     # Return error if something went wrong
                     if response.status_code != 200:
                         error_text = await response.aread()
-                        log.warning(
-                            "Upstream stream request failed with status %s: %s",
-                            response.status_code,
-                            error_text.decode(errors="replace")[:512],
-                        )
-                        raise EndpointError(
-                            "Upstream inference request failed.",
-                            status_code=response.status_code,
+                        raise ValueError(
+                            f"Error: Could not send stream API call to {url} "
+                            f"(status code: {response.status_code}): "
+                            f"{error_text.decode(errors='replace').strip()}"
                         )
 
                     # Stream the response
@@ -394,22 +372,14 @@ class DirectAPIEndpoint(BaseEndpoint):
                             yield chunk
 
         # Errors
-        except EndpointError:
-            raise
-        except httpx.TimeoutException as e:
-            raise EndpointError(
-                "Timeout calling the upstream inference endpoint.", status_code=504
-            ) from e
+        except httpx.TimeoutException:
+            raise ValueError(
+                f"Error: Timeout calling stream API at {url} (timeout: {self.config.api_request_timeout})"
+            )
         except httpx.HTTPError as e:
-            raise EndpointError(
-                "HTTP error calling the upstream inference endpoint.",
-                status_code=502,
-            ) from e
+            raise ValueError(f"Error: HTTP error calling stream API at {url}: {e}")
         except Exception as e:
-            raise EndpointError(
-                "Unexpected error calling the upstream inference endpoint.",
-                status_code=502,
-            ) from e
+            raise ValueError(f"Error: Unexpected error calling stream API: {e}")
 
     # Update streaming log
     async def _update_streaming_log(

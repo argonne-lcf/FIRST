@@ -10,21 +10,11 @@ http://your-gateway-domain:8000/resource_server
 
 ## Authentication
 
-Requests require a Globus access token. Use `Authorization: Bearer` for the
-OpenAI-compatible routes. The Anthropic Messages route also accepts the same
-Globus token in `x-api-key`:
+All requests require a Globus access token in the Authorization header:
 
 ```http
 Authorization: Bearer <globus-access-token>
 ```
-
-```http
-POST /{cluster}/{framework}/v1/messages
-x-api-key: <globus-access-token>
-anthropic-version: 2023-06-01
-```
-
-Both headers use the same Globus token validation and authorization checks.
 
 ## Endpoints
 
