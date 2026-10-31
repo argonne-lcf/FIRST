@@ -3,6 +3,7 @@
 import time
 import uuid
 from concurrent.futures import Future
+from contextlib import asynccontextmanager
 
 from django.http import StreamingHttpResponse
 from django.utils import timezone
@@ -246,6 +247,18 @@ class MockAsyncClient(AsyncClient):
         # url = args[0] if args else kwargs.get("url", "unknown")
         # print(f"[MOCK] Intercepted HTTP POST to: {url}")
         return AsyncClientPostResponse(status_code=200, text=MOCK_RESPONSE)
+
+    @asynccontextmanager
+    async def stream(self, *args, **kwargs):
+        yield MockAsyncStreamResponse()
+
+
+class MockAsyncStreamResponse:
+    status_code = 200
+
+    async def aiter_text(self):
+        for chunk in mock_sse_generator():
+            yield chunk.decode("utf-8")
 
 
 # =============
