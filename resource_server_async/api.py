@@ -9,7 +9,7 @@ from ninja.errors import HttpError
 from ninja.security import HttpBearer
 from ninja.throttling import AnonRateThrottle, AuthRateThrottle, BaseThrottle
 
-from resource_server_async.auth import get_access_token_header, validate_access_token
+from resource_server_async.auth import validate_access_token
 from resource_server_async.cache import should_throttle
 from resource_server_async.schemas.structured_logs import UserPydantic
 
@@ -57,11 +57,11 @@ class GlobalAuth(HttpBearer):
 
     # Custom error message if Authorization headers is missing
     async def __call__(self, request: HttpRequest) -> UserPydantic:
-        auth = get_access_token_header(request)
+        auth = request.headers.get("Authorization")
         if not auth:
             raise HttpError(
                 401,
-                "Error: Missing a bearer access token (or x-api-key on /v1/messages).",
+                "Error: Missing ('Authorization': 'Bearer <your-access-token>') in request headers.",
             )
         return await self.authenticate(
             request, None
