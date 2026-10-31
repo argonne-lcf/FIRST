@@ -102,9 +102,7 @@ async def retrieve_response(
     framework: str,
     response_id: str,
 ) -> dict[str, Any]:
-    return await get_stored_response(
-        request.auth, cluster_name, framework, response_id
-    )
+    return await get_stored_response(request.auth, cluster_name, framework, response_id)
 
 
 @router.delete("/{cluster_name}/{framework}/v1/responses/{response_id}")

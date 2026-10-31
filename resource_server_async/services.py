@@ -1,7 +1,8 @@
 import json
 import logging
 import uuid
-from typing import Any
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, cast
 
 from django.conf import settings
 from django.http import StreamingHttpResponse
@@ -202,7 +203,9 @@ async def _store_responses_result(
 
 def _responses_result_from_sse_event(frame: bytes) -> dict[str, Any] | None:
     """Extract a completed Responses object from one SSE event."""
-    data = [line[5:].strip() for line in frame.split(b"\n") if line.startswith(b"data:")]
+    data = [
+        line[5:].strip() for line in frame.split(b"\n") if line.startswith(b"data:")
+    ]
     if not data:
         return None
     try:
@@ -214,7 +217,7 @@ def _responses_result_from_sse_event(frame: bytes) -> dict[str, Any] | None:
         and event.get("type") == "response.completed"
         and isinstance(event.get("response"), dict)
     ):
-        return event["response"]
+        return cast(dict[str, Any], event["response"])
     return None
 
 
@@ -231,10 +234,18 @@ def _store_streamed_responses_result(
     """Persist a completed streamed response after forwarding it to the caller."""
     content = response.streaming_content
 
+    async def iter_stream_content() -> AsyncIterator[bytes]:
+        if response.is_async:
+            async for chunk in cast(AsyncIterator[bytes], content):
+                yield chunk
+        else:
+            for chunk in cast(Iterator[bytes], content):
+                yield chunk
+
     async def store_after_stream() -> Any:
         pending = b""
         completed_response: dict[str, Any] | None = None
-        async for chunk in content:
+        async for chunk in iter_stream_content():
             encoded = chunk if isinstance(chunk, bytes) else str(chunk).encode()
             pending += encoded.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
             while b"\n\n" in pending:
@@ -287,7 +298,7 @@ async def get_stored_response(
 
     endpoint = await BaseEndpoint.load_adapter(cluster_name, framework, stored.model)
     endpoint.check_permission(user)
-    return stored.response
+    return cast(dict[str, Any], stored.response)
 
 
 async def delete_stored_response(
@@ -565,14 +576,15 @@ async def submit_openai_inference_request(
     response_history: list[dict[str, Any]] = []
     response_request_input: list[dict[str, Any]] = []
     if openai_endpoint == "responses":
-        response_history, response_request_input = (
-            await _prepare_responses_continuation(
-                context.user.id,
-                cluster.cluster_name,
-                framework,
-                endpoint.model,
-                outbound,
-            )
+        (
+            response_history,
+            response_request_input,
+        ) = await _prepare_responses_continuation(
+            context.user.id,
+            cluster.cluster_name,
+            framework,
+            endpoint.model,
+            outbound,
         )
 
     # Return 429 status if TPM limits are exceeded

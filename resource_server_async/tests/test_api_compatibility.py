@@ -66,7 +66,10 @@ class ResponsesPassthroughTests(SimpleTestCase):
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": "Say hi."},
-                        {"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,AA==",
+                        },
                     ],
                 }
             ],
@@ -135,7 +138,11 @@ class TokenCountRouteTests(SimpleTestCase):
         )
 
         await endpoint._submit_task_with_headers(
-            {"openai_endpoint": "responses/input_tokens", "model": "model", "input": "hi"}
+            {
+                "openai_endpoint": "responses/input_tokens",
+                "model": "model",
+                "input": "hi",
+            }
         )
 
         post.assert_awaited_once_with(
@@ -187,7 +194,7 @@ class StoredResponsesTests(TestCase):
 
     async def test_streamed_completed_response_is_stored(self) -> None:
         event = (
-            b'event: response.completed\ndata: '
+            b"event: response.completed\ndata: "
             b'{"type":"response.completed","response":{"id":"resp_stream",'
             b'"output":[]}}\n\n'
         )
@@ -290,13 +297,13 @@ class MessagesApiKeyTests(SimpleTestCase):
             HTTP_X_API_KEY="api-key-token",
         )
 
-        self.assertEqual(
-            get_access_token_header(request), "Bearer authorization-token"
-        )
+        self.assertEqual(get_access_token_header(request), "Bearer authorization-token")
 
 
 class StreamingUpstreamErrorTests(SimpleTestCase):
-    async def test_first_upstream_error_propagates_http_status_before_streaming(self) -> None:
+    async def test_first_upstream_error_propagates_http_status_before_streaming(
+        self,
+    ) -> None:
         endpoint = object.__new__(DirectAPIEndpoint)
         config = type("Config", (), {"api_url": "https://api.example/v1"})()
         setattr(endpoint, "_DirectAPIEndpoint__config", config)
@@ -307,6 +314,7 @@ class StreamingUpstreamErrorTests(SimpleTestCase):
         )
         setattr(endpoint, "_BaseEndpoint__endpoint_slug", "direct-test")
         setattr(endpoint, "_BaseEndpoint__model", "model")
+
         async def failed_stream(*args: object, **kwargs: object):
             raise EndpointError("Upstream inference request failed.", status_code=400)
             yield ""  # Make this an async generator.
