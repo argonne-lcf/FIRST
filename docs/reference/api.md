@@ -10,21 +10,11 @@ http://your-gateway-domain:8000/resource_server
 
 ## Authentication
 
-Requests require a Globus access token. Use `Authorization: Bearer` for the
-OpenAI-compatible routes. The Anthropic Messages route also accepts the same
-Globus token in `x-api-key`:
+All requests require a Globus access token in the Authorization header:
 
 ```http
 Authorization: Bearer <globus-access-token>
 ```
-
-```http
-POST /{cluster}/{framework}/v1/messages
-x-api-key: <globus-access-token>
-anthropic-version: 2023-06-01
-```
-
-Both headers use the same Globus token validation and authorization checks.
 
 ## Endpoints
 
@@ -87,18 +77,18 @@ object:
 Capability metadata describes the deployed model API. It is intentionally
 client-neutral and must not contain backend connection details or secrets.
 
-### Token Counting
-
-For direct API-backed models whose cluster enables `messages` or `responses`,
-FIRST forwards token-count requests to the corresponding model-server endpoint:
+### Batch Processing
 
 ```http
-POST /{cluster}/{framework}/v1/messages/count_tokens
-POST /{cluster}/{framework}/v1/responses/input_tokens
+POST /v1/batches
+GET /v1/batches/{batch_id}
 ```
 
-The model server determines the tokenizer and returned token count. A backend
-that does not implement these endpoints returns its own error response.
+For detailed API documentation, refer to the [OpenAI API Reference](https://platform.openai.com/docs/api-reference) as FIRST follows the same schema.
+
+## Request Parameters
+
+See the [User Guide](../user-guide/index.md#request-parameters) for detailed parameter documentation.
 
 ### Responses
 
@@ -114,16 +104,3 @@ DELETE /{cluster}/{framework}/v1/responses/{response_id}
 
 Pass `previous_response_id` to continue a stored response. FIRST supplies the
 stored conversation context to the configured model server.
-
-### Batch Processing
-
-```http
-POST /v1/batches
-GET /v1/batches/{batch_id}
-```
-
-For detailed API documentation, refer to the [OpenAI API Reference](https://platform.openai.com/docs/api-reference) as FIRST follows the same schema.
-
-## Request Parameters
-
-See the [User Guide](../user-guide/index.md#request-parameters) for detailed parameter documentation.

@@ -1,7 +1,8 @@
 import json
 import logging
 import uuid
-from typing import Any
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, cast
 
 from django.conf import settings
 from django.http import StreamingHttpResponse
@@ -97,24 +98,6 @@ def _prepare_openai_request(
     prompt = payload[OPENAI_PROMPT_FIELDS[openai_endpoint]]
     return control, outbound, prompt
 
-
-def _adapt_mistral_developer_role(
-    payload: dict[str, Any], openai_endpoint: OpenAIEndpoint
-) -> None:
-    """Map OpenAI's developer role to Mistral's supported system role."""
-    field = "messages" if openai_endpoint == "chat/completions" else "input"
-    messages = payload.get(field)
-    if not isinstance(messages, list):
-        return
-
-    payload[field] = [
-        {**message, "role": "system"}
-        if isinstance(message, dict) and message.get("role") == "developer"
-        else message
-        for message in messages
-    ]
-
-
 def _responses_input_items(value: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize Responses input for gateway-managed conversation history."""
     if isinstance(value, str):
@@ -202,7 +185,9 @@ async def _store_responses_result(
 
 def _responses_result_from_sse_event(frame: bytes) -> dict[str, Any] | None:
     """Extract a completed Responses object from one SSE event."""
-    data = [line[5:].strip() for line in frame.split(b"\n") if line.startswith(b"data:")]
+    data = [
+        line[5:].strip() for line in frame.split(b"\n") if line.startswith(b"data:")
+    ]
     if not data:
         return None
     try:
@@ -214,7 +199,7 @@ def _responses_result_from_sse_event(frame: bytes) -> dict[str, Any] | None:
         and event.get("type") == "response.completed"
         and isinstance(event.get("response"), dict)
     ):
-        return event["response"]
+        return cast(dict[str, Any], event["response"])
     return None
 
 
@@ -231,10 +216,18 @@ def _store_streamed_responses_result(
     """Persist a completed streamed response after forwarding it to the caller."""
     content = response.streaming_content
 
+    async def iter_stream_content() -> AsyncIterator[bytes]:
+        if response.is_async:
+            async for chunk in cast(AsyncIterator[bytes], content):
+                yield chunk
+        else:
+            for chunk in cast(Iterator[bytes], content):
+                yield chunk
+
     async def store_after_stream() -> Any:
         pending = b""
         completed_response: dict[str, Any] | None = None
-        async for chunk in content:
+        async for chunk in iter_stream_content():
             encoded = chunk if isinstance(chunk, bytes) else str(chunk).encode()
             pending += encoded.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
             while b"\n\n" in pending:
@@ -287,7 +280,7 @@ async def get_stored_response(
 
     endpoint = await BaseEndpoint.load_adapter(cluster_name, framework, stored.model)
     endpoint.check_permission(user)
-    return stored.response
+    return cast(dict[str, Any], stored.response)
 
 
 async def delete_stored_response(
@@ -516,17 +509,8 @@ async def submit_openai_inference_request(
             f"framework {framework} not available on cluster {cluster.cluster_name}."
         )
 
-    # Token-count routes use the same model endpoint capability as their
-    # corresponding generation API and are forwarded only through direct APIs.
-    token_count_parent = {
-        "messages/count_tokens": "messages",
-        "responses/input_tokens": "responses",
-    }.get(openai_endpoint)
-    endpoint_is_available = openai_endpoint in cluster.openai_endpoints or (
-        token_count_parent is not None
-        and token_count_parent in cluster.openai_endpoints
-    )
-    if not endpoint_is_available:
+    # Verify that the OpenAI endpoint is available by the cluster
+    if openai_endpoint not in cluster.openai_endpoints:
         raise UnsupportedEndpoint(
             f"{openai_endpoint!r} not available on cluster {cluster.cluster_name!r}"
         )
@@ -534,10 +518,6 @@ async def submit_openai_inference_request(
     endpoint = await BaseEndpoint.load_adapter(
         cluster.cluster_name, framework, requested_model
     )
-    if token_count_parent is not None and not isinstance(endpoint, DirectAPIEndpoint):
-        raise UnsupportedEndpoint(
-            f"{openai_endpoint!r} requires a DirectAPI-backed endpoint."
-        )
     logger.debug(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
     )
@@ -556,24 +536,9 @@ async def submit_openai_inference_request(
     # Keep endpoint aliases useful for routing, but make the backend and logs use
     # the canonical model selected by FIRST.
     outbound["model"] = endpoint.model
-    if endpoint.model.lower().startswith("mistral-"):
-        _adapt_mistral_developer_role(outbound, openai_endpoint)
 
     # Block access if the user is not allowed to use the endpoint
     endpoint.check_permission(context.user)
-
-    response_history: list[dict[str, Any]] = []
-    response_request_input: list[dict[str, Any]] = []
-    if openai_endpoint == "responses":
-        response_history, response_request_input = (
-            await _prepare_responses_continuation(
-                context.user.id,
-                cluster.cluster_name,
-                framework,
-                endpoint.model,
-                outbound,
-            )
-        )
 
     # Return 429 status if TPM limits are exceeded
     tpm_check = endpoint.check_token_rate_limit(context.user)
@@ -617,31 +582,10 @@ async def submit_openai_inference_request(
     if isinstance(task_response, SubmitStreamingTaskResponse):
         # Return StreamingHttpResponse object directly
         response = task_response.response
-        if openai_endpoint == "responses" and outbound.get("store") is True:
-            response = _store_streamed_responses_result(
-                response,
-                user_id=context.user.id,
-                cluster=cluster.cluster_name,
-                framework=framework,
-                model=endpoint.model,
-                history=response_history,
-                request_input=response_request_input,
-            )
         return response
     # If not streaming, return the complete response and automate database operations
     else:
         result = task_response.result
-        if openai_endpoint == "responses":
-            result = await _store_responses_result(
-                result,
-                store=outbound.get("store") is True,
-                user_id=context.user.id,
-                cluster=cluster.cluster_name,
-                framework=framework,
-                model=endpoint.model,
-                history=response_history,
-                request_input=response_request_input,
-            )
         return result
 
 

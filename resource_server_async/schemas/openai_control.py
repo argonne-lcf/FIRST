@@ -8,8 +8,6 @@ OpenAIEndpoint: TypeAlias = Literal[
     "embeddings",
     "responses",
     "messages",
-    "messages/count_tokens",
-    "responses/input_tokens",
 ]
 CompletionInput: TypeAlias = str | list[str] | list[int] | list[list[int]]
 
@@ -52,8 +50,6 @@ OPENAI_CONTROL_MODELS: dict[OpenAIEndpoint, type[OpenAIControlFields]] = {
     "embeddings": EmbeddingsControl,
     "responses": ResponsesControl,
     "messages": AnthropicMessagesControl,
-    "messages/count_tokens": AnthropicMessagesControl,
-    "responses/input_tokens": ResponsesControl,
 }
 
 OPENAI_PROMPT_FIELDS: dict[OpenAIEndpoint, str] = {
@@ -62,8 +58,6 @@ OPENAI_PROMPT_FIELDS: dict[OpenAIEndpoint, str] = {
     "embeddings": "input",
     "responses": "input",
     "messages": "messages",
-    "messages/count_tokens": "messages",
-    "responses/input_tokens": "input",
 }
 
 # These fields exist only inside FIRST's adapter protocol. A client may use the

@@ -33,7 +33,6 @@ from resource_server_async.endpoints.globus_compute import (
     GlobusComputeEndpoint,
     GlobusComputeEndpointConfig,
 )
-from resource_server_async.errors import EndpointError
 from resource_server_async.logging import (
     RequestContext,
     _request_context,
@@ -47,6 +46,7 @@ from resource_server_async.schemas.structured_logs import (
 )
 from resource_server_async.streaming import (
     collect_and_aggregate_streaming_content,
+    extract_status_code_from_error,
     sample_streaming_frames,
     update_streaming_log_async,
 )
@@ -533,13 +533,8 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
 
                 @asynccontextmanager
                 async def fake_stream(*args: object, **kwargs: object):
-                    async def stream_chunks() -> AsyncGenerator[str, None]:
-                        yield CONTENT_CHUNK
-                        raise error
-
-                    yield SimpleNamespace(
-                        status_code=200, aiter_text=stream_chunks
-                    )
+                    raise error
+                    yield  # pragma: no cover
 
                 endpoint._client = SimpleNamespace(stream=fake_stream)
                 with (
@@ -555,20 +550,15 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
                             _ = [chunk async for chunk in result.response]
                     else:
                         chunks = [chunk async for chunk in result.response]
-                        self.assertEqual(chunks[0], CONTENT_CHUNK.encode())
-                        self.assertIn(b'"type": "api_error"', chunks[-1])
-                        self.assertNotIn(b"upstream failed", chunks[-1])
-                        self.assertNotIn(b"[ERROR]", chunks[-1])
+                        self.assertIn(b"upstream failed", chunks[0])
+                        self.assertEqual(chunks[-1], b"data: [DONE]\n\n")
                     create_task.assert_called_once()
                     await create_task.call_args.args[0]
 
                 state = final_log.call_args.args[1]
                 self.assertTrue(state["completed"])
                 if isinstance(error, ValueError):
-                    self.assertEqual(
-                        state["error"],
-                        "Unexpected error calling the upstream inference endpoint.",
-                    )
+                    self.assertEqual(state["error"], "upstream failed")
 
 
 class StreamingUsageOptInTests(SimpleTestCase):
@@ -1338,12 +1328,14 @@ class DirectAPIUpstreamStatusTests(SimpleTestCase):
 
         get_stream_chunks = getattr(endpoint, "_DirectAPIEndpoint__get_stream_chunks")
         with patch.object(direct_api.httpx, "AsyncClient", new=fake_client):
-            with self.assertRaises(EndpointError) as raised:
+            with self.assertRaises(ValueError) as raised:
                 await get_stream_chunks(
                     "https://api.example/v1/chat/completions", {}, {}
                 ).__anext__()
 
-        self.assertEqual(raised.exception.status_code, 503)
+        message = str(raised.exception)
+        self.assertIn("status code: 503", message)
+        self.assertEqual(extract_status_code_from_error(message), 503)
 
 
 class EstimateLineAccessIdTests(SimpleTestCase):
