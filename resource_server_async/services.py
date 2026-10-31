@@ -98,6 +98,7 @@ def _prepare_openai_request(
     prompt = payload[OPENAI_PROMPT_FIELDS[openai_endpoint]]
     return control, outbound, prompt
 
+
 def _responses_input_items(value: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize Responses input for gateway-managed conversation history."""
     if isinstance(value, str):

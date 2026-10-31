@@ -134,5 +134,3 @@ class StoredResponsesTests(TestCase):
         self.assertFalse(
             await StoredResponse.objects.filter(response_id="resp_delete").aexists()
         )
-
-
