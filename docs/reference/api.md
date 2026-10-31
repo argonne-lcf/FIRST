@@ -87,6 +87,34 @@ object:
 Capability metadata describes the deployed model API. It is intentionally
 client-neutral and must not contain backend connection details or secrets.
 
+### Token Counting
+
+For direct API-backed models whose cluster enables `messages` or `responses`,
+FIRST forwards token-count requests to the corresponding model-server endpoint:
+
+```http
+POST /{cluster}/{framework}/v1/messages/count_tokens
+POST /{cluster}/{framework}/v1/responses/input_tokens
+```
+
+The model server determines the tokenizer and returned token count. A backend
+that does not implement these endpoints returns its own error response.
+
+### Responses
+
+Responses requests with `store: true` are stored by FIRST. Stored responses are
+private to the authenticated caller and can be retrieved, continued, or
+deleted:
+
+```http
+POST /{cluster}/{framework}/v1/responses
+GET /{cluster}/{framework}/v1/responses/{response_id}
+DELETE /{cluster}/{framework}/v1/responses/{response_id}
+```
+
+Pass `previous_response_id` to continue a stored response. FIRST supplies the
+stored conversation context to the configured model server.
+
 ### Batch Processing
 
 ```http
