@@ -1,4 +1,6 @@
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import patch
 
@@ -65,6 +67,12 @@ class FirstV2ClientTests(SimpleTestCase):
                 streamed = await endpoint.submit_streaming_task(
                     {"model_params": {"model": "alias"}}
                 )
+                self.assertEqual(streamed.response["X-Accel-Buffering"], "no")
+                self.assertEqual(streamed.response["Cache-Control"], "no-cache")
+                self.assertEqual(streamed.response["Access-Control-Allow-Origin"], "*")
+                self.assertEqual(
+                    streamed.response["Access-Control-Allow-Headers"], "Cache-Control"
+                )
                 chunks = [chunk async for chunk in streamed.response]
             self.assertIn(b"data: [DONE]", b"".join(chunks))
             self.assertEqual(len(requests), 2)
@@ -80,6 +88,49 @@ class FirstV2ClientTests(SimpleTestCase):
                 {"include_usage": True},
             )
         finally:
+            await endpoint._client.aclose()
+
+    async def test_streaming_heartbeat_is_forwarded_without_waiting_for_data(
+        self,
+    ) -> None:
+        release_data = asyncio.Event()
+        heartbeat = b": keepalive during prefill\n\n"
+        data = b'data: {"usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}\n\ndata: [DONE]\n\n'
+
+        class Stream(httpx.AsyncByteStream):
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                yield heartbeat
+                await release_data.wait()
+                yield data
+
+        real_client = httpx.AsyncClient
+        with patch.object(
+            first_v2.httpx,
+            "AsyncClient",
+            side_effect=lambda **kwargs: real_client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(
+                        200,
+                        stream=Stream(),
+                        headers={"Content-Type": "text/event-stream"},
+                    )
+                ),
+                **kwargs,
+            ),
+        ):
+            endpoint = self.make_endpoint()
+        try:
+            with patch.object(first_v2, "get_request_context", side_effect=LookupError):
+                streamed = await endpoint.submit_streaming_task({"model_params": {}})
+                iterator = streamed.response.__aiter__()
+                first = await asyncio.wait_for(anext(iterator), timeout=1)
+                self.assertEqual(first, heartbeat)
+                self.assertFalse(release_data.is_set())
+                release_data.set()
+                remaining = [chunk async for chunk in iterator]
+            self.assertEqual(b"".join(remaining), data)
+        finally:
+            release_data.set()
             await endpoint._client.aclose()
 
     async def test_tls_proxy_and_permission_configuration_is_preserved(self) -> None:

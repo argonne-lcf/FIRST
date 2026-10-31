@@ -475,8 +475,9 @@ def include_streaming_usage(body: dict[str, Any], endpoint: str | None) -> None:
 
 
 def create_streaming_response_headers() -> dict[str, str]:
-    """Create standard headers for SSE streaming responses"""
+    """SSE headers, including NGINX buffering opt-out for timely heartbeats."""
     return {
+        "X-Accel-Buffering": "no",
         "Cache-Control": "no-cache",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Headers": "Cache-Control",
