@@ -537,9 +537,7 @@ class FirstV2StreamingFinalLogTests(SimpleTestCase):
                         yield CONTENT_CHUNK
                         raise error
 
-                    yield SimpleNamespace(
-                        status_code=200, aiter_text=stream_chunks
-                    )
+                    yield SimpleNamespace(status_code=200, aiter_text=stream_chunks)
 
                 endpoint._client = SimpleNamespace(stream=fake_stream)
                 with (

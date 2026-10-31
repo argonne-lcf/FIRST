@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock
 from django.test import SimpleTestCase
 
 from resource_server_async.endpoints.direct_api import DirectAPIEndpoint
-from resource_server_async.endpoints.first_v2 import FirstV2Endpoint, FirstV2EndpointConfig
+from resource_server_async.endpoints.first_v2 import (
+    FirstV2Endpoint,
+    FirstV2EndpointConfig,
+)
 from resource_server_async.errors import EndpointError
 
 
