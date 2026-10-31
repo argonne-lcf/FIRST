@@ -268,3 +268,24 @@ class Cluster(models.Model):
     # String function
     def __str__(self) -> str:
         return f"<Cluster {self.cluster_name}>"
+
+
+class StoredResponse(models.Model):
+    """Responses API records explicitly stored by an authenticated caller."""
+
+    response_id = models.CharField(max_length=200, primary_key=True)
+    user_id = models.CharField(max_length=100, db_index=True)
+    cluster = models.CharField(max_length=100)
+    framework = models.CharField(max_length=100)
+    model = models.CharField(max_length=250)
+    response = models.JSONField()
+    conversation = models.JSONField(default=list)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["user_id", "cluster", "framework"],
+                name="idx_stored_response_owner",
+            )
+        ]

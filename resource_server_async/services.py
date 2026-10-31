@@ -28,12 +28,13 @@ from .errors import (
     EndpointNotFound,
     InvalidRequest,
     QuotaExceeded,
+    ResponseNotFound,
     TooManyRequests,
     UnsupportedEndpoint,
     UnsupportedFramework,
 )
 from .logging import RequestContext
-from .models import BatchLog, Cluster, Endpoint
+from .models import BatchLog, Cluster, Endpoint, StoredResponse
 from .schemas import GlobusStagingAreaPrepared
 from .schemas.batch import (
     BatchStatus,
@@ -112,6 +113,205 @@ def _adapt_mistral_developer_role(
         else message
         for message in messages
     ]
+
+
+def _responses_input_items(value: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize Responses input for gateway-managed conversation history."""
+    if isinstance(value, str):
+        return [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": value}],
+            }
+        ]
+    return list(value)
+
+
+async def _prepare_responses_continuation(
+    user_id: str,
+    cluster: str,
+    framework: str,
+    model: str,
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve previous_response_id into input context held by FIRST."""
+    previous_response_id = payload.pop("previous_response_id", None)
+    request_input = _responses_input_items(payload["input"])
+    if previous_response_id is None:
+        return [], request_input
+
+    stored = await StoredResponse.objects.filter(
+        response_id=previous_response_id,
+        user_id=user_id,
+        cluster=cluster,
+        framework=framework,
+    ).afirst()
+    if stored is None or stored.model != model:
+        raise ResponseNotFound(
+            f"Response {previous_response_id!r} was not found for this request."
+        )
+
+    history = stored.conversation
+    if not isinstance(history, list):
+        raise ResponseNotFound(
+            f"Response {previous_response_id!r} has no reusable conversation state."
+        )
+    payload["input"] = [*history, *request_input]
+    return history, request_input
+
+
+async def _store_responses_result(
+    response: Any,
+    *,
+    store: bool,
+    user_id: str,
+    cluster: str,
+    framework: str,
+    model: str,
+    history: list[dict[str, Any]],
+    request_input: list[dict[str, Any]],
+) -> Any:
+    """Persist an explicitly stored Responses result and its input context."""
+    if not store:
+        return response
+    if not isinstance(response, dict):
+        raise InvalidRequest("The upstream Responses result cannot be stored.")
+
+    stored_response = dict(response)
+    response_id = stored_response.get("id")
+    if not isinstance(response_id, str) or not response_id:
+        response_id = f"resp_{uuid.uuid4().hex}"
+        stored_response["id"] = response_id
+
+    conversation = [*history, *request_input]
+    output = stored_response.get("output")
+    if isinstance(output, list):
+        conversation.extend(item for item in output if isinstance(item, dict))
+
+    await StoredResponse.objects.acreate(
+        response_id=response_id,
+        user_id=user_id,
+        cluster=cluster,
+        framework=framework,
+        model=model,
+        response=stored_response,
+        conversation=conversation,
+    )
+    return stored_response
+
+
+def _responses_result_from_sse_event(frame: bytes) -> dict[str, Any] | None:
+    """Extract a completed Responses object from one SSE event."""
+    data = [line[5:].strip() for line in frame.split(b"\n") if line.startswith(b"data:")]
+    if not data:
+        return None
+    try:
+        event = json.loads(b"\n".join(data))
+    except json.JSONDecodeError:
+        return None
+    if (
+        isinstance(event, dict)
+        and event.get("type") == "response.completed"
+        and isinstance(event.get("response"), dict)
+    ):
+        return event["response"]
+    return None
+
+
+def _store_streamed_responses_result(
+    response: StreamingHttpResponse,
+    *,
+    user_id: str,
+    cluster: str,
+    framework: str,
+    model: str,
+    history: list[dict[str, Any]],
+    request_input: list[dict[str, Any]],
+) -> StreamingHttpResponse:
+    """Persist a completed streamed response after forwarding it to the caller."""
+    content = response.streaming_content
+
+    async def store_after_stream() -> Any:
+        pending = b""
+        completed_response: dict[str, Any] | None = None
+        async for chunk in content:
+            encoded = chunk if isinstance(chunk, bytes) else str(chunk).encode()
+            pending += encoded.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            while b"\n\n" in pending:
+                frame, pending = pending.split(b"\n\n", maxsplit=1)
+                completed_response = (
+                    _responses_result_from_sse_event(frame) or completed_response
+                )
+            yield chunk
+
+        if pending:
+            completed_response = (
+                _responses_result_from_sse_event(pending) or completed_response
+            )
+        if completed_response is not None:
+            try:
+                await _store_responses_result(
+                    completed_response,
+                    store=True,
+                    user_id=user_id,
+                    cluster=cluster,
+                    framework=framework,
+                    model=model,
+                    history=history,
+                    request_input=request_input,
+                )
+            except Exception:
+                logger.exception("Failed to store completed Responses result")
+
+    response.streaming_content = store_after_stream()
+    return response
+
+
+async def get_stored_response(
+    user: UserPydantic,
+    cluster_name: str,
+    framework: str,
+    response_id: str,
+) -> dict[str, Any]:
+    """Return a stored Responses object to its owner after current auth checks."""
+    cluster = await BaseCluster.load_adapter(cluster_name)
+    cluster.check_permission(user)
+    stored = await StoredResponse.objects.filter(
+        response_id=response_id,
+        user_id=user.id,
+        cluster=cluster_name,
+        framework=framework,
+    ).afirst()
+    if stored is None or framework not in cluster.frameworks:
+        raise ResponseNotFound(f"Response {response_id!r} was not found.")
+
+    endpoint = await BaseEndpoint.load_adapter(cluster_name, framework, stored.model)
+    endpoint.check_permission(user)
+    return stored.response
+
+
+async def delete_stored_response(
+    user: UserPydantic,
+    cluster_name: str,
+    framework: str,
+    response_id: str,
+) -> dict[str, Any]:
+    """Delete a stored Responses object owned by the authenticated caller."""
+    cluster = await BaseCluster.load_adapter(cluster_name)
+    cluster.check_permission(user)
+    stored = await StoredResponse.objects.filter(
+        response_id=response_id,
+        user_id=user.id,
+        cluster=cluster_name,
+        framework=framework,
+    ).afirst()
+    if stored is None or framework not in cluster.frameworks:
+        raise ResponseNotFound(f"Response {response_id!r} was not found.")
+
+    endpoint = await BaseEndpoint.load_adapter(cluster_name, framework, stored.model)
+    endpoint.check_permission(user)
+    await stored.adelete()
+    return {"id": response_id, "object": "response.deleted", "deleted": True}
 
 
 async def get_all_endpoints(
@@ -316,8 +516,17 @@ async def submit_openai_inference_request(
             f"framework {framework} not available on cluster {cluster.cluster_name}."
         )
 
-    # Verify that the openAI endpoint is available by the cluster
-    if openai_endpoint not in cluster.openai_endpoints:
+    # Token-count routes use the same model endpoint capability as their
+    # corresponding generation API and are forwarded only through direct APIs.
+    token_count_parent = {
+        "messages/count_tokens": "messages",
+        "responses/input_tokens": "responses",
+    }.get(openai_endpoint)
+    endpoint_is_available = openai_endpoint in cluster.openai_endpoints or (
+        token_count_parent is not None
+        and token_count_parent in cluster.openai_endpoints
+    )
+    if not endpoint_is_available:
         raise UnsupportedEndpoint(
             f"{openai_endpoint!r} not available on cluster {cluster.cluster_name!r}"
         )
@@ -325,6 +534,10 @@ async def submit_openai_inference_request(
     endpoint = await BaseEndpoint.load_adapter(
         cluster.cluster_name, framework, requested_model
     )
+    if token_count_parent is not None and not isinstance(endpoint, DirectAPIEndpoint):
+        raise UnsupportedEndpoint(
+            f"{openai_endpoint!r} requires a DirectAPI-backed endpoint."
+        )
     logger.debug(
         f"endpoint_slug: {endpoint.endpoint_slug} - user: {context.user.username}"
     )
@@ -348,6 +561,19 @@ async def submit_openai_inference_request(
 
     # Block access if the user is not allowed to use the endpoint
     endpoint.check_permission(context.user)
+
+    response_history: list[dict[str, Any]] = []
+    response_request_input: list[dict[str, Any]] = []
+    if openai_endpoint == "responses":
+        response_history, response_request_input = (
+            await _prepare_responses_continuation(
+                context.user.id,
+                cluster.cluster_name,
+                framework,
+                endpoint.model,
+                outbound,
+            )
+        )
 
     # Return 429 status if TPM limits are exceeded
     tpm_check = endpoint.check_token_rate_limit(context.user)
@@ -390,10 +616,33 @@ async def submit_openai_inference_request(
     # If streaming, meaning that the StreamingHttpResponse object will be returned directly ...
     if isinstance(task_response, SubmitStreamingTaskResponse):
         # Return StreamingHttpResponse object directly
-        return task_response.response
+        response = task_response.response
+        if openai_endpoint == "responses" and outbound.get("store") is True:
+            response = _store_streamed_responses_result(
+                response,
+                user_id=context.user.id,
+                cluster=cluster.cluster_name,
+                framework=framework,
+                model=endpoint.model,
+                history=response_history,
+                request_input=response_request_input,
+            )
+        return response
     # If not streaming, return the complete response and automate database operations
     else:
-        return task_response.result
+        result = task_response.result
+        if openai_endpoint == "responses":
+            result = await _store_responses_result(
+                result,
+                store=outbound.get("store") is True,
+                user_id=context.user.id,
+                cluster=cluster.cluster_name,
+                framework=framework,
+                model=endpoint.model,
+                history=response_history,
+                request_input=response_request_input,
+            )
+        return result
 
 
 async def submit_batch(
