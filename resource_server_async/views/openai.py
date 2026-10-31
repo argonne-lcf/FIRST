@@ -75,3 +75,19 @@ async def create_response(
         payload,
         openai_endpoint="responses",
     )
+
+
+@router.post("/{cluster_name}/{framework}/v1/responses/input_tokens")
+async def count_response_input_tokens(
+    request: AuthedRequest,
+    cluster_name: str,
+    framework: str,
+    payload: Body[dict[str, Any]],
+) -> Any:
+    return await submit_openai_inference_request(
+        get_request_context(),
+        cluster_name,
+        framework,
+        payload,
+        openai_endpoint="responses/input_tokens",
+    )
