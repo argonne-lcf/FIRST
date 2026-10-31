@@ -4,6 +4,8 @@ Only the fields the bridge reads are modeled. Usage-policy overrides and other
 unmodeled fields are intentionally ignored by this temporary V1 bridge.
 """
 
+from typing import Any
+
 import redis
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,6 +73,13 @@ class ModelConfig(BaseModel):
     allowed_groups: list[str]
     allowed_domains: list[str]
     usage_limits: UsageLimits
+    # What the model can do. The V2 side sends these and we copy them into
+    # the V1 row. Older configs have no such fields, so each one needs a
+    # default: a config we cannot read means the rows never update.
+    supported_endpoints: list[str] = []
+    max_model_len: int | None = None
+    display_name: str | None = None
+    capabilities: dict[str, Any] = {}
     deployments: list[DeploymentConfig] = []
 
 

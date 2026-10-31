@@ -116,6 +116,36 @@ def _build_desired_endpoint(
     if tpm_user > 2**31 - 1:
         raise ValueError(f"{cluster}/{model.name} TPM exceeds V1's SQL integer column")
 
+    config: dict[str, Any] = {
+        "model_urls": model_urls,
+        "backend_model_name": backend_model_name,
+        "ca_cert_path": bridge_settings.ca_cert_path,
+        "client_cert_path": bridge_settings.client_cert_path,
+        "client_key_path": bridge_settings.client_key_path,
+        "proxy_url": bridge_settings.proxy_url,
+        "check_hostname": bridge_settings.check_hostname,
+        "trust_env": bridge_settings.trust_env,
+    }
+
+    # Tell V1 users what the model can do: which protocols it speaks, how
+    # big its context window is, and anything else the manifest says. When
+    # the config carries none of this, leave the new keys out entirely so
+    # the rows look exactly as they did before.
+    capabilities: dict[str, Any] = {"schema_version": 1}
+    if model.supported_endpoints:
+        # V2 writes "chat/completions"; the V1 API calls it "chat_completions".
+        capabilities["api_protocols"] = [
+            e.strip("/").replace("/", "_") for e in model.supported_endpoints
+        ]
+    if model.max_model_len:
+        capabilities["context_window_tokens"] = model.max_model_len
+    # Anything else the manifest says about the model is copied as-is.
+    capabilities.update(model.capabilities)
+    if len(capabilities) > 1:  # more than just the version number
+        config["capabilities"] = capabilities
+    if model.display_name:
+        config["display_name"] = model.display_name
+
     return DesiredEndpoint(
         pk=deterministic_pk(cluster, model.name),
         endpoint_slug=slugify(f"{cluster} {framework} {model.name.lower()}"),
@@ -126,14 +156,5 @@ def _build_desired_endpoint(
         allowed_globus_groups=list(model.allowed_groups),
         allowed_domains=list(model.allowed_domains),
         tpm_user=tpm_user,
-        config={
-            "model_urls": model_urls,
-            "backend_model_name": backend_model_name,
-            "ca_cert_path": bridge_settings.ca_cert_path,
-            "client_cert_path": bridge_settings.client_cert_path,
-            "client_key_path": bridge_settings.client_key_path,
-            "proxy_url": bridge_settings.proxy_url,
-            "check_hostname": bridge_settings.check_hostname,
-            "trust_env": bridge_settings.trust_env,
-        },
+        config=config,
     )

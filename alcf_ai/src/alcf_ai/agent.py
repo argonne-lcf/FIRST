@@ -446,9 +446,7 @@ def _edit_opencode_v1(
                         }
 
                     if reasoning.get("separate_output", False):
-                        entry["interleaved"] = {
-                            "field": "reasoning_content",
-                        }
+                        entry["interleaved"] = {"field": "reasoning"}
 
                 if m_id := model.get("id"):
                     entries[m_id] = entry
@@ -515,7 +513,7 @@ def _edit_opencode_v2(
 
                     if reasoning.get("separate_output", False):
                         entry.setdefault("compatibility", {})["reasoningField"] = (
-                            "reasoning_content"
+                            "reasoning"
                         )
 
                 entry["capabilities"] = capabilities
