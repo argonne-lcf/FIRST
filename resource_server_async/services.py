@@ -1,8 +1,7 @@
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from typing import Any, cast
+from typing import Any
 
 from django.conf import settings
 from django.http import StreamingHttpResponse
@@ -96,6 +95,8 @@ def _prepare_openai_request(
     outbound["openai_endpoint"] = openai_endpoint
     prompt = payload[OPENAI_PROMPT_FIELDS[openai_endpoint]]
     return control, outbound, prompt
+
+
 async def get_all_endpoints(
     user: UserPydantic, cluster: BaseCluster
 ) -> list[BaseEndpoint]:
