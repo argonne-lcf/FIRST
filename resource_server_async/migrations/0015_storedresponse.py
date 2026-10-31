@@ -5,26 +5,41 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('resource_server_async', '0014_remove_accesslog_user_remove_requestlog_access_log_and_more'),
+        (
+            "resource_server_async",
+            "0014_remove_accesslog_user_remove_requestlog_access_log_and_more",
+        ),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='StoredResponse',
+            name="StoredResponse",
             fields=[
-                ('response_id', models.CharField(max_length=200, primary_key=True, serialize=False)),
-                ('user_id', models.CharField(db_index=True, max_length=100)),
-                ('cluster', models.CharField(max_length=100)),
-                ('framework', models.CharField(max_length=100)),
-                ('model', models.CharField(max_length=250)),
-                ('response', models.JSONField()),
-                ('conversation', models.JSONField(default=list)),
-                ('created_at', models.DateTimeField(db_index=True, default=django.utils.timezone.now)),
+                (
+                    "response_id",
+                    models.CharField(max_length=200, primary_key=True, serialize=False),
+                ),
+                ("user_id", models.CharField(db_index=True, max_length=100)),
+                ("cluster", models.CharField(max_length=100)),
+                ("framework", models.CharField(max_length=100)),
+                ("model", models.CharField(max_length=250)),
+                ("response", models.JSONField()),
+                ("conversation", models.JSONField(default=list)),
+                (
+                    "created_at",
+                    models.DateTimeField(
+                        db_index=True, default=django.utils.timezone.now
+                    ),
+                ),
             ],
             options={
-                'indexes': [models.Index(fields=['user_id', 'cluster', 'framework'], name='idx_stored_response_owner')],
+                "indexes": [
+                    models.Index(
+                        fields=["user_id", "cluster", "framework"],
+                        name="idx_stored_response_owner",
+                    )
+                ],
             },
         ),
     ]
