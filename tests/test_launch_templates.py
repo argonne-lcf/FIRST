@@ -107,22 +107,23 @@ def test_resolve_merges_template_and_deployment() -> None:
     assert template.env["OVERRIDE"] == "template"
 
 
-def test_extended_pre_stop_is_an_explicit_deployment_override() -> None:
+@pytest.mark.parametrize("timeout", [80, 150])
+def test_extended_pre_stop_is_an_explicit_deployment_override(timeout: float) -> None:
     assert _template().pre_stop_timeout_sec == 20
     assert _launch().pre_stop_timeout_sec is None
     shared = _template(pre_stop_timeout_sec=25)
     nemotron = _launch(served_model_name="nemotron")
-    inkling = _launch(pre_stop_timeout_sec=80)
+    inkling = _launch(pre_stop_timeout_sec=timeout)
 
     resolved = shared.resolve(inkling, MAX_MODEL_LEN)
-    assert resolved.pre_stop_timeout_sec == 80
+    assert resolved.pre_stop_timeout_sec == timeout
     assert resolved.post_stop_timeout_sec == 50
     assert shared.resolve(nemotron, MAX_MODEL_LEN).pre_stop_timeout_sec == 25
     assert shared.pre_stop_timeout_sec == 25
     assert nemotron.pre_stop_timeout_sec is None
 
 
-@pytest.mark.parametrize("timeout", [0, -1, 80.01, float("inf"), float("nan")])
+@pytest.mark.parametrize("timeout", [0, -1, 150.01, float("inf"), float("nan")])
 def test_pre_stop_timeout_remains_bounded(timeout: float) -> None:
     with pytest.raises(ValidationError):
         _template(pre_stop_timeout_sec=timeout)
@@ -153,7 +154,7 @@ def test_launch_spec_is_strict() -> None:
     with pytest.raises(ValidationError):
         _launch(serve_script_template="unsafe")
     with pytest.raises(ValidationError):
-        _launch(pre_stop_timeout_sec=81)
+        _launch(pre_stop_timeout_sec=151)
 
 
 @pytest.mark.parametrize(

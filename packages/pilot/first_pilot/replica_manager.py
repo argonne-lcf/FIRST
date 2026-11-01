@@ -73,8 +73,8 @@ def discover_hosts(node_file_env: str) -> list[str]:
 class ReplicaManager:
     # Mirrors PilotControlClient.STOP_TIMEOUT: pre-stop, model TERM/KILL,
     # post-stop verification, auxiliary-group cleanup, and monitor join are all
-    # bounded to 162s below this ceiling, including an opt-in 80s pre-stop hook.
-    _STOP_JOIN_TIMEOUT = 180.0
+    # bounded to 232s below this ceiling, including an opt-in 150s pre-stop hook.
+    _STOP_JOIN_TIMEOUT = 250.0
     _INVENTORY_REFRESH_SEC = 60.0
 
     def __init__(self, config: PilotRuntimeConfig) -> None:
