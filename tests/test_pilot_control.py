@@ -41,8 +41,8 @@ def test_pilot_control_proxy_outlives_stop_read_without_changing_data_plane() ->
         1
     ].split("}", 1)[0]
     control_timeout = re.findall(r"proxy_read_timeout\s+(\d+)s;", control)
-    assert control_timeout == ["185"]
-    assert STOP_TIMEOUT.read is not None and 162 < STOP_TIMEOUT.read < 185
+    assert control_timeout == ["255"]
+    assert STOP_TIMEOUT.read is not None and 232 < STOP_TIMEOUT.read < 255
     assert re.findall(r"proxy_read_timeout\s+(\d+)s;", model) == ["920"]
     assert "proxy_pass http://control_api/;" in control
 

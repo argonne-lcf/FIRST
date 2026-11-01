@@ -31,7 +31,7 @@ from ..types import (
 )
 
 ParameterValue = StrictStr | StrictInt | StrictFloat | None
-PreStopTimeout = Annotated[float, Field(gt=0, le=80.0)]
+PreStopTimeout = Annotated[float, Field(gt=0, le=150.0)]
 PostStopTimeout = Annotated[float, Field(gt=0, le=50.0)]
 
 

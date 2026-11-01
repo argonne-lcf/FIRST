@@ -53,12 +53,12 @@ def test_stop_retry_heartbeat_allowance_is_drainer_only() -> None:
         ordinary = ReplicaDrainer.__new__(ReplicaDrainer)
         Worker.__init__(ordinary, "ordinary", MagicMock(), MagicMock())
 
-    assert heartbeat.timeout == STOP_HEARTBEAT_TIMEOUT == 630.75
+    assert heartbeat.timeout == STOP_HEARTBEAT_TIMEOUT == 840.75
     assert explicit._heartbeat_timeout == 42
     assert ordinary._heartbeat_timeout == 120
-    with patch("first_gateway.controllers.worker.monotonic", return_value=600):
+    with patch("first_gateway.controllers.worker.monotonic", return_value=810):
         assert not drainer.check_heartbeat().timed_out
-    with patch("first_gateway.controllers.worker.monotonic", return_value=631):
+    with patch("first_gateway.controllers.worker.monotonic", return_value=841):
         assert drainer.check_heartbeat().timed_out
 
 

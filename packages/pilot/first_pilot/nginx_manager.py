@@ -140,8 +140,8 @@ _conf_template_str = """
                 # Correlates the audit line with the pilot's replica logs.
                 # Replaces, never appends to, any caller-supplied value.
                 proxy_set_header X-Request-ID $request_id;
-                # Let the controller's 180s stop read deadline expire first.
-                proxy_read_timeout 185s;
+                # Let the controller's 250s stop read deadline expire first.
+                proxy_read_timeout 255s;
             }
 
             # Anything not pinned by an exact-match location below does not exist.

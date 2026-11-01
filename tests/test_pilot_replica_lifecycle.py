@@ -135,6 +135,8 @@ def test_unhealthy_deadline_defaults_to_startup_deadline() -> None:
 
 def test_stop_rpc_and_join_budgets_cover_sequential_hooks() -> None:
     properties = LaunchTemplateSpec.model_json_schema()["properties"]
+    assert properties["pre_stop_timeout_sec"]["maximum"] == 150
+    assert properties["post_stop_timeout_sec"]["maximum"] == 50
     monitor_join = inspect.signature(Replica.stop).parameters["timeout"].default + 5
     hook_cleanup = Replica._HOOK_TERM_GRACE + Replica._HOOK_KILL_GRACE
     stop_budget = (
@@ -146,9 +148,9 @@ def test_stop_rpc_and_join_budgets_cover_sequential_hooks() -> None:
         + properties["post_stop_timeout_sec"]["maximum"]
         + hook_cleanup
     )
-    assert stop_budget == 162
-    assert STOP_TIMEOUT.read == 180.0
-    assert ReplicaManager._STOP_JOIN_TIMEOUT == 180.0
+    assert stop_budget == 232
+    assert STOP_TIMEOUT.read == 250.0
+    assert ReplicaManager._STOP_JOIN_TIMEOUT == 250.0
     assert stop_budget < STOP_TIMEOUT.read
     assert stop_budget < ReplicaManager._STOP_JOIN_TIMEOUT
     assert (STOP_TIMEOUT.connect, STOP_TIMEOUT.write, STOP_TIMEOUT.pool) == (5, 10, 5)
@@ -158,7 +160,7 @@ def test_stop_rpc_and_join_budgets_cover_sequential_hooks() -> None:
     retry_budget = _RETRY_ATTEMPTS * request_budget + _RETRY_BACKOFF * sum(
         range(_RETRY_ATTEMPTS)
     )
-    assert retry_budget == 600.75
+    assert retry_budget == 810.75
     assert STOP_HEARTBEAT_TIMEOUT == retry_budget + 30.0
 
 
