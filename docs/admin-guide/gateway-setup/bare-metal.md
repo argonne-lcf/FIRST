@@ -266,6 +266,21 @@ server {
 }
 ```
 
+With multiple reverse proxies, preserve SSE behavior at every hop. FIRST sends
+`X-Accel-Buffering: no` on SSE responses, but NGINX
+[hides `X-Accel-*` response headers by default](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_hide_header).
+If an intermediate proxy must pass that per-response instruction to another
+proxy, add only the following in its relevant API `location`:
+
+```nginx
+proxy_pass_header X-Accel-Buffering;
+```
+
+See [`proxy_pass_header`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass_header).
+Review buffering at the remaining hops, validate with `nginx -t`, and verify
+actual heartbeats reach the client before generation. Header presence or
+comments delivered together at the end do not prove timely streaming.
+
 Enable the site:
 
 ```bash
