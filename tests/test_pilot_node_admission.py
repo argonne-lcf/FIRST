@@ -316,12 +316,17 @@ def _quarantine_config(tmp_path: Path, **admission: Any) -> PilotRuntimeConfig:
     )
 
 
-def _quarantine_job(env: str, host: str, owner: str = "svc") -> dict[str, Any]:
-    return {
+def _quarantine_job(
+    env: str, host: str, owner: str = "svc", *, reason: str | None = None
+) -> dict[str, Any]:
+    job: dict[str, Any] = {
         "Job_Name": f"first_quar_{env}_{host}",
         "Job_Owner": f"{owner}@login1",
         "Variable_List": {"FIRST_QUAR_ENV": env, "FIRST_QUAR_HOST": host},
     }
+    if reason is not None:
+        job["Variable_List"]["FIRST_QUAR_REASON"] = reason
+    return job
 
 
 def _fake_pbs(jobs: dict[str, dict[str, Any]]) -> MagicMock:
@@ -431,8 +436,8 @@ def test_pbs_quarantine_deletes_queued_quarantines_of_passing_nodes(
 ) -> None:
     pbs = _fake_pbs(
         {
-            "1.pbs": _quarantine_job("dev", "n1"),
-            "2.pbs": _quarantine_job("dev", "n1"),  # a duplicate request
+            "1.pbs": _quarantine_job("dev", "n1", reason="gpu_count"),
+            "2.pbs": _quarantine_job("dev", "n1", reason="gpu_count"),  # duplicate
             "3.pbs": _quarantine_job("dev", "n2"),  # n2 failed again
             "4.pbs": _quarantine_job("dev", "n3"),  # not in this allocation
         }
@@ -440,7 +445,10 @@ def test_pbs_quarantine_deletes_queued_quarantines_of_passing_nodes(
 
     with patch("first_pilot.admission._pbs", pbs):
         pbs_quarantine(
-            _quarantine_config(tmp_path), ["n1.lab", "n2"], {"n2": ["bad"]}, None
+            _quarantine_config(tmp_path, checks=["gpu_count"]),
+            ["n1.lab", "n2"],
+            {"n2": ["bad"]},
+            None,
         )
 
     assert _calls(pbs, "qdel") == [["qdel", "1.pbs"], ["qdel", "2.pbs"]]

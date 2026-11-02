@@ -5,6 +5,7 @@ This is the pilot's only way of reaching its nodes: GPU inventory and startup
 node checks both go through `run_on_hosts`.
 """
 
+import logging
 import os
 import re
 import shlex
@@ -15,9 +16,36 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import psutil
+
 from first_common.schema.types import GpuDiscovery, SSHDiscovery
 
 _PALS_LABEL = re.compile(r"^(?P<host>\S+)\s+(?P<rank>\d+):\s?(?P<row>.*)$")
+logger = logging.getLogger(__name__)
+
+
+def resolve_interface_ips(interfaces: list[str]) -> list[str]:
+    """IPv4 addresses of available configured interfaces, in configured order.
+
+    Missing/down/IPv6-only interfaces are skipped, with no DNS or management
+    fallback. The pilot server and node-local TCP probe use the same choice.
+    """
+    addrs = psutil.net_if_addrs()
+    stats = psutil.net_if_stats()
+    ips: list[str] = []
+    for ifname in interfaces:
+        ipv4 = [a.address for a in addrs.get(ifname, []) if a.family == socket.AF_INET]
+        if ifname not in stats or not stats[ifname].isup or not ipv4:
+            logger.warning("Skipping network interface %r: down or no IPv4", ifname)
+            continue
+        logger.info("Network interface %r has IP %s", ifname, ipv4[0])
+        ips.append(ipv4[0])
+    if not ips:
+        raise RuntimeError(
+            f"None of the configured network_interfaces {interfaces} has an "
+            "IPv4 address and is up"
+        )
+    return ips
 
 
 def run_on_hosts(

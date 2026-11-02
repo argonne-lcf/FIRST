@@ -340,6 +340,9 @@ class NodeAdmission(BaseModel):
     minimum_free_memory_fraction: float = Field(0.95, gt=0, le=1)
     memory_reserve_mib: int = Field(256, ge=0)
 
+    # A site-approved, unused rendezvous port; no scanning or automatic fallback.
+    tcp_probe_port: int | None = Field(None, ge=1024, le=65535)
+
     quarantine_walltime_min: int = Field(7 * 24 * 60, ge=1)
     max_quarantined_nodes: int = Field(8, ge=1)
 
@@ -347,6 +350,8 @@ class NodeAdmission(BaseModel):
     def quarantine_requires_environment(self) -> Self:
         if self.on_failure == "pbs_quarantine" and self.environment is None:
             raise ValueError("on_failure: pbs_quarantine requires environment")
+        if "tcp_self_connect" in self.checks and self.tcp_probe_port is None:
+            raise ValueError("tcp_self_connect requires tcp_probe_port")
         return self
 
 

@@ -108,7 +108,7 @@ def pbs_quarantine(
     """
     Park an exclusive sleep job on each failing node, so PBS cannot place
     another job there once it runs. Delete queued quarantine jobs on nodes that
-    just passed.
+    just passed the checks that caused their quarantine.
 
     The quarantine jobs in PBS are the only record of quarantined nodes. Each
     environment sees only its own: Dev may run experimental checks, which must
@@ -121,26 +121,29 @@ def pbs_quarantine(
 
     failed = {host_identity(host): reasons for host, reasons in failures.items()}
     passed = {host_identity(host) for host in hosts} - failed.keys()
-    quarantined = _quarantine_jobs(environment)  # job ID -> host
+    quarantined = _quarantine_jobs(environment)  # job ID -> (host, failed checks)
+    checked = set(config.node_admission.checks)
 
     # This pilot holds its hosts exclusively, so a quarantine job for one of
-    # them has not started yet. The host just passed: withdraw the request.
-    for job_id, host in list(quarantined.items()):
-        if host in passed:
+    # them has not started yet. Withdraw it only if this screen covered its
+    # recorded failures: a GPU-only pass says nothing about TCP reachability.
+    for job_id, (host, recorded_checks) in list(quarantined.items()):
+        if host in passed and recorded_checks and recorded_checks <= checked:
             _pbs(["qdel", job_id])
             del quarantined[job_id]
             logger.warning("node %s passed; deleted queued quarantine %s", host, job_id)
 
+    quarantined_hosts = {host for host, _reasons in quarantined.values()}
     limit = config.node_admission.max_quarantined_nodes
     for host, reasons in sorted(failed.items()):
-        if host in quarantined.values():
+        if host in quarantined_hosts:
             logger.info("node %s is already quarantined", host)
             continue
-        if len(set(quarantined.values())) >= limit:
+        if len(quarantined_hosts) >= limit:
             logger.error("not quarantining %s: %d nodes already are", host, limit)
             continue
         job_id = _submit_quarantine(config, environment, host, reasons, evidence)
-        quarantined[job_id] = host
+        quarantined_hosts.add(host)
         logger.warning("quarantined node %s with PBS job %s", host, job_id)
 
 
@@ -185,8 +188,8 @@ def _submit_quarantine(
     return _pbs(qsub).strip()
 
 
-def _quarantine_jobs(environment: str) -> dict[str, str]:
-    """Job ID -> host of this environment's queued and running quarantines."""
+def _quarantine_jobs(environment: str) -> dict[str, tuple[str, set[str]]]:
+    """Job ID -> (host, failed checks) for this environment's quarantines."""
     jobs = json.loads(_pbs(["qstat", "-f", "-F", "json"])).get("Jobs", {})
     owner = pwd.getpwuid(os.getuid()).pw_name
     result = {}
@@ -197,7 +200,11 @@ def _quarantine_jobs(environment: str) -> dict[str, str]:
             and variables.get(QUARANTINE_VAR_PREFIX + "ENV") == environment
             and QUARANTINE_VAR_PREFIX + "HOST" in variables
         ):
-            result[job_id] = variables[QUARANTINE_VAR_PREFIX + "HOST"]
+            reason = variables.get(QUARANTINE_VAR_PREFIX + "REASON", "")
+            result[job_id] = (
+                variables[QUARANTINE_VAR_PREFIX + "HOST"],
+                set(reason.split("+")) if reason else set(),
+            )
     return result
 
 
