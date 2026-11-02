@@ -106,34 +106,37 @@ class PilotSubmitter:
     async def list_ready_endpoints(self) -> list[str]:
         if isinstance(self.adapter, GraphQLPBSAdapter):
             # No filesystem access: a job is ready once it is running and the
-            # scheduler reports its head node's IP.
+            # scheduler reports its allocated nodes.
             return [
                 s.name
                 for s in await self.get_statuses()
-                if s.state == SchedulerJobState.running and s.head_node_ip_address
+                if s.state == SchedulerJobState.running and s.allocated_nodes
             ]
         files = await self.adapter.list_files(self._readyfile_dir)
         return [f[: -len(_READY_SUFFIX)] for f in files if f.endswith(_READY_SUFFIX)]
 
-    async def get_endpoint(self, job_name: str) -> AddressInfo:
+    async def get_endpoints(self, job_name: str) -> list[AddressInfo]:
+        """Where the job's manager may be listening; the caller probes them."""
         if isinstance(self.adapter, GraphQLPBSAdapter):
             for s in await self.get_statuses():
                 if (
                     s.name == job_name
                     and s.state == SchedulerJobState.running
-                    and s.head_node_ip_address
+                    and s.allocated_nodes
                 ):
-                    ip = s.head_node_ip_address
-                    return AddressInfo(
-                        hostname=s.head_node_hostname or ip,
-                        ip=ip,
-                        external_port=self.pilot_config.external_port,
-                        control_path="/control/",
-                    )
+                    return [
+                        AddressInfo(
+                            hostname=node.hostname,
+                            ip=node.ip_address,
+                            external_port=self.pilot_config.external_port,
+                            control_path="/control/",
+                        )
+                        for node in s.allocated_nodes
+                    ]
             raise ValueError(f"No ready endpoint for job {job_name!r}")
         path = self._readyfile_dir / f"{job_name}{_READY_SUFFIX}"
         content = await self.adapter.read_file(path)
-        return AddressInfo.model_validate_json(content)
+        return [AddressInfo.model_validate_json(content)]
 
     @property
     def _readyfile_dir(self) -> Path:

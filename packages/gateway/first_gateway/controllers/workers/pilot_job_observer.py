@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Awaitable
 from datetime import datetime, timezone
@@ -7,6 +8,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from first_common.schema.base_scheduler import JobStatusInfo, SchedulerJobState
+from first_common.schema.pilot import AddressInfo
 from first_common.schema.types import HealthCheckResult, PilotConfig
 
 from ...database.models import Cluster, PilotJob
@@ -384,23 +386,14 @@ class PilotJobObserver(Worker):
 
         for job_name in sorted(ready_jobs):
             try:
-                addr = await self._rpc(submitter.get_endpoint(job_name))
+                candidates = await self._rpc(submitter.get_endpoints(job_name))
             except Exception:
                 logger.exception("Failed to read endpoint for job %s", job_name)
                 continue
 
             # Do not wake ReplicaLauncher until control API is live
-            try:
-                await self.client.get_status(
-                    addr.control_url, cluster_name=cluster_name
-                )
-            except Exception as exc:
-                logger.info(
-                    "Job %s pilot manager is not ready at %s: %r",
-                    job_name,
-                    addr.control_url,
-                    exc,
-                )
+            addr = await self._find_live_manager(job_name, candidates, cluster_name)
+            if addr is None:
                 continue
 
             logger.info(
@@ -439,6 +432,31 @@ class PilotJobObserver(Worker):
             await self.client_state.redis_pubsub.publish(
                 Channel.pilot_job_ready, job_name
             )
+
+    async def _find_live_manager(
+        self, job_name: str, candidates: list[AddressInfo], cluster_name: str
+    ) -> AddressInfo | None:
+        """Return the candidate whose pilot manager answers /status over mTLS.
+
+        Probes concurrently so unreachable nodes cost one timeout, not one each.
+        """
+        results = await asyncio.gather(
+            *(
+                self.client.get_status(addr.control_url, cluster_name=cluster_name)
+                for addr in candidates
+            ),
+            return_exceptions=True,
+        )
+        for addr, result in zip(candidates, results):
+            if not isinstance(result, BaseException):
+                return addr
+        logger.info(
+            "Job %s pilot manager is not ready at any of %s: %r",
+            job_name,
+            [addr.control_url for addr in candidates],
+            results,
+        )
+        return None
 
     async def _mark_cluster_health(
         self,

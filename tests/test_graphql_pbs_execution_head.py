@@ -4,7 +4,7 @@ from typing import Any
 import httpx
 import pytest
 
-from first_common.schema.base_scheduler import SchedulerJobState
+from first_common.schema.base_scheduler import AllocatedNode, SchedulerJobState
 from first_gateway.platforms.schedulers.graphql_pbs import (
     GraphQLPBSAdapter,
     _job_status_from_node,
@@ -12,7 +12,6 @@ from first_gateway.platforms.schedulers.graphql_pbs import (
 
 
 def node() -> dict[str, Any]:
-    """PBS's first machine deliberately differs from lexical host order."""
     return {
         "jobId": "6349.tara",
         "name": "first_pilot_test",
@@ -34,32 +33,26 @@ def node() -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("reverse", [False, True])
-def test_head_follows_first_returned_machine(reverse: bool) -> None:
-    raw = node()
-    if reverse:
-        raw["allocatedMachines"].reverse()
-    first = raw["allocatedMachines"][0]
-    status = _job_status_from_node(raw)
+def test_status_reports_every_allocated_machine() -> None:
+    status = _job_status_from_node(node())
     assert status.state == SchedulerJobState.running
-    assert status.head_node_hostname == first["hostname"]
-    assert (
-        status.head_node_ip_address
-        == first["resourcesAvail"]["customResources"][0]["value"]
-    )
+    assert status.allocated_nodes == [
+        AllocatedNode("x4820c6s4b0n0.hostmgmt.example", "10.124.165.113"),
+        AllocatedNode("x4820c6s1b1n0.hostmgmt.example", "10.124.165.93"),
+    ]
 
 
 @pytest.mark.parametrize("ips", ["10.1.2.3,10.1.2.4", "10.1.2.3 10.1.2.4"])
-def test_head_uses_first_hsn_address(ips: str) -> None:
+def test_machine_uses_first_hsn_address(ips: str) -> None:
     raw = node()
     raw["allocatedMachines"][0]["resourcesAvail"]["customResources"][0]["value"] = ips
-    assert _job_status_from_node(raw).head_node_ip_address == "10.1.2.3"
+    assert _job_status_from_node(raw).allocated_nodes[0].ip_address == "10.1.2.3"
 
 
 @pytest.mark.parametrize(
     "allocation", [{}, {"allocatedMachines": None}, {"allocatedMachines": []}]
 )
-def test_missing_allocation_keeps_status_without_a_head(
+def test_missing_allocation_keeps_status_without_nodes(
     allocation: dict[str, Any],
 ) -> None:
     raw = node()
@@ -67,8 +60,7 @@ def test_missing_allocation_keeps_status_without_a_head(
     raw.update(allocation)
     status = _job_status_from_node(raw)
     assert status.state == SchedulerJobState.running
-    assert status.head_node_hostname is None
-    assert status.head_node_ip_address is None
+    assert status.allocated_nodes == []
 
 
 @pytest.mark.parametrize(
@@ -82,14 +74,12 @@ def test_missing_allocation_keeps_status_without_a_head(
         {"customResources": [{"name": "hsn_ips", "value": ""}]},
     ],
 )
-def test_missing_head_hsn_never_scans_or_uses_management_ip(resources: Any) -> None:
+def test_machine_without_hsn_is_skipped_not_given_management_ip(resources: Any) -> None:
     raw = node()
-    head = raw["allocatedMachines"][0]
-    head["resourcesAvail"] = resources
+    raw["allocatedMachines"][0]["resourcesAvail"] = resources
     status = _job_status_from_node(raw)
     assert status.state == SchedulerJobState.running
-    assert status.head_node_hostname == head["hostname"]
-    assert status.head_node_ip_address is None
+    assert [n.ip_address for n in status.allocated_nodes] == ["10.124.165.93"]
 
 
 @pytest.mark.parametrize("state", [0, 10])
@@ -98,13 +88,12 @@ def test_inactive_job_does_not_advertise_stale_allocation(state: int) -> None:
     raw["status"]["state"] = state
     status = _job_status_from_node(raw)
     assert status.state in (SchedulerJobState.queued, SchedulerJobState.gone)
-    assert status.head_node_hostname is None
-    assert status.head_node_ip_address is None
+    assert status.allocated_nodes == []
 
 
 @pytest.mark.parametrize("exact", [False, True])
 @pytest.mark.parametrize("include_extension", [False, True])
-async def test_both_queries_resolve_head_without_extension(
+async def test_both_queries_report_nodes_without_extension(
     exact: bool, include_extension: bool
 ) -> None:
     queries = []
@@ -135,4 +124,4 @@ async def test_both_queries_resolve_head_without_extension(
         )
     assert len(queries) == 1 and "extension" not in queries[0]
     assert status is not None
-    assert status.head_node_ip_address == "10.124.165.113"
+    assert len(status.allocated_nodes) == 2

@@ -9,6 +9,7 @@ from typing import Any, Self
 from httpx import AsyncClient, HTTPError
 
 from first_common.schema.base_scheduler import (
+    AllocatedNode,
     JobStatusInfo,
     JobSubmitPayload,
     JobSubmitResult,
@@ -58,9 +59,9 @@ def _parse_epoch_micros(raw: int | None) -> datetime | None:
     return datetime.fromtimestamp(raw / 1_000_000, tz=timezone.utc)
 
 
-def _head_node_ip(head: dict[str, Any]) -> str | None:
-    """Pull the selected machine's first hsn_ips address."""
-    resources_avail = head.get("resourcesAvail") or {}
+def _machine_ip(machine: dict[str, Any]) -> str | None:
+    """Pull the machine's first hsn_ips address."""
+    resources_avail = machine.get("resourcesAvail") or {}
     for pair in resources_avail.get("customResources") or []:
         if pair.get("name") == _HSN_RESOURCE_NAME:
             ips = pair["value"].replace(",", " ").split()
@@ -82,15 +83,14 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
 
     resources = (node.get("resourcesRequested") or {}).get("jobResources") or {}
     walltime_sec = resources.get("wallClockTime") or 0
-    head_ip = None
-    head_hostname = None
+    allocated_nodes = []
     if state_code in _ACTIVE_STATES:
-        machines = node.get("allocatedMachines") or []
-        if machines:
-            # PBS returns the pilot head first; preserve its allocation order.
-            head = machines[0]
-            head_ip = _head_node_ip(head)
-            head_hostname = head.get("hostname") or None
+        # allocatedMachines is not in exec_host order: any machine may be the head.
+        for machine in node.get("allocatedMachines") or []:
+            if ip := _machine_ip(machine):
+                allocated_nodes.append(
+                    AllocatedNode(hostname=machine.get("hostname") or ip, ip_address=ip)
+                )
 
     return JobStatusInfo(
         id=job_id,
@@ -100,8 +100,7 @@ def _job_status_from_node(node: dict[str, Any]) -> JobStatusInfo:
         or datetime.now(timezone.utc),
         started_at=_parse_epoch_micros(node.get("startTime")),
         walltime_minutes=walltime_sec // 60,
-        head_node_ip_address=head_ip,
-        head_node_hostname=head_hostname,
+        allocated_nodes=allocated_nodes,
         variables={pair["name"]: pair["value"] for pair in node.get("env") or []},
     )
 

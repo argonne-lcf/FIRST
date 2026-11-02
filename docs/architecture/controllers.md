@@ -362,7 +362,7 @@ Once the HPC job scheduler statuses are reconciled, the observer identifies acti
 These jobs require manager endpoint discovery.  If there is at least one actionable job, proceed to:
 
 - Use `PilotSubmitter.list_ready_endpoints()` to list the readyfiles that currently exist.  Intersect the existing set with the set of actionable jobs: any jobs in this intersection are ready to have `manager_url` updated.
-- For each of the ready jobs, use `PilotSubmitter.get_endpoint()` to discover the job's `AddressInfo`.  Log the discovered info and UPDATE the `AddressInfo.base_url` on `PilotJob.manager_url` to store the discovered endpoint.
+- For each of the ready jobs, use `PilotSubmitter.get_endpoints()` to discover the job's candidate `AddressInfo`s and probe them all: the one whose manager answers `/status` is the job's endpoint.  Log the discovered info and UPDATE the `AddressInfo.base_url` on `PilotJob.manager_url` to store the discovered endpoint.
 
 ### Pilot Replica Observer
 - `list_actionable` (Postgres): `PilotJob` where `state = running` AND `manager_url IS NOT NULL`.

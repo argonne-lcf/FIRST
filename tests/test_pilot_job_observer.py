@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_common.schema.base_scheduler import (
+    AllocatedNode,
     JobStatusInfo,
     JobSubmitPayload,
     JobSubmitResult,
@@ -270,10 +271,10 @@ async def test_submitted_to_running_and_endpoint_discovery(
     publish.assert_not_awaited()
 
 
-async def test_graphql_head_ip_requires_live_manager_status(
+async def test_graphql_allocation_requires_live_manager_status(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
-    """A scheduler-assigned head IP is not pilot-manager readiness evidence."""
+    """A scheduler-assigned node is not pilot-manager readiness evidence."""
     async with db.begin() as sess:
         await _seed_cluster(sess)
         uid = await _insert_pilot_job(
@@ -290,8 +291,7 @@ async def test_graphql_head_ip_requires_live_manager_status(
         created_at=NOW,
         started_at=NOW,
         walltime_minutes=60,
-        head_node_ip_address="10.1.2.3",
-        head_node_hostname="x3001",
+        allocated_nodes=[AllocatedNode("x3001", "10.1.2.3")],
     )
     adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
     submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
@@ -393,8 +393,7 @@ async def test_graphql_known_job_omitted_from_bulk_page_uses_exact_truth(
         created_at=NOW,
         started_at=NOW,
         walltime_minutes=60,
-        head_node_ip_address="10.1.2.7",
-        head_node_hostname="x3007",
+        allocated_nodes=[AllocatedNode("x3007", "10.1.2.7")],
     )
     adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
     bulk = AsyncMock(return_value=[])
@@ -411,6 +410,57 @@ async def test_graphql_known_job_omitted_from_bulk_page_uses_exact_truth(
         assert job.scheduler_state == SchedulerJobState.running.value
         assert job.deleted_at is None
     exact_lookup.assert_awaited_once_with("omitted.pbs")
+
+
+async def test_graphql_discovery_finds_manager_on_any_allocated_node(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """The head need not be the first allocated node the scheduler reports."""
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "job-unordered",
+            "unordered.pbs",
+            state=SchedulerJobState.running,
+        )
+
+    scheduler_status = JobStatusInfo(
+        id="unordered.pbs",
+        name="__FIRST_PILOT_job-unordered",
+        state=SchedulerJobState.running,
+        created_at=NOW,
+        started_at=NOW,
+        walltime_minutes=60,
+        allocated_nodes=[
+            AllocatedNode("x3001", "10.1.2.1"),
+            AllocatedNode("x3002", "10.1.2.2"),
+            AllocatedNode("x3003", "10.1.2.3"),
+        ],
+    )
+    head = "https://10.1.2.2:8443/control/"
+
+    async def get_status(url: str, *, cluster_name: str) -> PilotJobStatus:
+        if url != head:
+            raise ConnectionError("connection refused")
+        return PilotJobStatus(resources=PilotResources(), replicas=[])
+
+    adapter = GraphQLPBSAdapter(client=MagicMock(), owner="svc", url="https://gql")
+    submitter = PilotSubmitter(PilotConfig.model_validate(PILOT_SYSTEM), adapter)
+    observer = _make_observer(db)
+    cast(AsyncMock, observer.client.get_status).side_effect = get_status
+
+    with patch.object(
+        adapter, "get_job_statuses", new=AsyncMock(return_value=[scheduler_status])
+    ):
+        await observer._discover_endpoints(submitter, "polaris")
+
+    job = await _get_job(db, uid)
+    assert job.manager_url == head
+    assert job.idle_since is None
+    cast(
+        AsyncMock, observer.client_state.redis_pubsub.publish
+    ).assert_awaited_once_with(Channel.pilot_job_ready, "job-unordered")
 
 
 async def test_orphan_scheduler_job_reaped(
@@ -627,8 +677,7 @@ async def test_graphql_unready_terminal_allocation_counts_once(
         created_at=NOW,
         started_at=NOW,
         walltime_minutes=60,
-        head_node_ip_address="10.1.2.4",
-        head_node_hostname="x3002",
+        allocated_nodes=[AllocatedNode("x3002", "10.1.2.4")],
     )
     with patch.object(
         adapter, "get_job_statuses", new=AsyncMock(return_value=[scheduler_status])

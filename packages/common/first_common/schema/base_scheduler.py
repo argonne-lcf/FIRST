@@ -63,6 +63,14 @@ class SchedulerJobState(str, Enum):
     gone = "gone"
 
 
+@dataclass(frozen=True)
+class AllocatedNode:
+    """A node allocated to a running job, with an address the gateway can reach."""
+
+    hostname: str
+    ip_address: str
+
+
 @dataclass
 class JobStatusInfo:
     """
@@ -75,8 +83,8 @@ class JobStatusInfo:
     created_at: datetime
     started_at: datetime | None
     walltime_minutes: int
-    head_node_ip_address: str | None = None
-    head_node_hostname: str | None = None
+    # In no meaningful order: any of these may be the job's head node.
+    allocated_nodes: list[AllocatedNode] = field(default_factory=list)
     # The job's environment variables (qsub -v), where the scheduler reports them
     variables: dict[str, str] = field(default_factory=dict)
 

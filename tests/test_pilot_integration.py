@@ -258,7 +258,8 @@ async def _submit_and_wait_ready(
     statuses = await submitter.get_statuses()
     assert statuses[0].state == SchedulerJobState.running
 
-    return await submitter.get_endpoint(name)
+    [endpoint] = await submitter.get_endpoints(name)
+    return endpoint
 
 
 async def test_submit_brings_endpoint_online(
