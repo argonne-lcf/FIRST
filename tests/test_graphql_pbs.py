@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from first_common.schema.base_scheduler import (
+    AllocatedNode,
     JobStatusInfo,
     SchedulerJobState,
 )
@@ -160,11 +161,11 @@ async def test_graphql_suspended_state_is_dying_not_gone() -> None:
 
     assert status is not None
     assert status.state == SchedulerJobState.exiting
-    assert status.head_node_ip_address == "10.1.2.3"
+    assert [n.ip_address for n in status.allocated_nodes] == ["10.1.2.3"]
 
 
-async def test_graphql_get_endpoint_rejects_running_to_exiting_race() -> None:
-    """A head IP retained during scheduler exit is not a ready endpoint."""
+async def test_graphql_get_endpoints_rejects_running_to_exiting_race() -> None:
+    """An allocation retained during scheduler exit is not a ready endpoint."""
     status = JobStatusInfo(
         id="1234.scheduler",
         name="__FIRST_PILOT_model-canary",
@@ -172,8 +173,7 @@ async def test_graphql_get_endpoint_rejects_running_to_exiting_race() -> None:
         created_at=datetime.now(timezone.utc),
         started_at=datetime.now(timezone.utc),
         walltime_minutes=90,
-        head_node_ip_address="10.1.2.3",
-        head_node_hostname="node-1",
+        allocated_nodes=[AllocatedNode("node-1", "10.1.2.3")],
     )
     config = PilotConfig.model_validate(
         {
@@ -204,7 +204,7 @@ async def test_graphql_get_endpoint_rejects_running_to_exiting_race() -> None:
             new=AsyncMock(return_value=[status]),
         ):
             with pytest.raises(ValueError, match="No ready endpoint"):
-                await submitter.get_endpoint("model-canary")
+                await submitter.get_endpoints("model-canary")
 
 
 def _assert_normal_delete_request(body: dict[str, Any]) -> None:

@@ -342,7 +342,7 @@ async def test_list_ready_endpoints_strips_suffix(
     assert sorted(await submitter.list_ready_endpoints()) == ["alpha", "beta"]
 
 
-async def test_get_endpoint_roundtrips_address_info(
+async def test_get_endpoints_roundtrips_address_info(
     pilot_config: PilotConfig,
 ) -> None:
     addr = AddressInfo(
@@ -356,7 +356,7 @@ async def test_get_endpoint_roundtrips_address_info(
     adapter.files[str(path)] = (addr.model_dump_json(), 0o644)
     submitter = PilotSubmitter(pilot_config, adapter)
 
-    got = await submitter.get_endpoint("alpha")
+    [got] = await submitter.get_endpoints("alpha")
     assert got.hostname == addr.hostname
     assert got.ip == addr.ip
     assert got.external_port == addr.external_port
