@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 # rejection this recent counts as live demand.
 COLD_START_REJECT_WINDOW = timedelta(minutes=5)
 
+# A run of zero samples decays the EWMA geometrically toward 0: need a floor
+EWMA_ZERO_FLOOR = 1e-2
+
 DESIRED_REPLICAS = Gauge(
     "autoscaler_desired_replicas",
     "Number of desired replicas set by autoscaler per pilot deployment",
@@ -75,7 +78,12 @@ def update_reject_window(
 
 
 def update_ewma(prev: float, instantaneous: float, alpha: float) -> float:
-    return alpha * instantaneous + (1 - alpha) * prev
+    ewma = alpha * instantaneous + (1 - alpha) * prev
+    # Snap only on a zero sample: flooring a nonzero sample would discard small
+    # but real demand that has to accumulate across ticks at low alpha.
+    if instantaneous == 0.0 and ewma < EWMA_ZERO_FLOOR:
+        return 0.0
+    return ewma
 
 
 def ladder_target(
@@ -151,6 +159,19 @@ def decide_scale(
     return current_desired, candidates
 
 
+def _rung_desc(ewma: float, strategy: DemandThresholdStrategy) -> str:
+    """Describe which ladder rung ``ewma`` lands on, for log context."""
+    rung = None
+    for lower_bound, num in strategy.scaling_thresholds:
+        if ewma > lower_bound:
+            rung = (lower_bound, num)
+        else:
+            break
+    if rung is None:
+        return "below bottom rung (min_replicas)"
+    return f"> rung {rung[0]:g} (-> {rung[1]} replicas)"
+
+
 class PilotAutoscaler(Controller):
     resource_type = Model
     poll_interval = 10.0  # fixed sampling clock — the EWMA + reject window
@@ -200,7 +221,7 @@ class PilotAutoscaler(Controller):
 
         for dep in model.pilot_deployments:
             live_names.add(dep.name)
-            new_desired = self._decide_deployment(
+            new_desired, reason = self._decide_deployment(
                 dep=dep,
                 now=now,
                 ewma=ewma,
@@ -209,7 +230,7 @@ class PilotAutoscaler(Controller):
             )
             DESIRED_REPLICAS.labels(model.name, dep.name).set(new_desired)
             if new_desired != dep.desired_replicas:
-                await self._write_desired(dep, new_desired)
+                await self._write_desired(dep, new_desired, reason=reason)
 
         # Prune candidate state for deployments that no longer exist.
         rt.scale_down_candidates = {
@@ -228,18 +249,22 @@ class PilotAutoscaler(Controller):
         ewma: float,
         last_capacity_reject: datetime | None,
         candidates: dict[str, list[ScaledownCandidate]],
-    ) -> int:
-        """Return the deployment's new desired_replicas, mutating ``candidates``
-        (the per-model scale-down bookkeeping) as a side effect."""
+    ) -> tuple[int, str]:
+        """Return the deployment's new desired_replicas and a short
+        human-readable reason for it (logged when the value changes), mutating
+        ``candidates`` (the per-model scale-down bookkeeping) as a side effect."""
         # 1. One-way latch: too many launch failures pins desired to 0.
         if dep.consecutive_launch_failures > dep.max_consecutive_launch_failures:
             candidates.pop(dep.name, None)
-            return 0
+            return 0, (
+                f"launch-failure latch (failures={dep.consecutive_launch_failures}"
+                f" > max={dep.max_consecutive_launch_failures})"
+            )
 
         # 2. Manual scaling: leave desired_replicas alone.
         if dep.scaling_strategy is None:
             candidates.pop(dep.name, None)
-            return dep.desired_replicas
+            return dep.desired_replicas, "manual scaling"
 
         strategy = DemandThresholdStrategy.model_validate(dep.scaling_strategy)
 
@@ -251,6 +276,7 @@ class PilotAutoscaler(Controller):
             and now - last_capacity_reject < COLD_START_REJECT_WINDOW
         ):
             candidates.pop(dep.name, None)
+            reject_age = (now - last_capacity_reject).total_seconds()
             return max(
                 1,
                 ladder_target(
@@ -259,7 +285,7 @@ class PilotAutoscaler(Controller):
                     dep.min_replicas,
                     dep.max_replicas,
                 ),
-            )
+            ), f"cold start: capacity reject {reject_age:.0f}s ago, ewma={ewma:.3g}"
 
         # 4. Ladder + scale-down sustain.
         new_desired, new_candidates = decide_scale(
@@ -276,9 +302,21 @@ class PilotAutoscaler(Controller):
             candidates[dep.name] = new_candidates
         else:
             candidates.pop(dep.name, None)
-        return new_desired
 
-    async def _write_desired(self, dep: PilotDeployment, new_desired: int) -> None:
+        if new_desired > dep.desired_replicas:
+            reason = f"scale up: ewma={ewma:.3g} {_rung_desc(ewma, strategy)}"
+        elif new_desired < dep.desired_replicas:
+            reason = (
+                f"scale down: ewma={ewma:.3g} {_rung_desc(ewma, strategy)}, "
+                f"sustained >= {strategy.scale_down_sustain_sec}s"
+            )
+        else:
+            reason = "unchanged"
+        return new_desired, reason
+
+    async def _write_desired(
+        self, dep: PilotDeployment, new_desired: int, *, reason: str = ""
+    ) -> None:
         """Premised UPDATE of one deployment's desired_replicas. A stale premise
         is logged and skipped (the next tick re-reads) rather than failing the
         whole model's reconcile."""
@@ -321,11 +359,12 @@ class PilotAutoscaler(Controller):
             return
 
         logger.info(
-            "%s: deployment %s desired_replicas %d -> %d",
+            "%s: deployment %s desired_replicas %d -> %d (%s)",
             self.name,
             dep.name,
             dep.desired_replicas,
             new_desired,
+            reason or "no reason given",
         )
         await self.client_state.redis_pubsub.publish(
             Channel.desired_replicas_changed, dep.name

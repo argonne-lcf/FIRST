@@ -23,6 +23,7 @@ from first_common.schema.resources.runtime import (
 from first_common.schema.types import DemandSignalConfig
 from first_gateway import Settings
 from first_gateway.controllers.workers.autoscaler import (
+    EWMA_ZERO_FLOOR,
     PilotAutoscaler,
     decide_scale,
     ladder_target,
@@ -465,14 +466,16 @@ async def test_stale_premise_skips_without_publishing(
     # bumping desired_replicas after the controller loads the deployment.
     orig_write = ctrl._write_desired
 
-    async def racing_write(dep: PilotDeployment, new_desired: int) -> None:
+    async def racing_write(
+        dep: PilotDeployment, new_desired: int, *, reason: str = ""
+    ) -> None:
         async with db.begin() as sess:
             await sess.execute(
                 sa.update(PilotDeployment)
                 .where(PilotDeployment.uid == dep.uid)
                 .values(desired_replicas=7)
             )
-        await orig_write(dep, new_desired)
+        await orig_write(dep, new_desired, reason=reason)
 
     ctrl._write_desired = racing_write  # type: ignore[method-assign]
     await ctrl.reconcile(model.uid)
@@ -540,6 +543,33 @@ def test_calculate_demand() -> None:
 def test_ewma_update() -> None:
     assert update_ewma(prev=10.0, instantaneous=20.0, alpha=0.5) == 15.0
     assert update_ewma(prev=0.0, instantaneous=100.0, alpha=1.0) == 100.0
+
+
+@pytest.mark.parametrize("alpha", [0.01, 0.5, 1.0])
+def test_ewma_zero_samples_decay_to_exact_zero(alpha: float) -> None:
+    ewma = 10.0
+    for _ in range(2_000):  # alpha=0.01 needs ~690 ticks to cross the floor
+        ewma = update_ewma(prev=ewma, instantaneous=0.0, alpha=alpha)
+        if ewma == 0.0:
+            break
+    assert ewma == 0.0
+    # Zero stays zero; the ladder's exclusive 0.0 rung is no longer lit.
+    assert update_ewma(prev=0.0, instantaneous=0.0, alpha=alpha) == 0.0
+    assert ladder_target(ewma, [(0.0, 1)], min_replicas=0, max_replicas=1) == 0
+
+
+def test_ewma_floor_does_not_suppress_small_rising_demand() -> None:
+    # One reject at default config contributes 0.5; at alpha=0.01 a single tick
+    # adds only 0.005 (< floor), but it must still accumulate across ticks.
+    ewma = update_ewma(prev=0.0, instantaneous=0.5, alpha=0.01)
+    assert 0.0 < ewma < EWMA_ZERO_FLOOR
+    for _ in range(5):
+        ewma = update_ewma(prev=ewma, instantaneous=0.5, alpha=0.01)
+    assert ewma > EWMA_ZERO_FLOOR
+
+
+def test_ewma_decay_above_floor_is_untouched() -> None:
+    assert update_ewma(prev=0.04, instantaneous=0.0, alpha=0.5) == 0.02
 
 
 # ---------------------------------------------------------------------------
