@@ -6,7 +6,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, AsyncGenerator, cast
 
-import psutil
 import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -21,6 +20,7 @@ from first_common.schema.pilot import (
 )
 
 from .admission import admit_nodes
+from .host_commands import resolve_interface_ips as resolve_interface_ips
 from .nginx_manager import (
     NginxManager,
     ReplicaUpstream,
@@ -30,30 +30,6 @@ from .nginx_manager import (
 from .replica_manager import ReplicaManager
 
 logger = logging.getLogger(__name__)
-
-
-def resolve_interface_ips(interfaces: list[str]) -> list[str]:
-    """
-    IPv4 address of each configured interface, in configured order. Interfaces
-    that are missing, down, or lack an IPv4 address are skipped so a faulty NIC
-    (e.g. hsn0) does not stop the pilot from serving on the others.
-    """
-    addrs = psutil.net_if_addrs()
-    stats = psutil.net_if_stats()
-    ips: list[str] = []
-    for ifname in interfaces:
-        ipv4 = [a.address for a in addrs.get(ifname, []) if a.family == socket.AF_INET]
-        if ifname not in stats or not stats[ifname].isup or not ipv4:
-            logger.warning("Skipping network interface %r: down or no IPv4", ifname)
-            continue
-        logger.info("Network interface %r has IP %s", ifname, ipv4[0])
-        ips.append(ipv4[0])
-    if not ips:
-        raise RuntimeError(
-            f"None of the configured network_interfaces {interfaces} has an "
-            "IPv4 address and is up"
-        )
-    return ips
 
 
 class _PilotManager:

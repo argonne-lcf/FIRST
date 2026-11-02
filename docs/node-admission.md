@@ -19,7 +19,47 @@ pilot_system:
 With no `checks`, nothing runs and the pilot starts as before. A GPU passes
 `gpu_memory_free` with at least `ceil(total MiB * minimum_free_memory_fraction) + memory_reserve_mib` free.
 
-## Writing a check
+## IPv4 rendezvous self-connect
+
+Enable `tcp_self_connect` alongside the GPU checks, and explicitly configure an
+unused rendezvous port approved by the site. For example, where 20005 is approved:
+
+```yaml
+node_admission:
+  checks: [tcp_self_connect, gpu_count, gpu_memory_free, gpu_ecc_errors]
+  tcp_probe_port: 20005
+  on_failure: pbs_quarantine
+  environment: dev
+  minimum_free_memory_fraction: 0.95
+  memory_reserve_mib: 256
+```
+
+Before the pilot manager or any model starts, the existing local/SSH/PALS runner
+executes a GPU-free Python probe on each allocated node. It uses the first
+available IPv4 address from that node's configured `network_interfaces`, in the
+same order as the pilot server. Configure only the intended HSN interfaces:
+there is no DNS, management-address or localhost fallback.
+
+The probe binds a disposable wildcard IPv4 listener, like a rendezvous server,
+on the configured port, then connects through the node's own selected address.
+It verifies accept and a small payload exchange and closes all sockets before
+returning. The temporary wildcard listener is not HSN-only exposure; the site
+must approve its port. It does not change host networking or load a model.
+
+A connect/accept timeout counts as a node fault only after one bounded repeat
+confirms it on the same host, address and port. The existing action records the
+node, originating PBS allocation and both observations in the admission evidence.
+An occupied port, bind/listen error, missing interface, command failure, incomplete
+output or changing result is an infrastructure error: admission fails without
+quarantining a node. The check does not require IPv4 loopback to work.
+
+This checks one configured address and port, not peer connectivity or every
+possible listener. It runs at pilot startup; upgrading a pin does not rerun it
+inside an existing pilot or a reused allocation. Fresh pilot startup is required
+to exercise a newly enabled check. Matching pilot and control-plane common-schema
+versions must preserve `tcp_probe_port` when preparing the job configuration.
+
+## Writing a GPU check
 
 A check lives in `packages/pilot/first_pilot/node_checks.py`. It is a function
 that judges one node's GPUs and is registered by name in `CHECKS`. The GPUs are
@@ -59,9 +99,11 @@ The action receives every screen's result:
   which are known to reach the node. The job requests exactly that host
   (`select=1:host=<host>`, `place=exclhost`) and sleeps. Once it runs, PBS
   cannot place anything else on the node.
-- For each passing node, the pilot deletes that environment's quarantine jobs
-  targeting it. Those jobs are still queued, because the pilot holds the node,
-  and the node has just passed.
+- For each passing node, the pilot deletes that environment's queued quarantine
+  jobs only when this screen covered every recorded failed check. A GPU-only
+  pass cannot withdraw a networking quarantine; missing or unknown reasons are
+  retained for operator review. These jobs are still queued because the pilot
+  holds the node.
 
 The quarantine jobs in PBS are the only record of quarantined nodes:
 
@@ -79,7 +121,8 @@ The quarantine jobs in PBS are the only record of quarantined nodes:
   submitted once `max_quarantined_nodes` nodes are quarantined.
 - A failure to run `qstat`, `qsub` or `qdel` is logged and does not change the
   outcome: a healthy pilot still starts, and a failed one still exits.
-- To return a node to service, `qdel` its job. A job also ends at its walltime.
+- After Operations confirms remediation and a fresh screen covers and passes
+  the recorded faults, deliberately `qdel` its job. A job also ends at its walltime.
   Either way, the next pilot to land on the node checks it again and
   quarantines it again if it is still bad.
 - The gateway reports each quarantine job to Slack through the health alerter

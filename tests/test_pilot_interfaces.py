@@ -32,8 +32,8 @@ STATS = {
 @pytest.fixture(autouse=True)
 def interfaces() -> Iterator[None]:
     with (
-        patch("first_pilot.control_api.psutil.net_if_addrs", return_value=ADDRS),
-        patch("first_pilot.control_api.psutil.net_if_stats", return_value=STATS),
+        patch("first_pilot.host_commands.psutil.net_if_addrs", return_value=ADDRS),
+        patch("first_pilot.host_commands.psutil.net_if_stats", return_value=STATS),
     ):
         yield
 
