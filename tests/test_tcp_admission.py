@@ -19,24 +19,19 @@ from .test_pilot_node_admission import _config, _nodefile
 HOSTS = ["n1", "n2"]
 
 
-def _observation(host: str, result: str = "PASS") -> dict[str, Any]:
+def _observation(host: str, result: str = "pass") -> dict[str, Any]:
     return {
         "host": host,
         "address": {"n1": "10.20.0.1", "n2": "10.20.0.2"}[host],
         "port": 20005,
-        "listening": True,
-        "listener_inode": 12345,
-        "pid": 1234,
         "result": result,
-        "phase": "complete" if result == "PASS" else "connect",
-        "accepted": result == "PASS",
-        "elapsed_sec": 0.001 if result == "PASS" else 2.0,
+        "elapsed_sec": 0.001 if result == "pass" else 2.0,
     }
 
 
 def _outputs(**results: str) -> dict[str, str]:
     return {
-        host: json.dumps(_observation(host, results.get(host, "PASS")))
+        host: json.dumps(_observation(host, results.get(host, "pass")))
         for host in HOSTS
     }
 
@@ -87,20 +82,12 @@ def test_network_pass_uses_one_complete_sample_and_configured_launch_inputs(
     assert isinstance(samples, list) and len(samples) == 1
 
 
-@pytest.mark.parametrize("phase", ["connect", "accept"])
+@pytest.mark.parametrize("timeout", ["connect_timeout", "accept_timeout"])
 def test_matching_timeout_is_confirmed_once_on_every_host(
-    config: PilotRuntimeConfig, phase: str
+    config: PilotRuntimeConfig, timeout: str
 ) -> None:
-    first = _outputs(n1="TIMEOUT")
-    bad = json.loads(first["n1"])
-    bad["phase"] = phase
-    first["n1"] = json.dumps(bad)
-    second = {}
-    for host, raw in first.items():
-        row = json.loads(raw)
-        row["pid"] += 1
-        row["listener_inode"] += 1
-        second[host] = json.dumps(row)
+    first = _outputs(n1=timeout)
+    second = _outputs(n1=timeout)
     evidence: dict[str, object] = {}
 
     with patch(
@@ -114,7 +101,7 @@ def test_matching_timeout_is_confirmed_once_on_every_host(
     assert all(call.args[1] == HOSTS for call in run.call_args_list)
     assert set(failures) == {"n1"}
     assert len(failures["n1"]) == 1
-    assert failures["n1"][0].startswith("tcp_self_connect:")
+    assert failures["n1"][0].startswith(f"tcp_self_connect: {timeout} on ")
     samples = evidence["tcp_self_connect"]
     assert isinstance(samples, list) and len(samples) == 2
 
@@ -123,12 +110,12 @@ def test_matching_timeout_is_confirmed_once_on_every_host(
 def test_changed_timeout_evidence_is_infrastructure_not_a_node_fault(
     config: PilotRuntimeConfig, change: str
 ) -> None:
-    first = _outputs(n1="TIMEOUT")
-    second = _outputs(n1="TIMEOUT")
+    first = _outputs(n1="connect_timeout")
+    second = _outputs(n1="connect_timeout")
     if change == "recovered":
         second = _outputs()
     elif change == "other_host":
-        second = _outputs(n1="TIMEOUT", n2="TIMEOUT")
+        second = _outputs(n1="connect_timeout", n2="connect_timeout")
     else:
         bad = json.loads(second["n1"])
         bad["address"] = "10.20.0.9"
@@ -147,18 +134,12 @@ def test_changed_timeout_evidence_is_infrastructure_not_a_node_fault(
     [
         ("host", "not-allocated"),
         ("address", "::1"),
-        ("address", 167772161),
         ("port", 20006),
-        ("listening", False),
-        ("listener_inode", 0),
-        ("pid", 0),
         ("result", "ERROR"),
-        ("phase", "bind"),
-        ("accepted", False),
         ("elapsed_sec", -1),
     ],
 )
-def test_incoherent_probe_fields_are_infrastructure_errors(
+def test_unexpected_probe_fields_are_infrastructure_errors(
     config: PilotRuntimeConfig, field: str, value: object
 ) -> None:
     outputs = _outputs()
@@ -183,7 +164,7 @@ def test_incomplete_probe_observations_are_infrastructure_errors(
         outputs["n1"] = "not JSON"
     else:
         bad = json.loads(outputs["n1"])
-        del bad["accepted"]
+        del bad["result"]
         outputs["n1"] = json.dumps(bad)
 
     with patch("first_pilot.node_checks.run_on_hosts", return_value=outputs):
@@ -220,7 +201,7 @@ def test_confirmed_network_fault_submits_quarantine_before_admission_exit(
     )
     config.node_admission.on_failure = "pbs_quarantine"
     config.node_admission.environment = "dev"
-    outputs = _outputs(n1="TIMEOUT")
+    outputs = _outputs(n1="connect_timeout")
 
     with (
         patch("first_pilot.node_checks.run_on_hosts", side_effect=[outputs, outputs]),

@@ -20,7 +20,7 @@ from first_common.schema.pilot import (
 )
 
 from .admission import admit_nodes
-from .host_commands import resolve_interface_ips as resolve_interface_ips
+from .host_commands import resolve_interface_ips
 from .nginx_manager import (
     NginxManager,
     ReplicaUpstream,
