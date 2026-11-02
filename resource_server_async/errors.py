@@ -51,6 +51,11 @@ class BatchNotFound(BaseError):
     code: str = "batch_not_found"
 
 
+class ResponseNotFound(BaseError):
+    status_code = HTTPStatus.NOT_FOUND
+    code: str = "response_not_found"
+
+
 class Unauthorized(BaseError):
     status_code = HTTPStatus.UNAUTHORIZED
     code: str = "unauthorized"

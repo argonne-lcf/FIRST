@@ -89,3 +89,18 @@ For detailed API documentation, refer to the [OpenAI API Reference](https://plat
 ## Request Parameters
 
 See the [User Guide](../user-guide/index.md#request-parameters) for detailed parameter documentation.
+
+### Responses
+
+Responses requests with `store: true` are stored by FIRST. Stored responses are
+private to the authenticated caller and can be retrieved, continued, or
+deleted:
+
+```http
+POST /{cluster}/{framework}/v1/responses
+GET /{cluster}/{framework}/v1/responses/{response_id}
+DELETE /{cluster}/{framework}/v1/responses/{response_id}
+```
+
+Pass `previous_response_id` to continue a stored response. FIRST supplies the
+stored conversation context to the configured model server.
