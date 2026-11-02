@@ -50,9 +50,7 @@ class StoredResponsesTests(TestCase):
                                 {
                                     "type": "message",
                                     "role": "assistant",
-                                    "content": [
-                                        {"type": "output_text", "text": "42"}
-                                    ],
+                                    "content": [{"type": "output_text", "text": "42"}],
                                 }
                             ],
                         },
@@ -122,12 +120,8 @@ class StoredResponsesTests(TestCase):
         self.assertEqual(continued["id"], "resp_continued")
         submitted = endpoint.submit_task.await_args_list[1].args[0]["model_params"]
         self.assertNotIn("previous_response_id", submitted)
-        self.assertEqual(
-            submitted["input"][0]["content"][0]["text"], "Remember 42."
-        )
-        self.assertEqual(
-            submitted["input"][-1]["content"][0]["text"], "Which number?"
-        )
+        self.assertEqual(submitted["input"][0]["content"][0]["text"], "Remember 42.")
+        self.assertEqual(submitted["input"][-1]["content"][0]["text"], "Which number?")
         self.assertTrue(
             await StoredResponse.objects.filter(response_id="resp_continued").aexists()
         )
