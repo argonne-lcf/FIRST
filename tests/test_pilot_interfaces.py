@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from first_pilot.control_api import resolve_interface_ips
+from first_pilot.host_commands import resolve_interface_ips
 
 
 def _addr(family: int, address: str) -> SimpleNamespace:

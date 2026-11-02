@@ -1,11 +1,6 @@
 """
 Startup node checks.
 
-The explicit `tcp_self_connect` check uses a native, GPU-free listener probe
-through the same bounded host runner. Bind/command/incomplete results raise;
-only a confirmed IPv4 self-connect timeout becomes a node-level fault. GPU
-checks keep their existing samples, thresholds and process-ownership policy.
-
 The pilot samples every node's GPUs with `gpu_inventory.query_gpus`, and each
 enabled check judges one node's GPUs:
 
@@ -27,20 +22,26 @@ A sample that cannot be taken or trusted (a failed command, malformed output,
 GPUs that change identity between samples), or a check that lacks a value it
 needs (an "[N/A]" ECC counter), raises: the pilot fails to start and no node is
 blamed. Passing the screen is not proof of permanent health.
+
+Checks in NETWORK_CHECKS do not look at GPUs: each runs its own probe on every
+host and confirms its faults the same way. `tcp_self_connect` runs
+`first_pilot.tcp_probe` on each node; a timeout on both probes is a fault, and
+any other probe error raises.
 """
 
-import ipaddress
-import json
 import math
 import sys
 import time
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Callable
+
+from pydantic import ValidationError
 
 from first_common.schema.pilot import GpuInfo, PilotResources, PilotRuntimeConfig
 
 from .gpu_inventory import query_gpu_clients, query_gpus
 from .host_commands import host_matches, run_on_hosts
+from .tcp_probe import Observation
 
 CONFIRM_DELAY_SEC = 1.0
 # Both samples must fall within this window to describe the same node state.
@@ -125,146 +126,131 @@ def run_node_checks(
     *,
     evidence: dict[str, object] | None = None,
 ) -> dict[str, list[str]]:
-    """Screen the allocation before initialization, using the existing action path.
-
-    The one TCP check has native socket observations rather than GPU samples;
-    keep that explicit instead of extending the GPU callback interface.
     """
-    known = CHECKS.keys() | {"tcp_self_connect"}
+    Run the named checks on every host; return the failures of each bad host.
+    If `evidence` is given, record the screening policy and samples in it.
+    """
+    known = CHECKS.keys() | NETWORK_CHECKS.keys()
     unknown = [name for name in names if name not in known]
     if unknown:
         raise ValueError(f"unknown node checks {unknown}; known: {sorted(known)}")
-    failures = (
-        _tcp_self_connect(hostnames, config, evidence)
-        if "tcp_self_connect" in names
-        else {}
-    )
-    gpu_names = [name for name in names if name != "tcp_self_connect"]
+
+    failures: dict[str, list[str]] = {}
+    found = [
+        NETWORK_CHECKS[name](hostnames, config, evidence)
+        for name in names
+        if name in NETWORK_CHECKS
+    ]
+    gpu_names = [name for name in names if name in CHECKS]
     if gpu_names:
-        for host, reasons in _run_gpu_checks(
-            gpu_names, hostnames, config, evidence=evidence
-        ).items():
+        found.append(_run_gpu_checks(gpu_names, hostnames, config, evidence))
+    for result in found:
+        for host, reasons in result.items():
             failures.setdefault(host, []).extend(reasons)
     return failures
 
 
-def _tcp_sample(
-    hostnames: list[str], config: PilotRuntimeConfig
-) -> dict[str, dict[str, Any]]:
-    port = config.node_admission.tcp_probe_port
-    if port is None:
-        raise RuntimeError("tcp_self_connect requires tcp_probe_port")
-    # The host runner canonicalizes its executable. env preserves the venv
-    # interpreter argv (resolving the Python symlink would lose its packages).
-    outputs = run_on_hosts(
-        [
-            "/usr/bin/env",
-            sys.executable,
-            "-I",
-            "-B",
-            "-m",
-            "first_pilot.tcp_probe",
-            "--port",
-            str(port),
-            "--interfaces",
-            *config.network_interfaces,
-        ],
-        hostnames,
-        config.gpu_discovery,
-    )
-    if set(outputs) != set(hostnames):
-        raise RuntimeError("incomplete TCP probe host observations")
-    samples: dict[str, dict[str, Any]] = {}
-    for host, output in outputs.items():
-        try:
-            row = json.loads(output)
-            if not isinstance(row, dict):
-                raise ValueError("expected one observation object")
-            if not isinstance(row["address"], str):
-                raise ValueError("expected an IPv4 address string")
-            address = ipaddress.IPv4Address(row["address"])
-            valid = (
-                host_matches(row["host"], host)
-                and not address.is_unspecified
-                and row["port"] == port
-                and row["listening"] is True
-                and type(row["listener_inode"]) is int
-                and row["listener_inode"] > 0
-                and type(row["pid"]) is int
-                and row["pid"] > 0
-                and isinstance(row["elapsed_sec"], (int, float))
-                and math.isfinite(row["elapsed_sec"])
-                and row["elapsed_sec"] >= 0
-                and (
-                    (
-                        row["result"] == "PASS"
-                        and row["phase"] == "complete"
-                        and row["accepted"] is True
-                    )
-                    or (
-                        row["result"] == "TIMEOUT"
-                        and row["phase"] in ("connect", "accept")
-                        and row["accepted"] is False
-                    )
-                )
-            )
-            if not valid:
-                raise ValueError("incoherent TCP probe observation")
-        except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            raise RuntimeError(f"invalid TCP probe observation on {host!r}") from exc
-        samples[host] = row
-    return samples
+# ---------------------------------------------------------------------------
+# Network checks
+# ---------------------------------------------------------------------------
+
+NetworkCheck = Callable[
+    [list[str], PilotRuntimeConfig, dict[str, object] | None], dict[str, list[str]]
+]
 
 
-def _tcp_self_connect(
+def tcp_self_connect(
     hostnames: list[str],
     config: PilotRuntimeConfig,
     evidence: dict[str, object] | None,
 ) -> dict[str, list[str]]:
+    """Every node can connect to itself on its first configured interface."""
     started = time.monotonic()
-    first = _tcp_sample(hostnames, config)
-    samples = [first]
-    suspected = {host for host, row in first.items() if row["result"] == "TIMEOUT"}
+    samples = [_tcp_sample(hostnames, config)]
+    suspected = _timeouts(samples[0])
     if suspected:
         time.sleep(CONFIRM_DELAY_SEC)
-        # Preserve scheduler/PALS rank order, even if only one host is suspect.
-        second = _tcp_sample(hostnames, config)
-        samples.append(second)
-        confirmed = {h for h, row in second.items() if row["result"] == "TIMEOUT"}
+        # Probe every host again, not just the suspects, to keep PALS rank order.
+        samples.append(_tcp_sample(hostnames, config))
+        first, second = samples
         if (
             time.monotonic() - started > COHERENCE_WINDOW_SEC
-            or confirmed != suspected
-            or any(first[h]["address"] != second[h]["address"] for h in hostnames)
+            or _timeouts(second) != suspected
+            or any(first[h].address != second[h].address for h in hostnames)
         ):
-            raise RuntimeError(
-                "TCP observations changed; no persistent fault established"
-            )
+            raise RuntimeError("TCP probe results changed between observations")
+
     if evidence is not None:
-        evidence["tcp_self_connect"] = samples
+        evidence["tcp_self_connect"] = [
+            {host: row.model_dump(mode="json") for host, row in sample.items()}
+            for sample in samples
+        ]
+    first = samples[0]
     return {
         host: [
-            f"tcp_self_connect: IPv4 HSN self-connect/accept to "
-            f"{first[host]['address']}:{first[host]['port']} timed out in both observations"
+            f"tcp_self_connect: {first[host].result} on "
+            f"{first[host].address}:{first[host].port} in both observations"
         ]
         for host in hostnames
         if host in suspected
     }
 
 
+def _tcp_sample(
+    hostnames: list[str], config: PilotRuntimeConfig
+) -> dict[str, Observation]:
+    port = config.node_admission.tcp_probe_port
+    if port is None:  # NodeAdmission requires it with tcp_self_connect
+        raise RuntimeError("tcp_self_connect requires tcp_probe_port")
+    # The host runner resolves its executable's symlinks. Launching through env
+    # keeps the venv's python path, which resolving would replace with the
+    # system interpreter that lacks the pilot's packages.
+    command = [
+        "/usr/bin/env",
+        sys.executable,
+        "-I",
+        "-B",
+        "-m",
+        "first_pilot.tcp_probe",
+        "--port",
+        str(port),
+        "--interfaces",
+        *config.network_interfaces,
+    ]
+    outputs = run_on_hosts(command, hostnames, config.gpu_discovery)
+    if set(outputs) != set(hostnames):
+        raise RuntimeError("TCP probe did not report from every host")
+
+    samples: dict[str, Observation] = {}
+    for host, output in outputs.items():
+        try:
+            row = Observation.model_validate_json(output)
+        except ValidationError as exc:
+            raise RuntimeError(f"invalid TCP probe output on {host!r}") from exc
+        if not host_matches(row.host, host) or row.port != port:
+            raise RuntimeError(f"TCP probe on {host!r} reported {row.host}:{row.port}")
+        samples[host] = row
+    return samples
+
+
+def _timeouts(sample: dict[str, Observation]) -> set[str]:
+    return {host for host, row in sample.items() if row.result != "pass"}
+
+
+NETWORK_CHECKS: dict[str, NetworkCheck] = {"tcp_self_connect": tcp_self_connect}
+
+
+# ---------------------------------------------------------------------------
+# GPU checks
+# ---------------------------------------------------------------------------
+
+
 def _run_gpu_checks(
     names: list[str],
     hostnames: list[str],
     config: PilotRuntimeConfig,
-    *,
-    evidence: dict[str, object] | None = None,
+    evidence: dict[str, object] | None,
 ) -> dict[str, list[str]]:
-    """
-    Run the named checks on every host; return the failures of each bad host.
-    If `evidence` is given, record the screening policy and samples in it.
-    """
-    unknown = [name for name in names if name not in CHECKS]
-    if unknown:
-        raise ValueError(f"unknown node checks {unknown}; known: {sorted(CHECKS)}")
     idle = not IDLE_CHECKS.isdisjoint(names)
 
     started = time.monotonic()
