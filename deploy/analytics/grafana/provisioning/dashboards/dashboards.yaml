@@ -1,0 +1,13 @@
+---
+# Sample Grafana dashboard provider. allowUiUpdates: false, so these files win
+# over UI edits.
+apiVersion: 1
+
+providers:
+  - name: FIRST Analytics
+    orgId: 1
+    folder: Analytics
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

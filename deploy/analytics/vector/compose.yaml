@@ -1,0 +1,54 @@
+---
+# VM1: ship the inference gateway's structured JSONL to the analytics tier.
+# See docs/architecture/structured-logging-clickhouse.md.
+#
+# The design also specifies a non-blocking Docker log driver for the gateway
+# so a stalled Vector cannot back-pressure inference:
+#   logging:
+#     driver: json-file
+#     options: {mode: non-blocking, max-buffer-size: 32m, max-size: 100m, max-file: "5"}
+# deploy/compose.yaml currently uses the `local` driver without it; see the
+# analytics README.
+name: first-analytics-vector
+
+services:
+  vector:
+    image: ${VECTOR_IMAGE:-docker.io/timberio/vector:0.58.0-alpine}
+    container_name: first-analytics-vector
+    restart: unless-stopped
+    # Add "--config", "/etc/vector/vector-archive.yaml" to also ship the raw
+    # archive to S3.
+    command: ["--config", "/etc/vector/vector.yaml"]
+    environment:
+      # Interpolated into vector.yaml by Vector.
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:?set CLICKHOUSE_HOST}
+      CLICKHOUSE_HTTPS_PORT: ${CLICKHOUSE_HTTPS_PORT:-8443}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-vector}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+      # Only read when vector-archive.yaml is enabled.
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+    volumes:
+      # docker_logs reads the gateway container's stdout through the socket.
+      # Read-only: Vector never needs to control the runtime.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+      - ./vector-archive.yaml:/etc/vector/vector-archive.yaml:ro
+      - ${CLICKHOUSE_TLS_CA_PATH:?set CLICKHOUSE_TLS_CA_PATH}:/etc/vector/certs/ca.crt:ro
+      - vector_data:/var/lib/vector
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8686/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  vector_data:
