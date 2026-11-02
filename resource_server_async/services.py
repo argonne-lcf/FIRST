@@ -541,6 +541,20 @@ async def submit_openai_inference_request(
     # Block access if the user is not allowed to use the endpoint
     endpoint.check_permission(context.user)
 
+    response_history: list[dict[str, Any]] = []
+    response_request_input: list[dict[str, Any]] = []
+    if openai_endpoint == "responses":
+        (
+            response_history,
+            response_request_input,
+        ) = await _prepare_responses_continuation(
+            context.user.id,
+            cluster.cluster_name,
+            framework,
+            endpoint.model,
+            outbound,
+        )
+
     # Return 429 status if TPM limits are exceeded
     tpm_check = endpoint.check_token_rate_limit(context.user)
     if not tpm_check.allow:
@@ -583,10 +597,31 @@ async def submit_openai_inference_request(
     if isinstance(task_response, SubmitStreamingTaskResponse):
         # Return StreamingHttpResponse object directly
         response = task_response.response
+        if openai_endpoint == "responses" and outbound.get("store") is True:
+            response = _store_streamed_responses_result(
+                response,
+                user_id=context.user.id,
+                cluster=cluster.cluster_name,
+                framework=framework,
+                model=endpoint.model,
+                history=response_history,
+                request_input=response_request_input,
+            )
         return response
     # If not streaming, return the complete response and automate database operations
     else:
         result = task_response.result
+        if openai_endpoint == "responses":
+            result = await _store_responses_result(
+                result,
+                store=outbound.get("store") is True,
+                user_id=context.user.id,
+                cluster=cluster.cluster_name,
+                framework=framework,
+                model=endpoint.model,
+                history=response_history,
+                request_input=response_request_input,
+            )
         return result
 
 
