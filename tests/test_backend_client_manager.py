@@ -4,9 +4,13 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
+from first_common.schema.endpoints.generic import (
+    TASK_USER_ID_HEADER,
+    GenericTaskPayload,
+)
 from first_common.schema.endpoints.llm import OpenAIChatCompletionsPayload
 from first_gateway.apiserver import backend_client_manager as bcm
-from first_gateway.apiserver.inference import InferenceService
+from first_gateway.apiserver.inference import InferenceService, _UpstreamFailure
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -140,6 +144,58 @@ async def test_inference_request_uses_long_read_budget(
         else:
             await service._handle_unary(client, payload, model, deployment, backend)
     assert observed == [{"connect": 5.0, "read": 900.0, "write": 60.0, "pool": 5.0}]
+
+
+def _task_service(monkeypatch: pytest.MonkeyPatch) -> InferenceService:
+    service = InferenceService.__new__(InferenceService)
+    service.request_id = "task-test"
+    service.user = Mock(id="user-uuid")
+    service.admission_controller = AsyncMock()
+    monkeypatch.setattr(service, "_record_token_stats", AsyncMock())
+    monkeypatch.setattr(service, "_emit_inference_log", Mock())
+    return service
+
+
+async def test_task_sends_caller_identity_with_long_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    model = _config("https://backend.example/v1").models[0]
+    deployment = model.deployments[0]
+    payload = GenericTaskPayload(model="m", endpoint="segmentation", input_dir="/x")  # type: ignore[call-arg]
+    async with httpx.AsyncClient(
+        base_url=deployment.backends[0].model_url,
+        transport=httpx.MockTransport(upstream),
+    ) as client:
+        await _task_service(monkeypatch)._handle_unary(
+            client, payload, model, deployment, deployment.backends[0]
+        )
+    assert seen[0].headers[TASK_USER_ID_HEADER] == "user-uuid"
+    assert seen[0].extensions["timeout"]["read"] == 900.0
+    assert b'"endpoint"' not in seen[0].content
+
+
+async def test_timed_out_task_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    def upstream(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    model = _config("https://backend.example/v1").models[0]
+    deployment = model.deployments[0]
+    payload = GenericTaskPayload(model="m", endpoint="segmentation")
+    async with httpx.AsyncClient(
+        base_url=deployment.backends[0].model_url,
+        transport=httpx.MockTransport(upstream),
+    ) as client:
+        with pytest.raises(_UpstreamFailure) as exc:
+            await _task_service(monkeypatch)._handle_unary(
+                client, payload, model, deployment, deployment.backends[0]
+            )
+    assert exc.value.retryable is False
 
 
 async def test_bad_backend_does_not_block_others(

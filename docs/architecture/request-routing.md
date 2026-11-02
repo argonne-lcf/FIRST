@@ -45,8 +45,8 @@ Non-LLM modalities are exposed via explicit task namespaces:
 
 ```
 # Same scoping rules:
-/api/federated/v1/tasks/{task}    # e.g. tasks/sam3-segmentation
-/api/deployments/{slug}/v1/tasks/{task}
+/api/federated/v1/tasks    # {"model": ..., "endpoint": "sam3-segmentation", ...}
+/api/deployments/{slug}/v1/tasks
 ```
 
 Users can discover available resources via `/catalog/`:

@@ -16,6 +16,10 @@ from first_common.errors import (
     ServiceUnavailable,
 )
 from first_common.schema.endpoints.base import BasePayload
+from first_common.schema.endpoints.generic import (
+    TASK_USER_ID_HEADER,
+    GenericTaskPayload,
+)
 from first_common.schema.structured_logs import InferenceLog, InferenceOutcome
 from first_common.schema.types import upstream_endpoint_path
 
@@ -345,19 +349,24 @@ class InferenceService:
         if parser:
             upstream_payload = parser.prepare_request(upstream_payload)
 
+        is_task = isinstance(payload, GenericTaskPayload)
+
         t0 = time.perf_counter()
         try:
             response = await client.post(
                 upstream_endpoint_path(payload.endpoint),
                 json=upstream_payload,
                 timeout=UNARY_TIMEOUT,
+                headers={TASK_USER_ID_HEADER: self.user.id} if is_task else None,
             )
         except httpx.RequestError as exc:
             logger.warning(
                 f"Request error contacting backend for model {model.name}.",
                 exc_info=True,
             )
-            raise _UpstreamFailure(type(exc).__name__, retryable=True)
+            # A timed-out task may still be running: don't start it over elsewhere.
+            retryable = not (is_task and isinstance(exc, httpx.ReadTimeout))
+            raise _UpstreamFailure(type(exc).__name__, retryable=retryable)
 
         if response.status_code != 200:
             body = (await response.aread()).decode(errors="replace")
