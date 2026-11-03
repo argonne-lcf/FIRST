@@ -12,6 +12,7 @@ from globus_sdk import (
     TransferClient,
 )
 
+from first_common.errors import ServiceUnavailable
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.endpoints.staging import StagingArea
 
@@ -103,10 +104,16 @@ def prep_globus_staging_area(
 
 async def ensure_staging_area(user: UserAuthEvent, state: ClientState) -> StagingArea:
     """Idempotently create the caller's Globus staging area."""
+    collection_id = state.settings.data_staging_globus_collection_id
+    if not collection_id:
+        raise ServiceUnavailable(
+            "Data staging is not configured on this gateway "
+            "(FIRST_DATA_STAGING_GLOBUS_COLLECTION_ID is unset)"
+        )
     tc = get_transfer_client(state)
     return await anyio.to_thread.run_sync(
         prep_globus_staging_area,
         tc,
         user.id,
-        state.settings.data_staging_globus_collection_id,
+        collection_id,
     )

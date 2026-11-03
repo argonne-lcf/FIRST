@@ -87,8 +87,30 @@ def test_prep_staging_reraises_unexpected_mkdir_error() -> None:
         staging.prep_globus_staging_area(tc, "user-123", "coll-1")  # type: ignore[arg-type]
 
 
+@pytest.fixture
+def staging_collection(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Configure the staging collection before the `client` lifespan reads Settings."""
+    collection_id = "coll-1"
+    monkeypatch.setenv("FIRST_DATA_STAGING_GLOBUS_COLLECTION_ID", collection_id)
+    return collection_id
+
+
+async def test_staging_route_unconfigured_collection_is_503(
+    monkeypatch: pytest.MonkeyPatch, client: httpx.AsyncClient
+) -> None:
+    def never(_state: object) -> None:
+        raise AssertionError("Transfer API must not be called without a collection")
+
+    monkeypatch.setattr(staging, "get_transfer_client", never)
+    resp = await client.put("/data/v1/staging", headers=auth_header(USER_TOKEN))
+    assert resp.status_code == 503, resp.text
+    assert "FIRST_DATA_STAGING_GLOBUS_COLLECTION_ID" in resp.text
+
+
 async def test_staging_route_returns_area_for_caller(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    staging_collection: str,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tc = _FakeTransferClient(existing_dir=False, existing_rule=False)
     monkeypatch.setattr(staging, "get_transfer_client", lambda _state: tc)
@@ -99,6 +121,7 @@ async def test_staging_route_returns_area_for_caller(
     assert body["principal"] == "bbbbbbbb-0000-0000-0000-000000000002"
     assert body["path"] == "/user-staging/bbbbbbbb-0000-0000-0000-000000000002/"
     assert body["acl_rule_id"] == "rule-new"
+    assert body["collection_id"] == staging_collection
 
     # The legacy V1 path still works and delegates to the same service.
     resp = await client.put("/resource_server/staging", headers=auth_header(USER_TOKEN))
