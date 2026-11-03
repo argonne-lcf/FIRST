@@ -6,7 +6,11 @@ user can transfer data in and out of.
 import logging
 
 import anyio
-from globus_sdk import ClientCredentialsAuthorizer, TransferClient
+from globus_sdk import (
+    ClientCredentialsAuthorizer,
+    ConfidentialAppAuthClient,
+    TransferClient,
+)
 
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.endpoints.staging import StagingArea
@@ -19,12 +23,23 @@ _transfer_client: TransferClient | None = None
 
 
 def get_transfer_client(state: ClientState) -> TransferClient:
-    """Cache a TransferClient built from the existing confidential app creds."""
+    """
+    Cache a TransferClient authenticated as the compute service account.
+
+    This must not use `state.auth_client` (the resource-server app), which is
+    not permitted the client_credentials grant. As in V1, the service account
+    identity is the one granted access-manager rights on the staging collection.
+    """
     global _transfer_client
     if _transfer_client is None:
+        globus = state.settings.globus
+        service_client = ConfidentialAppAuthClient(
+            globus.compute_client_id,
+            globus.compute_client_secret.get_secret_value(),
+        )
         _transfer_client = TransferClient(
             authorizer=ClientCredentialsAuthorizer(
-                state.auth_client, TransferClient.scopes.all
+                service_client, TransferClient.scopes.all
             )
         )
     return _transfer_client
