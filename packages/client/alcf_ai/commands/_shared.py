@@ -125,10 +125,6 @@ def llm_endpoints(model: ModelSummary) -> list[str]:
     return [e for e in model.supported_endpoints if e in LLM_ENDPOINTS]
 
 
-def task_endpoints(model: ModelSummary) -> list[str]:
-    return [e for e in model.supported_endpoints if e not in LLM_ENDPOINTS]
-
-
 def model_state(model: ModelSummary) -> str:
     """
     Aggregate one state for a Model from its deployments: ready when any

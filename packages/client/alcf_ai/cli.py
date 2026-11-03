@@ -26,7 +26,6 @@ from .commands.catalog import (
 from .commands.chat import chat, embed
 from .commands.dinov3 import cli as dinov3_cli
 from .commands.sam3 import cli as sam3_cli
-from .commands.tasks import cli as tasks_cli
 from .commands.whoami import whoami
 
 logger = logging.getLogger(__name__)
@@ -38,7 +37,6 @@ cli.add_typer(models_cli, name="models", help="Discover and warm up Models")
 cli.add_typer(deployments_cli, name="deployments", help="Inspect model deployments")
 cli.add_typer(clusters_cli, name="clusters", help="Inspect cluster state")
 cli.add_typer(access_groups_cli, name="access-groups", help="Inspect AccessGroups")
-cli.add_typer(tasks_cli, name="tasks", help="Run non-LLM task models")
 cli.add_typer(sam3_cli, name="sam3", help="SAM3 promptable image segmentation")
 cli.add_typer(
     dinov3_cli, name="dinov3", help="DINOv3 semantic segmentation of image folders"

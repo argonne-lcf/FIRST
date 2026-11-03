@@ -104,18 +104,12 @@ the model supports is used (Chat Completions, then Responses, then Messages).
 ### Non-LLM task models
 
 Models such as segmentation services expose task endpoints instead of LLM
-endpoints.  They are invoked through the gateway's generic `tasks` route, which
-forwards the request body verbatim to the backend's `/v1/{endpoint}` and
-returns its result:
-
-```bash
-uvx alcf-ai tasks ls
-uvx alcf-ai tasks run sam3 promptable-segmentation \
-  -p inference_type=single-image \
-  -p data_uri=/eagle/IRIBeta/inference_data_staging/user-staging/<your id>/groceries.jpg \
-  -p single_image_prompt=Baguette
-uvx alcf-ai tasks run sam3 promptable-segmentation --json @request.json
-```
+endpoints (`alcf-ai models ls` lists them).  They read inputs from and write
+results to your data-staging area, so the CLI exposes them through
+model-specific commands that move the data for you: see
+[SAM3](#segment-images-with-sam3) and [DINOv3](#segment-images-with-dinov3)
+below.  To call another task model directly, use the SDK's
+`client.inference.task(...)` (see [SDK usage](#sdk-usage)).
 
 ### Data staging
 
