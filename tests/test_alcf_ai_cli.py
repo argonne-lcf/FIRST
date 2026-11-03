@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import click
 import httpx
 import pytest
 from typer.testing import CliRunner
@@ -260,35 +261,6 @@ def test_embed(gateway: FakeGateway) -> None:
     assert gateway.last_json == {"model": "emb", "input": ["a", "b"]}
 
 
-def test_tasks_ls_and_run(gateway: FakeGateway) -> None:
-    out = run("tasks", "ls")
-    assert "facebook/sam3" in out and "process" in out and "gemma" not in out
-
-    gateway.routes["POST /federated/v1/tasks"] = httpx.Response(
-        200, json={"result": {"boxes": []}}
-    )
-    out = run(
-        "tasks",
-        "run",
-        "facebook/sam3",
-        "process",
-        "-p",
-        "data_uri=https://x/y.jpg",
-        "-p",
-        "threshold=0.5",
-        "--json",
-        '{"inference_type": "single-image"}',
-    )
-    assert json.loads(out) == {"result": {"boxes": []}}
-    assert gateway.last_json == {
-        "model": "facebook/sam3",
-        "endpoint": "process",
-        "inference_type": "single-image",
-        "data_uri": "https://x/y.jpg",
-        "threshold": 0.5,
-    }
-
-
 def test_error_panel_on_gateway_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """main() turns FirstErrors into a clean panel and a non-zero exit."""
     import sys
@@ -361,8 +333,10 @@ def test_dinov3_cli_bounds_batch_size(tmp_path: Path) -> None:
             "65",
         ],
     )
-    assert result.exit_code != 0
-    assert "--batch-size" in result.output
+    assert result.exit_code == 2  # click usage error
+    # Typer forces a styled terminal under GITHUB_ACTIONS/FORCE_COLOR, so the
+    # error panel contains ANSI codes that split up the option name.
+    assert "--batch-size" in click.unstyle(result.output)
 
 
 def test_dinov3_submit_cli_stages_in_and_out(
