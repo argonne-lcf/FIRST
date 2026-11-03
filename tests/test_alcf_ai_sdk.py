@@ -281,17 +281,14 @@ def test_sam3_wrapper_maps_to_task_and_decodes_labelmap(
             }
         },
     )
-    result = sdk_client.sam3.submit_image(
-        "https://x/y.jpg", "cat", weights_dir_override=Path("/w"), threshold=0.3
-    )
+    result = sdk_client.sam3.submit_image("/staging/u1/y.jpg", "cat", threshold=0.3)
     assert result.num_objects == 1 and result.labelmap_bytes() == b"NUMPY-BYTES"
     assert gateway.last_json == {
         "model": "sam3",
         "endpoint": "promptable-segmentation",
         "inference_type": "single-image",
-        "data_uri": "https://x/y.jpg",
+        "data_uri": "/staging/u1/y.jpg",
         "single_image_prompt": "cat",
-        "weights_dir_override": "/w",
         "threshold": 0.3,
     }
 

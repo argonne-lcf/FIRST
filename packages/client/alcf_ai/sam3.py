@@ -2,6 +2,11 @@
 SAM3 promptable segmentation, served as a task model through the gateway's
 generic ``tasks`` route.  Inference is synchronous: the result comes back in
 the response.
+
+Inputs must already be in your staging area (see ``StagingAPI``): the server
+only reads files under your own staging directory.  Model weights are fixed
+when the server launches, so a fine-tune is a separately named catalog model
+selected with ``model``.
 """
 
 import base64
@@ -64,18 +69,15 @@ class Sam3API:
         image_uri: str,
         prompt: str,
         *,
-        weights_dir_override: Path | None = None,
         model: str | None = None,
         **params: Any,
     ) -> Sam3ImageResult:
         """
-        Segment a single image by text prompt.  ``image_uri`` is opened on the
-        serving cluster, so it may be an https/s3 URI or a path in your staging
-        area (see ``StagingAPI.remote_path``).  Extra ``params`` pass through
-        to the backend.
+        Segment a single image by text prompt.  ``image_uri`` is an absolute
+        path (or ``file://`` URI) of an image in your staging area, as returned
+        by ``StagingAPI.remote_path``; anything else is rejected by the server.
+        Extra ``params`` pass through to the backend.
         """
-        if weights_dir_override is not None:
-            params["weights_dir_override"] = str(weights_dir_override)
         body = self._client.inference.task(
             model or self.model,
             ENDPOINT,
@@ -90,17 +92,14 @@ class Sam3API:
         self,
         tar_path: str,
         *,
-        weights_dir_override: Path | None = None,
         model: str | None = None,
         **params: Any,
     ) -> Sam3BatchResult:
         """
-        Segment a WebDataset tar of (image, prompts) pairs already on the
-        serving cluster (typically staged in).  Returns where the results tar
-        was written.
+        Segment a WebDataset tar of (image, prompts) pairs in your staging area
+        (``tar_path`` as returned by ``StagingAPI.remote_path``).  Returns
+        where the results tar was written, beside the input.
         """
-        if weights_dir_override is not None:
-            params["weights_dir_override"] = str(weights_dir_override)
         body = self._client.inference.task(
             model or self.model,
             ENDPOINT,

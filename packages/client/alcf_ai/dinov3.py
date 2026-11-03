@@ -42,10 +42,15 @@ class DINOv3API:
         **params: Any,
     ) -> DINOv3Result:
         """
-        Segment every image in ``input_dir`` (a path on the serving cluster,
-        typically staged in).  The results directory is derived server-side as
-        a sibling of ``input_dir`` and reported back as ``mask_dir``.  Extra
-        ``params`` pass through to the backend.
+        Segment every image in ``input_dir``, a directory in your staging area
+        (as returned by ``StagingAPI.remote_path``); the server rejects any
+        other path.  The results directory is derived server-side as a sibling
+        of ``input_dir`` and reported back as ``mask_dir``.
+
+        ``checkpoint`` is the *name* of a checkpoint the server was launched
+        with (not a path); omit it for the server's default.  The server
+        accepts ``batch_size`` 1-64 and ``num_workers`` 0-16, and rejects
+        unknown fields, so extra ``params`` must be fields it supports.
         """
         options = {
             "project": project,

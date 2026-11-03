@@ -318,7 +318,7 @@ def test_sam3_submit_image_cli(gateway: FakeGateway, tmp_path: Path) -> None:
     out = run(
         "sam3",
         "submit-image",
-        "https://x/y.jpg",
+        "file:///staging/u1/y.jpg",
         "Baguette",
         "--save-labelmap",
         str(labels),
@@ -329,7 +329,40 @@ def test_sam3_submit_image_cli(gateway: FakeGateway, tmp_path: Path) -> None:
     assert labels.read_bytes() == b"LABELS"
     assert json.loads(result_json.read_text())["scores"] == [0.91]
     assert gateway.last_json["endpoint"] == "promptable-segmentation"
-    assert gateway.last_json["data_uri"] == "https://x/y.jpg"
+    assert gateway.last_json["data_uri"] == "file:///staging/u1/y.jpg"
+
+
+def test_sam3_submit_image_cli_rejects_remote_uri(gateway: FakeGateway) -> None:
+    # The server only reads the caller's staging area; fail before calling it.
+    result = runner.invoke(cli, ["sam3", "submit-image", "https://x/y.jpg", "cat"])
+    assert result.exit_code != 0
+    assert "remote URIs are not fetched" in result.output
+    assert not any(r.url.path.endswith("/tasks") for r in gateway.requests)
+
+
+def test_sam3_cli_has_no_weights_override() -> None:
+    result = runner.invoke(
+        cli, ["sam3", "submit-batch", "x.tar", "--weights-dir-override", "/w"]
+    )
+    assert result.exit_code != 0
+    assert "No such option" in result.output
+
+
+def test_dinov3_cli_bounds_batch_size(tmp_path: Path) -> None:
+    result = runner.invoke(
+        cli,
+        [
+            "dinov3",
+            "submit",
+            str(tmp_path),
+            "--from-collection-id",
+            "c",
+            "--batch-size",
+            "65",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--batch-size" in result.output
 
 
 def test_dinov3_submit_cli_stages_in_and_out(

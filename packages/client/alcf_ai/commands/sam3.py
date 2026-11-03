@@ -17,11 +17,13 @@ logger = logging.getLogger(__name__)
 cli = typer.Typer(no_args_is_help=True)
 
 ModelOpt = Annotated[
-    str, typer.Option("--model", "-m", help="Catalog name of the SAM3 model.")
-]
-WeightsOpt = Annotated[
-    Path | None,
-    typer.Option("--weights-dir-override", help="Fine-tuned weights on the cluster."),
+    str,
+    typer.Option(
+        "--model",
+        "-m",
+        help="Catalog name of the SAM3 model, e.g. sam3-synaps-i for the "
+        "SYNAPS-I fine-tune.",
+    ),
 ]
 WaitOpt = Annotated[
     bool,
@@ -33,11 +35,11 @@ WaitOpt = Annotated[
 def submit_image(
     ctx: typer.Context,
     image_uri: Annotated[
-        str, typer.Argument(help="Local file, https/s3 URI, or cluster path.")
+        str,
+        typer.Argument(help="Local file, or a path/file:// URI in your staging area."),
     ],
     prompt: Annotated[str, typer.Argument(help="Text prompt naming what to segment.")],
     model: ModelOpt = DEFAULT_MODEL,
-    weights_dir_override: WeightsOpt = None,
     save_labelmap: Annotated[
         Path | None,
         typer.Option("--save-labelmap", help="Write the label map as a .npy file."),
@@ -56,9 +58,17 @@ def submit_image(
     """
     Segment one image by text prompt.
 
-    A local file is uploaded to your staging area first; URIs are opened on the
-    serving cluster.  Preview the result with scripts/sam3_preview.py.
+    A local file is uploaded to your staging area first; otherwise the image
+    must already be in your staging area.  Preview the result with
+    scripts/sam3_preview.py.
     """
+    if "://" in image_uri and not image_uri.startswith("file://"):
+        raise typer.BadParameter(
+            "remote URIs are not fetched by the server; download the image and "
+            "pass the local file to stage it in",
+            param_hint="IMAGE_URI",
+        )
+
     client = get_client(ctx)
 
     if "://" not in image_uri and Path(image_uri).is_file():
@@ -69,9 +79,7 @@ def submit_image(
         data_uri = image_uri
 
     result = with_startup_wait(
-        lambda: client.sam3.submit_image(
-            data_uri, prompt, weights_dir_override=weights_dir_override, model=model
-        ),
+        lambda: client.sam3.submit_image(data_uri, prompt, model=model),
         model=model,
         wait=wait,
         timeout=1800,
@@ -109,7 +117,6 @@ def submit_batch(
         typer.Option(help="Globus collection holding the tar (default: HTTPS upload)."),
     ] = None,
     model: ModelOpt = DEFAULT_MODEL,
-    weights_dir_override: WeightsOpt = None,
     wait: WaitOpt = True,
 ) -> None:
     """
@@ -127,9 +134,7 @@ def submit_batch(
 
     result = with_startup_wait(
         lambda: client.sam3.submit_batch(
-            client.staging.remote_path(stagein),
-            weights_dir_override=weights_dir_override,
-            model=model,
+            client.staging.remote_path(stagein), model=model
         ),
         model=model,
         wait=wait,

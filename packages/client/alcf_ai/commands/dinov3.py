@@ -45,16 +45,20 @@ def submit(
         str | None, typer.Option(help="DINOv3 project/class set.")
     ] = None,
     checkpoint: Annotated[
-        str | None, typer.Option(help="Override the server's default checkpoint.")
+        str | None,
+        typer.Option(
+            help="Name of a checkpoint the server was launched with "
+            "(default: the server's default). Not a path."
+        ),
     ] = None,
     save_overlay: Annotated[
         bool, typer.Option(help="Also render color overlays alongside the masks.")
     ] = False,
     batch_size: Annotated[
-        int | None, typer.Option(help="GPU dataloader batch size.")
+        int | None, typer.Option(min=1, max=64, help="GPU dataloader batch size.")
     ] = None,
     num_workers: Annotated[
-        int | None, typer.Option(help="Dataloader worker count.")
+        int | None, typer.Option(min=0, max=16, help="Dataloader worker count.")
     ] = None,
     wait: Annotated[
         bool,

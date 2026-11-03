@@ -112,7 +112,7 @@ returns its result:
 uvx alcf-ai tasks ls
 uvx alcf-ai tasks run sam3 promptable-segmentation \
   -p inference_type=single-image \
-  -p data_uri=https://example.org/groceries.jpg \
+  -p data_uri=/eagle/IRIBeta/inference_data_staging/user-staging/<your id>/groceries.jpg \
   -p single_image_prompt=Baguette
 uvx alcf-ai tasks run sam3 promptable-segmentation --json @request.json
 ```
@@ -178,12 +178,13 @@ the same command.
 ### Segment images with SAM3
 
 Segment a single image by text prompt with [Meta SAM3](https://github.com/facebookresearch/sam3).
-Local files are staged in for you; URIs are opened on the cluster:
+Local files are staged in for you.  Task models only read data from your own
+staging area, so a remote image must be downloaded first:
 
 ```bash
-uvx alcf-ai sam3 submit-image \
-  https://raw.githubusercontent.com/masalim2/sam3-service/refs/heads/main/examples/images/groceries.jpg \
-  "Baguette" -o result.json --save-labelmap labels.npy
+curl -sLO https://raw.githubusercontent.com/masalim2/sam3-service/refs/heads/main/examples/images/groceries.jpg
+uvx alcf-ai sam3 submit-image groceries.jpg "Baguette" \
+  -o result.json --save-labelmap labels.npy
 
 # Render masks + boxes to a PNG (numpy/matplotlib live in the script, not the SDK):
 uv run scripts/sam3_preview.py image groceries.jpg result.json labels.npy preview.png
@@ -197,15 +198,38 @@ uv run scripts/sam3_create_webdataset.py /path/to/tiff-stack .tiff \
     "Phloem Fibers" "Hydrated Xylem vessels" "Air-based Pith cells" \
     --output-dir test-wds --shard-size 100 --num-workers 4
 
-SAM3_FINETUNE=/eagle/inference_service/sam3-service/weights/synaps-i
+# These are SYNAPS-I images, so use the SYNAPS-I fine-tune (see below):
 for f in test-wds/*.tar; do
   uvx alcf-ai sam3 submit-batch $f --from-collection-id $SOURCE_COLLECTION \
-      --weights-dir-override $SAM3_FINETUNE >> batch-inference.log 2>&1 &
+      --model sam3-synaps-i >> batch-inference.log 2>&1 &
 done
 wait
 
 uv run scripts/sam3_preview.py batch test-wds/shard-00004.tar test-wds/shard-00004.results.tar
 ```
+
+#### Fine-tuned SAM3
+
+Each set of SAM3 weights is its own catalog model with the same API, so you
+choose a fine-tune by choosing its model:
+
+| Model           | Weights                         |
+| --------------- | ------------------------------- |
+| `sam3`          | Base Meta SAM3 (the default)    |
+| `sam3-synaps-i` | Fine-tuned for SYNAPS-I imaging |
+
+Pass `--model` to either `sam3` command, or `model=` in the SDK:
+
+```bash
+uvx alcf-ai sam3 submit-image slice.tiff "Phloem Fibers" --model sam3-synaps-i
+```
+
+```python
+client.sam3.submit_image(path, "Phloem Fibers", model="sam3-synaps-i")
+```
+
+`uvx alcf-ai models ls --endpoint promptable-segmentation` lists the SAM3
+models you can use.
 
 ### Segment images with DINOv3
 
@@ -223,8 +247,12 @@ uvx alcf-ai dinov3 submit /path/to/image-folder \
 One folder is one request, so shard large datasets into subfolders and submit
 them concurrently (see the SDK example below).
 
-Both wrappers take `--model` to target a differently named catalog entry, and
-any extra request fields pass straight through to the backend.
+Both wrappers take `--model` to target a differently named catalog entry.
+Model weights are fixed when a server launches, so a fine-tune is served as its
+own catalog model and selected with `--model` (as with
+[`sam3-synaps-i`](#fine-tuned-sam3)).  DINOv3's `--checkpoint` picks one of the
+checkpoints its server was launched with, by name (never a path).
+Inputs must be in your staging area, and results are written beside them.
 
 ### Coding agents
 
