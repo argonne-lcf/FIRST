@@ -85,7 +85,7 @@ def test_configure_opencode_merges_into_existing_config(
     config = json.loads(path.read_text())
     assert config["theme"] == "dark" and "other" in config["provider"]
 
-    provider = config["provider"]["alcf-inference-service"]
+    provider = config["provider"]["alcf-inference-service-federated"]
     assert provider["options"] == {
         "baseURL": "http://gateway.test/federated/v1",
         "apiKey": "tok",
@@ -115,13 +115,20 @@ def test_configure_opencode_token_helper_installs_plugin(
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(
-            {"plugin": ["other-plugin", ["alcf-ai-opencode-plugin", {"old": 1}]]}
+            {
+                "provider": {"alcf-inference-service": {}},
+                "plugin": ["other-plugin", ["alcf-ai-opencode-plugin", {"old": 1}]],
+            }
         )
     )
 
     configure_opencode(BASE_URL, "tok", models, token_helper=HELPER)
     config = json.loads(path.read_text())
-    options = config["provider"]["alcf-inference-service"]["options"]
+    # The plugin only injects tokens for IDs with this prefix; the bare key an
+    # earlier release wrote is dropped.
+    assert list(config["provider"]) == ["alcf-inference-service-federated"]
+    assert all(p.startswith("alcf-inference-service-") for p in config["provider"])
+    options = config["provider"]["alcf-inference-service-federated"]["options"]
     assert options["apiKey"] == "alcf-ai-auto-refresh"
     assert config["plugin"] == [
         "other-plugin",
@@ -131,7 +138,10 @@ def test_configure_opencode_token_helper_installs_plugin(
     # Without a helper, the token is embedded and the plugin entry removed.
     configure_opencode(BASE_URL, "tok", models)
     config = json.loads(path.read_text())
-    assert config["provider"]["alcf-inference-service"]["options"]["apiKey"] == "tok"
+    assert (
+        config["provider"]["alcf-inference-service-federated"]["options"]["apiKey"]
+        == "tok"
+    )
     assert config["plugin"] == ["other-plugin"]
 
 
@@ -212,6 +222,8 @@ def test_configure_codex_splits_providers_by_wire_api(
     assert entry["context_window"] == 65536
     assert entry["base_instructions"] == "prompt for 0.90.0"
     assert entry["supports_parallel_tool_calls"] is False
+    # vLLM rejects the Lark-grammar custom tool that "freeform" produces.
+    assert entry["apply_patch_tool_type"] is None
 
     profile = tomlkit.parse(
         (home / ".codex" / "alcf-openai-gpt-oss-120b.config.toml").read_text()
@@ -345,7 +357,7 @@ def test_agent_configure_cli(
     assert "openai/gpt-oss-120b" in result.output and "gemma" not in result.output
     assert "refresh access tokens automatically" in result.output
     config = json.loads((home / ".config/opencode/opencode.jsonc").read_text())
-    assert list(config["provider"]["alcf-inference-service"]["models"]) == [
+    assert list(config["provider"]["alcf-inference-service-federated"]["models"]) == [
         "openai/gpt-oss-120b"
     ]
     assert config["plugin"] == [["alcf-ai-opencode-plugin", {"tokenHelper": HELPER}]]
@@ -373,7 +385,7 @@ def test_configure_opencode_v2_schema(home: Path, models: list[AgentModel]) -> N
     assert config["plugins"] == [
         {"package": "alcf-ai-opencode-plugin", "options": {"tokenHelper": HELPER}}
     ]
-    provider = config["providers"]["alcf-inference-service"]
+    provider = config["providers"]["alcf-inference-service-federated"]
     assert provider["package"] == "@opencode/ai/providers/openai-compatible"
     assert provider["settings"]["baseURL"] == "http://gateway.test/federated/v1"
     assert provider["settings"]["apiKey"] == "alcf-ai-auto-refresh"
