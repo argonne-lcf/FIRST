@@ -3,12 +3,13 @@ Temporary V1 (`/resource_server`) compatibility shim.
 """
 
 import logging
+from typing import Any, Literal
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from first_common.errors import ServiceUnavailable
+from first_common.errors import NotFound
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.endpoints.llm import (
     AnthropicMessagesPayload,
@@ -16,24 +17,21 @@ from first_common.schema.endpoints.llm import (
     OpenAIEmbeddingsPayload,
     OpenAIResponsesPayload,
 )
+from first_common.schema.endpoints.models import api_protocols
 from first_common.schema.endpoints.staging import StagingArea
-from first_common.schema.resources.read import ModelSummary
 from first_common.schema.types import HealthCheckResult, PilotDeploymentState
 
 from ...database import models as db
 from ...database.redis.router_config import ModelConfig, RouterConfig
 from ...services import staging
-from ...services.orchestration import maintenance_notices, maintenance_suffix
 from ..auth import user_can_access_group
 from ..dependencies import (
     AppState,
     AuthUser,
     DbSession,
-    RedisRepo,
     RouterConfigDep,
 )
 from ..inference import InferenceService, InferenceServiceDep
-from .catalog import model_summary
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +75,22 @@ class JobsByStatus(BaseModel):
     cluster_status: dict[str, object] = {}
 
 
+class ClusterModelInfo(BaseModel):
+    """
+    One entry of V1's per-cluster model list.  V1 `alcf-ai agent configure`
+    groups these by `framework`, filters on `id`, and reads `capabilities`
+    (api_protocols, context_window_tokens, reasoning, tool_calling, ...) to
+    write agent configs.
+    """
+
+    id: str
+    object: Literal["model"] = "model"
+    cluster: str
+    framework: str
+    display_name: str
+    capabilities: dict[str, Any]
+
+
 # --- Helpers -----------------------------------------------------------------
 
 
@@ -92,6 +106,25 @@ async def _visible_models(sess: DbSession, user: UserAuthEvent) -> list[db.Model
         for m in await db.Model.list(sess)
         if user_can_access_group(user, m.access_group)
     ]
+
+
+def _cluster_model_info(model: db.Model, cluster: str) -> ClusterModelInfo:
+    """
+    V1 capability block: the model's stored capabilities, plus the protocol and
+    context facts V2 keeps in first-class columns (supported_endpoints and
+    max_model_len are authoritative, since the gateway enforces them).
+    """
+    capabilities = dict(model.capabilities or {})
+    capabilities["api_protocols"] = api_protocols(model.supported_endpoints)
+    if model.max_model_len:
+        capabilities["context_window_tokens"] = model.max_model_len
+    return ClusterModelInfo(
+        id=model.name,
+        cluster=cluster,
+        framework=_framework(cluster),
+        display_name=model.display_name or model.name,
+        capabilities=capabilities,
+    )
 
 
 # --- health / whoami: trivial re-maps onto V2 --------------------------------
@@ -210,25 +243,31 @@ async def cluster_jobs(cluster: str, sess: DbSession, user: AuthUser) -> JobsByS
     )
 
 
-# --- cluster models: the catalog models API, filtered by cluster -------------
+# --- cluster models: V1's per-cluster model list ------------------------------
 
 
-@router.get("/{cluster}/models", response_model=list[ModelSummary])
+@router.get("/{cluster}/models", response_model=list[ClusterModelInfo])
 async def cluster_models(
-    cluster: str, sess: DbSession, user: AuthUser, repo: RedisRepo
-) -> list[ModelSummary]:
-    models = [
-        m for m in await _visible_models(sess, user) if cluster in m.cluster_names
-    ]
-    runtimes = await repo.get_many_model_runtimes([m.name for m in models])
-    notices = await db.Cluster.maintenance_notices(sess)
-    return [model_summary(model, rt, notices) for model, rt in zip(models, runtimes)]
+    cluster: str, sess: DbSession, user: AuthUser
+) -> list[ClusterModelInfo]:
+    """
+    Visible models with a deployment on `cluster`, in V1's list shape.  An
+    unknown cluster has no models.
+    """
+    return sorted(
+        (
+            _cluster_model_info(m, cluster)
+            for m in await _visible_models(sess, user)
+            if cluster in m.cluster_names
+        ),
+        key=lambda m: m.id,
+    )
 
 
 # --- staging: served by the V2 route; kept here for old clients -------------
 
 
-@router.put("/staging", response_model=StagingArea)
+@router.put("/data/staging", response_model=StagingArea)
 async def ensure_staging_area(user: AuthUser, state: AppState) -> StagingArea:
     """Idempotently create a Globus staging area for the caller (see /data/v1)."""
     return await staging.ensure_staging_area(user, state)
@@ -237,23 +276,19 @@ async def ensure_staging_area(user: AuthUser, state: AppState) -> StagingArea:
 # --- inference: reuse the deployment-scoped route, cluster picks deployment ---
 
 
-def _deployment_name(cluster: str, config: RouterConfig, model_name: str) -> str:
-    """First live deployment for `model_name` on `cluster` (framework ignored)."""
-    model: ModelConfig | None = config.models_by_name.get(
-        model_name
-    ) or config.models_by_alias.get(model_name)
-    notices: dict[str, str] = {}
-    if model is not None:
-        on_cluster = [d for d in model.deployments if d.name.startswith(f"{cluster}/")]
-        for dep in on_cluster:
-            if dep.backends:
-                return dep.name
-        notices = maintenance_notices(on_cluster)
-    raise ServiceUnavailable(
-        f"No available deployment for {model_name!r} on cluster {cluster!r}."
-        + maintenance_suffix(notices),
-        info={"maintenance_notices": notices},
-    )
+def _cluster_deployment(model: ModelConfig | None, cluster: str) -> str | None:
+    """
+    The deployment of `model` on `cluster` to pin the request to, or None if
+    there is none.  A deployment that can serve now is preferred; otherwise a
+    cold one is returned, so that admission records the capacity reject the
+    autoscaler scales on, and the caller gets the usual cold-start 503.
+    """
+    if model is None:
+        return None
+    on_cluster = [d for d in model.deployments if d.cluster_name == cluster]
+    if not on_cluster:
+        return None
+    return next((d for d in on_cluster if d.backends), on_cluster[0]).name
 
 
 async def _submit(
@@ -265,9 +300,15 @@ async def _submit(
     | AnthropicMessagesPayload
     | OpenAIEmbeddingsPayload,
 ) -> StreamingResponse | JSONResponse:
-    return await inference.submit_inference(
-        payload, deployment_name=_deployment_name(cluster, config, payload.model)
+    model = config.models_by_name.get(payload.model) or config.models_by_alias.get(
+        payload.model
     )
+    deployment_name = _cluster_deployment(model, cluster)
+    if deployment_name is None:
+        if model is None:
+            raise NotFound(f"Model {payload.model} does not exist.")
+        raise NotFound(f"Model {model.name} is not deployed on cluster {cluster!r}.")
+    return await inference.submit_inference(payload, deployment_name=deployment_name)
 
 
 @router.post("/{cluster}/{framework}/v1/chat/completions", response_model=None)

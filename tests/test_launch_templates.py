@@ -323,13 +323,20 @@ async def test_plan_apply_roundtrip_and_catalog_views(
     )
     assert response.status_code == 403
 
-    # Model facts reach the catalog, the per-cluster view and the router config.
-    for endpoint in ("/catalog/v1/models", "/resource_server/sophia/models"):
-        response = await client.get(endpoint, headers=auth_header(ADMIN_TOKEN))
-        assert response.status_code == 200, response.text
-        [model] = response.json()
-        assert model["max_model_len"] == MAX_MODEL_LEN
-        assert model["capabilities"] == {"tool_calling": True}
+    # Model facts reach the catalog, the V1 per-cluster view and the router config.
+    response = await client.get("/catalog/v1/models", headers=auth_header(ADMIN_TOKEN))
+    assert response.status_code == 200, response.text
+    [model] = response.json()
+    assert model["max_model_len"] == MAX_MODEL_LEN
+    assert model["capabilities"] == {"tool_calling": True}
+
+    response = await client.get(
+        "/resource_server/sophia/models", headers=auth_header(ADMIN_TOKEN)
+    )
+    assert response.status_code == 200, response.text
+    [model] = response.json()
+    assert model["capabilities"]["context_window_tokens"] == MAX_MODEL_LEN
+    assert model["capabilities"]["tool_calling"] is True
     client_state = MagicMock()
     client_state.db_sessionmaker = db
     observer = RouterConfigObserver("router-cfg", client_state, MagicMock())

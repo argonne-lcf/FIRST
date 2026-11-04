@@ -54,6 +54,10 @@ _PI_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 # npm package (alcf-ai-opencode-plugin) that injects a refreshed token.
 OPENCODE_PLUGIN_PACKAGE = "alcf-ai-opencode-plugin"
+# The plugin only injects tokens for provider IDs starting with
+# "alcf-inference-service-", so the bare PROVIDER_KEY would be sent the
+# placeholder apiKey and rejected by the gateway.
+OPENCODE_PROVIDER_KEY = f"{PROVIDER_KEY}-federated"
 
 # Command-based provider auth (auto token refresh) requires codex >= 0.118.0.
 _CODEX_AUTH_COMMAND_VERSION = (0, 118, 0)
@@ -376,7 +380,9 @@ def _configure_opencode_v1(
     token_helper: list[str] | None,
 ) -> None:
     providers = config.setdefault("provider", {})
-    providers[PROVIDER_KEY] = {
+    # An earlier release wrote the bare key, which the plugin does not match.
+    providers.pop(PROVIDER_KEY, None)
+    providers[OPENCODE_PROVIDER_KEY] = {
         "name": PROVIDER_NAME,
         "npm": "@ai-sdk/openai-compatible",
         "options": {
@@ -402,7 +408,9 @@ def _configure_opencode_v2(
     token_helper: list[str] | None,
 ) -> None:
     providers = config.setdefault("providers", {})
-    providers[PROVIDER_KEY] = {
+    # An earlier release wrote the bare key, which the plugin does not match.
+    providers.pop(PROVIDER_KEY, None)
+    providers[OPENCODE_PROVIDER_KEY] = {
         "name": PROVIDER_NAME,
         "package": "@opencode/ai/providers/openai-compatible",
         "settings": {
@@ -599,7 +607,9 @@ def build_codex_catalog(
             "support_verbosity": False,
             "default_verbosity": None,
             "shell_type": "shell_command",
-            "apply_patch_tool_type": "freeform",
+            # "freeform" sends apply_patch as a Lark-grammar custom tool, which
+            # vLLM rejects; codex 0.166 accepts only "freeform" or null.
+            "apply_patch_tool_type": None,
             "supports_search_tool": False,
             "web_search_tool_type": "text",
             "experimental_supported_tools": [],

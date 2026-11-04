@@ -5,9 +5,13 @@ deployment-scoped inference routes.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import httpx
 import pytest
+from openai import AsyncOpenAI
 
+from first_common.schema.endpoints.models import ModelListResponse
 from first_gateway.apiserver.api import app
 from first_gateway.database.redis.router_config import (
     BackendConfig,
@@ -17,6 +21,8 @@ from first_gateway.database.redis.router_config import (
 )
 
 from .fixtures.auth import ADMIN_TOKEN, USER_TOKEN, auth_header
+
+_CREATED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 
 def _backend(dep_name: str) -> DeploymentConfig:
@@ -45,6 +51,7 @@ def _seed_config() -> RouterConfig:
         models=[
             ModelConfig(
                 name="open/model",
+                created_at=_CREATED_AT,
                 aliases=[],
                 allowed_groups=[],
                 allowed_domains=[],
@@ -91,8 +98,51 @@ async def test_federated_models_filters_by_access(
     model = data[0]
     assert model["type"] == "model"
     assert model["display_name"] == "Open Model"
-    assert model["max_tokens"] == 4096
-    assert model["capabilities"] == {"thinking": {"supported": True}}
+    assert model["max_tokens"] == model["max_model_len"] == 4096
+    assert model["capabilities"] == {
+        "thinking": {"supported": True},
+        "api_protocols": ["chat_completions", "messages"],
+    }
+
+
+async def test_models_list_is_openai_and_anthropic_shaped(
+    client: httpx.AsyncClient, seeded_config: None
+) -> None:
+    """The listing is a superset of the OpenAI and Anthropic model-list shapes."""
+    resp = await client.get("/federated/v1/models", headers=auth_header(USER_TOKEN))
+    body = resp.json()
+
+    # OpenAI list envelope + Anthropic pagination fields (always one page).
+    assert body["object"] == "list"
+    assert body["has_more"] is False
+    assert body["first_id"] == body["last_id"] == "open/model"
+
+    [model] = body["data"]
+    # OpenAI per-model fields.
+    assert model["object"] == "model"
+    assert model["owned_by"] == "alcf"
+    assert model["created"] == int(_CREATED_AT.timestamp())
+    # Anthropic per-model fields.
+    assert model["type"] == "model"
+    assert model["created_at"].startswith("2026-01-02")
+
+
+async def test_models_list_parses_with_openai_sdk(
+    client: httpx.AsyncClient, seeded_config: None
+) -> None:
+    oai = AsyncOpenAI(
+        api_key=USER_TOKEN,
+        base_url=f"{client.base_url}/federated/v1",
+        http_client=client,
+    )
+    [model] = [m async for m in oai.models.list()]
+    assert (model.id, model.object, model.owned_by) == ("open/model", "model", "alcf")
+    assert model.created == int(_CREATED_AT.timestamp())
+
+
+async def test_models_list_empty_page_ids() -> None:
+    page = ModelListResponse(data=[])
+    assert (page.first_id, page.last_id, page.has_more) == (None, None, False)
 
 
 async def test_federated_models_display_name_defaults_to_id(

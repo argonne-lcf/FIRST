@@ -9,7 +9,11 @@ from first_common.schema.endpoints.llm import (
     OpenAIEmbeddingsPayload,
     OpenAIResponsesPayload,
 )
-from first_common.schema.endpoints.models import ModelInfo, ModelListResponse
+from first_common.schema.endpoints.models import (
+    ModelInfo,
+    ModelListResponse,
+    api_protocols,
+)
 
 from ...database.redis.router_config import ModelConfig, RouterConfig
 from ...services.orchestration import get_name_from_slug
@@ -26,8 +30,13 @@ def _model_info(model: ModelConfig) -> ModelInfo:
         id=model.name,
         created_at=model.created_at,
         display_name=model.display_name or model.name,
-        capabilities=model.capabilities,
+        # supported_endpoints is authoritative: the gateway enforces it.
+        capabilities={
+            **model.capabilities,
+            "api_protocols": api_protocols(model.supported_endpoints),
+        },
         max_tokens=model.max_model_len,
+        max_model_len=model.max_model_len,
     )
 
 
