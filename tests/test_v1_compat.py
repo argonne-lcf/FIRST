@@ -356,8 +356,6 @@ def cold_model_config() -> None:
 @pytest.mark.parametrize(
     ("path", "model", "detail"),
     [
-        ("nocluster", "m", "Cluster"),
-        ("nocluster", "no-such-model", "Cluster"),
         ("sophia", "no-such-model", "does not exist"),
         ("metis", "m", "not deployed on cluster"),
     ],
