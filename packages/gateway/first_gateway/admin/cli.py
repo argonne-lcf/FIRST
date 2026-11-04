@@ -405,14 +405,46 @@ def reconcile_reset(ctx: typer.Context, resource: str) -> None:
 
 @cli.command()
 def set_desired_replicas(
-    ctx: typer.Context, deployment_name: str, num_replicas: int
+    ctx: typer.Context,
+    deployment_names: list[str] = typer.Argument(
+        help="PilotDeployment names; '-' reads names (one per line) from stdin."
+    ),
+    num_replicas: int = typer.Argument(),
 ) -> None:
-    """Manually scale the number of replicas in a PilotDeployment"""
+    """
+    Manually scale one or more PilotDeployments.
+
+    Scale a group at once by piping names from alcf-ai:
+
+        alcf-ai deployments ls -q 'sophia/amsc-d3/*' | first-admin set-desired-replicas - 0
+    """
     client: AdminClient = ctx.obj
-    deployment = client.set_desired_pilot_deployment_replicas(
-        deployment_name, num_replicas
-    )
-    Console().print(Pretty(deployment.model_dump(mode="json")))
+    names = [
+        line.strip()
+        for name in deployment_names
+        for line in (sys.stdin if name == "-" else [name])
+        if line.strip()
+    ]
+    if not names:
+        raise typer.BadParameter("No deployment names given.")
+    out = Console()
+    if len(names) == 1:
+        deployment = client.set_desired_pilot_deployment_replicas(
+            names[0], num_replicas
+        )
+        out.print(Pretty(deployment.model_dump(mode="json")))
+        return
+    failed = False
+    for name in names:
+        try:
+            client.set_desired_pilot_deployment_replicas(name, num_replicas)
+        except FirstError as exc:
+            failed = True
+            out.print(f"[red]✗[/] {name}: {exc}")
+        else:
+            out.print(f"[green]✓[/] {name} → {num_replicas}")
+    if failed:
+        raise typer.Exit(1)
 
 
 def main() -> None:

@@ -2,7 +2,8 @@
 Catalog commands: models, deployments, clusters, access-groups.
 """
 
-from typing import Annotated
+from fnmatch import fnmatchcase
+from typing import Annotated, Iterable
 
 import typer
 from rich.panel import Panel
@@ -27,6 +28,7 @@ from ._shared import (
     fmt_int,
     fmt_seconds,
     get_client,
+    model_for,
     model_state,
     print_json,
     ready_deployments,
@@ -74,6 +76,11 @@ def _deployments_table(model: ModelSummary) -> Table:
     return table
 
 
+def _longest(names: Iterable[str]) -> int:
+    """Column width that fits every name, so names are never truncated."""
+    return max((len(n) for n in names), default=0)
+
+
 def _maintenance(model: ModelSummary) -> str:
     notices = model.maintenance_notices.items()
     return "\n".join(f"{c}: {n}" for c, n in notices) or "—"
@@ -98,7 +105,9 @@ def models_ls(
         return
 
     table = Table(title="Models")
-    table.add_column("Model", style="bold")
+    table.add_column(
+        "Model", style="bold", no_wrap=True, min_width=_longest(m.name for m in models)
+    )
     table.add_column("Endpoints")
     table.add_column("Context", justify="right")
     table.add_column("State")
@@ -166,7 +175,9 @@ def models_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> None:
 @models_cli.command("warmup")
 def models_warmup(
     ctx: typer.Context,
-    name: str,
+    name: Annotated[
+        str | None, typer.Argument(help="Model name (optional with -d).")
+    ] = None,
     endpoint: Annotated[
         str | None,
         typer.Option("--endpoint", "-e", help="Endpoint to probe (default: auto)."),
@@ -186,6 +197,7 @@ def models_warmup(
     keeps polling and shows the gateway's startup ETA until a request succeeds.
     """
     client = get_client(ctx)
+    name = model_for(ctx, name, deployment)
     api = client.deployment(deployment) if deployment else client.inference
     last: list[StartupStatus] = []
 
@@ -210,24 +222,57 @@ def models_warmup(
 @deployments_cli.command("ls")
 def deployments_ls(
     ctx: typer.Context,
+    patterns: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="Only deployments whose name matches one of these globs "
+            "(e.g. 'sophia/amsc-d3/*')."
+        ),
+    ] = None,
     model: Annotated[
         str | None, typer.Option("--model", "-m", help="Only this Model's deployments.")
     ] = None,
+    names_only: Annotated[
+        bool,
+        typer.Option(
+            "--names", "-q", help="Print only deployment names, one per line."
+        ),
+    ] = False,
     as_json: bool = JsonFlag,
 ) -> None:
-    """List pilot and static deployments with their live state."""
+    """
+    List pilot and static deployments with their live state.
+
+    Pipe names into first-admin to scale a group at once:
+
+        alcf-ai deployments ls -q 'sophia/amsc-d3/*' | first-admin set-desired-replicas - 0
+    """
     catalog = get_client(ctx).catalog
     pilots = catalog.pilot_deployments()
     statics = catalog.static_deployments()
     if model:
         pilots = [d for d in pilots if d.model_name == model]
         statics = [d for d in statics if d.model_name == model]
+    if patterns:
+        pilots = [d for d in pilots if any(fnmatchcase(d.name, p) for p in patterns)]
+        statics = [d for d in statics if any(fnmatchcase(d.name, p) for p in patterns)]
+    pilots.sort(key=lambda d: d.name)
+    statics.sort(key=lambda d: d.name)
+    if names_only:
+        for d in [*pilots, *statics]:
+            print(d.name)
+        return
     if as_json:
         print_json([*pilots, *statics])
         return
 
     table = Table(title="Deployments")
-    table.add_column("Name", style="bold")
+    table.add_column(
+        "Name",
+        style="bold",
+        no_wrap=True,
+        min_width=_longest(d.name for d in [*pilots, *statics]),
+    )
     table.add_column("Kind")
     table.add_column("Model")
     table.add_column("Cluster")
@@ -236,7 +281,7 @@ def deployments_ls(
     table.add_column("Last startup", justify="right")
     table.add_column("In-flight", justify="right")
 
-    for pd in sorted(pilots, key=lambda d: d.name):
+    for pd in pilots:
         table.add_row(
             pd.name,
             "pilot",
@@ -247,7 +292,7 @@ def deployments_ls(
             fmt_seconds(pd.last_startup_sec),
             "—",
         )
-    for sd in sorted(statics, key=lambda d: d.name):
+    for sd in statics:
         table.add_row(
             sd.name,
             "static",

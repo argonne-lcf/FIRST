@@ -14,8 +14,12 @@ from pydantic import BaseModel
 from rich.console import Console
 from rich.status import Status
 
-from first_common.errors import ServiceUnavailable
-from first_common.schema.resources.read import ModelSummary
+from first_common.errors import NotFound, ServiceUnavailable
+from first_common.schema.resources.read import (
+    ModelSummary,
+    PilotDeploymentSummary,
+    StaticDeploymentDetail,
+)
 from first_common.schema.types import HealthCheckResult, PilotDeploymentState
 
 from ..client import InferenceClient
@@ -38,6 +42,27 @@ def get_client(ctx: typer.Context) -> InferenceClient:
     """Return the InferenceClient stashed on the Typer context by the root callback."""
     obj: CliContext = ctx.obj
     return obj.client
+
+
+def model_for(ctx: typer.Context, model: str | None, deployment: str | None) -> str:
+    """
+    The Model to target: ``model`` if given, else the Model served by
+    ``deployment`` (by name or slug), so ``-d`` alone is enough.
+    """
+    if model:
+        return model
+    if not deployment:
+        raise typer.BadParameter("Specify a Model, or a deployment with -d.")
+    name = deployment.replace("~", "/")
+    catalog = get_client(ctx).catalog
+    deployments: list[PilotDeploymentSummary | StaticDeploymentDetail] = [
+        *catalog.pilot_deployments(),
+        *catalog.static_deployments(),
+    ]
+    for d in deployments:
+        if d.name == name:
+            return d.model_name
+    raise NotFound(f"Deployment {deployment!r} not found (or not visible to you).")
 
 
 def print_json(obj: Any) -> None:

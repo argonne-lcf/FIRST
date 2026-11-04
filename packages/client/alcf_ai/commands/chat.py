@@ -22,7 +22,14 @@ from ..inference import (
     response_usage,
     stream_delta,
 )
-from ._shared import console, err_console, llm_endpoints, print_json, with_startup_wait
+from ._shared import (
+    console,
+    err_console,
+    llm_endpoints,
+    model_for,
+    print_json,
+    with_startup_wait,
+)
 
 # Preference order when a Model supports several LLM dialects.
 _CHAT_ENDPOINTS = ("chat/completions", "responses", "messages")
@@ -196,7 +203,10 @@ def _run_unary(
 
 def chat(
     ctx: typer.Context,
-    prompt: Annotated[str, typer.Argument(help="The prompt to send")] = "",
+    prompt: Annotated[
+        list[str] | None,
+        typer.Argument(help="The prompt to send (quotes optional)."),
+    ] = None,
     model: Annotated[
         str | None,
         typer.Option(
@@ -248,13 +258,15 @@ def chat(
     Works with Chat Completions, Responses, and Anthropic Messages models.
     """
     client = ctx.obj.client
-    user_content = _gather_prompt(prompt, input_file)
+    user_content = _gather_prompt(" ".join(prompt or []), input_file)
     if not user_content and not system:
         raise typer.BadParameter(
             "Provide a prompt via the positional argument, --input-file, "
             "piped stdin, or --system."
         )
 
+    if deployment and not model:
+        model = model_for(ctx, model, deployment)
     model, endpoint = resolve_target(client, model, api)
     payload = build_payload(
         endpoint,
@@ -278,7 +290,10 @@ def chat(
 def embed(
     ctx: typer.Context,
     text: Annotated[list[str], typer.Argument(help="One or more texts to embed")],
-    model: Annotated[str, typer.Option("--model", "-m", help="Embedding model name.")],
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Embedding model name (optional with -d)."),
+    ] = None,
     deployment: Annotated[
         str | None,
         typer.Option("--deployment", "-d", help="Pin the request to one deployment."),
@@ -292,6 +307,7 @@ def embed(
 ) -> None:
     """Embed text and print the OpenAI-format embeddings response as JSON."""
     client: InferenceClient = ctx.obj.client
+    model = model_for(ctx, model, deployment)
     inference = client.deployment(deployment) if deployment else client.inference
     body = with_startup_wait(
         lambda: inference.embeddings(model, text if len(text) > 1 else text[0]),

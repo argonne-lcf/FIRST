@@ -33,10 +33,15 @@ logger = logging.getLogger(__name__)
 cli = Typer(no_args_is_help=True)
 
 cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
-cli.add_typer(models_cli, name="models", help="Discover and warm up Models")
-cli.add_typer(deployments_cli, name="deployments", help="Inspect model deployments")
-cli.add_typer(clusters_cli, name="clusters", help="Inspect cluster state")
-cli.add_typer(access_groups_cli, name="access-groups", help="Inspect AccessGroups")
+for _name, _sub, _help in [
+    ("models", models_cli, "Discover and warm up Models"),
+    ("deployments", deployments_cli, "Inspect model deployments"),
+    ("clusters", clusters_cli, "Inspect cluster state"),
+    ("access-groups", access_groups_cli, "Inspect AccessGroups"),
+]:
+    cli.add_typer(_sub, name=_name, help=_help)
+    # Singular alias (e.g. `alcf-ai model ls`), hidden from --help.
+    cli.add_typer(_sub, name=_name.removesuffix("s"), hidden=True)
 cli.add_typer(sam3_cli, name="sam3", help="SAM3 promptable image segmentation")
 cli.add_typer(
     dinov3_cli, name="dinov3", help="DINOv3 semantic segmentation of image folders"

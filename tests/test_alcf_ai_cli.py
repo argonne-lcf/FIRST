@@ -390,3 +390,93 @@ def test_dinov3_submit_cli_stages_in_and_out(
     assert [t["recursive"] for t in transfers] == [True, True]
     assert transfers[1]["source_path"] == "/user-staging/u1/imgs-results"
     assert transfers[1]["destination_path"] == str(tmp_path / "imgs-results")
+
+
+def test_singular_aliases() -> None:
+    assert "openai/gpt-oss-120b" in run("model", "ls")
+    assert "sophia/openai/gpt-oss-120b" in run("deployment", "ls")
+
+
+def test_deployments_ls_glob_and_names_only() -> None:
+    assert run("deployments", "ls", "-q").splitlines() == [
+        "sophia/facebook/sam3",  # pilots first, then statics
+        "sophia/openai/gpt-oss-120b",
+        "metis/google/gemma-4-31B-it",
+    ]
+    assert run("deployments", "ls", "-q", "sophia/openai/*").splitlines() == [
+        "sophia/openai/gpt-oss-120b"
+    ]
+    assert run("deployments", "ls", "-q", "metis/*", "*/sam3").splitlines() == [
+        "sophia/facebook/sam3",
+        "metis/google/gemma-4-31B-it",
+    ]
+
+
+def test_names_not_truncated_in_narrow_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COLUMNS", "60")
+    assert "metis/google/gemma-4-31B-it" in run("deployments", "ls")
+    assert "google/gemma-4-31B-it" in run("models", "ls")
+
+
+def test_chat_unquoted_prompt_and_deployment_only(gateway: FakeGateway) -> None:
+    gateway.routes[
+        "POST /deployments/sophia~openai~gpt-oss-120b/v1/chat/completions"
+    ] = httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": "hi"}}]},
+    )
+    out = run(
+        "chat",
+        "-d",
+        "sophia/openai/gpt-oss-120b",
+        "--no-stream",
+        "what",
+        "is",
+        "up",
+    )
+    assert "hi" in out
+    assert gateway.last_json["model"] == "openai/gpt-oss-120b"
+    assert gateway.last_json["messages"] == [{"role": "user", "content": "what is up"}]
+
+
+def test_embed_deployment_only(gateway: FakeGateway) -> None:
+    gateway.routes["POST /deployments/metis~google~gemma-4-31B-it/v1/embeddings"] = (
+        httpx.Response(200, json={"data": []})
+    )
+    run("embed", "-d", "metis/google/gemma-4-31B-it", "a")
+    assert gateway.last_json == {"model": "google/gemma-4-31B-it", "input": "a"}
+
+
+def test_admin_set_desired_replicas_many_and_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from first_common.errors import NotFound
+    from first_gateway.admin import cli as admin_cli
+
+    calls: list[tuple[str, int]] = []
+
+    class FakeAdmin:
+        base_url = "http://admin"
+
+        def __init__(self, *_: Any) -> None: ...
+
+        def set_desired_pilot_deployment_replicas(self, name: str, n: int) -> None:
+            if name == "missing":
+                raise NotFound("nope")
+            calls.append((name, n))
+
+    monkeypatch.setattr(admin_cli, "AdminClient", FakeAdmin)
+    result = runner.invoke(
+        admin_cli.cli,
+        ["set-desired-replicas", "a", "-", "0"],
+        input="b\n\nc\n",
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [("a", 0), ("b", 0), ("c", 0)]
+
+    result = runner.invoke(admin_cli.cli, ["set-desired-replicas", "missing", "d", "2"])
+    assert result.exit_code == 1
+    assert "missing" in result.output and ("d", 2) in calls
