@@ -124,5 +124,7 @@ async def test_staging_route_returns_area_for_caller(
     assert body["collection_id"] == staging_collection
 
     # The legacy V1 path still works and delegates to the same service.
-    resp = await client.put("/resource_server/staging", headers=auth_header(USER_TOKEN))
+    resp = await client.put(
+        "/resource_server/data/staging", headers=auth_header(USER_TOKEN)
+    )
     assert resp.status_code == 200 and resp.json()["path"] == body["path"]
