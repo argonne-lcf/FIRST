@@ -10,6 +10,7 @@ import { ResourceHeader } from "@/components/ResourceHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { resourceLinks } from "@/lib/links";
 import { cn, unslug } from "@/lib/utils";
 
 function DetailShell({
@@ -140,6 +141,7 @@ export function ReplicaDetail() {
     );
   }
 
+  const deployment = query.data;
   const replica = query.data.replicas.find((r) => r.slug === replicaSlug);
   if (!replica) {
     return (
@@ -166,7 +168,41 @@ export function ReplicaDetail() {
       deploymentName={query.data.name}
       replicaName={replica.name}
     >
-      <ResourceHeader kind={replica.kind} name={replica.name} uid={replica.uid}>
+      <ResourceHeader
+        kind={replica.kind}
+        name={replica.name}
+        uid={replica.uid}
+        related={[
+          {
+            label: "Deployment",
+            name: replica.pilot_deployment_name,
+            link: resourceLinks.deployment(
+              "pilot",
+              replica.pilot_deployment_name,
+            ),
+          },
+          {
+            label: "Pilot Job",
+            name: replica.pilot_job_name,
+            link: replica.pilot_job_name
+              ? resourceLinks.pilotJob(
+                  deployment.cluster_name,
+                  replica.pilot_job_name,
+                )
+              : undefined,
+          },
+          {
+            label: "Cluster",
+            name: deployment.cluster_name,
+            link: resourceLinks.cluster(deployment.cluster_name),
+          },
+          {
+            label: "Model",
+            name: deployment.model_name,
+            link: resourceLinks.model(deployment.model_name),
+          },
+        ]}
+      >
         <ReplicaStateBadge state={replica.state} />
       </ResourceHeader>
 
@@ -197,6 +233,18 @@ export function ReplicaDetail() {
               "runtime",
               "reconcile_last_traceback",
             ]}
+            links={{
+              pilot_deployment_name: resourceLinks.deployment(
+                "pilot",
+                replica.pilot_deployment_name,
+              ),
+              ...(replica.pilot_job_name && {
+                pilot_job_name: resourceLinks.pilotJob(
+                  deployment.cluster_name,
+                  replica.pilot_job_name,
+                ),
+              }),
+            }}
           />
         </CardContent>
       </Card>

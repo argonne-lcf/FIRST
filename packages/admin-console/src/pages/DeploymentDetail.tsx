@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { type LinkProps, useParams } from "@tanstack/react-router";
 import { type PilotDeploymentDetail as PilotDeploymentDetailModel } from "@/lib/client";
 import { deploymentQueries } from "@/queries/deployment";
+import { launchTemplateQueries } from "@/queries/launchTemplate";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import {
   HealthDescription,
@@ -15,6 +16,7 @@ import { ReplicaCards } from "@/components/ReplicaCards";
 import { ResourceHeader } from "@/components/ResourceHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { resourceLinks } from "@/lib/links";
 import { unslug } from "@/lib/utils";
 
 function DetailShell({
@@ -67,11 +69,13 @@ function DetailsCard({
   obj,
   omit,
   order,
+  links,
 }: {
   title: string;
   obj: Record<string, unknown>;
   omit?: readonly string[];
   order?: readonly string[];
+  links?: Partial<Record<string, LinkProps>>;
 }) {
   return (
     <Card>
@@ -79,7 +83,7 @@ function DetailsCard({
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <FieldValueTable obj={obj} omit={omit} order={order} />
+        <FieldValueTable obj={obj} omit={omit} order={order} links={links} />
       </CardContent>
     </Card>
   );
@@ -117,8 +121,55 @@ function ReplicaGrid({
   return (
     <div className="space-y-3">
       <h2 className="text-lg font-medium">Replicas</h2>
-      <ReplicaCards replicas={deployment.replicas} />
+      <ReplicaCards
+        replicas={deployment.replicas}
+        clusterName={deployment.cluster_name}
+      />
     </div>
+  );
+}
+
+/** The LaunchTemplate this pilot deployment renders its replicas from. */
+function LaunchTemplateCard({ name }: { name: string }) {
+  const query = useQuery(launchTemplateQueries.byName(name));
+  return (
+    <Card id="launch-template" className="scroll-mt-6">
+      <CardHeader>
+        <CardTitle>
+          Launch Template{" "}
+          <span className="font-mono font-normal text-muted-foreground">
+            {name}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {query.isPending ? (
+          <Skeleton className="h-48" />
+        ) : query.isError ? (
+          <p className="text-sm text-destructive">
+            Failed to load launch template:{" "}
+            {query.error instanceof Error
+              ? query.error.message
+              : "unknown error"}
+          </p>
+        ) : query.data === null ? (
+          <p className="text-sm text-muted-foreground">
+            Launch template not found.
+          </p>
+        ) : (
+          <FieldValueTable
+            obj={query.data}
+            omit={["kind", "name"]}
+            order={[
+              "serve_script_template",
+              "parameters",
+              "env",
+              "health_check",
+            ]}
+          />
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -135,6 +186,23 @@ function PilotDeploymentDetail({ name }: { name: string }) {
         kind={deployment.kind}
         name={deployment.name}
         uid={deployment.uid}
+        related={[
+          {
+            label: "Cluster",
+            name: deployment.cluster_name,
+            link: resourceLinks.cluster(deployment.cluster_name),
+          },
+          {
+            label: "Model",
+            name: deployment.model_name,
+            link: resourceLinks.model(deployment.model_name),
+          },
+          {
+            label: "Launch Template",
+            name: deployment.launch_template_name,
+            link: resourceLinks.launchTemplate(deployment.name),
+          },
+        ]}
       >
         <PilotStateIndicator state={deployment.state} />
       </ResourceHeader>
@@ -149,7 +217,13 @@ function PilotDeploymentDetail({ name }: { name: string }) {
         obj={deployment}
         omit={["kind", "name", "uid", "replicas", "reconcile_last_traceback"]}
         order={PILOT_FIELD_ORDER}
+        links={{
+          cluster_name: resourceLinks.cluster(deployment.cluster_name),
+          model_name: resourceLinks.model(deployment.model_name),
+          launch_template_name: resourceLinks.launchTemplate(deployment.name),
+        }}
       />
+      <LaunchTemplateCard name={deployment.launch_template_name} />
     </DetailShell>
   );
 }
@@ -170,6 +244,18 @@ function StaticDeploymentDetail({ name }: { name: string }) {
         kind={deployment.kind}
         name={deployment.name}
         uid={deployment.uid}
+        related={[
+          {
+            label: "Cluster",
+            name: deployment.cluster_name,
+            link: resourceLinks.cluster(deployment.cluster_name),
+          },
+          {
+            label: "Model",
+            name: deployment.model_name,
+            link: resourceLinks.model(deployment.model_name),
+          },
+        ]}
       >
         <HealthIndicator health={deployment.health} />
       </ResourceHeader>
@@ -188,6 +274,10 @@ function StaticDeploymentDetail({ name }: { name: string }) {
           "health_detail",
         ]}
         order={STATIC_FIELD_ORDER}
+        links={{
+          cluster_name: resourceLinks.cluster(deployment.cluster_name),
+          model_name: resourceLinks.model(deployment.model_name),
+        }}
       />
     </DetailShell>
   );

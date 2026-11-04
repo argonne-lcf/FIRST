@@ -34,7 +34,7 @@ const callbackRoute = createRoute({
   component: Callback,
 });
 
-// Layout route: the authenticated app shell (AppBar + auth guard).
+// Layout route: the authenticated app shell (AppBar + TabNav + auth guard).
 // Its children render inside <Outlet />.
 const shellRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -42,7 +42,7 @@ const shellRoute = createRoute({
   component: AppLayout,
 });
 
-// Sub-layout: the primary tabbed views share a tab bar.
+// Sub-layout: the primary list views share a padded <main>.
 const tabsLayoutRoute = createRoute({
   getParentRoute: () => shellRoute,
   id: "tabs",
@@ -73,7 +73,7 @@ const clustersRoute = createRoute({
   component: Clusters,
 });
 
-// Detail views render their own breadcrumb bar instead of the tab bar.
+// Detail views render their own breadcrumb bar beneath the tab bar.
 const modelDetailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/models/$modelSlug",

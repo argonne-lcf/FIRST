@@ -1,13 +1,10 @@
 import { Outlet } from "@tanstack/react-router";
-import { TabNav } from "@/components/TabNav";
 
+/** Padded content area for the top-level list views (detail pages own theirs). */
 export function TabsLayout() {
   return (
-    <>
-      <TabNav />
-      <main className="flex-1 p-6">
-        <Outlet />
-      </main>
-    </>
+    <main className="flex-1 p-6">
+      <Outlet />
+    </main>
   );
 }

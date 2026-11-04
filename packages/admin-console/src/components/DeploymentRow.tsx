@@ -1,4 +1,4 @@
-import { Link, type LinkProps } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import {
   type HealthCheckResult,
@@ -6,7 +6,9 @@ import {
   type PilotDeploymentSummary,
   type StaticDeploymentSummary,
 } from "@/lib/client";
+import { ResourceLink } from "@/components/ResourceLink";
 import { Button } from "@/components/ui/button";
+import { resourceLinks } from "@/lib/links";
 
 /** The union of static health results and pilot deployment states. */
 export type DeploymentState = HealthCheckResult | PilotDeploymentState;
@@ -16,20 +18,16 @@ export type Deployment =
   | { kind: "static"; state: DeploymentState; summary: StaticDeploymentSummary }
   | { kind: "pilot"; state: DeploymentState; summary: PilotDeploymentSummary };
 
-function detailLink(d: Deployment): LinkProps {
-  return {
-    to: "/deployments/$kind/$deploymentSlug",
-    params: { kind: d.kind, deploymentSlug: d.summary.slug },
-  };
-}
-
 export function DeploymentRow({ deployment }: { deployment: Deployment }) {
   const { summary } = deployment;
+  const detailLink = resourceLinks.deployment(deployment.kind, summary.name);
   return (
     <div className="flex items-center gap-4 border-t border-border py-2 text-sm first:border-t-0">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate font-medium">{summary.name}</span>
+          <ResourceLink link={detailLink} className="truncate font-medium">
+            {summary.name}
+          </ResourceLink>
           <span className="font-mono text-xs text-muted-foreground">
             #{summary.uid}
           </span>
@@ -38,6 +36,15 @@ export function DeploymentRow({ deployment }: { deployment: Deployment }) {
               ? "PilotDeployment"
               : "StaticDeployment"}
           </span>
+        </div>
+        <div className="truncate text-xs text-muted-foreground">
+          <ResourceLink link={resourceLinks.cluster(summary.cluster_name)}>
+            {summary.cluster_name}
+          </ResourceLink>
+          {" · "}
+          <ResourceLink link={resourceLinks.model(summary.model_name)}>
+            {summary.model_name}
+          </ResourceLink>
         </div>
         {deployment.kind === "static" ? (
           <div className="truncate font-mono text-xs text-muted-foreground">
@@ -62,7 +69,7 @@ export function DeploymentRow({ deployment }: { deployment: Deployment }) {
         )}
       </div>
       <Button asChild variant="ghost" size="sm">
-        <Link {...detailLink(deployment)}>
+        <Link {...detailLink}>
           View
           <ArrowRight data-icon="inline-end" />
         </Link>

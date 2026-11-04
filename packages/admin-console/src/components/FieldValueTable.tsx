@@ -1,4 +1,6 @@
+import { type LinkProps } from "@tanstack/react-router";
 import { JsonBlock } from "@/components/JsonBlock";
+import { ResourceLink } from "@/components/ResourceLink";
 import {
   Table,
   TableBody,
@@ -15,15 +17,20 @@ import {
  *
  * Fields named in `order` are floated to the top in that order; any remaining
  * fields keep their original declaration order below them.
+ *
+ * Fields with an entry in `links` (e.g. `cluster_name`) render their value as
+ * a link to the referenced resource instead of as JSON.
  */
 export function FieldValueTable({
   obj,
   omit = [],
   order = [],
+  links = {},
 }: {
   obj: Record<string, unknown>;
   omit?: readonly string[];
   order?: readonly string[];
+  links?: Partial<Record<string, LinkProps>>;
 }) {
   const rank = (field: string) => {
     const i = order.indexOf(field);
@@ -47,11 +54,22 @@ export function FieldValueTable({
               {field}
             </TableCell>
             <TableCell className="w-full">
-              <JsonBlock value={value} />
+              <FieldValue value={value} link={links[field]} />
             </TableCell>
           </TableRow>
         ))}
       </TableBody>
     </Table>
   );
+}
+
+function FieldValue({ value, link }: { value: unknown; link?: LinkProps }) {
+  if (link && typeof value === "string") {
+    return (
+      <ResourceLink link={link} className="font-mono text-xs">
+        {value}
+      </ResourceLink>
+    );
+  }
+  return <JsonBlock value={value} />;
 }

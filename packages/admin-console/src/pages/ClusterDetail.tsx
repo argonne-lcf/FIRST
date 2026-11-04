@@ -15,6 +15,8 @@ import {
 } from "@/components/ClusterStatus";
 import { JsonBlock } from "@/components/JsonBlock";
 import { ResourceHeader } from "@/components/ResourceHeader";
+import { ResourceLink } from "@/components/ResourceLink";
+import { resourceLinks } from "@/lib/links";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -177,7 +179,13 @@ function PilotJobsTableBody({
                 });
               }}
             >
-              <TableCell className="font-medium">{job.name}</TableCell>
+              <TableCell className="font-medium">
+                <ResourceLink
+                  link={resourceLinks.pilotJob(job.cluster_name, job.name)}
+                >
+                  {job.name}
+                </ResourceLink>
+              </TableCell>
               <TableCell className="font-mono text-xs">
                 {job.scheduler_job_id}
               </TableCell>

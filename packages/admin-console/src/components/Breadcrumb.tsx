@@ -10,7 +10,7 @@ export type Crumb = {
 
 export function Breadcrumb({ items }: { items: Crumb[] }) {
   return (
-    <nav className="flex h-11 items-center gap-1.5 border-b border-border px-4 text-sm">
+    <nav className="flex h-10 items-center gap-1.5 border-b border-border bg-muted/40 px-4 text-sm">
       {items.map((item, i) => (
         <Fragment key={i}>
           {i > 0 && (

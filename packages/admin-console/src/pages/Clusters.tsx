@@ -12,13 +12,19 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ResourceLink } from "@/components/ResourceLink";
+import { resourceLinks } from "@/lib/links";
 
 function ClusterCard({ overview }: { overview: ClusterOverview }) {
   const { cluster, staticDeployments, pilotDeployments } = overview;
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{cluster.name}</CardTitle>
+        <CardTitle>
+          <ResourceLink link={resourceLinks.cluster(cluster.name)}>
+            {cluster.name}
+          </ResourceLink>
+        </CardTitle>
         <CardAction>
           <HealthIndicator health={cluster.health} />
         </CardAction>

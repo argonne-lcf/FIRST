@@ -16,6 +16,7 @@ import { ResourceHeader } from "@/components/ResourceHeader";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { resourceLinks } from "@/lib/links";
 import { formatAgo, formatTimestamp, gib, unslug } from "@/lib/utils";
 
 function DetailShell({
@@ -276,7 +277,18 @@ export function PilotJobDetail() {
       clusterName={query.data.name}
       jobName={job.name}
     >
-      <ResourceHeader kind={job.kind} name={job.name} uid={job.uid}>
+      <ResourceHeader
+        kind={job.kind}
+        name={job.name}
+        uid={job.uid}
+        related={[
+          {
+            label: "Cluster",
+            name: job.cluster_name,
+            link: resourceLinks.cluster(job.cluster_name),
+          },
+        ]}
+      >
         <Badge variant="outline">
           {job.scheduler_state.replace(/_/g, " ")}
         </Badge>
@@ -295,7 +307,10 @@ export function PilotJobDetail() {
 
       <div className="space-y-3">
         <h2 className="text-lg font-medium">Replicas</h2>
-        <ReplicaCards replicas={job.assigned_replicas} />
+        <ReplicaCards
+          replicas={job.assigned_replicas}
+          clusterName={job.cluster_name}
+        />
       </div>
 
       <Card>
@@ -314,6 +329,7 @@ export function PilotJobDetail() {
               "runtime",
               "reconcile_last_traceback",
             ]}
+            links={{ cluster_name: resourceLinks.cluster(job.cluster_name) }}
           />
         </CardContent>
       </Card>

@@ -23,6 +23,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ResourceLink } from "@/components/ResourceLink";
+import { resourceLinks } from "@/lib/links";
 import { humanize } from "@/lib/utils";
 
 /** Deployment states worst-first, matching the Deployments page grouping. */
@@ -165,7 +167,11 @@ export function Models() {
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     #{model.uid}
                   </TableCell>
-                  <TableCell className="font-medium">{model.name}</TableCell>
+                  <TableCell className="font-medium">
+                    <ResourceLink link={resourceLinks.model(model.name)}>
+                      {model.name}
+                    </ResourceLink>
+                  </TableCell>
                   <TableCell>
                     <Button
                       variant="link"
