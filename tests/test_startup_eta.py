@@ -105,6 +105,7 @@ def test_incoming_without_eta_reports_typical() -> None:
     exc = cold_start_error(model, None, "")
     assert str(exc) == "Model open/model is starting. Startup typically takes ~80s."
     assert exc.info == {
+        "reject_reason": "capacity:no_candidates",
         "startup_eta_sec": None,
         "typical_startup_sec": 80,
         "maintenance_notices": {},
@@ -122,6 +123,7 @@ def test_nothing_known_keeps_generic_message() -> None:
     exc = cold_start_error(_model(_dep("d")), 15, " Retry in 15 seconds.")
     assert str(exc) == "Backend not available yet. Retry in 15 seconds."
     assert exc.info == {
+        "reject_reason": "capacity:no_candidates",
         "startup_eta_sec": None,
         "typical_startup_sec": None,
         "maintenance_notices": {},

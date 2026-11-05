@@ -48,6 +48,9 @@ spec:
   access_group_name: research-team
   max_model_len: 262144
   supported_endpoints: ["/messages", "/chat/completions", "/responses"]
+  usage_limits:
+    default:
+      burst_tokens: 300000
 
 ---
 kind: Model

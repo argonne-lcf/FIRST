@@ -15,7 +15,7 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(FirstError)
     def handle_app_error(_request: Request, exc: FirstError) -> JSONResponse:
-        headers = {}
+        headers = dict(exc.headers)
         if exc.retry_after_sec is not None:
             headers["Retry-After"] = str(exc.retry_after_sec)
 

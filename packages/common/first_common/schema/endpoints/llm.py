@@ -5,11 +5,8 @@ from pydantic import Field
 from .base import BasePayload
 from .token_estimation import (
     CHARS_PER_TOKEN,
-    count_input,
-    count_tool_chars,
-    estimate_input_tokens,
-    estimate_tool_tokens,
-    estimate_total_tokens,
+    TokenEstimate,
+    estimate_llm_tokens,
 )
 
 
@@ -27,20 +24,16 @@ class OpenAIChatCompletionsPayload(BasePayload):
         max_context: int | None,
         *,
         chars_per_token: float | None = None,
-        output_estimate: int | None = None,
-    ) -> int:
-        max_output = self.max_completion_tokens or self.max_tokens
-        return estimate_total_tokens(
-            estimate_input_tokens(self.messages, chars_per_token=chars_per_token)
-            + estimate_tool_tokens(self.tools, chars_per_token=chars_per_token),
+        output_estimate: float | None = None,
+    ) -> TokenEstimate:
+        return estimate_llm_tokens(
+            self.messages,
+            tools=self.tools,
             max_context=max_context,
-            max_output=max_output,
+            max_output=self.max_completion_tokens or self.max_tokens,
+            chars_per_token=chars_per_token,
             output_estimate=output_estimate,
         )
-
-    def input_basis(self) -> tuple[int, int]:
-        chars, images = count_input(self.messages)
-        return chars + count_tool_chars(self.tools), images
 
 
 # https://platform.openai.com/docs/api-reference/responses/create
@@ -57,21 +50,17 @@ class OpenAIResponsesPayload(BasePayload):
         max_context: int | None,
         *,
         chars_per_token: float | None = None,
-        output_estimate: int | None = None,
-    ) -> int:
-        return estimate_total_tokens(
-            estimate_input_tokens(
-                self.input, self.instructions, chars_per_token=chars_per_token
-            )
-            + estimate_tool_tokens(self.tools, chars_per_token=chars_per_token),
+        output_estimate: float | None = None,
+    ) -> TokenEstimate:
+        return estimate_llm_tokens(
+            self.input,
+            self.instructions,
+            tools=self.tools,
             max_context=max_context,
             max_output=self.max_output_tokens,
+            chars_per_token=chars_per_token,
             output_estimate=output_estimate,
         )
-
-    def input_basis(self) -> tuple[int, int]:
-        chars, images = count_input(self.input, self.instructions)
-        return chars + count_tool_chars(self.tools), images
 
 
 # https://docs.claude.com/en/api/messages
@@ -91,21 +80,17 @@ class AnthropicMessagesPayload(BasePayload):
         max_context: int | None,
         *,
         chars_per_token: float | None = None,
-        output_estimate: int | None = None,
-    ) -> int:
-        return estimate_total_tokens(
-            estimate_input_tokens(
-                self.messages, self.system, chars_per_token=chars_per_token
-            )
-            + estimate_tool_tokens(self.tools, chars_per_token=chars_per_token),
+        output_estimate: float | None = None,
+    ) -> TokenEstimate:
+        return estimate_llm_tokens(
+            self.messages,
+            self.system,
+            tools=self.tools,
             max_context=max_context,
             max_output=self.max_tokens,
+            chars_per_token=chars_per_token,
             output_estimate=output_estimate,
         )
-
-    def input_basis(self) -> tuple[int, int]:
-        chars, images = count_input(self.messages, self.system)
-        return chars + count_tool_chars(self.tools), images
 
 
 # https://platform.openai.com/docs/api-reference/embeddings/create
@@ -118,13 +103,15 @@ class OpenAIEmbeddingsPayload(BasePayload):
         max_context: int | None,
         *,
         chars_per_token: float | None = None,  # noqa: ARG002 (N/A for embeddings)
-        output_estimate: int | None = None,  # noqa: ARG002 (N/A for embeddings)
-    ) -> int:
+        output_estimate: float | None = None,  # noqa: ARG002 (N/A for embeddings)
+    ) -> TokenEstimate:
         # Embeddings produce no completion tokens and their inputs are often
         # pre-tokenized, so neither learned parameter applies here.
         inp = self.input
+        chars = 0
         if isinstance(inp, str):
-            tokens = len(inp) // CHARS_PER_TOKEN
+            chars = len(inp)
+            tokens = chars // CHARS_PER_TOKEN
         elif inp and isinstance(inp[0], int):
             # Already tokenized: count tokens directly, don't measure the repr.
             tokens = len(inp)
@@ -133,6 +120,10 @@ class OpenAIEmbeddingsPayload(BasePayload):
             tokens = sum(len(arr) for arr in inp)
         else:
             # Batch of strings (or empty input).
-            tokens = sum(len(s) for s in inp) // CHARS_PER_TOKEN  # type: ignore
+            chars = sum(len(s) for s in inp)  # type: ignore
+            tokens = chars // CHARS_PER_TOKEN
         tokens = max(1, tokens)
-        return min(max_context, tokens) if max_context else tokens
+        return TokenEstimate(
+            total_estimated_tokens=min(max_context, tokens) if max_context else tokens,
+            input_chars=chars,
+        )

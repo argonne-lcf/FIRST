@@ -193,13 +193,17 @@ class InferenceLog(_StructuredLog):
 
     endpoint: str
     model: str
-    deployment: str
-    cluster: str
-    backend_id: str
-    backend_model_url: str
+    # The routing target.  None on ``admission_rejected`` attempts, which are
+    # refused before a backend is chosen (``deployment`` is still set when the
+    # request was pinned to one).
+    deployment: str | None = None
+    cluster: str | None = None
+    backend_id: str | None = None
+    backend_model_url: str | None = None
 
     # Per-attempt result. ``attempt`` is 1-based within this request_id;
-    # ``error`` carries the failure summary for non-success outcomes.
+    # ``error`` carries the failure summary for non-success outcomes (for
+    # ``admission_rejected``, a reason code such as ``quota:user_tpm``).
     outcome: InferenceOutcome = "success"
     attempt: int = 1
     error: str | None = None
@@ -217,3 +221,4 @@ class InferenceLog(_StructuredLog):
     est_chars_per_token: float | None = None
     est_output_tokens: float | None = None
     input_chars: int | None = None
+    input_images: int | None = None

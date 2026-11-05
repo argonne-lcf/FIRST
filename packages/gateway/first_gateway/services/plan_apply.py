@@ -63,6 +63,28 @@ def validate_resources(
                     f"{child_kind}.{child.name} references nonexistant {parent_kind}.{parent_name}"
                 )
 
+    # A request can never be admitted if it costs more than the user's token
+    # bucket holds, so a context window larger than burst_tokens is unusable.
+    for model_resource in by_kind["Model"]:
+        model_spec = model_resource.spec
+        assert isinstance(model_spec, ModelSpec)
+        if model_spec.max_model_len is None:
+            continue
+        policy = model_spec.usage_limits
+        limits = [("default", policy.default.burst_tokens)] + [
+            (f"override {o.kind}={o.id}", o.burst_tokens)
+            for o in policy.overrides
+            if o.burst_tokens is not None
+        ]
+        for where, burst_tokens in limits:
+            if burst_tokens < model_spec.max_model_len:
+                raise InvalidSpecError(
+                    f"Model.{model_resource.name}: usage_limits {where} "
+                    f"burst_tokens ({burst_tokens}) must be at least "
+                    f"max_model_len ({model_spec.max_model_len}); otherwise "
+                    "requests using the full context can never be admitted."
+                )
+
     # Resolve every deployment against its template so a template edit that
     # breaks a dependent (or an invalid launch_spec) fails at plan time.
     templates = {r.name: r.spec for r in by_kind["LaunchTemplate"]}

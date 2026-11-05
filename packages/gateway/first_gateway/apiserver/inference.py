@@ -20,10 +20,11 @@ from first_common.schema.endpoints.generic import (
     TASK_USER_ID_HEADER,
     GenericTaskPayload,
 )
+from first_common.schema.endpoints.token_estimation import TokenEstimate
 from first_common.schema.structured_logs import InferenceLog, InferenceOutcome
 from first_common.schema.types import upstream_endpoint_path
 
-from ..database.redis.admission import AdmissionController, TokenStats
+from ..database.redis.admission import AdmissionController
 from ..database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -46,6 +47,7 @@ from .router_config_manager import RouterConfigManager
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
+DEPLOYMENT_HEADER = "X-First-Deployment"
 _RETRYABLE_STATUS = (502, 503, 504)
 
 UpstreamHandler = Callable[
@@ -78,10 +80,7 @@ class InferenceService:
         self.user = user
         self.request_id = get_request_id() or str(uuid.uuid4())
         self.attempt = 1
-        # Admission's token estimate and the calibration behind it, logged on
-        # every InferenceLog so estimates can be compared with actual usage.
-        self.estimated_tokens: int | None = None
-        self.token_stats = TokenStats()
+        self.estimate = TokenEstimate()
 
         state = request.app.state
         self.storage_dir = state.client_state.settings.prompt_storage_dir
@@ -134,15 +133,11 @@ class InferenceService:
         stats = await self.admission_controller.get_token_stats(
             model.name, self.user.id
         )
-        estimated_tokens = payload.estimate_tokens(
+        self.estimate = payload.estimate_tokens(
             model.max_model_len,
             chars_per_token=stats.chars_per_token,
-            output_estimate=(
-                round(stats.output_tokens) if stats.output_tokens is not None else None
-            ),
+            output_estimate=stats.output_tokens,
         )
-        self.token_stats = stats
-        self.estimated_tokens = estimated_tokens
         handler = self._get_upstream_handler(payload)
 
         attempted = 0
@@ -150,16 +145,29 @@ class InferenceService:
 
         # Attempt at least once to make sure admit_request is called.
         for _ in range(max(1, min(MAX_ATTEMPTS, len(backend_candidates)))):
-            backend_id = await admit_request(
-                self.user,
-                model,
-                self.admission_controller,
-                backend_candidates,
-                self.request_id,
-                estimated_tokens=estimated_tokens,
-                deployment_name=deployment_name,
-                charge_request=attempted == 0,
-            )
+            t0 = time.perf_counter()
+            try:
+                backend_id = await admit_request(
+                    self.user,
+                    model,
+                    self.admission_controller,
+                    backend_candidates,
+                    self.request_id,
+                    estimated_tokens=self.estimate.total_estimated_tokens,
+                    deployment_name=deployment_name,
+                    charge_request=attempted == 0,
+                )
+            except FirstError as exc:
+                self.attempt = attempted + 1
+                self._emit_inference_log(
+                    payload,
+                    model,
+                    deployment_name=deployment_name,
+                    outcome="admission_rejected",
+                    latency_sec=time.perf_counter() - t0,
+                    error=exc.info.get("reject_reason") or exc.code,
+                )
+                raise
 
             client = self.backend_client_manager.get(backend_id)
             if client is None:
@@ -207,6 +215,7 @@ class InferenceService:
             except FirstError as exc:
                 # Upstream 4xx: settle & propagate response without penalising the backend
                 await self.admission_controller.settle(self.request_id, actual_tokens=0)
+                exc.headers[DEPLOYMENT_HEADER] = deployment.name
                 self._emit_inference_log(
                     payload,
                     model,
@@ -252,9 +261,7 @@ class InferenceService:
         )
         await self.admission_controller.settle(self.request_id, actual_tokens=0)
 
-    async def _record_token_stats(
-        self, payload: BasePayload, model: ModelConfig, usage: TokenUsage
-    ) -> None:
+    async def _record_token_stats(self, model: ModelConfig, usage: TokenUsage) -> None:
         """Feed one successful request's real usage into the estimation EWMAs.
 
         chars-per-token is only learnable from requests with no images and no
@@ -263,7 +270,8 @@ class InferenceService:
         (Anthropic omits cache reads from ``input_tokens``; OpenAI folds them
         in).  Output tokens are learned from any completion that reports them.
         """
-        input_chars, images = payload.input_basis()
+        input_chars = self.estimate.input_chars
+        images = self.estimate.input_images
         cached = bool(usage.cache_read_tokens or usage.cache_write_tokens)
         chars_per_token_sample = (
             input_chars / usage.input_tokens
@@ -288,9 +296,10 @@ class InferenceService:
         self,
         payload: BasePayload,
         model: ModelConfig,
-        deployment: DeploymentConfig,
-        backend: BackendConfig,
+        deployment: DeploymentConfig | None = None,
+        backend: BackendConfig | None = None,
         *,
+        deployment_name: str | None = None,
         latency_sec: float,
         outcome: InferenceOutcome = "success",
         usage: TokenUsage | None = None,
@@ -299,17 +308,19 @@ class InferenceService:
     ) -> None:
         """Emit one per-attempt InferenceLog. Success attempts pass ``usage`` and
         ``raw_body``; failed attempts pass ``outcome`` + ``error`` and leave
-        usage null (a failed attempt rarely reports tokens)."""
+        usage null (a failed attempt rarely reports tokens).  Admission
+        rejections pass no ``deployment``/``backend`` (none was chosen), only
+        the pinned ``deployment_name`` if any."""
         usage = usage or TokenUsage()
         InferenceLog(
             request_id=self.request_id,
             user_id=self.user.id,
             endpoint=payload.endpoint,
             model=model.name,
-            deployment=deployment.name,
-            cluster=deployment.cluster_name,
-            backend_id=backend.id,
-            backend_model_url=backend.model_url,
+            deployment=deployment.name if deployment else deployment_name,
+            cluster=deployment.cluster_name if deployment else None,
+            backend_id=backend.id if backend else None,
+            backend_model_url=backend.model_url if backend else None,
             outcome=outcome,
             attempt=self.attempt,
             error=error,
@@ -320,10 +331,11 @@ class InferenceService:
             cache_read_tokens=usage.cache_read_tokens,
             cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens,
-            estimated_tokens=self.estimated_tokens,
-            est_chars_per_token=self.token_stats.chars_per_token,
-            est_output_tokens=self.token_stats.output_tokens,
-            input_chars=payload.input_basis()[0],
+            estimated_tokens=self.estimate.total_estimated_tokens,
+            est_chars_per_token=self.estimate.est_chars_per_token,
+            est_output_tokens=self.estimate.est_output_tokens,
+            input_chars=self.estimate.input_chars,
+            input_images=self.estimate.input_images,
         ).emit(raw_body=raw_body, storage_dir=self.storage_dir)
 
     def _raise_for_upstream_status(
@@ -391,7 +403,7 @@ class InferenceService:
         await self.admission_controller.settle(
             self.request_id, actual_tokens=usage.total_tokens or 0
         )
-        await self._record_token_stats(payload, model, usage)
+        await self._record_token_stats(model, usage)
         self._emit_inference_log(
             payload,
             model,
@@ -402,7 +414,11 @@ class InferenceService:
             latency_sec=latency_sec,
             raw_body=response.content,
         )
-        return JSONResponse(json_body, status_code=response.status_code)
+        return JSONResponse(
+            json_body,
+            status_code=response.status_code,
+            headers={DEPLOYMENT_HEADER: deployment.name},
+        )
 
     async def _handle_streaming(
         self,
@@ -474,12 +490,16 @@ class InferenceService:
                         latency_sec=time.perf_counter() - t0,
                         raw_body=bytes(content),
                     )
-                    await self._record_token_stats(payload, model, usage)
+                    await self._record_token_stats(model, usage)
 
         return StreamingResponse(
             _relay(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                DEPLOYMENT_HEADER: deployment.name,
+            },
         )
 
 

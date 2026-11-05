@@ -1,3 +1,4 @@
+import math
 import random
 from datetime import datetime, timezone
 from typing import NoReturn
@@ -5,10 +6,11 @@ from typing import NoReturn
 from first_common.errors import (
     FirstError,
     NotFound,
+    RequestTooLarge,
     ServiceUnavailable,
     TooManyRequests,
 )
-from first_common.schema.types import UsageLimits
+from first_common.schema.types import OverloadPolicy, UsageLimits
 from first_gateway.apiserver.dependencies import AuthUser
 
 from ..database.redis.admission import (
@@ -89,6 +91,22 @@ async def admit_request(
 
     usage_limits = model.usage_limits.get_limits(user)
 
+    # A request costing more than the bucket depth can never be admitted, no
+    # matter how long the client waits: fail fast instead of handing out a
+    # Retry-After that would only be rejected again.
+    if usage_limits.tpm > 0 and estimated_tokens > usage_limits.burst_tokens:
+        raise RequestTooLarge(
+            f"Request is estimated at {estimated_tokens:,} tokens, which exceeds "
+            f"the per-request limit of {usage_limits.burst_tokens:,} tokens for "
+            f"model {model.name}. Reduce the prompt size or the maximum output "
+            "tokens and try again.",
+            info={
+                "reject_reason": "request_too_large",
+                "estimated_tokens": estimated_tokens,
+                "burst_tokens": usage_limits.burst_tokens,
+            },
+        )
+
     admit_result = await admission_controller.admit(
         request_id=request_id,
         model_name=model.name,
@@ -120,65 +138,79 @@ def get_deployment_from_backend_id(
     )
 
 
+def jittered_retry_after(
+    retry_after_sec: float | None, overload: OverloadPolicy
+) -> int | None:
+    """
+    Whole-second Retry-After for an admission rejection.
+    Jitter only ever lengthens the wait.
+    """
+    base = retry_after_sec or overload.short_retry_sec
+    if not base or base <= 0:
+        return None
+    jitter = max(0, overload.retry_jitter_percent) / 100
+    return max(1, math.ceil(base * (1 + random.uniform(0, jitter))))
+
+
 def raise_admit_error(
     admit_result: AdmitResult,
     usage_limits: UsageLimits,
     model: ModelConfig,
     deployment_name: str | None = None,
 ) -> NoReturn:
-    retry_after_sec: int | None
-    if admit_result.retry_after_sec:
-        retry_after_sec = int(admit_result.retry_after_sec)
-        retry_str = f" Retry in {retry_after_sec} seconds."
-    elif model.overload.short_retry_sec:
-        retry_after_sec = int(model.overload.short_retry_sec)
-        retry_str = f" Retry in {retry_after_sec} seconds."
-    else:
-        retry_after_sec = None
-        retry_str = ""
+    """
+    Raise the client-facing error for a rejected admission.
+
+    Every error carries a short `<status>:<reason>` code in
+    `info["reject_reason"]`, e.g. `quota:user_tpm`.
+    """
+    retry_after_sec = jittered_retry_after(admit_result.retry_after_sec, model.overload)
+    retry_str = f" Retry in {retry_after_sec} seconds." if retry_after_sec else ""
 
     if admit_result.status == AdmitStatus.REJECT_QUOTA:
-        if admit_result.quota_reason == QuotaReason.USER_CONCURRENCY:
-            raise TooManyRequests(
-                f"Concurrent requests above {usage_limits.max_user_concurrency}."
-                + retry_str,
-                retry_after_sec=retry_after_sec,
-            )
-        elif admit_result.quota_reason == QuotaReason.USER_RPM:
-            raise TooManyRequests(
-                f"Requests per minute above {usage_limits.rpm}." + retry_str,
-                retry_after_sec=retry_after_sec,
-            )
-        elif admit_result.quota_reason == QuotaReason.USER_TPM:
-            raise TooManyRequests(
-                f"Tokens per minute above {usage_limits.tpm}." + retry_str,
-                retry_after_sec=retry_after_sec,
-            )
+        quota_reason = admit_result.quota_reason
+        info = {
+            "reject_reason": f"quota:{quota_reason.value if quota_reason else 'unknown'}"
+        }
+        if quota_reason == QuotaReason.USER_CONCURRENCY:
+            message = f"Concurrent requests above {usage_limits.max_user_concurrency}."
+        elif quota_reason == QuotaReason.USER_RPM:
+            message = f"Requests per minute above {usage_limits.rpm}."
+        elif quota_reason == QuotaReason.USER_TPM:
+            message = f"Tokens per minute above {usage_limits.tpm}."
         else:
             raise FirstError(
-                f"Uncaught reject reason for status {AdmitStatus.REJECT_QUOTA}: {admit_result.quota_reason}."
+                f"Uncaught reject reason for status {admit_result.status}: {quota_reason}.",
+                info=info,
             )
+        raise TooManyRequests(
+            message + retry_str, retry_after_sec=retry_after_sec, info=info
+        )
 
-    elif admit_result.status == AdmitStatus.REJECT_CAPACITY:
-        if admit_result.capacity_reason == CapacityReason.SATURATED:
-            raise ServiceUnavailable(
-                "Backend saturated." + retry_str,
-                retry_after_sec=retry_after_sec,
-            )
-        elif admit_result.capacity_reason == CapacityReason.ALL_BENCHED:
-            raise ServiceUnavailable(
-                "Backend in cooldown phase." + retry_str,
-                retry_after_sec=retry_after_sec,
-            )
-        elif admit_result.capacity_reason == CapacityReason.NO_CANDIDATES:
+    if admit_result.status == AdmitStatus.REJECT_CAPACITY:
+        capacity_reason = admit_result.capacity_reason
+        info = {
+            "reject_reason": f"capacity:{capacity_reason.value if capacity_reason else 'unknown'}"
+        }
+        if capacity_reason == CapacityReason.SATURATED:
+            message = "Backend saturated."
+        elif capacity_reason == CapacityReason.ALL_BENCHED:
+            message = "Backend in cooldown phase."
+        elif capacity_reason == CapacityReason.NO_CANDIDATES:
             raise cold_start_error(model, retry_after_sec, retry_str, deployment_name)
         else:
             raise FirstError(
-                f"Uncaught reject reason for status {AdmitStatus.REJECT_CAPACITY}: {admit_result.capacity_reason}."
+                f"Uncaught reject reason for status {admit_result.status}: {capacity_reason}.",
+                info=info,
             )
+        raise ServiceUnavailable(
+            message + retry_str, retry_after_sec=retry_after_sec, info=info
+        )
 
-    else:
-        raise FirstError(f"Uncaught admit_result status: {admit_result.status}.")
+    raise FirstError(
+        f"Uncaught admit_result status: {admit_result.status}.",
+        info={"reject_reason": f"status:{admit_result.status.name.lower()}"},
+    )
 
 
 def cold_start_error(
@@ -198,6 +230,7 @@ def cold_start_error(
     When every deployment is on a cluster under maintenance, the maintenance
     notice replaces the startup outlook; otherwise any notices are appended.
     """
+    reject_reason = f"capacity:{CapacityReason.NO_CANDIDATES.value}"
     now = datetime.now(timezone.utc)
     deployments = [d for d in model.deployments if deployment_name in (None, d.name)]
     etas = [eta for d in deployments if (eta := d.startup_eta_sec(now)) is not None]
@@ -216,6 +249,7 @@ def cold_start_error(
             + retry_str,
             retry_after_sec=retry_after_sec,
             info={
+                "reject_reason": reject_reason,
                 "startup_eta_sec": None,
                 "typical_startup_sec": None,
                 "maintenance_notices": notices,
@@ -241,6 +275,7 @@ def cold_start_error(
         message + maintenance_suffix(notices) + retry_str,
         retry_after_sec=retry_after_sec,
         info={
+            "reject_reason": reject_reason,
             "startup_eta_sec": round(min(etas)) if etas else None,
             "typical_startup_sec": round(min(typical)) if typical else None,
             "maintenance_notices": notices,

@@ -25,11 +25,14 @@ class FirstError(Exception):
         status_code: HTTPStatus | int | None = None,
         info: dict[str, Any] | None = None,
         retry_after_sec: int | None = None,
+        headers: dict[str, str] | None = None,
     ):
         if status_code is not None:
             self.status_code = HTTPStatus(status_code)
         self.info = info or {}
         self.retry_after_sec = retry_after_sec
+        # Extra response headers set by the apiserver's FirstError handler.
+        self.headers = headers or {}
         super().__init__(*args)
 
 
@@ -51,6 +54,14 @@ class TooManyRequests(FirstError):
 class ServiceUnavailable(FirstError):
     status_code = HTTPStatus.SERVICE_UNAVAILABLE
     code: str = "service_unavailable"
+
+
+class RequestTooLarge(FirstError):
+    """The request can never be admitted (e.g. it exceeds the token bucket
+    depth), so retrying it unchanged is pointless: no Retry-After."""
+
+    status_code = HTTPStatus.BAD_REQUEST
+    code: str = "request_too_large"
 
 
 class InvalidSpecError(FirstError):

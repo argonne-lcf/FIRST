@@ -84,6 +84,8 @@ def _resources() -> list[ResourceManifest]:
         elif r.kind == "Model":
             assert isinstance(r.spec, ModelSpec)
             r.spec.max_model_len = MAX_MODEL_LEN
+            # The token bucket must hold a full-context request.
+            r.spec.usage_limits.default.burst_tokens = MAX_MODEL_LEN
             r.spec.capabilities = {"tool_calling": True}
     return resources
 

@@ -3,6 +3,8 @@
 These are pure-unit tests over ``first_common`` schema only -- no DB required.
 """
 
+import dataclasses
+
 import pytest
 
 from first_common.schema.endpoints.base import BasePayload
@@ -17,6 +19,7 @@ from first_common.schema.endpoints.token_estimation import (
     DEFAULT_OUTPUT_ESTIMATE,
     IMAGE_TOKEN_ESTIMATE,
     MAX_OUTPUT_ESTIMATE,
+    TokenEstimate,
     count_input,
     count_tool_chars,
     estimate_input_tokens,
@@ -156,8 +159,8 @@ def test_base_payload_defaults_to_zero() -> None:
     class Dummy(BasePayload):
         endpoint = "dummy"
 
-    assert Dummy(model="m").estimate_tokens(1000) == 0
-    assert Dummy(model="m").estimate_tokens(None) == 0
+    assert Dummy(model="m").estimate_tokens(1000).total_estimated_tokens == 0
+    assert Dummy(model="m").estimate_tokens(None).total_estimated_tokens == 0
 
 
 def test_openai_chat_completions_input_plus_default_output() -> None:
@@ -165,7 +168,10 @@ def test_openai_chat_completions_input_plus_default_output() -> None:
         model="m",
         messages=[{"role": "user", "content": "h" * (CHARS_PER_TOKEN * 8)}],
     )
-    assert payload.estimate_tokens(None) == 8 + DEFAULT_OUTPUT_ESTIMATE
+    assert (
+        payload.estimate_tokens(None).total_estimated_tokens
+        == 8 + DEFAULT_OUTPUT_ESTIMATE
+    )
 
 
 def test_openai_chat_completions_prefers_max_completion_tokens() -> None:
@@ -176,7 +182,7 @@ def test_openai_chat_completions_prefers_max_completion_tokens() -> None:
         max_tokens=999,
     )
     # input "hi" -> 0 chars//4 floored to 1; output prefers max_completion_tokens.
-    assert payload.estimate_tokens(None) == 1 + 42
+    assert payload.estimate_tokens(None).total_estimated_tokens == 1 + 42
 
 
 def test_openai_chat_completions_falls_back_to_legacy_max_tokens() -> None:
@@ -185,7 +191,7 @@ def test_openai_chat_completions_falls_back_to_legacy_max_tokens() -> None:
         messages=[{"role": "user", "content": "hi"}],
         max_tokens=7,
     )
-    assert payload.estimate_tokens(None) == 1 + 7
+    assert payload.estimate_tokens(None).total_estimated_tokens == 1 + 7
 
 
 def test_openai_chat_completions_includes_tools() -> None:
@@ -197,7 +203,7 @@ def test_openai_chat_completions_includes_tools() -> None:
         tools=tools,
     )
     expected_input = 1 + estimate_tool_tokens(tools)
-    assert payload.estimate_tokens(None) == expected_input + 10
+    assert payload.estimate_tokens(None).total_estimated_tokens == expected_input + 10
 
 
 def test_openai_responses_counts_input_and_instructions() -> None:
@@ -207,12 +213,15 @@ def test_openai_responses_counts_input_and_instructions() -> None:
         instructions="b" * (CHARS_PER_TOKEN * 2),
         max_output_tokens=5,
     )
-    assert payload.estimate_tokens(None) == (4 + 2) + 5
+    assert payload.estimate_tokens(None).total_estimated_tokens == (4 + 2) + 5
 
 
 def test_openai_responses_default_output() -> None:
     payload = OpenAIResponsesPayload(model="m", input="hello")
-    assert payload.estimate_tokens(None) == 1 + DEFAULT_OUTPUT_ESTIMATE
+    assert (
+        payload.estimate_tokens(None).total_estimated_tokens
+        == 1 + DEFAULT_OUTPUT_ESTIMATE
+    )
 
 
 def test_anthropic_messages_uses_required_max_tokens() -> None:
@@ -222,7 +231,7 @@ def test_anthropic_messages_uses_required_max_tokens() -> None:
         system="s" * (CHARS_PER_TOKEN * 2),
         max_tokens=100,
     )
-    assert payload.estimate_tokens(None) == (6 + 2) + 100
+    assert payload.estimate_tokens(None).total_estimated_tokens == (6 + 2) + 100
 
 
 def test_anthropic_messages_max_tokens_is_required() -> None:
@@ -239,7 +248,7 @@ def test_anthropic_messages_clamped_by_context() -> None:
         max_tokens=1000,
     )
     # input=10, context=50 -> output clamped to 40, total 50.
-    assert payload.estimate_tokens(50) == 50
+    assert payload.estimate_tokens(50).total_estimated_tokens == 50
 
 
 # --------------------------------------------------------------------------
@@ -249,7 +258,7 @@ def test_anthropic_messages_clamped_by_context() -> None:
 
 def test_embeddings_single_string() -> None:
     payload = OpenAIEmbeddingsPayload(model="m", input="e" * (CHARS_PER_TOKEN * 9))
-    assert payload.estimate_tokens(None) == 9
+    assert payload.estimate_tokens(None).total_estimated_tokens == 9
 
 
 def test_embeddings_list_of_strings() -> None:
@@ -258,39 +267,44 @@ def test_embeddings_list_of_strings() -> None:
         input=["a" * CHARS_PER_TOKEN * 3, "b" * CHARS_PER_TOKEN * 2],
     )
     # (12 + 8) chars // 4 = 5 tokens.
-    assert payload.estimate_tokens(None) == 5
+    assert payload.estimate_tokens(None).total_estimated_tokens == 5
 
 
 def test_embeddings_pretokenized_ids_counted_directly() -> None:
     payload = OpenAIEmbeddingsPayload(model="m", input=[1, 2, 3, 4, 5])
-    assert payload.estimate_tokens(None) == 5
+    assert payload.estimate_tokens(None).total_estimated_tokens == 5
 
 
 def test_embeddings_batch_of_token_arrays() -> None:
     payload = OpenAIEmbeddingsPayload(model="m", input=[[1, 2, 3], [4, 5]])
-    assert payload.estimate_tokens(None) == 5
+    assert payload.estimate_tokens(None).total_estimated_tokens == 5
 
 
 def test_embeddings_empty_input_floored_to_one() -> None:
     payload = OpenAIEmbeddingsPayload(model="m", input=[])
-    assert payload.estimate_tokens(None) == 1
+    assert payload.estimate_tokens(None).total_estimated_tokens == 1
 
 
 def test_embeddings_clamped_by_context() -> None:
     payload = OpenAIEmbeddingsPayload(model="m", input=[1, 2, 3, 4, 5])
-    assert payload.estimate_tokens(3) == 3
+    assert payload.estimate_tokens(3).total_estimated_tokens == 3
 
 
 def test_embeddings_never_adds_output_estimate() -> None:
     # Embeddings produce no completion tokens; estimate must equal the input.
     payload = OpenAIEmbeddingsPayload(model="m", input="z" * (CHARS_PER_TOKEN * 7))
-    assert payload.estimate_tokens(None) == 7
+    assert payload.estimate_tokens(None).total_estimated_tokens == 7
 
 
 def test_embeddings_ignore_learned_params() -> None:
     # The learned params are accepted for interface uniformity but do nothing.
     payload = OpenAIEmbeddingsPayload(model="m", input="z" * (CHARS_PER_TOKEN * 7))
-    assert payload.estimate_tokens(None, chars_per_token=2.0, output_estimate=999) == 7
+    assert (
+        payload.estimate_tokens(
+            None, chars_per_token=2.0, output_estimate=999
+        ).total_estimated_tokens
+        == 7
+    )
 
 
 # --------------------------------------------------------------------------
@@ -342,7 +356,9 @@ def test_chat_completions_uses_learned_chars_per_token() -> None:
         max_tokens=5,
     )
     # 40 chars / 2.0 = 20 input tokens + 5 output.
-    assert payload.estimate_tokens(None, chars_per_token=2.0) == 25
+    assert (
+        payload.estimate_tokens(None, chars_per_token=2.0).total_estimated_tokens == 25
+    )
 
 
 # --------------------------------------------------------------------------
@@ -402,7 +418,10 @@ def test_chat_completions_uses_learned_output_estimate() -> None:
         max_tokens=5000,
     )
     # input "hi" -> 1 token; learned output 42 < cap 5000.
-    assert payload.estimate_tokens(None, output_estimate=42) == 1 + 42
+    assert (
+        payload.estimate_tokens(None, output_estimate=42).total_estimated_tokens
+        == 1 + 42
+    )
 
 
 def test_anthropic_learned_output_below_required_max_tokens() -> None:
@@ -412,30 +431,34 @@ def test_anthropic_learned_output_below_required_max_tokens() -> None:
         max_tokens=1000,
     )
     # Learned 30 output shrinks the reservation below the required max_tokens.
-    assert payload.estimate_tokens(None, output_estimate=30) == 6 + 30
+    assert (
+        payload.estimate_tokens(None, output_estimate=30).total_estimated_tokens
+        == 6 + 30
+    )
 
 
 # --------------------------------------------------------------------------
-# input_basis: char/image basis carried to settlement
+# TokenEstimate: the input basis carried to settlement and the InferenceLog
 # --------------------------------------------------------------------------
 
 
-def test_base_payload_input_basis_is_zero() -> None:
+def test_base_payload_estimate_is_zero() -> None:
     class Dummy(BasePayload):
         endpoint = "dummy"
 
-    assert Dummy(model="m").input_basis() == (0, 0)
+    assert Dummy(model="m").estimate_tokens(1000) == TokenEstimate()
 
 
-def test_count_input_matches_input_basis_for_chat() -> None:
+def test_estimate_input_chars_match_count_input_for_chat() -> None:
     msgs = [{"role": "user", "content": "x" * 40}]
     tools = [{"type": "function", "function": {"name": "s"}}]
     payload = OpenAIChatCompletionsPayload(model="m", messages=msgs, tools=tools)
-    expected_chars = count_input(msgs)[0] + count_tool_chars(tools)
-    assert payload.input_basis() == (expected_chars, 0)
+    est = payload.estimate_tokens(None)
+    assert est.input_chars == count_input(msgs)[0] + count_tool_chars(tools)
+    assert est.input_images == 0
 
 
-def test_input_basis_counts_images() -> None:
+def test_estimate_counts_images() -> None:
     msgs = [
         {
             "role": "user",
@@ -445,13 +468,12 @@ def test_input_basis_counts_images() -> None:
             ],
         }
     ]
-    payload = OpenAIChatCompletionsPayload(model="m", messages=msgs)
-    chars, images = payload.input_basis()
-    assert chars == len("hello")
-    assert images == 1
+    est = OpenAIChatCompletionsPayload(model="m", messages=msgs).estimate_tokens(None)
+    assert est.input_chars == len("hello")
+    assert est.input_images == 1
 
 
-def test_anthropic_input_basis_includes_system_and_tools() -> None:
+def test_anthropic_estimate_basis_includes_system_and_tools() -> None:
     payload = AnthropicMessagesPayload(
         model="m",
         messages=[{"role": "user", "content": "c" * 12}],
@@ -459,6 +481,44 @@ def test_anthropic_input_basis_includes_system_and_tools() -> None:
         max_tokens=10,
         tools=[{"type": "function", "function": {"name": "f"}}],
     )
-    chars, images = payload.input_basis()
-    assert chars == 12 + 8 + count_tool_chars(payload.tools)
-    assert images == 0
+    est = payload.estimate_tokens(None)
+    assert est.input_chars == 12 + 8 + count_tool_chars(payload.tools)
+    assert est.input_images == 0
+
+
+def test_estimate_records_learned_calibration() -> None:
+    payload = OpenAIChatCompletionsPayload(
+        model="m",
+        messages=[{"role": "user", "content": "x" * 40}],
+        max_tokens=5000,
+    )
+    assert payload.estimate_tokens(None) == TokenEstimate(
+        total_estimated_tokens=10 + 5000, input_chars=40
+    )
+    # The learned float output estimate is rounded for the reservation but
+    # recorded as given.
+    est = payload.estimate_tokens(None, chars_per_token=2.0, output_estimate=41.6)
+    assert est == TokenEstimate(
+        total_estimated_tokens=20 + 42,
+        est_chars_per_token=2.0,
+        est_output_tokens=41.6,
+        input_chars=40,
+    )
+
+
+def test_estimate_is_frozen() -> None:
+    est = TokenEstimate(total_estimated_tokens=1)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        est.total_estimated_tokens = 2  # type: ignore[misc]
+
+
+def test_embeddings_estimate_basis() -> None:
+    est = OpenAIEmbeddingsPayload(model="m", input=["ab", "cde"]).estimate_tokens(
+        None, chars_per_token=2.0, output_estimate=10
+    )
+    assert est.input_chars == 5
+    assert est.est_chars_per_token is None
+    assert est.est_output_tokens is None
+    assert OpenAIEmbeddingsPayload(model="m", input=[1, 2]).estimate_tokens(
+        None
+    ) == TokenEstimate(total_estimated_tokens=2)

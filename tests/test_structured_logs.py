@@ -19,7 +19,7 @@ from first_common.schema.structured_logs import (
 from first_gateway.apiserver.api import app
 from first_gateway.apiserver.context import _request_id_ctx, get_request_id
 from first_gateway.apiserver.dependencies import _INFERENCE_PATH_PREFIXES
-from first_gateway.apiserver.inference import InferenceService
+from first_gateway.apiserver.inference import DEPLOYMENT_HEADER, InferenceService
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -238,7 +238,17 @@ def capture_events() -> Iterator[list[dict[str, Any]]]:
         logger.removeHandler(handler)
 
 
-def _seed_streaming_config() -> None:
+def _seed_streaming_config(
+    usage_limits: dict[str, Any] | None = None, with_backend: bool = True
+) -> None:
+    backends = [
+        BackendConfig(
+            id="static_deployment/dep-open",
+            model_url="http://backend.invalid/v1",
+            backend_model_name="upstream",
+            api_key=None,
+        )
+    ]
     cfg = RouterConfig(
         version=1,
         models=[
@@ -248,7 +258,7 @@ def _seed_streaming_config() -> None:
                 allowed_groups=[],
                 allowed_domains=[],
                 supported_endpoints=["chat/completions"],
-                usage_limits={},  # type: ignore[arg-type]
+                usage_limits=usage_limits or {},  # type: ignore[arg-type]
                 overload={},  # type: ignore[arg-type]
                 deployments=[
                     DeploymentConfig(
@@ -258,14 +268,7 @@ def _seed_streaming_config() -> None:
                         router_params={},  # type: ignore[arg-type]
                         prometheus_metrics_path=None,
                         prometheus_scrape_interval_sec=30,
-                        backends=[
-                            BackendConfig(
-                                id="static_deployment/dep-open",
-                                model_url="http://backend.invalid/v1",
-                                backend_model_name="upstream",
-                                api_key=None,
-                            )
-                        ],
+                        backends=backends if with_backend else [],
                     )
                 ],
             )
@@ -425,3 +428,150 @@ def test_inference_routes_match_body_logging_prefixes() -> None:
         p for p in inference_paths if not p.startswith(_INFERENCE_PATH_PREFIXES)
     ]
     assert unmatched == []
+
+
+# --------------------------------------------------------------------------
+# Deployment header on every relayed response
+# --------------------------------------------------------------------------
+
+
+def _inject_backend(response: httpx.Response) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return response
+
+    app.state.backend_client_manager._clients["static_deployment/dep-open"] = (
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="http://backend.invalid/v1",
+        )
+    )
+
+
+_CHAT = {"model": "open/model", "messages": [{"role": "user", "content": "hi"}]}
+
+
+async def test_streaming_response_names_deployment(client: httpx.AsyncClient) -> None:
+    _seed_streaming_config()
+    _inject_streaming_backend()
+    async with client.stream(
+        "POST",
+        "/federated/v1/chat/completions",
+        headers=auth_header(USER_TOKEN),
+        json={**_CHAT, "stream": True},
+    ) as resp:
+        assert resp.status_code == 200
+        assert resp.headers[DEPLOYMENT_HEADER] == "dep-open"
+        await resp.aread()
+
+
+async def test_unary_response_names_deployment(client: httpx.AsyncClient) -> None:
+    _seed_streaming_config()
+    body = {
+        "id": "x",
+        "object": "chat.completion",
+        "choices": [],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    _inject_backend(httpx.Response(200, json=body))
+    resp = await client.post(
+        "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
+    )
+    assert resp.status_code == 200
+    assert resp.headers[DEPLOYMENT_HEADER] == "dep-open"
+    # The body is relayed untouched.
+    assert resp.json() == body
+
+
+async def test_upstream_4xx_names_deployment(client: httpx.AsyncClient) -> None:
+    _seed_streaming_config()
+    _inject_backend(httpx.Response(400, text="bad request"))
+    resp = await client.post(
+        "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
+    )
+    assert resp.status_code == 400
+    assert resp.headers[DEPLOYMENT_HEADER] == "dep-open"
+
+
+# --------------------------------------------------------------------------
+# Admission rejections are logged
+# --------------------------------------------------------------------------
+
+
+async def _post_and_get_log(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    json_body: dict[str, Any],
+) -> tuple[httpx.Response, dict[str, Any]]:
+    capture_events.clear()
+    resp = await client.post(
+        "/federated/v1/chat/completions",
+        headers=auth_header(USER_TOKEN),
+        json=json_body,
+    )
+    await asyncio.sleep(0.05)
+    inference = [r for r in capture_events if r["stream"] == "inference"]
+    assert len(inference) == 1
+    return resp, inference[0]
+
+
+async def test_request_over_burst_tokens_rejected_and_logged(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    _seed_streaming_config(usage_limits={"default": {"burst_tokens": 50}})
+    _inject_streaming_backend()
+
+    resp, log = await _post_and_get_log(
+        client, capture_events, {**_CHAT, "max_tokens": 100}
+    )
+    assert resp.status_code == 400
+    assert "Retry-After" not in resp.headers
+    error = resp.json()["error"]
+    assert error["code"] == "request_too_large"
+    assert "per-request limit of 50 tokens" in error["message"]
+
+    assert log["outcome"] == "admission_rejected"
+    assert log["error"] == "request_too_large"
+    assert log["estimated_tokens"] == 101
+    assert log["deployment"] is None and log["backend_id"] is None
+
+
+async def test_tpm_rejection_logged_with_rounded_up_retry_after(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    # 60 tpm = 1 token/sec into a 150-token bucket.
+    _seed_streaming_config(usage_limits={"default": {"tpm": 60, "burst_tokens": 150}})
+    usage = {"prompt_tokens": 1, "completion_tokens": 139, "total_tokens": 140}
+    _inject_backend(httpx.Response(200, json={"choices": [], "usage": usage}))
+    request = {**_CHAT, "max_tokens": 100}
+
+    first, log = await _post_and_get_log(client, capture_events, request)
+    assert first.status_code == 200
+    assert log["outcome"] == "success"
+    assert log["input_images"] == 0
+
+    # The first request settles at 140 tokens; the second is estimated at
+    # 1 + 100, so it must wait (140 + 101 - 150) = 91s less a few ms elapsed.
+    second, log = await _post_and_get_log(client, capture_events, request)
+    assert second.status_code == 429
+    # Rounded up (never truncated to 90), plus at most 30% upward jitter.
+    retry_after = int(second.headers["Retry-After"])
+    assert 91 <= retry_after <= 119
+    assert f"Retry in {retry_after} seconds." in second.json()["error"]["message"]
+    assert log["outcome"] == "admission_rejected"
+    assert log["error"] == "quota:user_tpm"
+    assert log["attempt"] == 1
+    assert log["estimated_tokens"] == 101
+
+
+async def test_capacity_rejection_logged(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    _seed_streaming_config(with_backend=False)
+    resp, log = await _post_and_get_log(client, capture_events, _CHAT)
+    assert resp.status_code == 503
+    assert int(resp.headers["Retry-After"]) >= 15
+    assert resp.json()["error"]["info"]["reject_reason"] == "capacity:no_candidates"
+    assert log["outcome"] == "admission_rejected"
+    assert log["error"] == "capacity:no_candidates"
+    assert log["model"] == "open/model"
+    assert log["cluster"] is None

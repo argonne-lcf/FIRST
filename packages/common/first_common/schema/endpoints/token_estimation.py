@@ -5,12 +5,31 @@ request completes.  We bias toward *modest* output estimates to avoid spuriously
 rejecting user requests.
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 CHARS_PER_TOKEN = 4
 DEFAULT_OUTPUT_ESTIMATE = 2048
 MAX_OUTPUT_ESTIMATE = 32768
 IMAGE_TOKEN_ESTIMATE = 1000
+
+
+@dataclass(frozen=True)
+class TokenEstimate:
+    """One request's preflight token estimate and the basis it was built from.
+
+    Computed once per request: admission reserves ``total_estimated_tokens``,
+    settlement calibrates chars-per-token from ``input_chars``/``input_images``.
+
+    ``est_chars_per_token`` and ``est_output_tokens`` are the learned
+    per-user+model calibration that was applied.
+    """
+
+    total_estimated_tokens: int = 0
+    est_chars_per_token: float | None = None
+    est_output_tokens: float | None = None
+    input_chars: int = 0
+    input_images: int = 0
 
 
 # Content-part types (across OpenAI chat, OpenAI Responses, and Anthropic
@@ -73,6 +92,42 @@ def count_input(*nodes: Any) -> tuple[int, int]:
 def count_tool_chars(tools: Any) -> int:
     """Serialized character count of tool/function definitions (see below)."""
     return len(str(tools)) if tools else 0
+
+
+def estimate_llm_tokens(
+    *nodes: Any,
+    tools: Any,
+    max_context: int | None,
+    max_output: int | None,
+    chars_per_token: float | None = None,
+    output_estimate: float | None = None,
+) -> TokenEstimate:
+    """Build the full TokenEstimate for an LLM request in a single input scan.
+
+    ``nodes`` are the message structures (messages, system, instructions...),
+    ``tools`` the tool/function definitions.  The learned ``chars_per_token``
+    and ``output_estimate`` override the static defaults when given.
+    """
+    cpt = chars_per_token or CHARS_PER_TOKEN
+    message_chars, images = count_input(*nodes)
+    tool_chars = count_tool_chars(tools)
+    input_tokens = max(1, int(message_chars / cpt) + images * IMAGE_TOKEN_ESTIMATE)
+    input_tokens += int(tool_chars / cpt)
+    total = estimate_total_tokens(
+        input_tokens,
+        max_context=max_context,
+        max_output=max_output,
+        output_estimate=(
+            round(output_estimate) if output_estimate is not None else None
+        ),
+    )
+    return TokenEstimate(
+        total_estimated_tokens=total,
+        est_chars_per_token=chars_per_token,
+        est_output_tokens=output_estimate,
+        input_chars=message_chars + tool_chars,
+        input_images=images,
+    )
 
 
 def estimate_input_tokens(*nodes: Any, chars_per_token: float | None = None) -> int:
