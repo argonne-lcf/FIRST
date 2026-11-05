@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 import httpx
+import pytest
 from alcf_tokens.auth import get_access_token
 
 from alcf_ai.client import INFERENCE_SERVICE
@@ -72,13 +73,22 @@ class LiveConfig:
     controller_service: str = os.environ.get(
         "LIVE_CONTROLLER_SERVICE", "controller-manager"
     )
-    # vLLM-only knob that makes a generation run for exactly max_tokens, so a
-    # "hold" lasts long enough.  Only sent to the fleet model.
-    fleet_hold_extra: tuple[tuple[str, Any], ...] = (("ignore_eos", True),)
+    # Makes a vLLM generation run for exactly max_tokens, so a "hold" lasts
+    # long enough.  Other stacks (Metis/SambaNova) accept and ignore it, so it
+    # is sent to every model; there only HOLD_PROMPT keeps the stream going.
+    hold_extra_params: tuple[tuple[str, Any], ...] = (("ignore_eos", True),)
 
     def hold_extra(self, model: str) -> dict[str, Any]:
-        return dict(self.fleet_hold_extra) if model == self.fleet_model else {}
+        return dict(self.hold_extra_params)
 
+
+# A long, bounded task for streams that must stay open.  An open-ended "never
+# stop" prompt gets refused in ~170 tokens (gpt-oss), which ends a hold early
+# even with ignore_eos.
+HOLD_PROMPT = (
+    "Write out every integer from 1 to 100000 in increasing order, one per "
+    "line, with no other text."
+)
 
 STARTUP_TIMEOUT = float(os.environ.get("LIVE_STARTUP_TIMEOUT", "1800"))
 LIVE_STATES = {"pending", "placed", "launching", "ready", "unhealthy"}
@@ -228,6 +238,23 @@ def sse_usage(text: str) -> dict[str, Any] | None:
             if u:
                 usage = u
     return usage
+
+
+def sse_finish_reason(text: str) -> str | None:
+    """The last non-null ``finish_reason`` in a Chat Completions SSE stream."""
+    reason = None
+    for line in text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            obj = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            for choice in obj.get("choices") or []:
+                if isinstance(choice, dict) and choice.get("finish_reason"):
+                    reason = choice["finish_reason"]
+    return reason
 
 
 # ---------------------------------------------------------------------------
@@ -602,8 +629,24 @@ class HeldStream:
         return sse_usage(self.tail.decode(errors="replace"))
 
     @property
+    def finish_reason(self) -> str | None:
+        return sse_finish_reason(self.tail.decode(errors="replace"))
+
+    @property
     def finished_early(self) -> bool:
         return self.ended_at is not None and not self.released
+
+    def ending(self) -> str:
+        """How the stream ended, for skip/failure messages."""
+        if self.ended_at is None:
+            return "still running"
+        if self.released:
+            return "released by the test"
+        if self.stream_error:
+            return f"cut: {self.stream_error}"
+        tokens = (self.usage or {}).get("completion_tokens")
+        how = "[DONE]" if self.done else "no [DONE]"
+        return f"{how}, finish_reason={self.finish_reason}, {tokens} tokens"
 
 
 class Hold:
@@ -638,6 +681,22 @@ class Hold:
     def live(self) -> list[HeldStream]:
         return [s for s in self.admitted if s.ended_at is None]
 
+    def endings(self) -> str:
+        return "; ".join(s.ending() for s in self.admitted)
+
+    def require_live(self, n: int, what: str) -> None:
+        """Fail if a stream was cut, skip if one merely finished before
+        ``what``: either way the hold no longer has ``n`` live streams."""
+        if len(self.live) >= n:
+            return
+        cut = [s for s in self.admitted if s.stream_error and not s.released]
+        msg = (
+            f"{n - len(self.live)} held stream(s) ended before {what}: {self.endings()}"
+        )
+        if cut:
+            raise AssertionError(msg)
+        pytest.skip(msg + " (raise max_tokens or check HOLD_PROMPT)")
+
     async def open(self, n: int, *, stagger_sec: float = 0.0) -> list[HeldStream]:
         """Open ``n`` more streams; return once each has a status."""
         new: list[HeldStream] = []
@@ -664,7 +723,7 @@ class Hold:
         body = self.gw.chat_body(
             self.model,
             s.marker,
-            "Count upward from 1, one number per line, and never stop.",
+            HOLD_PROMPT,
             self.max_tokens,
             True,
             self.gw.cfg.hold_extra(self.model),
@@ -707,6 +766,8 @@ class Hold:
                 done=s.done,
                 stream_error=s.stream_error,
                 released=s.released,
+                finish_reason=s.finish_reason,
+                completion_tokens=(s.usage or {}).get("completion_tokens"),
             )
 
     async def _drain(self, resp: httpx.Response, s: HeldStream) -> None:
@@ -778,7 +839,7 @@ class DemandPump:
             body = self.gw.chat_body(
                 self.model,
                 marker,
-                "Count upward from 1, one number per line, and never stop.",
+                HOLD_PROMPT,
                 self.max_tokens,
                 True,
                 body_extra,

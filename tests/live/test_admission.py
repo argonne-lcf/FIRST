@@ -154,15 +154,34 @@ async def test_rpm_retry_after_is_sufficient(
     """A client that is told to retry after N seconds, and does exactly that,
     gets in.  (The wait is rounded up and only ever jittered upward.)"""
     model, ref, _ = await _rpm_setup(gw, cfg, redis, me)
+    interval = 1 / ref.rate_per_sec
     results = []
     for trial in range(3):
-        await redis.reset_quota(model, me.id)
-        for _ in range(int(ref.burst)):
-            await gw.chat(model, max_tokens=1, tag="rpm-fill")
+        # The burst is filled one request at a time (max_user_concurrency is
+        # below the burst).  A slow backend can stretch that past one refill
+        # interval, and then the "over-limit" request is legitimately
+        # admitted, so such a fill is redone rather than judged.
+        for attempt in range(5):
+            await redis.reset_quota(model, me.id)
+            t_fill = time.monotonic()
+            for _ in range(int(ref.burst)):
+                await gw.chat(model, max_tokens=1, tag="rpm-fill")
+            filled_in = time.monotonic() - t_fill
+            if filled_in < 0.8 * interval:
+                break
+            run.note(
+                f"Trial {trial + 1}: filling the burst took {filled_in:.1f}s "
+                f"(refill interval {interval:.1f}s); redoing it"
+            )
+        else:
+            pytest.skip(
+                f"{model} is too slow to fill the burst within one refill "
+                f"interval ({interval:.1f}s)"
+            )
         rejected = await gw.chat(model, max_tokens=1, tag="rpm-over")
         run.step(
-            f"Trial {trial + 1}: emptied the bucket, used up the burst, and got "
-            f"{rejected.summary()}"
+            f"Trial {trial + 1}: emptied the bucket, used up the burst in "
+            f"{filled_in:.1f}s, and got {rejected.summary()}"
         )
         run.check(
             rejected.status == 429 and rejected.retry_after is not None,
@@ -217,8 +236,7 @@ async def test_max_user_concurrency(
             "Emptied the RPM bucket (so RPM cannot be the reason) and sent one more"
         )
         extra = await gw.chat(model, max_tokens=1, tag="conc-over")
-        if len(hold.live) < c:
-            pytest.skip("a held stream finished before the probe; raise max_tokens")
+        hold.require_live(c, "the probe")
         run.check(
             extra.status == 429
             and f"Concurrent requests above {c}" in extra.message

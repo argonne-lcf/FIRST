@@ -10,6 +10,7 @@ Every fixture is session-scoped and runs on one session event loop: each test
 module sets ``pytestmark = LIVE``.
 """
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -31,7 +32,7 @@ from .backend import (  # noqa: E402
     RedisState,
     describe_plan,
 )
-from .harness import Gateway, LiveConfig, Run, wait_for  # noqa: E402
+from .harness import STARTUP_TIMEOUT, Gateway, LiveConfig, Run, wait_for  # noqa: E402
 
 LIVE = pytest.mark.asyncio(loop_scope="session")
 
@@ -171,18 +172,37 @@ async def _profile(admin: Admin) -> None:
     """Every live test runs against the live-test profile."""
 
 
-async def require_model(gw: Gateway, name: str, *, probe: bool = True) -> None:
-    """Skip unless the model is visible and (optionally) currently serving."""
+async def require_model(
+    gw: Gateway, name: str, *, probe: bool = True, wait: float = STARTUP_TIMEOUT
+) -> None:
+    """Skip unless the model is visible and (optionally) serving.
+
+    A model that is merely starting (scaled to zero, or a replica launching)
+    is waited for, up to ``wait`` seconds, honoring Retry-After: the profile
+    scales idle models to zero quickly, so a cold model between tests is
+    expected.  The probes are themselves demand, which starts a replica.
+    """
     try:
         await gw.model(name)
     except LookupError as exc:
         pytest.skip(str(exc))
-    if probe:
+    if not probe:
+        return
+    t0 = time.monotonic()
+    while True:
         reply = await gw.chat(name, max_tokens=4, tag="probe")
-        if reply.status == 429:
-            return  # serving, just rate limited
-        if not reply.ok:
+        if reply.ok or reply.status == 429:  # 429: serving, just rate limited
+            if reply.ok and time.monotonic() - t0 > 5:
+                gw.run.note(f"Waited {time.monotonic() - t0:.0f}s for {name} to serve")
+            return
+        starting = (
+            reply.status == 503
+            and str(reply.info.get("reject_reason", "")).startswith("capacity:")
+            and "due to cluster maintenance" not in reply.message
+        )
+        if not starting or time.monotonic() - t0 > wait:
             pytest.skip(f"{name} is not serving right now: {reply.summary()}")
+        await asyncio.sleep(max(5, min(reply.retry_after or 10, 30)))
 
 
 # ---------------------------------------------------------------------------

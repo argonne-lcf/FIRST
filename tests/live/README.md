@@ -70,8 +70,7 @@ LIVE_RESTORE_MANIFESTS=../gateway-api-fixtures/firstv2-manifests/dev \
 
 Tests that need a different configuration (the chaos model, manual scaling for
 the drain test, a maintenance notice) apply profile + edit and re-apply the
-plain profile on exit. `make test` checks that the bundle passes plan validation
-(`tests/test_plan_validation.py`). When the dev manifests change, re-copy them
+plain profile on exit. When the dev manifests change, re-copy them
 and re-apply the `# livetest` edits.
 
 | Role (env override)                  | Model                                   | Limits under test |

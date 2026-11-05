@@ -58,7 +58,7 @@ async def test_sweeper_recovers_reservations_after_apiserver_crash(
             t_kill = time.monotonic()
             await compose.kill(cfg.apiserver_service, "KILL")
             run.step(
-                f"Crashed the apiserver (docker compose kill -s KILL {cfg.apiserver_service})"
+                f"Crashed the apiserver (SIGKILL to the {cfg.apiserver_service} container)"
             )
             left = {rid for rid in ours if await redis.reservation(rid)}
             deadlines = [await redis.deadline(rid) for rid in left]

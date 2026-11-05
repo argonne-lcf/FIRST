@@ -90,12 +90,13 @@ kind: Model
 name: openai/gpt-oss-20b
 spec:
   access_group_name: public
-  # livetest: was 65536.  Room for the 16000-token lease hold.
-  max_model_len: 32768
+  # Must match the production value: Tara's pinned vLLM recipe refuses to
+  # start a replica whose context differs ("model/context differs from recipe").
+  max_model_len: 65536
   usage_limits:
     default:  # livetest: fleet role; only backend capacity binds
       tpm: 0
-      burst_tokens: 32768   # = max_model_len (unused while tpm is 0)
+      burst_tokens: 65536   # = max_model_len (unused while tpm is 0)
       rpm: 0
       max_user_concurrency: 64
   overload:  # livetest
@@ -171,8 +172,8 @@ kind: Model
 name: google/gemma-4-31B-it
 spec:
   access_group_name: public
-  # livetest: was 128000.  Room for the 4000-token concurrency holds.
-  max_model_len: 8192
+  # Must match the production value (Tara's pinned recipe checks it).
+  max_model_len: 128000
   supported_endpoints:
     - chat/completions
     - messages
@@ -180,7 +181,7 @@ spec:
   usage_limits:
     default:  # livetest: RPM GCRA + concurrency role (was tpm 0 / rpm 0)
       tpm: 0
-      burst_tokens: 8192    # = max_model_len (unused while tpm is 0)
+      burst_tokens: 128000  # = max_model_len (unused while tpm is 0)
       rpm: 12               # one request per 5s steady state
       burst_requests: 3     # bucket refills fully in 15s
       max_user_concurrency: 2

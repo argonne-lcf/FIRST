@@ -58,6 +58,21 @@ def _replica(detail: dict[str, Any], name: str) -> dict[str, Any]:
     return next(r for r in detail["replicas"] if r["name"] == name)
 
 
+async def _wait_removed(gw: Gateway, dep: str, name: str) -> None:
+    async def gone() -> bool:
+        return bool(_replica(await gw.pilot_deployment(dep), name).get("deleted_at"))
+
+    try:
+        await wait_for(
+            f"replica {name} to finish draining (cleanup)",
+            gone,
+            timeout=MAX_DRAIN_WAIT_SEC + 60,
+            interval=3,
+        )
+    except AssertionError:
+        pass  # the test's own checks report a replica that never went away
+
+
 async def test_scale_down_drains_inflight_requests(
     gw: Gateway, cfg: LiveConfig, run: Run, admin: Admin, compose: Compose
 ) -> None:
@@ -94,6 +109,7 @@ async def test_scale_down_drains_inflight_requests(
         name = victim["name"]
 
         hold = Hold(gw, model, MAX_TOKENS, dep, "drain")
+        scaled_down = False
         try:
             await hold.open(N_STREAMS)
             run.step(
@@ -109,6 +125,7 @@ async def test_scale_down_drains_inflight_requests(
 
             t_scale = time.time()
             await admin.set_desired_replicas(dep, 0)
+            scaled_down = True
             run.step(f"Scaled {dep} down to 0 replicas while the streams were running")
 
             async def unroutable() -> bool:
@@ -127,8 +144,7 @@ async def test_scale_down_drains_inflight_requests(
                 f"left the router after {time.time() - t_scale:.0f}s; a new pinned "
                 f"request got {late.summary()}",
             )
-            if len(hold.live) < N_STREAMS:
-                pytest.skip("streams ended before the scale-down; raise MAX_TOKENS")
+            hold.require_live(N_STREAMS, "the scale-down")
 
             states: list[str] = []
             torn_down = None
@@ -149,21 +165,21 @@ async def test_scale_down_drains_inflight_requests(
             await hold.finish(timeout=60)
         finally:
             await hold.release()
+            if scaled_down:
+                # Even on a skip or failure, let the drain finish before the
+                # profile is restored: a replica left "stopping" would be
+                # picked up by the next test as if it were serving.
+                await _wait_removed(gw, dep, name)
 
         last_end = max(s.ended_at or 0 for s in hold.streams)
         ran_for = last_end - t_scale
-        endings = [
-            f"{'[DONE]' if s.done else s.stream_error or 'no [DONE]'}, "
-            f"{(s.usage or {}).get('completion_tokens')} tokens"
-            for s in hold.streams
-        ]
         run.check(
             all(
                 s.done and s.usage and s.usage["completion_tokens"] == MAX_TOKENS
                 for s in hold.streams
             ),
             f"Every stream finished normally with all {MAX_TOKENS} tokens",
-            "; ".join(endings),
+            hold.endings(),
         )
         if ran_for < MIN_DRAIN_WAIT_SEC + 10:
             pytest.skip(

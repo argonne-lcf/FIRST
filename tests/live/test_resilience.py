@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from .backend import Admin, Compose, Docs, find, log_message
-from .conftest import LIVE
+from .conftest import LIVE, require_model
 from .harness import (
     STARTUP_TIMEOUT,
     DemandPump,
@@ -53,11 +53,28 @@ async def test_replica_process_dies_and_is_replaced(
     users only see answers or clean 503s (never 500/502/504), no reservations
     leak, and nothing is logged as CRITICAL."""
     model = cfg.fleet_model
-    ready = await gw.ready_replicas(model)
-    if not ready:
-        pytest.skip(f"{model} has no ready replica to stop")
-    dep_name, victim = ready[0]
-    want_ready = int((await gw.pilot_deployment(dep_name))["desired_replicas"])
+    await require_model(gw, model)
+
+    async def serving_victim() -> tuple[str, dict[str, Any], int] | None:
+        """A ready replica that is actually in service: routable, on a
+        deployment that still wants it (not one left draining by an earlier
+        test, whose death would need no replacement)."""
+        routable = await gw.backend_ids(model)
+        for dep, rep in await gw.ready_replicas(model):
+            want = int((await gw.pilot_deployment(dep))["desired_replicas"])
+            if want >= 1 and routable.get(dep):
+                return dep, rep, want
+        return None
+
+    dep_name: str
+    victim: dict[str, Any]
+    want_ready: int
+    try:
+        dep_name, victim, want_ready = await wait_for(
+            f"a ready, routable replica of {model}", serving_victim, timeout=300
+        )
+    except AssertionError:
+        pytest.skip(f"{model} has no ready, routable replica to stop")
     since = datetime.now(timezone.utc) - timedelta(seconds=2)
 
     pump = DemandPump(gw, model, max_tokens=3000, max_backoff=15.0)
@@ -298,6 +315,19 @@ async def test_maintenance_notice_and_pilot_loss(
         return not cs[cluster].get("maintenance_notice")
 
     await wait_for("the notice to be lifted", notice_gone, timeout=60)
+
+    # Requests are admitted against the router config, which the controller
+    # republishes on its own poll (up to ~10s after the catalog changes).
+    async def unrouted() -> bool:
+        cfg_ = await gw.router_config()
+        return not any(
+            d.get("maintenance_notice")
+            for m in cfg_["models"]
+            for d in m["deployments"]
+            if d["name"].startswith(f"{cluster}/")
+        )
+
+    await wait_for("the notice to leave the router config", unrouted, timeout=60)
 
     bad = {s: n for s, n in pump.statuses.items() if s in UNEXPECTED_STATUSES}
     run.check(

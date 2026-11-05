@@ -56,6 +56,20 @@ def _compose_redis_url() -> str:
 # ---------------------------------------------------------------------------
 
 
+async def _docker(*args: str, timeout: float = 60) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "docker", *args,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )  # fmt: skip
+    out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    if proc.returncode:
+        raise RuntimeError(
+            f"docker {shlex.join(args)} exited {proc.returncode}:\n"
+            f"{err.decode(errors='replace')[-2000:]}"
+        )
+    return out.decode(errors="replace")
+
+
 class Compose:
     """`docker compose` in the repo root, so `.env` picks COMPOSE_FILE and
     COMPOSE_PROJECT_NAME exactly as `make compose-up` does."""
@@ -94,7 +108,25 @@ class Compose:
         return parse_log_lines(text)
 
     async def kill(self, service: str, signal: str = "KILL") -> None:
-        await self.run("kill", "-s", signal, service)
+        """Signal the service's own container(s) only.
+
+        `docker compose kill SERVICE` also signals one-off `compose run`
+        containers of that service, which would take down the chaos upstream
+        sidecar (started with `compose run ... <apiserver image>`) and break
+        every later chaos test with ConnectError.
+        """
+        ids = (await self.run("ps", "-q", service)).split()
+        ours = []
+        for cid in ids:
+            oneoff = await _docker(
+                "inspect", "-f",
+                '{{index .Config.Labels "com.docker.compose.oneoff"}}', cid,
+            )  # fmt: skip
+            if oneoff.strip() != "True":
+                ours.append(cid)
+        if not ours:
+            raise RuntimeError(f"no running container for service {service}")
+        await _docker("kill", "-s", signal, *ours)
 
     async def start(self, service: str) -> None:
         await self.run("start", service)

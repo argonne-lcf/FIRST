@@ -9,13 +9,15 @@ Requests are sent one at a time (so none can spill over because of
 saturation) and attributed by the X-First-Deployment response header.
 """
 
+import asyncio
 import os
+import time
 from collections import Counter
 
 import pytest
 
 from .conftest import LIVE, require_model
-from .harness import Gateway, LiveConfig, Run, binomial_tolerance
+from .harness import STARTUP_TIMEOUT, Gateway, LiveConfig, Run, binomial_tolerance
 
 pytestmark = LIVE
 
@@ -34,12 +36,29 @@ async def _routable(gw: Gateway, model: str) -> dict[str, float]:
     return {name: w / total for name, w in raw.items()}
 
 
+async def _wait_routable(gw: Gateway, model: str, n: int) -> dict[str, float]:
+    """Wait (up to STARTUP_TIMEOUT) for ``n`` routable deployments, sending a
+    probe every 10s: the probes are demand, so a deployment that is still
+    starting is not scaled back to zero in the meantime."""
+    t0 = time.monotonic()
+    while True:
+        expected = await _routable(gw, model)
+        if len(expected) >= n or time.monotonic() - t0 > STARTUP_TIMEOUT:
+            if time.monotonic() - t0 > 5:
+                gw.run.note(
+                    f"Waited {time.monotonic() - t0:.0f}s for {n} routable deployments"
+                )
+            return expected
+        await gw.chat(model, max_tokens=1, tag="fed-warm")
+        await asyncio.sleep(10)
+
+
 async def test_weighted_balance(gw: Gateway, cfg: LiveConfig, run: Run) -> None:
     """Federated requests are spread across deployments in proportion to
     weight x number of backends."""
     model = cfg.fleet_model
     await require_model(gw, model)
-    expected = await _routable(gw, model)
+    expected = await _wait_routable(gw, model, 2)
     if len(expected) < 2:
         pytest.skip(f"need >=2 deployments with ready backends, have {expected}")
 
