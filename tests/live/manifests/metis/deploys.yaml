@@ -1,0 +1,131 @@
+kind: StaticDeployment
+name: metis/google/gemma-4-31B-it
+spec:
+  cluster_name: metis
+  model_name: google/gemma-4-31B-it
+  api_url: "https://metis.alcf.anl.gov"
+  api_key: env_var://METIS_API_KEY_GEMMA_4_31B_IT
+  upstream_model_name: gemma-4-31B-it
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://metis.alcf.anl.gov/v1/chat/completions"
+    api_key: env_var://METIS_API_KEY_GEMMA_4_31B_IT
+    http_method: POST
+    json_body:
+      model: gemma-4-31B-it
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---
+
+kind: StaticDeployment
+name: metis/openai/gpt-oss-120b
+spec:
+  cluster_name: metis
+  model_name: openai/gpt-oss-120b
+  api_url: "https://metis.alcf.anl.gov"
+  api_key: env_var://METIS_API_KEY_GPT_OSS_120B
+  upstream_model_name: gpt-oss-120b
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://metis.alcf.anl.gov/v1/chat/completions"
+    api_key: env_var://METIS_API_KEY_GPT_OSS_120B
+    http_method: POST
+    json_body:
+      model: gpt-oss-120b
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---
+
+kind: StaticDeployment
+name: metis/mistralai/Mistral-Large-3-675B-Instruct-2512
+spec:
+  cluster_name: metis
+  model_name: mistralai/Mistral-Large-3-675B-Instruct-2512
+  api_url: "https://metis.alcf.anl.gov"
+  api_key: env_var://METIS_API_KEY_MISTRAL_LARGE_3_675B_INSTRUCT_2512
+  upstream_model_name: Mistral-Large-3-675B-Instruct-2512
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://metis.alcf.anl.gov/v1/chat/completions"
+    api_key: env_var://METIS_API_KEY_MISTRAL_LARGE_3_675B_INSTRUCT_2512
+    http_method: POST
+    json_body:
+      model: Mistral-Large-3-675B-Instruct-2512
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---
+
+kind: StaticDeployment
+name: metis/MiniMax-M3
+spec:
+  cluster_name: metis
+  model_name: MiniMax-M3
+  api_url: "https://metis.alcf.anl.gov"
+  api_key: env_var://METIS_API_KEY_MINIMAX_M2
+  upstream_model_name: MiniMax-M3
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://metis.alcf.anl.gov/v1/chat/completions"
+    api_key: env_var://METIS_API_KEY_MINIMAX_M2
+    http_method: POST
+    json_body:
+      model: MiniMax-M3
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---

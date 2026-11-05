@@ -1,0 +1,10 @@
+kind: Cluster
+name: minerva
+spec:
+  # Minerva's status endpoint (https://minerva-login-01.minerva.alcf.anl.gov:9443/status)
+  # requires a client certificate, and Cluster health checks do not support mTLS.
+  # Health is tracked per StaticDeployment instead.
+  health_check:
+    url: ""
+  maintenance_notice: null
+  pilot_system: null

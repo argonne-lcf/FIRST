@@ -1,0 +1,754 @@
+kind: Model
+name: AstroMLab/AstroSage-70B-20251009
+spec:
+  access_group_name: public
+  max_model_len: 16384
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: arcee-ai/Trinity-Large-Thinking-W4A16
+spec:
+  access_group_name: public
+  max_model_len: 131072
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    reasoning:
+      supported: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: openai/gpt-oss-120b
+spec:
+  access_group_name: public
+  max_model_len: 65536
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  aliases:
+    - gpt-oss-120b
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 128000
+      rpm: 0
+      burst_requests: 10
+      max_user_concurrency: 5
+    overrides:
+      - kind: user_id
+        id: msalim@anl.gov
+        tpm: 0
+        rpm: 0
+        max_user_concurrency: 100
+  overload:
+    short_retry_sec: 10
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 60
+    ewma_alpha: 0.4
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    reasoning:
+      supported: true
+      effort_levels: [low, medium, high]
+      default_effort: medium
+      separate_output: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: openai/gpt-oss-20b
+spec:
+  access_group_name: public
+  # livetest: was 65536.  Room for the 16000-token lease hold.
+  max_model_len: 32768
+  usage_limits:
+    default:  # livetest: fleet role; only backend capacity binds
+      tpm: 0
+      burst_tokens: 32768   # = max_model_len (unused while tpm is 0)
+      rpm: 0
+      max_user_concurrency: 64
+  overload:  # livetest
+    short_retry_sec: 10
+    retry_jitter_percent: 30
+  demand_signal:  # livetest: fast-reacting demand for the autoscaling walk
+    reject_window_sec: 60
+    avg_request_duration_sec: 20
+    ewma_alpha: 0.5
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    reasoning:
+      supported: true
+      effort_levels: [low, medium, high]
+      default_effort: medium
+      separate_output: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: google/gemma-3-27b-it
+spec:
+  access_group_name: public
+  max_model_len: 32768
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: google/gemma-4-26B-A4B-it
+spec:
+  access_group_name: public
+  max_model_len: 262144
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 262144
+      rpm: 0
+  capabilities:
+    input_modalities: [text, image]
+    streaming: true
+    reasoning:
+      supported: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: google/gemma-4-31B-it
+spec:
+  access_group_name: public
+  # livetest: was 128000.  Room for the 4000-token concurrency holds.
+  max_model_len: 8192
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:  # livetest: RPM GCRA + concurrency role (was tpm 0 / rpm 0)
+      tpm: 0
+      burst_tokens: 8192    # = max_model_len (unused while tpm is 0)
+      rpm: 12               # one request per 5s steady state
+      burst_requests: 3     # bucket refills fully in 15s
+      max_user_concurrency: 2
+  overload:  # livetest
+    short_retry_sec: 10
+    retry_jitter_percent: 30
+  capabilities:
+    input_modalities: [text, image]
+    streaming: true
+    reasoning:
+      supported: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: google/gemma-4-E4B-it
+spec:
+  access_group_name: public
+  max_model_len: 128000
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text, image]
+    streaming: true
+    reasoning:
+      supported: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: mistralai/Mistral-Large-3-675B-Instruct-2512
+spec:
+  access_group_name: public
+  # livetest: was 65536.  burst_tokens must cover the context window.
+  max_model_len: 4096
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:  # livetest: TPM GCRA role (was unset -> 100k tpm defaults)
+      tpm: 6000             # 100 tokens/s steady state
+      burst_tokens: 4096    # = max_model_len; bucket refills fully in ~41s
+      rpm: 0
+      max_user_concurrency: 16
+
+---
+
+kind: Model
+name: mistralai/Devstral-2-123B-Instruct-2512
+spec:
+  access_group_name: public
+  max_model_len: 16384
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: mistralai/Mistral-Large-Instruct-2407
+spec:
+  access_group_name: public
+  max_model_len: 16384
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+
+---
+
+kind: Model
+name: mistralai/Mixtral-8x22B-Instruct-v0.1
+spec:
+  access_group_name: public
+  max_model_len: 16384
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+
+---
+
+kind: Model
+name: meta-llama/Meta-Llama-3.1-8B-Instruct
+spec:
+  access_group_name: public
+  max_model_len: 32768
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+
+---
+
+kind: Model
+name: MiniMax-M3
+spec:
+  access_group_name: private-models
+  max_model_len: 32768
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+
+---
+
+kind: Model
+name: meta-llama/Meta-Llama-3.1-70B-Instruct
+spec:
+  access_group_name: public
+  max_model_len: 16384
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+
+---
+
+kind: Model
+name: meta-llama/Meta-Llama-3.1-405B-Instruct
+spec:
+  access_group_name: public
+  max_model_len: 24576
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: meta-llama/Llama-3.2-90B-Vision-Instruct
+spec:
+  access_group_name: public
+  max_model_len: 8192
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text, image]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: meta-llama/Llama-3.3-70B-Instruct
+spec:
+  access_group_name: public
+  max_model_len: 32768
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: meta-llama/Llama-4-Maverick-17B-128E-Instruct
+spec:
+  access_group_name: public
+  max_model_len: 16384
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: meta-llama/Llama-4-Scout-17B-16E-Instruct
+spec:
+  access_group_name: public
+  max_model_len: 32768
+  supported_endpoints:
+    - chat/completions
+    - messages
+    - responses
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: nemotron-3-ultra
+spec:
+  access_group_name: public
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases: []
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 8388608
+      rpm: 0
+      burst_requests: 4
+      max_user_concurrency: 4
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4
+  capabilities:
+    input_modalities: [text]
+    streaming: true
+    reasoning:
+      supported: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: inkling-bf16
+spec:
+  access_group_name: public
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases: []
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 8388608
+      rpm: 0
+      burst_requests: 4
+      max_user_concurrency: 4
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4
+  capabilities:
+    input_modalities: [text, image, audio]
+    streaming: true
+    reasoning:
+      supported: true
+      effort_levels: [none, minimal, low, medium, high, xhigh, max]
+      default_effort: high
+      separate_output: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: deepseek-v4-1-flash-1017
+spec:
+  access_group_name: deepseek-restricted
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases: []
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 1048576
+      rpm: 0
+      burst_requests: 2
+      max_user_concurrency: 1
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4
+  capabilities:
+    input_modalities: [text, image]
+    streaming: true
+    reasoning:
+      supported: true
+      effort_levels: [low, medium, high, max]
+      default_effort: high
+      separate_output: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: nemotron-35-super-vl
+spec:
+  access_group_name: public
+  supported_endpoints:
+  - chat/completions
+  - responses
+  - messages
+  aliases:
+  - nemotron-3.5-super-vl
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 8388608
+      rpm: 0
+      burst_requests: 4
+      max_user_concurrency: 4
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 60
+    avg_request_duration_sec: 30
+    ewma_alpha: 0.5
+  max_model_len: 1048576
+  display_name: NVIDIA Nemotron 3.5 Super VL 120B-A12B BF16
+  capabilities:
+    input_modalities: [text, image, video]
+    streaming: true
+    reasoning:
+      supported: true
+    tool_calling:
+      supported: true
+
+---
+
+kind: Model
+name: muse-spark-bf16
+spec:
+  access_group_name: public
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases: []
+  display_name: Muse Spark Open 816B-A42B BF16
+  capabilities:
+    attribution: Built with Muse Spark Open
+    input_modalities: [text, image]
+    streaming: true
+    reasoning:
+      supported: true
+      effort_levels: [low, medium, high, xhigh]
+      default_effort: xhigh
+      separate_output: true
+    tool_calling:
+      supported: true
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 16777216
+      rpm: 0
+      burst_requests: 16
+      max_user_concurrency: 16
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4
+
+---
+
+kind: Model
+name: beam-1.0-bf16
+spec:
+  access_group_name: public
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases: []
+  display_name: Beam 1.0 BF16
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 8388608
+      rpm: 0
+      burst_requests: 4
+      max_user_concurrency: 4
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4
+
+---
+
+kind: Model
+name: glm-5.3
+spec:
+  access_group_name: glm-restricted
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases: []
+  display_name: GLM-5.3
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 8388608
+      rpm: 0
+      burst_requests: 4
+      max_user_concurrency: 4
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4
+
+---
+
+kind: Model
+name: mistral-large-4-nvfp4
+spec:
+  access_group_name: public
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases: []
+  display_name: Mistral Large 4 NVFP4
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 8388608
+      rpm: 0
+      burst_requests: 4
+      max_user_concurrency: 4
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4
+
+---
+
+kind: Model
+name: mistral-large-4
+spec:
+  access_group_name: public
+  max_model_len: 1048576
+  supported_endpoints:
+    - chat/completions
+    - responses
+    - messages
+  aliases:
+    - mistralai/Mistral-Large-4-1T-A52B
+  display_name: Mistral Large 4 FP8
+  capabilities:
+    attribution: Mistral AI
+    input_modalities: [text, image]
+    streaming: true
+    reasoning:
+      supported: true
+      effort_levels: [low, medium, high]
+      default_effort: high
+      separate_output: true
+    tool_calling:
+      supported: true
+  usage_limits:
+    default:
+      tpm: 0
+      burst_tokens: 8388608
+      rpm: 0
+      burst_requests: 4
+      max_user_concurrency: 4
+    overrides: []
+  overload:
+    short_retry_sec: 15
+    retry_jitter_percent: 30
+  demand_signal:
+    reject_window_sec: 120
+    avg_request_duration_sec: 180
+    ewma_alpha: 0.4

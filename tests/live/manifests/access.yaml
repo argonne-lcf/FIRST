@@ -1,0 +1,34 @@
+kind: AccessGroup
+name: public
+spec:
+    allowed_groups: []
+    allowed_domains: []
+
+---
+
+kind: AccessGroup
+name: private-models
+spec:
+  allowed_groups:
+    - 8581127a-06b0-11f1-b123-0affecd7d007
+  allowed_domains:
+    - alcf.anl.gov
+    - anl.gov
+
+---
+
+kind: AccessGroup
+name: deepseek-restricted
+spec:
+  allowed_groups:
+    - e0337c8a-9153-11ef-9fac-6f9995a83a2e
+  allowed_domains: []
+
+---
+
+kind: AccessGroup
+name: glm-restricted
+spec:
+  allowed_groups:
+    - 1e943dcd-32ae-11f1-b41c-0e1cdb0e3035
+  allowed_domains: []

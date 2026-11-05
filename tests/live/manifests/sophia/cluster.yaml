@@ -1,0 +1,33 @@
+kind: Cluster
+name: sophia
+spec:
+  health_check:
+    url: "https://api.alcf.anl.gov/api/v1/status/resources/9674c7e1-aecc-4dbb-bf01-c9197e027cd6"
+    match_pattern: '"current_status":\s*"up"'
+    attempts_per_check: 1
+  maintenance_notice: null
+  pilot_system:
+    submit_script_preamble: |
+      source /home/openinference_svc/service_account.env
+    scheduler_adapter: first_gateway.platforms.schedulers.GlobusComputePBSAdapter
+    scheduler_config:
+      # /eagle/inference_service/firstv2-pilot/globus_compute/sophia-pbs-adapter
+      endpoint_id: 508cbb33-145f-40e4-9f67-1e99660f6a78
+    job_walltime_min: 120
+    max_concurrent_jobs: 3
+    max_num_nodes: 10
+    gpus_per_node: 8
+    queue: "infer-svc-test"
+    account: inference_service
+    scheduler_flags: "-l filesystems=home:eagle"
+    workdir: /eagle/inference_service/firstv2-pilot/workdir
+    external_port: 9443
+    nginx_path: /eagle/inference_service/nginx/sbin/nginx
+    ip_allowlist:
+      - "140.221.33.155/32"
+      - "140.221.69.42/32"
+      - "140.221.69.53/32"
+    node_file_env: PBS_NODEFILE
+    pilot_path: /eagle/inference_service/env/firstv2-pilot/bin/first-pilot
+    job_name_prefix: __FIRST_PILOT_MISHADEV_
+    pilot_config_path: /eagle/inference_service/firstv2-pilot/workdir/config.yaml

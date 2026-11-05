@@ -1,0 +1,51 @@
+kind: LaunchTemplate
+name: tara/vllm-recipe
+spec:
+  parameters:
+    recipe:
+      type: str
+      required: true
+    recipe_sha256:
+      type: str
+      required: true
+  env:
+    TARA_DEPLOYMENT_ENV: dev
+  max_startup_sec: 600
+  max_unhealthy_sec: 60
+  pre_stop_timeout_sec: 70
+  post_stop_timeout_sec: 50
+  health_check:
+    url: /health
+  serve_script_template: "#!/usr/bin/env bash\nset -euo pipefail\numask 077\n[[ !\
+    \ -v LD_PRELOAD && ! -v PYTHONPATH && ! -v PYTHONHOME ]] || exit 89\nreplica_runtime=$PWD\n\
+    [[ -d \"$replica_runtime\" && ! -L \"$replica_runtime\" &&\n   $(stat -Lc '%U:%G'\
+    \ \"$replica_runtime\") == openinference_svc:inference_service ]] || exit 90\n\
+    case $(stat -Lc '%a' \"$replica_runtime\") in 700|2700) ;; *) exit 91 ;; esac\n\
+    chgrp inference_service \"$replica_runtime\"\nchmod 02700 \"$replica_runtime\"\
+    \nsource_backend=$TARA_FIRSTV2_BUNDLE_ROOT/firstv2-vllm-backend.py\n[[ -f \"$source_backend\"\
+    \ && ! -L \"$source_backend\" ]] || exit 92\n(cd \"$TARA_FIRSTV2_BUNDLE_ROOT\"\
+    \ && sha256sum --check --strict --status BUNDLE.SHA256SUMS) || exit 93\nbackend=$replica_runtime/firstv2-vllm-backend.py\n\
+    install -m 0440 \"$source_backend\" \"$backend\"\nchgrp inference_service \"$backend\"\
+    \n[[ $(sha256sum \"$backend\" | awk '{print $1}') == \"$TARA_FIRSTV2_BACKEND_SHA256\"\
+    \ ]] || exit 94\nuds_dir={{ quote(runtime.uds.rsplit('/', 1)[0]) }}\n[[ -d \"\
+    $uds_dir\" && ! -L \"$uds_dir\" &&\n   ${uds_dir##*/} == first-pilot-uds-* &&\n\
+    \   $(realpath -e \"$uds_dir\") == \"$uds_dir\" &&\n   $(stat -Lc '%U' \"$uds_dir\"\
+    ) == openinference_svc ]] || exit 96\ncase $(stat -Lc '%a' \"$uds_dir\") in 700|2700)\
+    \ ;; *) exit 97 ;; esac\nchgrp inference_service \"$uds_dir\"\nchmod 02700 \"\
+    $uds_dir\"\n# Ordered pairs retain FIRST ranks; plain-string format avoids Markup\n\
+    # escaping the apostrophes inserted by the shell quote helper.\nexec /opt/cray/pe/python/3.12.12/bin/python3\
+    \ -I -B \"$backend\" serve \\\n  {{ quote(parameters.recipe) }} {{ quote(parameters.recipe_sha256)\
+    \ }} \\\n  {{ quote(runtime.replica_name) }} {{ quote(runtime.served_model_name)\
+    \ }} \\\n  {{ quote(runtime.uds) }} {{ runtime.num_nodes }} {{ runtime.gpus_per_node\
+    \ }} \\\n  {{ quote('%s' | format(runtime.gpus_by_host.items() | list | tojson))\
+    \ }} {{ runtime.max_model_len }}"
+  pre_stop_script_template: "#!/usr/bin/env bash\nset -euo pipefail\nbackend=$PWD/firstv2-vllm-backend.py\n\
+    [[ -f \"$backend\" && ! -L \"$backend\" &&\n   $(stat -Lc '%U:%G:%a' \"$backend\"\
+    ) == openinference_svc:inference_service:440 &&\n   $(sha256sum \"$backend\" |\
+    \ awk '{print $1}') == \"$TARA_FIRSTV2_BACKEND_SHA256\" ]] || exit 95\nexec /opt/cray/pe/python/3.12.12/bin/python3\
+    \ -I -B \"$backend\" pre-stop \\\n  {{ quote(runtime.replica_name) }}"
+  post_stop_script_template: "#!/usr/bin/env bash\nset -euo pipefail\nbackend=$PWD/firstv2-vllm-backend.py\n\
+    [[ -f \"$backend\" && ! -L \"$backend\" &&\n   $(stat -Lc '%U:%G:%a' \"$backend\"\
+    ) == openinference_svc:inference_service:440 &&\n   $(sha256sum \"$backend\" |\
+    \ awk '{print $1}') == \"$TARA_FIRSTV2_BACKEND_SHA256\" ]] || exit 95\nexec /opt/cray/pe/python/3.12.12/bin/python3\
+    \ -I -B \"$backend\" post-stop \\\n  {{ quote(runtime.replica_name) }}"

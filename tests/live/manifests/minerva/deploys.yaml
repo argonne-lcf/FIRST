@@ -1,0 +1,177 @@
+kind: StaticDeployment
+name: minerva/beam-1.0-bf16
+spec:
+  cluster_name: minerva
+  model_name: beam-1.0-bf16
+  api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/beam-1.0-bf16"
+  api_key: env_var://MINERVA_DIRECT_API_KEY
+  mtls:
+    ca_file: /run/secrets/upstream/minerva/ca.crt
+    cert_file: /run/secrets/upstream/minerva/client.crt
+    key_file: /run/secrets/upstream/minerva/client.key
+  upstream_model_name: beam-1.0-bf16
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/beam-1.0-bf16/v1/chat/completions"
+    api_key: env_var://MINERVA_DIRECT_API_KEY
+    http_method: POST
+    json_body:
+      model: beam-1.0-bf16
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---
+
+kind: StaticDeployment
+name: minerva/glm-5.3
+spec:
+  cluster_name: minerva
+  model_name: glm-5.3
+  api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/glm-5.3"
+  api_key: env_var://MINERVA_DIRECT_API_KEY
+  mtls:
+    ca_file: /run/secrets/upstream/minerva/ca.crt
+    cert_file: /run/secrets/upstream/minerva/client.crt
+    key_file: /run/secrets/upstream/minerva/client.key
+  upstream_model_name: glm-5.3
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/glm-5.3/v1/chat/completions"
+    api_key: env_var://MINERVA_DIRECT_API_KEY
+    http_method: POST
+    json_body:
+      model: glm-5.3
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---
+
+kind: StaticDeployment
+name: minerva/inkling-bf16
+spec:
+  cluster_name: minerva
+  model_name: inkling-bf16
+  api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/inkling-bf16"
+  api_key: env_var://MINERVA_DIRECT_API_KEY
+  mtls:
+    ca_file: /run/secrets/upstream/minerva/ca.crt
+    cert_file: /run/secrets/upstream/minerva/client.crt
+    key_file: /run/secrets/upstream/minerva/client.key
+  upstream_model_name: inkling-bf16
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/inkling-bf16/v1/chat/completions"
+    api_key: env_var://MINERVA_DIRECT_API_KEY
+    http_method: POST
+    json_body:
+      model: inkling-bf16
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---
+
+kind: StaticDeployment
+name: minerva/muse-spark-bf16
+spec:
+  cluster_name: minerva
+  model_name: muse-spark-bf16
+  api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/muse-spark-bf16"
+  api_key: env_var://MINERVA_DIRECT_API_KEY
+  mtls:
+    ca_file: /run/secrets/upstream/minerva/ca.crt
+    cert_file: /run/secrets/upstream/minerva/client.crt
+    key_file: /run/secrets/upstream/minerva/client.key
+  upstream_model_name: muse-spark-bf16
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/muse-spark-bf16/v1/chat/completions"
+    api_key: env_var://MINERVA_DIRECT_API_KEY
+    http_method: POST
+    json_body:
+      model: muse-spark-bf16
+      messages:
+        - {"role":"user","content":"Reply with exactly one word: OK"}
+      max_tokens: 5
+    status_range: [200, 200]
+    match_pattern: "choices"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null
+
+---
+
+kind: StaticDeployment
+name: minerva/mistral-large-4-nvfp4
+spec:
+  cluster_name: minerva
+  model_name: mistral-large-4-nvfp4
+  api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/mistral-large-4-nvfp4"
+  api_key: env_var://MINERVA_DIRECT_API_KEY
+  mtls:
+    ca_file: /run/secrets/upstream/minerva/ca.crt
+    cert_file: /run/secrets/upstream/minerva/client.crt
+    key_file: /run/secrets/upstream/minerva/client.key
+  upstream_model_name: mistral-large-4-nvfp4
+  router_params:
+    weight: 1
+    max_backend_concurrency: 10
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  health_check:
+    url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/mistral-large-4-nvfp4/v1/models"
+    api_key: env_var://MINERVA_DIRECT_API_KEY
+    http_method: GET
+    status_range: [200, 200]
+    match_pattern: "mistral-large-4-nvfp4"
+    attempts_per_check: 1
+    attempt_delay: 3.0
+    debounce: 3
+    read_timeout: 90
+  prometheus_metrics_path: null

@@ -1,0 +1,8 @@
+kind: Cluster
+name: metis
+spec:
+  health_check:
+    url: "https://metis.alcf.anl.gov/status"
+    match_pattern: '"status":\s*"Live"'
+  maintenance_notice: null
+  pilot_system: null

@@ -1,0 +1,207 @@
+kind: Model
+name: Salesforce/SFR-Embedding-Mistral
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - embeddings
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: mistralai/Mistral-7B-Instruct-v0.3-embed
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - embeddings
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: google/embeddinggemma-300m
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - embeddings
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: genslm-test/genslm-esmc-300M-contrastive-2026-10-step-200000
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - embeddings
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: genslm-test/genslm-esmc-600M-contrastive-2026-10-step-200000
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - embeddings
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: genslm-test/genslm-esmc-6B-contrastive-2026-10-step-200000
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - embeddings
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+
+---
+
+kind: Model
+name: amsc-d3/snbamsc_2dcnn_u
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - triton-rpc
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: amsc-d3/snbamsc_2dcnn_v
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - triton-rpc
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: amsc-d3/snbamsc_2dcnn_z
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - triton-rpc
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: amsc-d3/DoubleMetricLearning
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - triton-rpc
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: amsc-d3/higgsInteractionNet
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - triton-rpc
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: amsc-d3/particlenet_AK4_PT
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - triton-rpc
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: amsc-d3/nugraph2
+spec:
+  access_group_name: public
+  supported_endpoints:
+    - triton-rpc
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: sam3
+spec:
+  access_group_name: private-models
+  supported_endpoints:
+    - promptable-segmentation
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+# SAM3 fine-tuned for SYNAPS-I; same API as sam3.
+kind: Model
+name: sam3-synaps-i
+spec:
+  access_group_name: private-models
+  supported_endpoints:
+    - promptable-segmentation
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0
+
+---
+
+kind: Model
+name: dinov3
+spec:
+  access_group_name: private-models
+  supported_endpoints:
+    - segmentation
+  usage_limits:
+    default:
+      tpm: 0
+      rpm: 0

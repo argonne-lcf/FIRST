@@ -463,11 +463,21 @@ class InferenceService:
         async def _relay() -> AsyncIterator[bytes]:
             tap = UsageTap()
             content = bytearray()
+            # Set when the backend breaks the stream after the 200 (too late to
+            # fail over).  A client disconnect closes this generator instead.
+            broken: str | None = None
             try:
                 async for chunk in response.aiter_raw():
                     tap.feed(chunk)
                     content += chunk
                     yield chunk
+            except httpx.TransportError as exc:
+                broken = type(exc).__name__
+                logger.warning(
+                    f"Backend {backend.id} broke the stream for model "
+                    f"{model.name} mid-response ({broken})."
+                )
+                raise  # abort the client's stream rather than end it cleanly
             finally:
                 with anyio.CancelScope(shield=True):
                     await response.aclose()
@@ -477,20 +487,31 @@ class InferenceService:
                         if parser
                         else TokenUsage()
                     )
+                    if broken:
+                        await self.admission_controller.record_error(
+                            backend.id, deployment.router_params
+                        )
+                        # Unknown usage keeps the estimate charged: the
+                        # backend did generate tokens before it failed.
+                        actual = usage.total_tokens or None
+                    else:
+                        actual = usage.total_tokens or 0
                     await self.admission_controller.settle(
-                        self.request_id, actual_tokens=usage.total_tokens or 0
+                        self.request_id, actual_tokens=actual
                     )
                     self._emit_inference_log(
                         payload,
                         model,
                         deployment,
                         backend,
-                        outcome="success",
+                        outcome="upstream_error" if broken else "success",
                         usage=usage,
                         latency_sec=time.perf_counter() - t0,
                         raw_body=bytes(content),
+                        error=broken,
                     )
-                    await self._record_token_stats(model, usage)
+                    if not broken:  # a truncated completion skews the EWMAs
+                        await self._record_token_stats(model, usage)
 
         return StreamingResponse(
             _relay(),

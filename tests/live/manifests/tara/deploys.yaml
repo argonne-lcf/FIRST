@@ -1,0 +1,293 @@
+kind: PilotDeployment
+name: tara/openai/gpt-oss-20b
+spec:
+  cluster_name: tara
+  model_name: openai/gpt-oss-20b
+  router_params:  # livetest: was max_backend_concurrency 20, weight 1
+    weight: 3
+    max_backend_concurrency: 4
+  prometheus_metrics_path: /metrics
+  prometheus_scrape_interval_sec: 15
+  min_replicas: 0
+  max_replicas: 2
+  scaling_strategy:  # livetest: was sustain 10800, rung2 5.0
+    immediate_cold_start: true
+    scale_down_sustain_sec: 120
+    scaling_thresholds:
+    - - 0.0
+      - 1
+    - - 6.0
+      - 2
+  max_consecutive_launch_failures: 2
+  launch_template_name: tara/vllm-recipe
+  launch_spec:
+    served_model_name: openai/gpt-oss-20b
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      recipe: recipe-gpt-oss-20b.json
+      recipe_sha256: 0dd844f77c749bb23280cf6a21ed8e95321f8844b1231b16462aad592f1ac77e
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/b891bbaf9b8775fa29bcf85243cb0a627c44d2af
+      TARA_FIRSTV2_BACKEND_SHA256: 8372af3603374aa56cc23e42528e582b4fa21ea8790144380c0558e2170d3cf8
+---
+kind: PilotDeployment
+name: tara/nemotron-3-ultra
+spec:
+  cluster_name: tara
+  model_name: nemotron-3-ultra
+  router_params:
+    weight: 1
+    max_backend_concurrency: 1
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  prometheus_metrics_path: /metrics
+  prometheus_scrape_interval_sec: 15
+  min_replicas: 0
+  max_replicas: 1
+  max_consecutive_launch_failures: 1
+  launch_template_name: tara/vllm-recipe
+  launch_spec:
+    served_model_name: nemotron-3-ultra
+    gpus_per_node: 4
+    num_nodes: 2
+    parameters:
+      recipe: recipe-nemotron-3-ultra.json
+      recipe_sha256: 27ea1d83a94590183cd31e535595e7499ef5ad3b5d61a365b5bf20666e2eeb4d
+    max_startup_sec: 3600
+    pre_stop_timeout_sec: 80
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/9424c85bf4cbd8c4d9a34b70ad5477378bda6ba1
+      TARA_FIRSTV2_BACKEND_SHA256: 8f551f441356389d046f4584b1c6dba7bfbea07b5c4a5ec0028d40ed2bcf32ce
+---
+kind: PilotDeployment
+name: tara/inkling-bf16
+spec:
+  cluster_name: tara
+  model_name: inkling-bf16
+  router_params:
+    weight: 1
+    max_backend_concurrency: 80
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  prometheus_metrics_path: /metrics
+  prometheus_scrape_interval_sec: 15
+  min_replicas: 0
+  max_replicas: 1
+  max_consecutive_launch_failures: 1
+  launch_template_name: tara/vllm-recipe
+  launch_spec:
+    served_model_name: inkling-bf16
+    gpus_per_node: 4
+    num_nodes: 8
+    parameters:
+      recipe: recipe-inkling-bf16.json
+      recipe_sha256: c670a3cd288f0cc7c3144c349959ff1b848f73c10cfa5be31185323963b887ad
+    max_startup_sec: 3600
+    pre_stop_timeout_sec: 80
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/875e504aa3855b2c3811c20348561517198d4139
+      TARA_FIRSTV2_BACKEND_SHA256: 8f551f441356389d046f4584b1c6dba7bfbea07b5c4a5ec0028d40ed2bcf32ce
+
+---
+
+kind: PilotDeployment
+name: tara/deepseek-v4-1-flash-1017
+spec:
+  cluster_name: tara
+  model_name: deepseek-v4-1-flash-1017
+  router_params:
+    weight: 1
+    max_backend_concurrency: 1
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  prometheus_metrics_path: /metrics
+  prometheus_scrape_interval_sec: 15
+  min_replicas: 0
+  max_replicas: 1
+  max_consecutive_launch_failures: 1
+  launch_template_name: tara/vllm-recipe
+  launch_spec:
+    served_model_name: deepseek-v4-1-flash-1017
+    gpus_per_node: 4
+    num_nodes: 2
+    parameters:
+      recipe: recipe-deepseek-v4-1-flash-1017.json
+      recipe_sha256: 4481285107280093cad77fb067be18c5157f37a863f1e30a89df9820faeb192f
+    # Deliberate first-boot budget: 510 GB weight load plus FlashInfer autotune.
+    max_startup_sec: 7200
+    pre_stop_timeout_sec: 80
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/bb10373e50d90d1d444ee4862029d4924f453c21
+      TARA_FIRSTV2_BACKEND_SHA256: 2fbf511d2cd0135e9a459465db8871d2452c9eec86acad3284f4762c3e7f7540
+
+---
+
+kind: PilotDeployment
+name: tara/nemotron-35-super-vl
+spec:
+  cluster_name: tara
+  model_name: nemotron-35-super-vl
+  router_params:
+    weight: 1
+    max_backend_concurrency: 4
+    cooldown_threshold: 3
+    cooldown_window_sec: 30
+    cooldown_bench_sec: 60
+  prometheus_metrics_path: /metrics
+  prometheus_scrape_interval_sec: 15
+  scaling_strategy: null
+  min_replicas: 0
+  max_replicas: 1
+  launch_template_name: tara/vllm-recipe
+  launch_spec:
+    served_model_name: nemotron-35-super-vl
+    gpus_per_node: 4
+    num_nodes: 1
+    parameters:
+      recipe: recipe-nemotron-35-super-vl.json
+      recipe_sha256: e7a5f21f1cd09175a4c610a0b4d23a1f296f6a959f7102a36f70b8c3e53f5f0e
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/db22dbc8c573c5bd90654081d49dbdf656b1d192
+      TARA_FIRSTV2_BACKEND_SHA256: 6ba8f42712d34b4403c6a0c91985ae0dba196cd50716c01caadc78da5682cdb2
+    max_startup_sec: 3600
+    max_unhealthy_sec: null
+    pre_stop_timeout_sec: 80.0
+    post_stop_timeout_sec: 50.0
+    health_check: null
+  max_consecutive_launch_failures: 1
+
+---
+kind: PilotDeployment
+name: tara/gpt-oss-120b
+spec:
+  cluster_name: tara
+  model_name: openai/gpt-oss-120b
+  launch_template_name: tara/vllm-recipe
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 1
+  router_params:
+    max_backend_concurrency: 32
+  launch_spec:
+    served_model_name: gpt-oss-120b
+    num_nodes: 1
+    gpus_per_node: 1
+    max_startup_sec: 1800
+    pre_stop_timeout_sec: 80
+    post_stop_timeout_sec: 50
+    parameters:
+      recipe: recipe-gpt-oss-120b.json
+      recipe_sha256: 293791e5589a93c15d49556bb4fff6eb40f5c2427b6da7f1b513f0002570e68d
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/86e482bdf83bd6e34b1fcbce8dc5a7a3c37943ae
+      TARA_FIRSTV2_BACKEND_SHA256: 6cc1495ea9f19a606e3ac415fc411191669f7a6727cec8e98ce2ee88bb3d5c68
+
+---
+kind: PilotDeployment
+name: tara/muse-spark-bf16
+spec:
+  cluster_name: tara
+  model_name: muse-spark-bf16
+  launch_template_name: tara/vllm-recipe
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 1
+  router_params:
+    max_backend_concurrency: 16
+  launch_spec:
+    served_model_name: muse-spark-bf16
+    num_nodes: 8
+    gpus_per_node: 4
+    max_startup_sec: 7200
+    pre_stop_timeout_sec: 80
+    post_stop_timeout_sec: 50
+    parameters:
+      recipe: recipe-muse-spark-bf16.json
+      recipe_sha256: 9fd1289d0046af9c20ba4cea38d0f23810409e7e4de3ce86afc7acce22f25d05
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/d661a9344af23df6175a7929d5acc98845e9d42e
+      TARA_FIRSTV2_BACKEND_SHA256: be90752a054bb3d7078e92b8ce343fd8e968fe20883b3c90ab29100339339601
+
+---
+
+kind: PilotDeployment
+name: tara/google/gemma-4-31B-it
+spec:
+  cluster_name: tara
+  model_name: google/gemma-4-31B-it
+  launch_template_name: tara/vllm-recipe
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  router_params:
+    max_backend_concurrency: 64
+  launch_spec:
+    served_model_name: google/gemma-4-31B-it
+    num_nodes: 1
+    gpus_per_node: 4
+    parameters:
+      recipe: recipe-google~gemma-4-31B-it.json
+      recipe_sha256: "18aca261fc17a6950a675b99432427fdb4a6199278efeb9a9f4ded4810530fc0"
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/0e1578e6c666d5dbe51ec0037eac8b5a31d61f0c
+      TARA_FIRSTV2_BACKEND_SHA256: "036b520824fab3f929862d51dbff853771b7481d37096717bf4ad198e5ed3105"
+
+---
+
+kind: PilotDeployment
+name: tara/google/gemma-4-E4B-it
+spec:
+  cluster_name: tara
+  model_name: google/gemma-4-E4B-it
+  launch_template_name: tara/vllm-recipe
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  router_params:
+    max_backend_concurrency: 64
+  launch_spec:
+    served_model_name: google/gemma-4-E4B-it
+    num_nodes: 1
+    gpus_per_node: 4
+    parameters:
+      recipe: recipe-google~gemma-4-E4B-it.json
+      recipe_sha256: "89bf75217153b4edc8467f97e8c38480aee45a40f0c403d71c9cf02b9e639399"
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/6c0c4f7b156d98ae276471526fd4e39c2f7d23bd
+      TARA_FIRSTV2_BACKEND_SHA256: "036b520824fab3f929862d51dbff853771b7481d37096717bf4ad198e5ed3105"
+
+---
+
+kind: PilotDeployment
+name: tara/mistral-large-4
+spec:
+  cluster_name: tara
+  model_name: mistral-large-4
+  launch_template_name: tara/vllm-recipe
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 1
+  router_params:
+    max_backend_concurrency: 4
+  launch_spec:
+    served_model_name: mistral-large-4
+    num_nodes: 8
+    gpus_per_node: 4
+    max_startup_sec: 7200
+    pre_stop_timeout_sec: 150
+    post_stop_timeout_sec: 50
+    parameters:
+      recipe: recipe-mistral-large-4-1m-tp16-pp2-api-tools.json
+      recipe_sha256: 485d4b16fecf9415b0615e13ca5636f579c6e8474214bf0b1024e25d003a0eda
+    env:
+      TARA_FIRSTV2_BUNDLE_ROOT: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-model-bundles/ed6feb8832f465492eb412981b4eae63449ef3f6
+      TARA_FIRSTV2_BACKEND_SHA256: 9d8204165d1081ebaf1f7c5eb4815a682eadf28ea4ef962e3dc5b069c6f5c279
+
+

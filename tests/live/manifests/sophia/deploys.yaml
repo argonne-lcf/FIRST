@@ -1,0 +1,575 @@
+kind: PilotDeployment
+name: sophia/AstroMLab/AstroSage-70B-20251009
+spec:
+  cluster_name: sophia
+  model_name: AstroMLab/AstroSage-70B-20251009
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: AstroMLab/AstroSage-70B-20251009
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: mistral
+      gpu_memory_utilization: 0.85
+
+---
+
+kind: PilotDeployment
+name: sophia/arcee-ai/Trinity-Large-Thinking-W4A16
+spec:
+  cluster_name: sophia
+  model_name: arcee-ai/Trinity-Large-Thinking-W4A16
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: arcee-ai/Trinity-Large-Thinking-W4A16
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: qwen3_coder
+      reasoning_parser: deepseek_r1
+      gpu_memory_utilization: 0.90
+      kv_cache_dtype: fp8
+      max_num_seqs: 1
+
+---
+
+kind: PilotDeployment
+name: sophia/google/gemma-3-27b-it
+spec:
+  cluster_name: sophia
+  model_name: google/gemma-3-27b-it
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: google/gemma-3-27b-it
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: pythonic
+      chat_template: /eagle/argonne_tpc/model_weights/chat-templates/tool_chat_template_gemma3_pythonic.jinja
+
+---
+
+kind: PilotDeployment
+name: sophia/google/gemma-4-26B-A4B-it
+spec:
+  cluster_name: sophia
+  model_name: google/gemma-4-26B-A4B-it
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: google/gemma-4-26B-A4B-it
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: gemma4
+      reasoning_parser: gemma4
+      gpu_memory_utilization: 0.9
+
+---
+
+kind: PilotDeployment
+name: sophia/google/gemma-4-31B-it
+spec:
+  cluster_name: sophia
+  model_name: google/gemma-4-31B-it
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 2
+  scaling_strategy:
+    immediate_cold_start: true
+    scale_down_sustain_sec: 10800
+    scaling_thresholds:
+      - [0.0, 1]
+      - [5.0, 2]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: google/gemma-4-31B-it
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: gemma4
+      reasoning_parser: gemma4
+      gpu_memory_utilization: 0.9
+      max_num_seqs: 64
+      max_num_batched_tokens: 8192
+
+---
+
+kind: PilotDeployment
+name: sophia/google/gemma-4-E4B-it
+spec:
+  cluster_name: sophia
+  model_name: google/gemma-4-E4B-it
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: true
+    scale_down_sustain_sec: 10800
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: google/gemma-4-E4B-it
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: gemma4
+      reasoning_parser: gemma4
+      gpu_memory_utilization: 0.9
+
+---
+
+kind: PilotDeployment
+name: sophia/mistralai/Devstral-2-123B-Instruct-2512
+spec:
+  cluster_name: sophia
+  model_name: mistralai/Devstral-2-123B-Instruct-2512
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: mistralai/Devstral-2-123B-Instruct-2512
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: mistral
+      gpu_memory_utilization: 0.85
+
+---
+
+kind: PilotDeployment
+name: sophia/mistralai/Mistral-Large-Instruct-2407
+spec:
+  cluster_name: sophia
+  model_name: mistralai/Mistral-Large-Instruct-2407
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: mistralai/Mistral-Large-Instruct-2407
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      gpu_memory_utilization: 0.85
+
+---
+
+kind: PilotDeployment
+name: sophia/mistralai/Mixtral-8x22B-Instruct-v0.1
+spec:
+  cluster_name: sophia
+  model_name: mistralai/Mixtral-8x22B-Instruct-v0.1
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: mistralai/Mixtral-8x22B-Instruct-v0.1
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+
+---
+
+kind: PilotDeployment
+name: sophia/openai/gpt-oss-120b
+spec:
+  cluster_name: sophia
+  model_name: openai/gpt-oss-120b
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path:  "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 2
+  scaling_strategy:
+    immediate_cold_start: true
+    scale_down_sustain_sec: 10800
+    scaling_thresholds:
+      - [0.0, 1]
+      - [5.0, 2]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: openai/gpt-oss-120b
+    gpus_per_node: 4
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: openai
+      max_num_seqs: 32
+
+---
+
+kind: PilotDeployment
+name: sophia/openai/gpt-oss-20b
+spec:
+  cluster_name: sophia
+  model_name: openai/gpt-oss-20b
+  router_params:  # livetest: was max_backend_concurrency 20, weight 1
+    weight: 1
+    max_backend_concurrency: 4
+  prometheus_metrics_path:  "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 2
+  scaling_strategy:  # livetest: was sustain 10800, rung2 5.0
+    immediate_cold_start: true
+    scale_down_sustain_sec: 120
+    scaling_thresholds:
+      - [0.0, 1]
+      - [6.0, 2]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: openai/gpt-oss-20b
+    gpus_per_node: 2
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: openai
+
+---
+
+kind: PilotDeployment
+name: sophia/meta-llama/Meta-Llama-3.1-8B-Instruct
+spec:
+  cluster_name: sophia
+  model_name: meta-llama/Meta-Llama-3.1-8B-Instruct
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path:  "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: true
+    scale_down_sustain_sec: 10800
+    scaling_thresholds:
+      - [0.0, 1]
+      - [5.0, 2]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: meta-llama/Meta-Llama-3.1-8B-Instruct
+    gpus_per_node: 4
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: llama3_json
+      chat_template: /eagle/argonne_tpc/model_weights/chat-templates/tool_chat_template_llama3.1_json.jinja
+
+---
+
+kind: PilotDeployment
+name: sophia/meta-llama/Meta-Llama-3.1-70B-Instruct
+spec:
+  cluster_name: sophia
+  model_name: meta-llama/Meta-Llama-3.1-70B-Instruct
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path:  "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: true
+    scale_down_sustain_sec: 10800
+    scaling_thresholds:
+      - [0.0, 1]
+      - [5.0, 2]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: meta-llama/Meta-Llama-3.1-70B-Instruct
+    gpus_per_node: 4
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: llama3_json
+      max_num_seqs: 8
+      gpu_memory_utilization: 0.95
+      chat_template: /eagle/argonne_tpc/model_weights/chat-templates/tool_chat_template_llama3.1_json.jinja
+
+---
+
+kind: PilotDeployment
+name: sophia/meta-llama/Meta-Llama-3.1-405B-Instruct
+spec:
+  cluster_name: sophia
+  model_name: meta-llama/Meta-Llama-3.1-405B-Instruct
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: meta-llama/Meta-Llama-3.1-405B-Instruct
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: llama3_json
+      max_num_seqs: 8
+      chat_template: /eagle/argonne_tpc/model_weights/chat-templates/tool_chat_template_llama3.1_json.jinja
+
+---
+
+kind: PilotDeployment
+name: sophia/meta-llama/Llama-3.2-90B-Vision-Instruct
+spec:
+  cluster_name: sophia
+  model_name: meta-llama/Llama-3.2-90B-Vision-Instruct
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: meta-llama/Llama-3.2-90B-Vision-Instruct
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /eagle/argonne_tpc/inference-gateway/envs/vllmv0.10.2
+      tool_call_parser: llama3_json
+      max_num_seqs: 8
+      enforce_eager: 1
+      limit_mm_per_prompt_image: 4
+
+---
+
+kind: PilotDeployment
+name: sophia/meta-llama/Llama-3.3-70B-Instruct
+spec:
+  cluster_name: sophia
+  model_name: meta-llama/Llama-3.3-70B-Instruct
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: meta-llama/Llama-3.3-70B-Instruct
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: llama3_json
+      max_num_seqs: 32
+      chat_template: /eagle/argonne_tpc/model_weights/chat-templates/tool_chat_template_llama3.3_json.jinja
+
+---
+
+kind: PilotDeployment
+name: sophia/meta-llama/Llama-4-Maverick-17B-128E-Instruct
+spec:
+  cluster_name: sophia
+  model_name: meta-llama/Llama-4-Maverick-17B-128E-Instruct
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: meta-llama/Llama-4-Maverick-17B-128E-Instruct
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: llama4_json
+      gpu_memory_utilization: 0.85
+      max_num_seqs: 8
+      dtype: bfloat16
+      enforce_eager: 1
+
+---
+
+kind: PilotDeployment
+name: sophia/meta-llama/Llama-4-Scout-17B-16E-Instruct
+spec:
+  cluster_name: sophia
+  model_name: meta-llama/Llama-4-Scout-17B-16E-Instruct
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+  prometheus_scrape_interval_sec: 15
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy:
+    immediate_cold_start: false
+    scale_down_sustain_sec: 7200
+    scaling_thresholds:
+      - [0.0, 1]
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: meta-llama/Llama-4-Scout-17B-16E-Instruct
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      tool_call_parser: llama4_pythonic
+      max_num_seqs: 8
+      chat_template: /eagle/argonne_tpc/model_weights/chat-templates/tool_chat_template_llama4_pythonic.jinja

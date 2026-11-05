@@ -1,0 +1,181 @@
+kind: LaunchTemplate
+name: tara/vllm-single-node
+spec:
+  parameters:
+    venv_path:
+      type: str
+      required: true
+    weights_path:
+      type: str
+      required: true
+  max_startup_sec: 600
+  health_check:
+    url: /health
+  env:
+    TARA_DEPLOYMENT_ENV: "dev"
+  serve_script_template: |-
+    #!/usr/bin/env bash
+    set -euo pipefail
+    umask 077
+    replica_runtime=$PWD
+    [[ -d "$replica_runtime" && ! -L "$replica_runtime" &&
+       $(stat -Lc '%U:%G' "$replica_runtime") == \
+         openinference_svc:inference_service ]] || exit 90
+    case $(stat -Lc '%a' "$replica_runtime") in
+      700|2700) ;;
+      *) exit 91 ;;
+    esac
+    chgrp inference_service "$replica_runtime"
+    chmod 02700 "$replica_runtime"
+    source_backend=$TARA_FIRSTV2_BUNDLE_ROOT/firstv2-gpt-oss-backend.py
+    [[ -f "$source_backend" && ! -L "$source_backend" ]] || exit 92
+    (cd "$TARA_FIRSTV2_BUNDLE_ROOT" &&
+      sha256sum --check --strict --status BUNDLE.SHA256SUMS) || exit 93
+    backend=$replica_runtime/firstv2-gpt-oss-backend.py
+    install -m 0440 "$source_backend" "$backend"
+    chgrp inference_service "$backend"
+    [[ $(sha256sum "$backend" | awk '{print $1}') == \
+       "$TARA_FIRSTV2_BACKEND_SHA256" ]] || exit 94
+    # FIRST creates this private, job-local directory with the account's primary
+    # group. Normalize only its own UDS parent, not PBS's temporary directory.
+    uds_dir={{ quote(runtime.uds.rsplit('/', 1)[0]) }}
+    [[ -d "$uds_dir" && ! -L "$uds_dir" &&
+       ${uds_dir##*/} == first-pilot-uds-* &&
+       $(realpath -e "$uds_dir") == "$uds_dir" &&
+       $(stat -Lc '%U' "$uds_dir") == openinference_svc ]] || exit 96
+    case $(stat -Lc '%a' "$uds_dir") in
+      700|2700) ;;
+      *) exit 97 ;;
+    esac
+    chgrp inference_service "$uds_dir"
+    chmod 02700 "$uds_dir"
+    exec {{ quote(parameters.venv_path + '/bin/python') }} -I -B "$backend" serve \
+      {{ quote(runtime.replica_name) }} \
+      {{ quote(runtime.served_model_name) }} \
+      {{ quote(runtime.uds) }} \
+      {{ runtime.gpus_by_host.values() | first | first }} \
+      {{ quote(parameters.venv_path) }} \
+      {{ quote(parameters.weights_path) }}
+  post_stop_script_template: |-
+    #!/usr/bin/env bash
+    set -euo pipefail
+    backend=$PWD/firstv2-gpt-oss-backend.py
+    [[ -f "$backend" && ! -L "$backend" &&
+       $(stat -Lc '%U:%G:%a' "$backend") == \
+         openinference_svc:inference_service:440 &&
+       $(sha256sum "$backend" | awk '{print $1}') == \
+         "$TARA_FIRSTV2_BACKEND_SHA256" ]] || exit 95
+    exec {{ quote(parameters.venv_path + '/bin/python') }} -I -B "$backend" post-stop \
+      {{ quote(runtime.replica_name) }}
+
+---
+
+kind: LaunchTemplate
+name: tara/pals-verified-backend
+spec:
+  parameters:
+    venv_path:
+      type: str
+      required: true
+    weights_path:
+      type: str
+      required: true
+    backend_script:
+      type: str
+      required: true
+  max_startup_sec: 3600
+  max_unhealthy_sec: 60
+  pre_stop_timeout_sec: 25
+  post_stop_timeout_sec: 50
+  health_check:
+    url: /health
+    connect_timeout: 3.1
+    read_timeout: 12
+    status_range:
+    - 200
+    - 299
+    attempts_per_check: 1
+    attempt_delay: 0.1
+    debounce: 5
+  env:
+    TARA_DEPLOYMENT_ENV: "dev"
+    DO_NOT_TRACK: "1"
+    HF_DATASETS_OFFLINE: "1"
+    HF_HUB_OFFLINE: "1"
+    PYTHONNOUSERSITE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    TARA_MODEL_MAX_MODEL_LEN: "262144"
+  serve_script_template: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    umask 077
+    replica_runtime=$PWD
+    [[ -d "$replica_runtime" && ! -L "$replica_runtime" &&
+       $(stat -Lc '%U:%G' "$replica_runtime") == \
+         openinference_svc:inference_service ]] || exit 90
+    case $(stat -Lc '%a' "$replica_runtime") in
+      700|2700) ;;
+      *) exit 91 ;;
+    esac
+    chgrp inference_service "$replica_runtime"
+    chmod 02700 "$replica_runtime"
+    [[ -f "$replica_runtime/serve.sh" &&
+       ! -L "$replica_runtime/serve.sh" &&
+       -f "$replica_runtime/out.log" &&
+       ! -L "$replica_runtime/out.log" ]] || exit 92
+    chgrp inference_service "$replica_runtime/serve.sh" "$replica_runtime/out.log"
+    chmod 0500 "$replica_runtime/serve.sh"
+    chmod 0600 "$replica_runtime/out.log"
+
+    hostfile=$replica_runtime/ordered-hosts.tsv
+    : >"$hostfile"
+    {% for hostname, gpu_ids in runtime.gpus_by_host.items() -%}
+    printf '%s\t%s\n' {{ quote(hostname) }} {{ quote(gpu_ids | join(',')) }} >>"$hostfile"
+    {% endfor -%}
+    chgrp inference_service "$hostfile"
+    chmod 0600 "$hostfile"
+    [[ $(wc -l <"$hostfile") == {{ runtime.num_nodes }} ]] || exit 93
+
+    backend=$replica_runtime/{{ parameters.backend_script }}
+    install -m 0500 \
+      "$TARA_FIRSTV2_BUNDLE_ROOT/{{ parameters.backend_script }}" "$backend"
+    chgrp inference_service "$backend"
+    [[ $(sha256sum "$backend" | awk '{print $1}') == \
+       "$TARA_FIRSTV2_BACKEND_SHA256" ]] || exit 94
+    exec "$backend" serve \
+      {{ quote(runtime.replica_name) }} \
+      {{ quote(runtime.served_model_name) }} \
+      {{ quote(runtime.uds) }} \
+      {{ runtime.num_nodes }} \
+      {{ runtime.gpus_per_node }} \
+      {{ quote(parameters.venv_path) }} \
+      {{ quote(parameters.weights_path) }}
+  pre_stop_script_template: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    umask 077
+    backend=$PWD/{{ parameters.backend_script }}
+    [[ -f "$backend" && ! -L "$backend" &&
+       $(stat -Lc '%U:%G:%a' "$backend") == \
+         openinference_svc:inference_service:500 &&
+       $(sha256sum "$backend" | awk '{print $1}') == \
+         "$TARA_FIRSTV2_BACKEND_SHA256" ]] || exit 95
+    timeout=22
+    if [[ ${TARA_MODEL_INKLING_RUNTIME_PROFILE:-} == vllm029-qualification &&
+          ${TARA_INKLING_029_QUALIFICATION:-} == 1 ]] ||
+       [[ ${TARA_MODEL_NEMOTRON_RUNTIME_PROFILE:-} == vllm029-qualification &&
+          ${TARA_NEMOTRON_029_QUALIFICATION:-} == 1 ]]; then
+      timeout=75
+    fi
+    exec "$backend" pre-stop {{ quote(runtime.replica_name) }} "$timeout"
+  post_stop_script_template: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    umask 077
+    backend=$PWD/{{ parameters.backend_script }}
+    [[ -f "$backend" && ! -L "$backend" &&
+       $(stat -Lc '%U:%G:%a' "$backend") == \
+         openinference_svc:inference_service:500 &&
+       $(sha256sum "$backend" | awk '{print $1}') == \
+         "$TARA_FIRSTV2_BACKEND_SHA256" ]] || exit 96
+    exec "$backend" post-stop {{ quote(runtime.replica_name) }} 40

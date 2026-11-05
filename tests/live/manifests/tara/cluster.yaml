@@ -1,0 +1,59 @@
+kind: Cluster
+name: tara
+spec:
+  health_check:
+    url: ""
+  maintenance_notice: null
+  pilot_system:
+    submit_script_preamble: |-
+      #!/bin/bash
+      set -euo pipefail
+      umask 077
+      export PATH=/opt/pbs/bin:$PATH
+      export TARA_DEPLOYMENT_ENV=dev
+      log_dir=/vast/draco/tara/projects/inference_service/dev/runtime/firstv2/submit_scripts
+      mkdir -p "$log_dir"
+      exec >>"$log_dir/${PBS_JOBNAME:?}.log" 2>&1
+    scheduler_adapter: first_gateway.platforms.schedulers.GraphQLPBSAdapter
+    scheduler_config:
+      keycloak_client_name: tara-pbs
+      job_owner: openinference_svc
+      graphql_url: https://graphql-bridge-dev-01.lab.alcf.anl.gov/tara/graphql
+      # Let PBS choose any Tara rack; group=tier0 below keeps each job in one.
+      # The versioned admission policy independently permits x4818/x4819/x4820.
+      task_resources: {}
+    job_walltime_min: 10080
+    pilot_max_idle_time_min: 60
+    pilot_max_unhealthy_time_min: 15
+    max_concurrent_jobs: 20
+    max_num_nodes: 20
+    gpus_per_node: 4
+    queue: workq
+    account: inference_service
+    # Tara's network isolation boundary is the rack, not the chassis.
+    # Admission screens the allocation; this does not exclude hosts in PBS.
+    scheduler_flags: "-l place=scatter:exclhost:group=tier0"
+    workdir: /vast/draco/tara/projects/inference_service/dev/runtime/firstv2
+    external_port: 9443
+    nginx_path: /vast/draco/tara/projects/inference_service/deployment/envs/nginx-1.30.4/sbin/nginx
+    ip_allowlist:
+      - "140.221.33.155/32"
+      - "140.221.69.42/32"
+      - "140.221.69.53/32"
+    node_file_env: PBS_NODEFILE
+    gpu_discovery:
+      method: pals
+      launcher_path: /opt/cray/pals/1.8/bin/mpiexec
+      timeout_sec: 35
+    pilot_path: /vast/draco/tara/projects/inference_service/deployment/artifacts/firstv2-pilot-admission/c1460c72611695f8c2faf54d808c800dcbf800db/firstv2-admitted-pilot
+    node_admission:
+      checks: [gpu_count, gpu_memory_free, gpu_ecc_errors, tcp_self_connect]
+      tcp_probe_port: 20005
+      on_failure: pbs_quarantine
+      environment: dev
+      minimum_free_memory_fraction: 0.95
+      memory_reserve_mib: 256
+      quarantine_walltime_min: 10080
+      max_quarantined_nodes: 8
+    pilot_config_path: /vast/draco/tara/projects/inference_service/dev/config/pilot.yaml
+    job_name_prefix: first_dev_tara_v2_

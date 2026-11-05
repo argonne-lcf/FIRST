@@ -1,0 +1,270 @@
+# Shared scratch-cache launch; deployment-specific limits remain parameters.
+kind: LaunchTemplate
+name: sophia/vllm
+spec:
+  parameters:
+    venv_path:
+      type: str
+      required: true
+    # Model weights directory under model_weights/; defaults to the served name.
+    weights_name:
+      type: str
+    # Chat models only; omit for embedding models.
+    tool_call_parser:
+      type: str
+    max_num_seqs:
+      type: int
+      minimum: 1
+    gpu_memory_utilization:
+      type: float
+      minimum: 0
+      maximum: 1
+    chat_template:
+      type: str
+    reasoning_parser:
+      type: str
+    kv_cache_dtype:
+      type: str
+    max_num_batched_tokens:
+      type: int
+      minimum: 1
+    # 1 to pass --enforce-eager (schema has no bool type).
+    enforce_eager:
+      type: int
+      minimum: 0
+    dtype:
+      type: str
+    limit_mm_per_prompt_image:
+      type: int
+      minimum: 1
+    # Appended verbatim, e.g. "--runner pooling" for embedding models.
+    extra_flags:
+      type: str
+  max_startup_sec: 600
+  health_check:
+    url: /health
+  env:
+    TRANSFORMERS_OFFLINE: "1"
+    OMP_NUM_THREADS: "4"
+    VLLM_LOGGING_LEVEL: "INFO"
+    USE_FASTSAFETENSOR: "true"
+    VLLM_IMAGE_FETCH_TIMEOUT: "60"
+    VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: "shm"
+    TORCHINDUCTOR_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/torch_inductor"
+    VLLM_CACHE_ROOT: "/raid/scratch/inference_service/model_weights/.cache/vllm"
+    TRITON_CACHE_DIR: "/raid/scratch/inference_service/model_weights/.cache/triton"
+    VLLM_ATTENTION_BACKEND: "TRITON_ATTN"
+    HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+    HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
+  serve_script_template: |
+    {% set weights = parameters.weights_name or runtime.served_model_name -%}
+    ulimit -c unlimited
+
+    mkdir -p $TORCHINDUCTOR_CACHE_DIR
+    mkdir -p $VLLM_CACHE_ROOT
+    mkdir -p $TRITON_CACHE_DIR
+
+    ~/sync_model_weights_on_scratch.sh {{weights}} \
+      --source /eagle/inference_service/model_weights \
+      --dest /raid/scratch/inference_service/model_weights \
+      --ext "safetensors json txt py model jinja yaml"
+
+    source {{parameters.venv_path}}/bin/activate
+    which python
+    export CUDA_VISIBLE_DEVICES={{ runtime.gpus_by_host.values() | first | join(',') }}
+
+    args=(
+      --served-model-name {{ runtime.served_model_name }}
+      --uds {{ runtime.uds }}
+      --disable-access-log-for-endpoints /health,/metrics
+      --enable-log-requests
+      --tensor-parallel-size {{ runtime.gpus_per_node }}
+    )
+
+    # Optional flags
+    {%- if parameters.tool_call_parser %}
+      args+=(--tool-call-parser {{ parameters.tool_call_parser }} --enable-auto-tool-choice)
+    {%- endif %}
+    {%- if parameters.gpu_memory_utilization is not none %}
+      args+=(--gpu-memory-utilization {{ parameters.gpu_memory_utilization }})
+    {%- endif %}
+    {%- if runtime.max_model_len is not none %}
+      args+=(--max-model-len {{ runtime.max_model_len }})
+    {%- endif %}
+    {%- if parameters.max_num_seqs is not none %}
+      args+=(--max-num-seqs {{ parameters.max_num_seqs }})
+    {%- endif %}
+    {%- if parameters.chat_template %}
+      args+=(--chat-template {{ parameters.chat_template }})
+    {%- endif %}
+    {%- if parameters.reasoning_parser %}
+      args+=(--reasoning-parser {{ parameters.reasoning_parser }})
+    {%- endif %}
+    {%- if parameters.kv_cache_dtype %}
+      args+=(--kv-cache-dtype {{ parameters.kv_cache_dtype }})
+    {%- endif %}
+    {%- if parameters.max_num_batched_tokens %}
+      args+=(--max-num-batched-tokens {{ parameters.max_num_batched_tokens }})
+    {%- endif %}
+    {%- if parameters.dtype %}
+      args+=(--dtype {{ parameters.dtype }})
+    {%- endif %}
+    {%- if parameters.enforce_eager %}
+      args+=(--enforce-eager)
+    {%- endif %}
+    {%- if parameters.limit_mm_per_prompt_image %}
+      args+=(--limit-mm-per-prompt.image {{ parameters.limit_mm_per_prompt_image }})
+    {%- endif %}
+    {%- if parameters.extra_flags %}
+      # Unquoted on purpose: word-split into separate flags.
+      args+=({{ parameters.extra_flags }})
+    {%- endif %}
+
+    vllm serve /raid/scratch/inference_service/model_weights/{{ weights }} "${args[@]}"
+
+---
+
+# One server, pinned to one GenSLM-ESM checkpoint: each checkpoint is its own Model.
+kind: LaunchTemplate
+name: sophia/genslm-esm
+spec:
+  max_startup_sec: 600
+  health_check:
+    url: /health
+  env:
+    HF_HOME: "/eagle/inference_service/model_weights"
+    HF_HUB_OFFLINE: "1"
+    GENSLM_ESM_BATCH_SIZE: "16"
+    GENSLM_ESM_NUM_WORKERS: "4"
+    GENSLM_ESM_PIN_MEMORY: "true"
+  serve_script_template: |
+    source /lus/eagle/projects/inference_service/misha/genslm-esm-service/.venv/bin/activate
+    export CUDA_VISIBLE_DEVICES={{ runtime.gpus_by_host.values() | first | join(',') }}
+    export GENSLM_ESM_PRELOAD_MODEL={{ runtime.served_model_name | quote }}
+    export GENSLM_ESM_UDS={{ runtime.uds | quote }}
+
+    exec genslm-esm-serve
+
+---
+
+# Requests can only read/write <SAM3_STAGING_ROOT>/<X-First-User-Id>/ and cannot
+# choose weights: each set of weights (base or a fine-tune) is its own Model and
+# PilotDeployment, selected with the weights_dir parameter. weights_dir must hold
+# model.safetensors plus the processor files, outside any user-staging area, or
+# the server refuses to start. No outbound proxy: the server only reads local
+# weights and staged files, so it needs no egress.
+kind: LaunchTemplate
+name: sophia/sam3
+spec:
+  parameters:
+    weights_dir:
+      type: str
+      default: "/eagle/inference_service/sam3-service/weights/"
+  max_startup_sec: 600
+  health_check:
+    url: /health
+  env:
+    SAM3_STAGING_ROOT: "/eagle/IRIBeta/inference_data_staging/user-staging"
+    HF_HUB_OFFLINE: "1"
+  serve_script_template: |
+    source /eagle/inference_service/sam3-service/.venv/bin/activate
+    export CUDA_VISIBLE_DEVICES={{ runtime.gpus_by_host.values() | first | join(',') }}
+    export SAM3_DIR={{ parameters.weights_dir | quote }}
+
+    exec uvicorn sam3_service.app:app --uds {{ runtime.uds | quote }}
+
+---
+
+# Checkpoints are fixed here at launch (requests select one by name, never by
+# path). --staging-root confines input_dir to <root>/<X-First-User-Id>/; it must
+# exist on the compute node, since the server resolves it strictly at startup.
+kind: LaunchTemplate
+name: sophia/dinov3
+spec:
+  # Every configured checkpoint is loaded before the socket is bound
+  max_startup_sec: 1800
+  health_check:
+    url: /health
+  env:
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+  serve_script_template: |
+    source /eagle/inference_service/misha/dino-server/.venv/bin/activate
+    export CUDA_VISIBLE_DEVICES={{ runtime.gpus_by_host.values() | first | join(',') }}
+
+    exec dino-server \
+      --uds {{ runtime.uds | quote }} \
+      --staging-root /eagle/IRIBeta/inference_data_staging/user-staging \
+      --default-checkpoint /eagle/inference_service/misha/dino-server/checkpoints/best.ckpt
+
+---
+
+# One tritonserver per Model, plus the relay that listens on the replica's socket.
+# Triton only listens on TCP: a replica owns its GPUs on a node, so ports derived
+# from the first GPU id can't collide.
+kind: LaunchTemplate
+name: sophia/triton
+spec:
+  parameters:
+    model_repo:
+      type: str
+      required: true
+  max_startup_sec: 600
+  health_check:
+    url: /health
+  env:
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    HTTP_PROXY: "http://proxy.alcf.anl.gov:3128"
+    HTTPS_PROXY: "http://proxy.alcf.anl.gov:3128"
+    http_proxy: "http://proxy.alcf.anl.gov:3128"
+    https_proxy: "http://proxy.alcf.anl.gov:3128"
+    ftp_proxy: "http://proxy.alcf.anl.gov:3128"
+    no_proxy: "admin,polaris-adminvm-01,localhost,*.cm.polaris.alcf.anl.gov,polaris-*,*.polaris.alcf.anl.gov,*.alcf.anl.gov"
+  serve_script_template: |
+    {%- set gpu_ids = runtime.gpus_by_host.values() | first %}
+    command -v module > /dev/null || source /etc/profile
+    module use /soft/spack/base/0.7.1/install/modulefiles/Core/
+    module load apptainer
+    set -euo pipefail
+
+    model={{ runtime.served_model_name | quote }}
+    model_dir="/eagle/inference_service/amsc-d3-triton-workdir/${model}"
+    patched_repo="${model_dir}/model-repo"
+
+    mkdir -p "$patched_repo"
+    cp -a {{ parameters.model_repo | quote }}/"$model" "$patched_repo/"
+    perl -0pi -e "s/gpus:\\s*\\[\\s*[0-9,\\s]+\\s*\\]/gpus: [ {{ range(gpu_ids | length) | join(', ') }} ]/g" \
+      "${patched_repo}/${model}/config.pbtxt"
+
+    # Triton's only listener is gRPC on a Unix socket in a mode-0700 directory,
+    # so nothing but this user (i.e. the relay) can reach it. Triton appends
+    # ":<grpc-port>" to the address, which becomes part of the socket filename.
+    sock_dir=$(mktemp -d)
+    trap 'rm -rf "$sock_dir"' EXIT
+    grpc_target="unix:${sock_dir}/triton.sock:8001"
+
+    export CUDA_VISIBLE_DEVICES={{ gpu_ids | join(',') }}
+
+    # model-control-mode=none loads the repository's single model at startup
+    # and disables the load/unload API.
+    apptainer exec --nv \
+      --bind="${patched_repo}:/models" \
+      --bind="${model_dir}:${model_dir}" \
+      --bind="${sock_dir}:${sock_dir}" \
+      --pwd "$model_dir" \
+      /eagle/inference_service/misha/amsc-d3-triton/models/tritonserver_light.sif \
+      tritonserver \
+        --model-repository=/models \
+        --model-control-mode=none \
+        --allow-http=false \
+        --allow-metrics=false \
+        --grpc-address="unix:${sock_dir}/triton.sock" \
+        --grpc-port=8001 \
+        --log-info=1 --log-warning=1 --log-error=1 &
+
+    source /eagle/inference_service/misha/amsc-d3-triton/.venv/bin/activate
+    triton-relay --uds {{ runtime.uds | quote }} --grpc-target "$grpc_target" --model "$model" &
+
+    # Either process exiting ends the replica
+    wait -n
+    exit 1

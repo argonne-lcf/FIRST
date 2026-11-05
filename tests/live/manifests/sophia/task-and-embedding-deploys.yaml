@@ -1,0 +1,361 @@
+kind: PilotDeployment
+name: sophia/Salesforce/SFR-Embedding-Mistral
+spec:
+  cluster_name: sophia
+  model_name: Salesforce/SFR-Embedding-Mistral
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: Salesforce/SFR-Embedding-Mistral
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      extra_flags: "--runner pooling"
+
+---
+
+kind: PilotDeployment
+name: sophia/mistralai/Mistral-7B-Instruct-v0.3-embed
+spec:
+  cluster_name: sophia
+  model_name: mistralai/Mistral-7B-Instruct-v0.3-embed
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: mistralai/Mistral-7B-Instruct-v0.3-embed
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      weights_name: mistralai/Mistral-7B-Instruct-v0.3
+      extra_flags: "--runner pooling --convert embed --load-format safetensors --config-format hf --tokenizer-mode hf"
+
+---
+
+kind: PilotDeployment
+name: sophia/google/embeddinggemma-300m
+spec:
+  cluster_name: sophia
+  model_name: google/embeddinggemma-300m
+  router_params:
+    max_backend_concurrency: 20
+  prometheus_metrics_path: "/metrics"
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/vllm
+  launch_spec:
+    served_model_name: google/embeddinggemma-300m
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      venv_path: /lus/eagle/projects/inference_service/env/vllm-0.19.0
+      extra_flags: "--runner pooling --trust-remote-code"
+
+---
+
+kind: PilotDeployment
+name: sophia/genslm-test/genslm-esmc-300M-contrastive-2026-10-step-200000
+spec:
+  cluster_name: sophia
+  model_name: genslm-test/genslm-esmc-300M-contrastive-2026-10-step-200000
+  router_params:
+    max_backend_concurrency: 4
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/genslm-esm
+  launch_spec:
+    served_model_name: genslm-test/genslm-esmc-300M-contrastive-2026-10-step-200000
+    gpus_per_node: 1
+    num_nodes: 1
+
+---
+
+kind: PilotDeployment
+name: sophia/genslm-test/genslm-esmc-600M-contrastive-2026-10-step-200000
+spec:
+  cluster_name: sophia
+  model_name: genslm-test/genslm-esmc-600M-contrastive-2026-10-step-200000
+  router_params:
+    max_backend_concurrency: 4
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/genslm-esm
+  launch_spec:
+    served_model_name: genslm-test/genslm-esmc-600M-contrastive-2026-10-step-200000
+    gpus_per_node: 1
+    num_nodes: 1
+
+---
+
+kind: PilotDeployment
+name: sophia/genslm-test/genslm-esmc-6B-contrastive-2026-10-step-200000
+spec:
+  cluster_name: sophia
+  model_name: genslm-test/genslm-esmc-6B-contrastive-2026-10-step-200000
+  router_params:
+    max_backend_concurrency: 4
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/genslm-esm
+  launch_spec:
+    served_model_name: genslm-test/genslm-esmc-6B-contrastive-2026-10-step-200000
+    gpus_per_node: 1
+    num_nodes: 1
+
+---
+
+kind: PilotDeployment
+name: sophia/amsc-d3/snbamsc_2dcnn_u
+spec:
+  cluster_name: sophia
+  model_name: amsc-d3/snbamsc_2dcnn_u
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/triton
+  launch_spec:
+    served_model_name: snbamsc_2dcnn_u
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      model_repo: /eagle/inference_service/misha/amsc-d3-triton/models/triton-models
+
+---
+
+kind: PilotDeployment
+name: sophia/amsc-d3/snbamsc_2dcnn_v
+spec:
+  cluster_name: sophia
+  model_name: amsc-d3/snbamsc_2dcnn_v
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/triton
+  launch_spec:
+    served_model_name: snbamsc_2dcnn_v
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      model_repo: /eagle/inference_service/misha/amsc-d3-triton/models/triton-models
+
+---
+
+kind: PilotDeployment
+name: sophia/amsc-d3/snbamsc_2dcnn_z
+spec:
+  cluster_name: sophia
+  model_name: amsc-d3/snbamsc_2dcnn_z
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/triton
+  launch_spec:
+    served_model_name: snbamsc_2dcnn_z
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      model_repo: /eagle/inference_service/misha/amsc-d3-triton/models/triton-models
+
+---
+
+kind: PilotDeployment
+name: sophia/amsc-d3/DoubleMetricLearning
+spec:
+  cluster_name: sophia
+  model_name: amsc-d3/DoubleMetricLearning
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/triton
+  launch_spec:
+    served_model_name: DoubleMetricLearning
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      model_repo: /eagle/inference_service/misha/amsc-d3-triton/models/triton-models/cuda_models
+
+---
+
+kind: PilotDeployment
+name: sophia/amsc-d3/higgsInteractionNet
+spec:
+  cluster_name: sophia
+  model_name: amsc-d3/higgsInteractionNet
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/triton
+  launch_spec:
+    served_model_name: higgsInteractionNet
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      model_repo: /eagle/inference_service/misha/amsc-d3-triton/models/triton-models/cuda_models
+
+---
+
+kind: PilotDeployment
+name: sophia/amsc-d3/particlenet_AK4_PT
+spec:
+  cluster_name: sophia
+  model_name: amsc-d3/particlenet_AK4_PT
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/triton
+  launch_spec:
+    served_model_name: particlenet_AK4_PT
+    gpus_per_node: 1
+    num_nodes: 1
+    parameters:
+      model_repo: /eagle/inference_service/misha/amsc-d3-triton/models/triton-models/cuda_models
+
+---
+
+kind: PilotDeployment
+name: sophia/amsc-d3/nugraph2
+spec:
+  cluster_name: sophia
+  model_name: amsc-d3/nugraph2
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/triton
+  launch_spec:
+    served_model_name: nugraph2
+    gpus_per_node: 2
+    num_nodes: 1
+    parameters:
+      model_repo: /eagle/inference_service/misha/amsc-d3-triton/models/triton-models
+
+---
+
+kind: PilotDeployment
+name: sophia/sam3
+spec:
+  cluster_name: sophia
+  model_name: sam3
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/sam3
+  launch_spec:
+    served_model_name: sam3
+    gpus_per_node: 8
+    num_nodes: 1
+
+---
+
+# SYNAPS-I fine-tune of SAM3: same server and template, different weights.
+kind: PilotDeployment
+name: sophia/sam3-synaps-i
+spec:
+  cluster_name: sophia
+  model_name: sam3-synaps-i
+  router_params:
+    max_backend_concurrency: 16
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 1
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/sam3
+  launch_spec:
+    served_model_name: sam3-synaps-i
+    gpus_per_node: 8
+    num_nodes: 1
+    parameters:
+      weights_dir: /eagle/inference_service/sam3-service/weights/synaps-i
+
+---
+
+kind: PilotDeployment
+name: sophia/dinov3
+spec:
+  cluster_name: sophia
+  model_name: dinov3
+  router_params:
+    max_backend_concurrency: 2
+  prometheus_metrics_path: null
+
+  min_replicas: 0
+  max_replicas: 4
+  scaling_strategy: null
+  max_consecutive_launch_failures: 2
+  launch_template_name: sophia/dinov3
+  launch_spec:
+    served_model_name: dinov3
+    gpus_per_node: 1
+    num_nodes: 1

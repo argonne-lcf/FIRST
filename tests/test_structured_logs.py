@@ -20,6 +20,7 @@ from first_gateway.apiserver.api import app
 from first_gateway.apiserver.context import _request_id_ctx, get_request_id
 from first_gateway.apiserver.dependencies import _INFERENCE_PATH_PREFIXES
 from first_gateway.apiserver.inference import DEPLOYMENT_HEADER, InferenceService
+from first_gateway.database.redis.keys import Keys
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -575,3 +576,47 @@ async def test_capacity_rejection_logged(
     assert log["error"] == "capacity:no_candidates"
     assert log["model"] == "open/model"
     assert log["cluster"] is None
+
+
+async def test_stream_broken_by_backend_logged_as_upstream_error(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    """A backend that dies after the 200 cuts the client's stream short (no
+    clean end), and the attempt is logged as upstream_error, not success, and
+    counted toward the backend's cooldown."""
+    _seed_streaming_config()
+    backend_id = "static_deployment/dep-open"
+    redis = app.state.admission_controller.client
+    await redis.delete(Keys.backend_errors(backend_id))
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        async def stream() -> Any:
+            yield _SSE_CHUNKS[0]
+            raise httpx.RemoteProtocolError("peer closed connection")
+
+        return httpx.Response(200, content=stream())
+
+    app.state.backend_client_manager._clients[backend_id] = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://backend.invalid/v1"
+    )
+
+    relayed = b""
+    with pytest.raises(Exception):
+        async with client.stream(
+            "POST",
+            "/federated/v1/chat/completions",
+            headers=auth_header(USER_TOKEN),
+            json={**_CHAT, "stream": True},
+        ) as resp:
+            assert resp.status_code == 200
+            async for chunk in resp.aiter_raw():
+                relayed += chunk
+    assert b"[DONE]" not in relayed
+    await asyncio.sleep(0.05)
+
+    (inf,) = [r for r in capture_events if r["stream"] == "inference"]
+    assert inf["outcome"] == "upstream_error"
+    assert inf["error"] == "RemoteProtocolError"
+    assert inf["total_tokens"] is None
+    assert int(await redis.get(Keys.backend_errors(backend_id))) == 1
+    await redis.delete(Keys.backend_errors(backend_id))
