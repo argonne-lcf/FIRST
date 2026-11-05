@@ -47,6 +47,11 @@ class LiveConfig:
     redis_url: str = os.environ.get("LIVE_REDIS_URL") or _compose_redis_url()
     # RPM GCRA + max_user_concurrency (small, request-metered limits).
     rpm_model: str = os.environ.get("LIVE_RPM_MODEL", "google/gemma-4-31B-it")
+    # Where the concurrency test's long streams are pinned: a vLLM deployment
+    # (honors ignore_eos).  Metis's stack ignores it and stops early.
+    rpm_hold_deployment: str = os.environ.get(
+        "LIVE_RPM_HOLD_DEPLOYMENT", "tara/google/gemma-4-31B-it"
+    )
     # TPM GCRA (token-metered limits, rpm unlimited).
     tpm_model: str = os.environ.get(
         "LIVE_TPM_MODEL", "mistralai/Mistral-Large-3-675B-Instruct-2512"
@@ -73,13 +78,21 @@ class LiveConfig:
     controller_service: str = os.environ.get(
         "LIVE_CONTROLLER_SERVICE", "controller-manager"
     )
-    # Makes a vLLM generation run for exactly max_tokens, so a "hold" lasts
-    # long enough.  Other stacks (Metis/SambaNova) accept and ignore it, so it
-    # is sent to every model; there only HOLD_PROMPT keeps the stream going.
-    hold_extra_params: tuple[tuple[str, Any], ...] = (("ignore_eos", True),)
 
-    def hold_extra(self, model: str) -> dict[str, Any]:
-        return dict(self.hold_extra_params)
+    def hold_extra(self, model: str, max_tokens: int) -> dict[str, Any]:
+        """Sampling params that make a generation run for exactly max_tokens,
+        so a "hold" lasts long enough.
+
+        - gpt-oss: ``min_tokens``.  vLLM masks the stop tokens until then.
+          ``ignore_eos`` instead lets ``<|return|>`` through and keeps
+          generating, which breaks vLLM's Harmony parser mid-stream ("Unexpected
+          token 200002 while expecting start token 200006", then [DONE]).
+        - Everything else: ``ignore_eos`` (vLLM honors it; Metis's SambaNova
+          stack accepts and ignores it, so there only HOLD_PROMPT helps).
+        """
+        if "gpt-oss" in model:
+            return {"min_tokens": max_tokens}
+        return {"ignore_eos": True}
 
 
 # A long, bounded task for streams that must stay open.  An open-ended "never
@@ -238,6 +251,15 @@ def sse_usage(text: str) -> dict[str, Any] | None:
             if u:
                 usage = u
     return usage
+
+
+def sse_last_event(text: str) -> str | None:
+    """The last ``data:`` payload before ``[DONE]`` (e.g. an in-stream error)."""
+    last = None
+    for line in text.splitlines():
+        if line.startswith("data:") and line[5:].strip() != "[DONE]":
+            last = line[5:].strip()
+    return last
 
 
 def sse_finish_reason(text: str) -> str | None:
@@ -646,7 +668,14 @@ class HeldStream:
             return f"cut: {self.stream_error}"
         tokens = (self.usage or {}).get("completion_tokens")
         how = "[DONE]" if self.done else "no [DONE]"
-        return f"{how}, finish_reason={self.finish_reason}, {tokens} tokens"
+        out = f"{how}, finish_reason={self.finish_reason}, {tokens} tokens"
+        if self.finish_reason is None:
+            out += f", last event {(self.last_event or '')[:300]!r}"
+        return out
+
+    @property
+    def last_event(self) -> str | None:
+        return sse_last_event(self.tail.decode(errors="replace"))
 
 
 class Hold:
@@ -726,7 +755,7 @@ class Hold:
             HOLD_PROMPT,
             self.max_tokens,
             True,
-            self.gw.cfg.hold_extra(self.model),
+            self.gw.cfg.hold_extra(self.model, self.max_tokens),
         )
         path = self.gw.path("chat/completions", self.deployment)
         sent_at = time.time()
@@ -768,6 +797,7 @@ class Hold:
                 released=s.released,
                 finish_reason=s.finish_reason,
                 completion_tokens=(s.usage or {}).get("completion_tokens"),
+                last_event=None if s.finish_reason else (s.last_event or "")[:2000],
             )
 
     async def _drain(self, resp: httpx.Response, s: HeldStream) -> None:
@@ -833,7 +863,7 @@ class DemandPump:
         await self.set_level(0)
 
     async def _worker(self) -> None:
-        body_extra = self.gw.cfg.hold_extra(self.model)
+        body_extra = self.gw.cfg.hold_extra(self.model, self.max_tokens)
         while True:
             marker = self.gw.marker("pump")
             body = self.gw.chat_body(

@@ -224,8 +224,17 @@ async def test_max_user_concurrency(
     await redis.reset_quota(model, me.id)
     rejects_before = (await gw.model_runtime(model))["capacity_rejects_total"]
 
-    async with gw.hold(model, c, max_tokens=4000, tag="conc") as hold:
-        run.step(f"Opened {c} long streams on {model} (max_user_concurrency {c})")
+    async with gw.hold(
+        model,
+        c,
+        max_tokens=4000,
+        deployment=cfg.rpm_hold_deployment or None,
+        tag="conc",
+    ) as hold:
+        run.step(
+            f"Opened {c} long streams on {model} (max_user_concurrency {c}), "
+            f"pinned to {cfg.rpm_hold_deployment or 'any deployment'}"
+        )
         run.check(
             len(hold.admitted) == c,
             f"All {c} were admitted",

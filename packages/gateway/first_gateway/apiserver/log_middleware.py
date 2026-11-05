@@ -39,12 +39,14 @@ class ResponseLogMiddleware:
         t0 = time.perf_counter()
 
         status_code = 500
+        started = False
         streaming = False
         error_body = bytearray()
 
         async def send_wrapper(message: Message) -> None:
-            nonlocal status_code, streaming
+            nonlocal status_code, started, streaming
             if message["type"] == "http.response.start":
+                started = True
                 status_code = message["status"]
                 headers = message.get("headers") or []
                 for name, value in headers:
@@ -62,9 +64,14 @@ class ResponseLogMiddleware:
             await self.app(scope, receive, send_wrapper)
         except Exception:
             # An uncaught exception propagates un-statused (ServerErrorMiddleware,
-            # which emits the 500, is above us). Log our own ResponseLog(500) so
-            # the request_id is preserved, then re-raise.
-            self._emit(cid, 500, t0, streaming=False, raw_body=None)
+            # which emits the 500, is above us). Log our own ResponseLog so the
+            # request_id is preserved, then re-raise.  If the status line already
+            # went out (a stream broken mid-body), that status is what the client
+            # got, not a 500.
+            if started:
+                self._emit(cid, status_code, t0, streaming, raw_body=None)
+            else:
+                self._emit(cid, 500, t0, streaming=False, raw_body=None)
             raise
         else:
             if scope["path"] not in _SKIP_PATHS:

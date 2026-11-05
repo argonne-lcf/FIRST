@@ -89,7 +89,7 @@ async def _send_mix(
     gw: Gateway, cfg: LiveConfig, redis: RedisState, me: UserAuthEvent
 ) -> list[Sent]:
     model = cfg.fleet_model
-    ign = cfg.hold_extra(model)
+    ign = cfg.hold_extra(model, 1200)
     sent = [
         await _send_chat(gw, model, "small-unary", "Say OK.", 8),
         await _send_chat(gw, model, "small-stream", "Say OK.", 8, stream=True),

@@ -1289,12 +1289,13 @@ async def test_steady_state_poll_issues_no_replica_or_deployment_writes(
     ]
     assert writes == []
 
-    # One batched replica read each for sync_replicas and reap_orphans, plus
-    # the selectin load in update_deployments: independent of replica count.
+    # One batched replica read each for sync_replicas, mark_vanished and
+    # reap_orphans, plus the selectin load in update_deployments: independent
+    # of replica count.
     replica_reads = [
         s for s in statements if s.startswith("SELECT") and f" {replica_table} " in s
     ]
-    assert len(replica_reads) == 3
+    assert len(replica_reads) == 4
 
     dep = await _get_deployment(db)
     assert dep.state == PilotDeploymentState.healthy.value
@@ -1368,3 +1369,96 @@ async def test_failed_replica_write_is_isolated_and_atomic(
     dep = await _get_deployment(db)
     assert dep.consecutive_launch_failures == 0
     publish.assert_awaited_once()
+
+
+# ── Replicas that vanish from /status ────────────────────────────────
+
+
+async def _rep(db: async_sessionmaker[AsyncSession], name: str) -> PilotReplica:
+    async with db() as sess:
+        return (
+            await sess.scalars(select(PilotReplica).where(PilotReplica.name == name))
+        ).one()
+
+
+async def test_ready_replica_missing_from_status_is_terminated(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A ready replica the pilot no longer reports (stopped out-of-band, or
+    lost in a manager restart) is terminated so it is unrouted and replaced;
+    replicas the pilot still reports are left alone."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1", state=ReplicaState.ready.value)
+        await _add_replica(sess, name="rep-2", state=ReplicaState.ready.value)
+
+    transport = _make_transport(
+        {
+            "GET /status": httpx.Response(
+                200, json=_status_json([_replica_info(name="rep-2")])
+            )
+        }
+    )
+    await _make_observer(db, transport).poll()
+
+    gone, kept = await _rep(db, "rep-1"), await _rep(db, "rep-2")
+    assert gone.state == ReplicaState.terminated.value
+    assert gone.stopped_at is not None
+    assert "No longer reported" in (gone.state_message or "")
+    assert kept.state == ReplicaState.ready.value
+
+
+async def test_empty_status_terminates_unhealthy_replica(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """An empty replica list is a real answer too (e.g. a restarted manager)."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, state=ReplicaState.unhealthy.value)
+
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([]))}
+    )
+    await _make_observer(db, transport).poll()
+
+    assert (await _rep(db, "rep-1")).state == ReplicaState.terminated.value
+
+
+async def test_missing_launching_or_draining_replicas_untouched(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A launching replica may have started after the status snapshot, and a
+    replica scheduled for deletion belongs to the Drainer: neither is judged."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, name="rep-1", state=ReplicaState.launching.value)
+        draining = await _add_replica(
+            sess, name="rep-2", state=ReplicaState.ready.value
+        )
+        draining.scheduled_deletion_at = NOW
+
+    transport = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([]))}
+    )
+    await _make_observer(db, transport).poll()
+
+    assert (await _rep(db, "rep-1")).state == ReplicaState.launching.value
+    assert (await _rep(db, "rep-2")).state == ReplicaState.ready.value
+
+
+async def test_status_failure_does_not_terminate_replicas(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Only a successful /status counts as evidence of absence."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, state=ReplicaState.ready.value)
+
+    transport = _make_transport({"GET /status": httpx.Response(503)})
+    await _make_observer(db, transport).poll()
+
+    assert (await _rep(db, "rep-1")).state == ReplicaState.ready.value

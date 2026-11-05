@@ -620,3 +620,58 @@ async def test_stream_broken_by_backend_logged_as_upstream_error(
     assert inf["total_tokens"] is None
     assert int(await redis.get(Keys.backend_errors(backend_id))) == 1
     await redis.delete(Keys.backend_errors(backend_id))
+
+
+# --------------------------------------------------------------------------
+# ResponseLogMiddleware status on a failure
+# --------------------------------------------------------------------------
+
+
+async def _run_middleware(fail_after_start: bool) -> None:
+    from first_gateway.apiserver.log_middleware import ResponseLogMiddleware
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        if fail_after_start:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/event-stream")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"data: {}\n\n",
+                    "more_body": True,
+                }
+            )
+        raise RuntimeError("upstream broke")
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Any) -> None:
+        pass
+
+    scope = {"type": "http", "path": "/federated/v1/chat/completions"}
+    with pytest.raises(RuntimeError):
+        await ResponseLogMiddleware(app)(scope, receive, send)
+
+
+@pytest.mark.parametrize(
+    ("fail_after_start", "status", "streaming"),
+    [(True, 200, True), (False, 500, False)],
+)
+async def test_response_log_status_when_app_raises(
+    capture_events: list[dict[str, Any]],
+    fail_after_start: bool,
+    status: int,
+    streaming: bool,
+) -> None:
+    """A stream that breaks after its 200 went out is logged as the 200 the
+    client received; an exception before any response is logged as 500."""
+    await _run_middleware(fail_after_start)
+    (row,) = [r for r in capture_events if "status_code" in r]
+    assert row["status_code"] == status
+    assert row["streaming"] is streaming

@@ -26,6 +26,7 @@ from ..worker import Heartbeat, Worker
 logger = logging.getLogger(__name__)
 
 MAINTENANCE_UNREACHABLE = "Pilot manager unreachable during cluster maintenance."
+VANISHED_FROM_PILOT = "No longer reported by the pilot manager of"
 
 
 def aggregate_state(dep: PilotDeployment) -> PilotDeploymentState:
@@ -195,6 +196,7 @@ class PilotReplicaObserver(Worker):
         self._status_cooldown.pop(job.uid, None)
         await self.update_job_status(job, status)
         await self.sync_replicas(job, status.replicas)
+        await self.mark_vanished(job, status.replicas)
         await self.reap_orphans(job, status.replicas)
 
     async def _record_status_failure(
@@ -384,6 +386,58 @@ class PilotReplicaObserver(Worker):
 
         if any_started:
             await self.client_state.redis_pubsub.publish(Channel.replica_started, "")
+
+    async def mark_vanished(
+        self, job: PilotJob, remote_replicas: list[ReplicaInfo]
+    ) -> None:
+        """Terminate serving replicas that the pilot no longer reports.
+
+        A crashed model server stays registered on its pilot (in ``error``), but
+        a replica stopped out-of-band, or lost when the pilot manager restarts,
+        drops out of ``/status`` entirely.  Without this, its row would stay
+        ``ready`` forever: still routed to, never replaced, its GPUs never
+        released.  Only ``ready``/``unhealthy`` replicas are judged: their
+        state came from this very status feed, whereas a ``launching`` one may
+        have been started after the snapshot was taken.  Replicas already
+        scheduled for deletion are the Drainer's.
+        """
+        reported = {ri.name for ri in remote_replicas}
+        async with self.client_state.db_sessionmaker() as sess:
+            rows = list(
+                await sess.scalars(
+                    sa.select(PilotReplica).where(
+                        PilotReplica.pilot_job_name == job.name,
+                        PilotReplica.deleted_at.is_(None),
+                        PilotReplica.scheduled_deletion_at.is_(None),
+                        PilotReplica.state.in_(
+                            [ReplicaState.ready.value, ReplicaState.unhealthy.value]
+                        ),
+                    )
+                )
+            )
+        for db_replica in rows:
+            if db_replica.name in reported:
+                continue
+            async with self.client_state.db_sessionmaker.begin() as sess:
+                result = await sess.execute(
+                    sa.update(PilotReplica)
+                    .where(
+                        PilotReplica.uid == db_replica.uid,
+                        PilotReplica.deleted_at.is_(None),
+                        PilotReplica.scheduled_deletion_at.is_(None),
+                        PilotReplica.state == db_replica.state,
+                    )
+                    .values(
+                        state=ReplicaState.terminated.value,
+                        state_message=VANISHED_FROM_PILOT,
+                        stopped_at=datetime.now(timezone.utc),
+                    )
+                )
+            if result.rowcount:  # type: ignore[attr-defined]
+                logger.warning(
+                    f"Replica {db_replica.name!r}: {db_replica.state} -> terminated "
+                    f"[{VANISHED_FROM_PILOT} {job.name}]"
+                )
 
     async def _update_replica(self, db_replica: PilotReplica, ri: ReplicaInfo) -> bool:
         """
