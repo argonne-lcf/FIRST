@@ -8,6 +8,7 @@ from time import monotonic
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -27,10 +28,12 @@ from first_common.schema.types import (
     ReplicaState,
 )
 from first_gateway.controllers.worker import Heartbeat, Worker
+from first_gateway.controllers.workers.autoscaler import PilotAutoscaler
 from first_gateway.controllers.workers.pilot_replica_observer import (
     MAINTENANCE_UNREACHABLE,
     PilotReplicaObserver,
 )
+from first_gateway.controllers.workers.replica_reconciler import ReplicaReconciler
 from first_gateway.database.models import (
     AccessGroup,
     Cluster,
@@ -504,6 +507,134 @@ async def test_consecutive_launch_failures_accumulates(
             )
         ).one()
     assert dep.consecutive_launch_failures == 4
+
+
+@pytest.mark.parametrize(
+    ("prior_state", "message", "new_state", "increments"),
+    [
+        (ReplicaState.pending, "created", ReplicaState.error, True),
+        (ReplicaState.placed, "placed", ReplicaState.error, True),
+        (ReplicaState.launching, "starting", ReplicaState.error, True),
+        (ReplicaState.launching, "starting", ReplicaState.start_timeout, True),
+        (ReplicaState.ready, "Running", ReplicaState.error, False),
+        (ReplicaState.unhealthy, "health failed", ReplicaState.error, False),
+        (
+            ReplicaState.unhealthy,
+            MAINTENANCE_UNREACHABLE,
+            ReplicaState.error,
+            True,
+        ),
+        (ReplicaState.unhealthy, "health failed", ReplicaState.start_timeout, True),
+    ],
+)
+async def test_failure_accounting_no_db(
+    prior_state: ReplicaState, message: str, new_state: ReplicaState, increments: bool
+) -> None:
+    """Runtime faults do not spend the cold-start budget; uncertain starts do."""
+    session = MagicMock(spec=AsyncSession)
+    session.execute = AsyncMock()
+    replica = PilotReplica(
+        name="rep",
+        pilot_deployment_name="pd",
+        state=prior_state.value,
+        state_message=message,
+    )
+    await PilotReplicaObserver._record_transition(session, replica, new_state)
+    if increments:
+        session.execute.assert_awaited_once()
+        statement = session.execute.call_args.args[0]
+        assert "+ :consecutive_launch_failures_1" in str(statement)
+        assert statement.compile().params["consecutive_launch_failures_1"] == 1
+    else:
+        session.execute.assert_not_awaited()
+
+
+async def test_unhealthy_recovery_resets_failures_no_db() -> None:
+    """Keep the existing recovery reset without treating it as cold-start timing."""
+    session = MagicMock(spec=AsyncSession)
+    session.execute = AsyncMock()
+    replica = PilotReplica(
+        name="rep", pilot_deployment_name="pd", state=ReplicaState.unhealthy.value
+    )
+    await PilotReplicaObserver._record_transition(session, replica, ReplicaState.ready)
+    session.execute.assert_awaited_once()
+    statement = session.execute.call_args.args[0]
+    assert statement.compile().params["consecutive_launch_failures"] == 0
+    assert "last_startup_sec" not in str(statement)
+
+
+@pytest.mark.parametrize(
+    ("prior_state", "message", "expected_failures"),
+    [
+        (ReplicaState.ready, "Running", 0),
+        (ReplicaState.unhealthy, "health failed", 0),
+        (ReplicaState.launching, "starting", 2),
+        (ReplicaState.unhealthy, MAINTENANCE_UNREACHABLE, 2),
+    ],
+)
+async def test_two_faults_preserve_only_proven_serving_capacity(
+    db: async_sessionmaker[AsyncSession],
+    prior_state: ReplicaState,
+    message: str,
+    expected_failures: int,
+) -> None:
+    """Two runtime faults replace only themselves; two cold failures still halt."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        names = [f"rep-{i}" for i in range(20)]
+        for i, name in enumerate(names):
+            replica = await _add_replica(
+                sess,
+                name=name,
+                state=(prior_state if i < 2 else ReplicaState.ready).value,
+            )
+            replica.state_message = message if i < 2 else "Running"
+        dep = await PilotDeployment.get_by_name(sess, "pd")
+        dep.desired_replicas = 20
+        dep.max_consecutive_launch_failures = 1
+        dep.scaling_strategy = None
+        uid = dep.uid
+
+    remote = [
+        _replica_info(
+            name=name, state=ReplicaState.error if i < 2 else ReplicaState.ready
+        )
+        for i, name in enumerate(names)
+    ]
+    observer = _make_observer(
+        db,
+        _make_transport(
+            {"GET /status": httpx.Response(200, json=_status_json(remote))}
+        ),
+    )
+    await observer.poll()
+    await observer.poll()  # Identical terminal observations must not count twice.
+    dep = await _get_deployment(db)
+    assert dep.consecutive_launch_failures == expected_failures
+    autoscaler = PilotAutoscaler("autoscaler", observer.client_state, MagicMock())
+    target, reason = autoscaler._decide_deployment(
+        dep=dep, now=NOW, ewma=0, last_capacity_reject=None, candidates={}
+    )
+    assert target == (0 if expected_failures else 20)
+    if target != dep.desired_replicas:
+        await autoscaler._write_desired(dep, target, reason=reason)
+    reconciler = ReplicaReconciler("reconciler", observer.client_state, MagicMock())
+    await reconciler.reconcile(uid)
+    async with db() as sess:
+        rows = list(await sess.scalars(select(PilotReplica)))
+    healthy = [r for r in rows if r.name in names[2:]]
+    assert len(healthy) == 18 and all(
+        r.state == ReplicaState.ready.value for r in healthy
+    )
+    assert all(
+        (r.scheduled_deletion_at is not None) == bool(expected_failures)
+        for r in healthy
+    )
+    assert sum(r.state == ReplicaState.pending.value for r in rows) == (
+        0 if expected_failures else 2
+    )
+    assert (await _get_deployment(db)).desired_replicas == target
 
 
 async def test_no_update_when_state_unchanged(

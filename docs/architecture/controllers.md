@@ -704,12 +704,20 @@ Load the `Model` (with `DemandSignalConfig`) and its child `PilotDeployment`s.
 **B. For each child `PilotDeployment`, decide and write `desired_replicas`:**
 
   1. If `consecutive_launch_failures` exceeds `max_consecutive_launch_failures`,
-     set `desired_replicas = 0`. Skip to the next deployment. (This is a one-way
-     latch: with `desired_replicas = 0` nothing launches, so
-     `consecutive_launch_failures` cannot reset on its own. It clears only on
-     operator action — a spec edit — or via the reset paths described under
-     [Per-resource backoff](#per-resource-backoff-and-giving-up). This is
-     intended.)
+     set `desired_replicas = 0`. Skip to the next deployment, including manual
+     deployments. Equality still allows a final retry. The budget counts
+     cold-start errors and startup timeouts, not an observed `ready -> error`
+     or native `unhealthy -> error` runtime failure; those replicas are replaced
+     normally without stopping healthy peers. Maintenance can mark a launching
+     replica unhealthy too, so an error following that explicit maintenance
+     marker remains conservatively counted: its prior readiness is unknown.
+     A transition to ready resets the counter, including an in-flight start
+     that finishes after the target was set to zero; that does not restore a
+     manual target. `first-admin reconcile-reset PilotDeployment.NAME` clears
+     failure/backoff state, not the previous target or already scheduled drains.
+     Restore an intended manual target explicitly with
+     `first-admin set-desired-replicas NAME COUNT`. An actual spec update also
+     clears the counter; an unchanged catalog reapply is a no-op.
   2. If `scaling_strategy` is None: skip this deployment (manual scaling).
   3. Parse/validate the `scaling_strategy` JSONB into a `DemandThresholdStrategy`.
   4. Cold start: if `desired_replicas == 0` AND `immediate_cold_start` is True

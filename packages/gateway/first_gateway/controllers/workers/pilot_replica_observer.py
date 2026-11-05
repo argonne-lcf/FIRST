@@ -521,6 +521,16 @@ class PilotReplicaObserver(Worker):
                 sa.update(PilotDeployment).where(dep_clause).values(**values)
             )
         elif new_state in (ReplicaState.error, ReplicaState.start_timeout):
+            # A runtime crash should replace that replica, not exhaust the
+            # cold-start budget and scale healthy serving capacity to zero.
+            # Native unhealthy follows ready, but maintenance also marks
+            # launching replicas unhealthy: keep that ambiguous case counted.
+            was_serving = db_replica.state == ReplicaState.ready or (
+                db_replica.state == ReplicaState.unhealthy
+                and db_replica.state_message != MAINTENANCE_UNREACHABLE
+            )
+            if new_state == ReplicaState.error and was_serving:
+                return
             await sess.execute(
                 sa.update(PilotDeployment)
                 .where(dep_clause)
