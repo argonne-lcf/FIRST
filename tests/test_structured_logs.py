@@ -353,6 +353,47 @@ async def test_three_events_share_request_id_streaming(
     assert json.loads(by_stream["request"]["body"])["model"] == "open/model"
 
 
+async def test_inference_log_carries_token_estimation_calibration(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    """The first request is estimated from static defaults (no EWMA yet); the
+    second carries the EWMA learned from the first's actual usage."""
+    _seed_streaming_config()
+    _inject_streaming_backend()
+    content = "x" * 30  # 30 chars against 3 actual prompt tokens -> 10 cpt
+
+    async def send() -> dict[str, Any]:
+        capture_events.clear()
+        async with client.stream(
+            "POST",
+            "/federated/v1/chat/completions",
+            headers=auth_header(USER_TOKEN),
+            json={
+                "model": "open/model",
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": 100,
+                "stream": True,
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            await resp.aread()
+        await asyncio.sleep(0.05)
+        return next(r for r in capture_events if r["stream"] == "inference")
+
+    first = await send()
+    assert first["input_chars"] == 30
+    assert first["est_chars_per_token"] is None
+    assert first["est_output_tokens"] is None
+    # Static defaults: 30 chars / 4 cpt -> 7 input + max_tokens 100 output.
+    assert first["estimated_tokens"] == 107
+
+    second = await send()
+    assert second["est_chars_per_token"] == pytest.approx(10.0)
+    assert second["est_output_tokens"] == pytest.approx(5.0)
+    # Learned: 30 / 10 cpt -> 3 input + learned 5 output.
+    assert second["estimated_tokens"] == 8
+
+
 async def test_non_inference_request_body_not_logged(
     client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
 ) -> None:

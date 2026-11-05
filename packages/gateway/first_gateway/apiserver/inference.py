@@ -23,7 +23,7 @@ from first_common.schema.endpoints.generic import (
 from first_common.schema.structured_logs import InferenceLog, InferenceOutcome
 from first_common.schema.types import upstream_endpoint_path
 
-from ..database.redis.admission import AdmissionController
+from ..database.redis.admission import AdmissionController, TokenStats
 from ..database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -78,6 +78,10 @@ class InferenceService:
         self.user = user
         self.request_id = get_request_id() or str(uuid.uuid4())
         self.attempt = 1
+        # Admission's token estimate and the calibration behind it, logged on
+        # every InferenceLog so estimates can be compared with actual usage.
+        self.estimated_tokens: int | None = None
+        self.token_stats = TokenStats()
 
         state = request.app.state
         self.storage_dir = state.client_state.settings.prompt_storage_dir
@@ -137,6 +141,8 @@ class InferenceService:
                 round(stats.output_tokens) if stats.output_tokens is not None else None
             ),
         )
+        self.token_stats = stats
+        self.estimated_tokens = estimated_tokens
         handler = self._get_upstream_handler(payload)
 
         attempted = 0
@@ -314,6 +320,10 @@ class InferenceService:
             cache_read_tokens=usage.cache_read_tokens,
             cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens,
+            estimated_tokens=self.estimated_tokens,
+            est_chars_per_token=self.token_stats.chars_per_token,
+            est_output_tokens=self.token_stats.output_tokens,
+            input_chars=payload.input_basis()[0],
         ).emit(raw_body=raw_body, storage_dir=self.storage_dir)
 
     def _raise_for_upstream_status(

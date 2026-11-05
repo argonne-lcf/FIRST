@@ -211,3 +211,9 @@ class InferenceLog(_StructuredLog):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     reasoning_tokens: int | None
+
+    # Preflight estimate admission reserved against the user's TPM bucket
+    estimated_tokens: int | None = None
+    est_chars_per_token: float | None = None
+    est_output_tokens: float | None = None
+    input_chars: int | None = None
