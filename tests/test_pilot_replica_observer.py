@@ -1426,6 +1426,31 @@ async def test_empty_status_terminates_unhealthy_replica(
     assert (await _rep(db, "rep-1")).state == ReplicaState.terminated.value
 
 
+async def test_terminating_replica_that_finished_stopping_is_terminated(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """The pilot reports `terminating` while an out-of-band stop runs, then
+    unregisters the replica.  The row must not stay `terminating` forever
+    (never reaped, GPUs never released)."""
+    async with db.begin() as sess:
+        await _seed_base(sess)
+        await _add_job(sess)
+        await _add_replica(sess, state=ReplicaState.ready.value)
+
+    stopping = _replica_info(state=ReplicaState.terminating, state_message="stopping")
+    mid_stop = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([stopping]))}
+    )
+    await _make_observer(db, mid_stop).poll()
+    assert (await _rep(db, "rep-1")).state == ReplicaState.terminating.value
+
+    stopped = _make_transport(
+        {"GET /status": httpx.Response(200, json=_status_json([]))}
+    )
+    await _make_observer(db, stopped).poll()
+    assert (await _rep(db, "rep-1")).state == ReplicaState.terminated.value
+
+
 async def test_missing_launching_or_draining_replicas_untouched(
     db: async_sessionmaker[AsyncSession],
 ) -> None:

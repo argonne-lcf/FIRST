@@ -26,7 +26,12 @@ from ..worker import Heartbeat, Worker
 logger = logging.getLogger(__name__)
 
 MAINTENANCE_UNREACHABLE = "Pilot manager unreachable during cluster maintenance."
-VANISHED_FROM_PILOT = "No longer reported by the pilot manager of"
+VANISHED_FROM_PILOT = "No longer reported by the pilot manager"
+_VANISH_CHECKED_STATES = [
+    ReplicaState.ready.value,
+    ReplicaState.unhealthy.value,
+    ReplicaState.terminating.value,
+]
 
 
 def aggregate_state(dep: PilotDeployment) -> PilotDeploymentState:
@@ -390,16 +395,11 @@ class PilotReplicaObserver(Worker):
     async def mark_vanished(
         self, job: PilotJob, remote_replicas: list[ReplicaInfo]
     ) -> None:
-        """Terminate serving replicas that the pilot no longer reports.
+        """
+        Clean up serving replicas that the pilot no longer reports.
 
-        A crashed model server stays registered on its pilot (in ``error``), but
-        a replica stopped out-of-band, or lost when the pilot manager restarts,
-        drops out of ``/status`` entirely.  Without this, its row would stay
-        ``ready`` forever: still routed to, never replaced, its GPUs never
-        released.  Only ``ready``/``unhealthy`` replicas are judged: their
-        state came from this very status feed, whereas a ``launching`` one may
-        have been started after the snapshot was taken.  Replicas already
-        scheduled for deletion are the Drainer's.
+        This is only expected to have an effect if replicas are stopped
+        out-of-band (e.g. by a live test harness).
         """
         reported = {ri.name for ri in remote_replicas}
         async with self.client_state.db_sessionmaker() as sess:
@@ -409,9 +409,7 @@ class PilotReplicaObserver(Worker):
                         PilotReplica.pilot_job_name == job.name,
                         PilotReplica.deleted_at.is_(None),
                         PilotReplica.scheduled_deletion_at.is_(None),
-                        PilotReplica.state.in_(
-                            [ReplicaState.ready.value, ReplicaState.unhealthy.value]
-                        ),
+                        PilotReplica.state.in_(_VANISH_CHECKED_STATES),
                     )
                 )
             )
