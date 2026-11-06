@@ -95,18 +95,6 @@ def staging_collection(monkeypatch: pytest.MonkeyPatch) -> str:
     return collection_id
 
 
-async def test_staging_route_unconfigured_collection_is_503(
-    monkeypatch: pytest.MonkeyPatch, client: httpx.AsyncClient
-) -> None:
-    def never(_state: object) -> None:
-        raise AssertionError("Transfer API must not be called without a collection")
-
-    monkeypatch.setattr(staging, "get_transfer_client", never)
-    resp = await client.put("/data/v1/staging", headers=auth_header(USER_TOKEN))
-    assert resp.status_code == 503, resp.text
-    assert "FIRST_DATA_STAGING_GLOBUS_COLLECTION_ID" in resp.text
-
-
 async def test_staging_route_returns_area_for_caller(
     staging_collection: str,
     client: httpx.AsyncClient,

@@ -24,7 +24,8 @@ from first_common.schema.types import HealthCheckResult, PilotDeploymentState
 from ...database import models as db
 from ...database.redis.router_config import ModelConfig, RouterConfig
 from ...services import staging
-from ..auth import user_can_access_group
+from ...services.orchestration import deployment_retired_error, model_retired_error
+from ..auth import enforce_permission, user_can_access_group
 from ..dependencies import (
     AppState,
     AuthUser,
@@ -291,9 +292,14 @@ def _cluster_deployment(model: ModelConfig | None, cluster: str) -> str | None:
     return next((d for d in on_cluster if d.backends), on_cluster[0]).name
 
 
+def _v1_base_path(cluster: str, framework: str | None = None) -> str:
+    return f"/resource_server/{cluster}/{framework or _framework(cluster)}/v1"
+
+
 async def _submit(
     inference: InferenceService,
     cluster: str,
+    framework: str,
     config: RouterConfig,
     payload: OpenAIChatCompletionsPayload
     | OpenAIResponsesPayload
@@ -303,53 +309,78 @@ async def _submit(
     model = config.models_by_name.get(payload.model) or config.models_by_alias.get(
         payload.model
     )
+    if model is None:
+        raise NotFound(f"Model {payload.model} does not exist.")
+    enforce_permission(inference.user, model)
+    if model.retired:
+        raise model_retired_error(model)
+
     deployment_name = _cluster_deployment(model, cluster)
-    if deployment_name is None:
-        if model is None:
-            raise NotFound(f"Model {payload.model} does not exist.")
+    if deployment_name is not None:
+        return await inference.submit_inference(
+            payload, deployment_name=deployment_name
+        )
+
+    # V1 pins by cluster: the model "was retired from this cluster" when one of
+    # its retired deployments lived here.
+    retired = next(
+        (d for d in model.retired_deployments if d.cluster_name == cluster), None
+    )
+    if retired is None:
         raise NotFound(f"Model {model.name} is not deployed on cluster {cluster!r}.")
-    return await inference.submit_inference(payload, deployment_name=deployment_name)
+    alternatives = [
+        {"deployment": name, "cluster": c, "base_path": _v1_base_path(c)}
+        for c in sorted({d.cluster_name for d in model.deployments})
+        if (name := _cluster_deployment(model, c)) is not None
+    ]
+    raise deployment_retired_error(
+        model,
+        retired,
+        subject=f"Model '{model.name}' on cluster '{cluster}'",
+        requested_base_path=_v1_base_path(cluster, framework),
+        alternatives=alternatives,
+    )
 
 
 @router.post("/{cluster}/{framework}/v1/chat/completions", response_model=None)
 async def chat_completions(
     cluster: str,
-    framework: str,  # noqa: ARG001  (path segment; irrelevant in V2)
+    framework: str,  # path segment; irrelevant to routing in V2
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: OpenAIChatCompletionsPayload,
 ) -> StreamingResponse | JSONResponse:
-    return await _submit(inference, cluster, config, payload)
+    return await _submit(inference, cluster, framework, config, payload)
 
 
 @router.post("/{cluster}/{framework}/v1/responses", response_model=None)
 async def responses(
     cluster: str,
-    framework: str,  # noqa: ARG001  (path segment; irrelevant in V2)
+    framework: str,  # path segment; irrelevant to routing in V2
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: OpenAIResponsesPayload,
 ) -> StreamingResponse | JSONResponse:
-    return await _submit(inference, cluster, config, payload)
+    return await _submit(inference, cluster, framework, config, payload)
 
 
 @router.post("/{cluster}/{framework}/v1/messages", response_model=None)
 async def messages(
     cluster: str,
-    framework: str,  # noqa: ARG001  (path segment; irrelevant in V2)
+    framework: str,  # path segment; irrelevant to routing in V2
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: AnthropicMessagesPayload,
 ) -> StreamingResponse | JSONResponse:
-    return await _submit(inference, cluster, config, payload)
+    return await _submit(inference, cluster, framework, config, payload)
 
 
 @router.post("/{cluster}/{framework}/v1/embeddings", response_model=None)
 async def embeddings(
     cluster: str,
-    framework: str,  # noqa: ARG001  (path segment; irrelevant in V2)
+    framework: str,  # path segment; irrelevant to routing in V2
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: OpenAIEmbeddingsPayload,
 ) -> StreamingResponse | JSONResponse:
-    return await _submit(inference, cluster, config, payload)
+    return await _submit(inference, cluster, framework, config, payload)

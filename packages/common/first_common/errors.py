@@ -41,6 +41,23 @@ class NotFound(FirstError):
     code: str = "not_found"
 
 
+class ModelRetired(FirstError):
+    """The model has been permanently removed from the service."""
+
+    status_code = HTTPStatus.GONE
+    code: str = "model_retired"
+
+
+class DeploymentRetired(FirstError):
+    """
+    The requested deployment has been permanently removed, but its model may
+    still be served by other deployments (listed in `info["alternatives"]`).
+    """
+
+    status_code = HTTPStatus.GONE
+    code: str = "deployment_retired"
+
+
 class NotImplemented(FirstError):
     status_code = HTTPStatus.NOT_IMPLEMENTED
     code: str = "not_implemented"

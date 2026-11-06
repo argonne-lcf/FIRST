@@ -1,5 +1,6 @@
 import logging
 
+from first_common.schema.resources.spec import RetiredDeployment
 from first_common.schema.types import (
     HealthCheckResult,
     MTLSClientConfig,
@@ -68,6 +69,11 @@ class RouterConfigObserver(Worker):
                 deployments=self._build_deployments(
                     model.pilot_deployments, model.static_deployments, notices
                 ),
+                retired=model.retired,
+                retired_deployments=[
+                    RetiredDeployment.model_validate(d)
+                    for d in model.retired_deployments
+                ],
             )
             for model in sorted(models, key=lambda m: m.uid)
         ]

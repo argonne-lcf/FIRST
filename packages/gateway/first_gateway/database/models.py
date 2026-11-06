@@ -281,6 +281,11 @@ class Model(ResourceRow):
     max_model_len: Mapped[int | None]
     display_name: Mapped[str | None] = mapped_column(sa.Text())
     capabilities: Mapped[DictJsonb] = mapped_column(default=dict)
+    retired: Mapped[bool] = mapped_column(default=False, server_default=sa.false())
+    # list of RetiredDeployment dicts ({name, cluster_name})
+    retired_deployments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=sa.text("'[]'::jsonb")
+    )
 
     access_group: Mapped[AccessGroup] = relationship(lazy="raise")
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(

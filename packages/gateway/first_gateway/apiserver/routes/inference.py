@@ -41,7 +41,10 @@ def _model_info(model: ModelConfig) -> ModelInfo:
 
 
 def _visible_models(config: RouterConfig, user: UserAuthEvent) -> list[ModelConfig]:
-    return [m for m in config.models if user_can_access_group(user, m)]
+    """Models the caller may use; retired tombstones are never listed."""
+    return [
+        m for m in config.models if not m.retired and user_can_access_group(user, m)
+    ]
 
 
 # --- Federated routes: backend chosen via `model` in the request body. -------

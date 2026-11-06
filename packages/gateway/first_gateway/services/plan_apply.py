@@ -63,6 +63,32 @@ def validate_resources(
                     f"{child_kind}.{child.name} references nonexistant {parent_kind}.{parent_name}"
                 )
 
+    # Retirement tombstones must not contradict the live deployments: a retired
+    # model has none, and a retired deployment name is not also a live one.
+    deployments_by_model: dict[str, list[str]] = defaultdict(list)
+    for kind in ("StaticDeployment", "PilotDeployment"):
+        for deployment in by_kind[kind]:
+            assert isinstance(
+                deployment.spec, (StaticDeploymentSpec, PilotDeploymentSpec)
+            )
+            deployments_by_model[deployment.spec.model_name].append(deployment.name)
+    live_deployments = {n for names in deployments_by_model.values() for n in names}
+    for model_resource in by_kind["Model"]:
+        model_spec = model_resource.spec
+        assert isinstance(model_spec, ModelSpec)
+        if model_spec.retired and (live := deployments_by_model[model_resource.name]):
+            raise InvalidSpecError(
+                f"Model.{model_resource.name} is retired but still has "
+                f"deployments: {', '.join(sorted(live))}.  Remove them, or set "
+                "retired: false."
+            )
+        clash = {d.name for d in model_spec.retired_deployments} & live_deployments
+        if clash:
+            raise InvalidSpecError(
+                f"Model.{model_resource.name} lists retired_deployments that are "
+                f"still live: {', '.join(sorted(clash))}."
+            )
+
     # A request can never be admitted if it costs more than the user's token
     # bucket holds, so a context window larger than burst_tokens is unusable.
     for model_resource in by_kind["Model"]:

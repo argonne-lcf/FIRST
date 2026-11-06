@@ -36,6 +36,7 @@ from ..services.orchestration import (
     get_shuffled_backends,
     maintenance_notices,
     maintenance_suffix,
+    model_retired_error,
 )
 from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
 from .auth import enforce_permission
@@ -103,6 +104,9 @@ class InferenceService:
                 raise NotFound(f"Model {payload.model} does not exist.")
 
         enforce_permission(self.user, model)
+
+        if model.retired:
+            raise model_retired_error(model)
 
         if payload.endpoint not in model.supported_endpoints:
             raise InvalidSpecError(
