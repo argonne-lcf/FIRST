@@ -6,7 +6,12 @@ from typing import Any
 
 from django.utils.text import slugify
 
-from .router_config import ModelConfig, RouterConfig
+from .router_config import (
+    ModelConfig,
+    ModelRetirementConfig,
+    RetiredDeployment,
+    RouterConfig,
+)
 from .settings import BridgeSettings
 
 ENDPOINT_ADAPTER = "resource_server_async.endpoints.first_v2.FirstV2Endpoint"
@@ -68,6 +73,8 @@ def desired_endpoints(
     desired: list[DesiredEndpoint] = []
 
     for model in cfg.models:
+        if model.retired:
+            continue
         # Group healthy pilot backends by the resolved (cluster, framework).
         grouped: dict[tuple[str, str], list[str]] = {}
         backend_model_name: dict[tuple[str, str], str] = {}
@@ -99,6 +106,27 @@ def desired_endpoints(
             )
 
     return desired
+
+
+def retirement_catalog(cfg: RouterConfig) -> list[dict[str, Any]]:
+    """Snapshot only retirement identity and ACLs; never backend credentials.
+
+    Unlike serving rows, tombstones are independent of prefix_map and health.
+    They may describe a retired static deployment, such as Minerva's, even
+    though the bridge only creates serving rows for healthy pilot deployments.
+    """
+    catalog = []
+    for model in cfg.models:
+        if not model.retired and not model.retired_deployments:
+            continue
+        entry = ModelRetirementConfig.model_validate(model.model_dump())
+        entry.active_deployments = [
+            RetiredDeployment(name=d.name, cluster_name=d.cluster_name)
+            for d in model.deployments
+            if d.cluster_name is not None
+        ]
+        catalog.append(entry.model_dump())
+    return catalog
 
 
 def _build_desired_endpoint(

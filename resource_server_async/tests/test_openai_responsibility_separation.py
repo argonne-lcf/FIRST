@@ -196,6 +196,7 @@ class OpenAIServiceDispatchTests(SimpleTestCase):
         original = json.loads(json.dumps(payload))
 
         with (
+            patch("resource_server_async.services.raise_if_retired", new=AsyncMock()),
             patch.object(
                 BaseCluster, "load_adapter", new=AsyncMock(return_value=cluster)
             ),

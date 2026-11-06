@@ -15,18 +15,20 @@ import time
 from typing import Any
 
 from django.core.management.base import BaseCommand
+from django.db import transaction
 
 from resource_server_async.first_v2_bridge.mapping import (
     ENDPOINT_ADAPTER,
     DesiredEndpoint,
     desired_endpoints,
+    retirement_catalog,
 )
 from resource_server_async.first_v2_bridge.router_config import (
     RouterConfig,
     get_bridge_redis_client,
 )
 from resource_server_async.first_v2_bridge.settings import BridgeSettings
-from resource_server_async.models import Endpoint
+from resource_server_async.models import Cluster, Endpoint
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +69,15 @@ class Command(BaseCommand):
             return
         desired = desired_endpoints(cfg, settings)
 
-        created, updated, deleted = self._reconcile_endpoints(desired)
+        # Serving rows and retirement metadata come from one validated config.
+        # A missing/invalid/unreachable config never erases the last snapshot.
+        with transaction.atomic():
+            created, updated, deleted = self._reconcile_endpoints(desired)
+            catalog = retirement_catalog(cfg)
+            for cluster in Cluster.objects.all():
+                if cluster.model_retirements != catalog:
+                    cluster.model_retirements = catalog
+                    cluster.save(update_fields=["model_retirements"])
 
         log.info(
             "first_v2_bridge tick: version=%s desired=%s created=%s updated=%s deleted=%s",

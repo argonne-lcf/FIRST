@@ -34,6 +34,7 @@ from .errors import (
 )
 from .logging import RequestContext
 from .models import BatchLog, Cluster, Endpoint
+from .retirements import raise_if_retired, retired_model_names
 from .schemas import GlobusStagingAreaPrepared
 from .schemas.batch import (
     BatchStatus,
@@ -104,7 +105,10 @@ async def get_all_endpoints(
 
     # For all endpoints in the database for this cluster ...
     endpoint_adaptors: list[BaseEndpoint] = []
+    retired = await retired_model_names(cluster.cluster_name)
     async for db_endpoint in Endpoint.objects.filter(cluster=cluster.cluster_name):
+        if db_endpoint.model in retired:
+            continue
         endpoint = await BaseEndpoint.load_adapter(
             db_endpoint.cluster, db_endpoint.framework, db_endpoint.model
         )
@@ -224,6 +228,8 @@ async def _should_show(
     """
     Return whether user is authorized to see this endpoint.
     """
+    if model in await retired_model_names(cluster):
+        return False
     try:
         endpoint = await BaseEndpoint.load_adapter(cluster, framework, model)
     except EndpointNotFound:
@@ -286,6 +292,8 @@ async def submit_openai_inference_request(
     requested_model = control.model
 
     assert context.user is not None
+
+    await raise_if_retired(cluster_name, framework, requested_model, context.user)
 
     # Get cluster wrapper from database
     cluster = await BaseCluster.load_adapter(cluster_name)
