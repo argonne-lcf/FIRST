@@ -1,0 +1,142 @@
+"""V2 catalog tombstones for V1 callers, not fake serving endpoints."""
+
+from http import HTTPStatus
+
+from .auth import check_permission
+from .errors import BaseError, Unauthorized
+from .first_v2_bridge.router_config import ModelRetirementConfig
+from .models import Cluster, Endpoint
+from .schemas.structured_logs import UserPydantic
+
+
+class ModelRetired(BaseError):
+    status_code = HTTPStatus.GONE
+    code = "model_retired"
+
+
+class DeploymentRetired(BaseError):
+    status_code = HTTPStatus.GONE
+    code = "deployment_retired"
+
+
+def _retired_on_cluster(retirement: ModelRetirementConfig, cluster: str) -> bool:
+    return retirement.retired or (
+        any(d.cluster_name == cluster for d in retirement.retired_deployments)
+        and not any(d.cluster_name == cluster for d in retirement.active_deployments)
+    )
+
+
+async def retired_model_names(cluster_name: str) -> set[str]:
+    """Hide tombstones before adapter lookup, including during fixture rollout."""
+    try:
+        cluster = await Cluster.objects.aget(cluster_name=cluster_name)
+    except Cluster.DoesNotExist:
+        return set()
+    return {
+        name
+        for raw in cluster.model_retirements
+        if _retired_on_cluster(
+            entry := ModelRetirementConfig.model_validate(raw), cluster_name
+        )
+        for name in (entry.name, *entry.aliases)
+    }
+
+
+async def _alternatives(
+    retirement: ModelRetirementConfig, user: UserPydantic
+) -> list[dict[str, str]]:
+    """Only advertise V1 routes the caller can actually access; no adapters.
+
+    Healthy bridge rows come and go independently of retirement metadata. A
+    temporarily cold/unavailable replacement must not turn a retirement into
+    a 404 or require contacting any backend to construct the error.
+    """
+    clusters = {c.cluster_name: c async for c in Cluster.objects.all()}
+    active = {
+        d.cluster_name: d.name
+        for d in sorted(
+            retirement.active_deployments, key=lambda d: d.name, reverse=True
+        )
+    }
+    retired_clusters = {
+        d.cluster_name for d in retirement.retired_deployments
+    } - active.keys()
+    alternatives = {}
+    async for endpoint in Endpoint.objects.filter(model=retirement.name).order_by(
+        "cluster", "framework", "endpoint_slug"
+    ):
+        cluster = clusters.get(endpoint.cluster)
+        if cluster is None or endpoint.cluster in retired_clusters:
+            continue
+        try:
+            check_permission(
+                user, cluster.allowed_globus_groups, cluster.allowed_domains
+            )
+            check_permission(
+                user, endpoint.allowed_globus_groups, endpoint.allowed_domains
+            )
+        except Unauthorized:
+            continue
+        path = f"/resource_server/{endpoint.cluster}/{endpoint.framework}/v1"
+        alternatives[path] = {
+            "deployment": active.get(endpoint.cluster, endpoint.endpoint_slug),
+            "cluster": endpoint.cluster,
+            "base_path": path,
+        }
+    return [alternatives[path] for path in sorted(alternatives)]
+
+
+async def raise_if_retired(
+    cluster_name: str, framework: str, model_name: str, user: UserPydantic
+) -> None:
+    """Authorize before 410; never resolve, dispatch, redirect or replay."""
+    try:
+        cluster = await Cluster.objects.aget(cluster_name=cluster_name)
+    except Cluster.DoesNotExist:
+        return  # Keep the normal cluster-not-found path unchanged.
+    for raw in cluster.model_retirements:
+        retirement = ModelRetirementConfig.model_validate(raw)
+        if model_name == retirement.name or model_name in retirement.aliases:
+            break
+    else:
+        return
+    retired = next(
+        (d for d in retirement.retired_deployments if d.cluster_name == cluster_name),
+        None,
+    )
+    if not _retired_on_cluster(retirement, cluster_name):
+        return
+    check_permission(user, cluster.allowed_globus_groups, cluster.allowed_domains)
+    check_permission(user, retirement.allowed_groups, retirement.allowed_domains)
+    if retirement.retired:
+        raise ModelRetired(
+            f"Model '{retirement.name}' has been retired and is no longer available. "
+            "Please switch to a different model; GET .../resource_server/list-endpoints "
+            "lists the models available to you.",
+            info={"model": retirement.name},
+        )
+    assert retired is not None
+    alternatives = await _alternatives(retirement, user)
+    subject = f"Model '{retirement.name}' on cluster '{cluster_name}'"
+    if alternatives:
+        paths = ", ".join(f"...{a['base_path']}" for a in alternatives)
+        message = (
+            f"{subject} has been retired, but model '{retirement.name}' is still "
+            "available elsewhere. Change your client's base URL from "
+            f".../resource_server/{cluster_name}/{framework}/v1 to one of: {paths}."
+        )
+    else:
+        message = (
+            f"{subject} has been retired, and no alternative deployment is currently "
+            "listed for you. GET .../resource_server/list-endpoints lists the models "
+            "available to you."
+        )
+    raise DeploymentRetired(
+        message,
+        info={
+            "model": retirement.name,
+            "retired_deployment": retired.name,
+            "retired_cluster": retired.cluster_name,
+            "alternatives": alternatives,
+        },
+    )

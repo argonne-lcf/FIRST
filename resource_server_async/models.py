@@ -242,6 +242,10 @@ class Cluster(models.Model):
     # Cluster name
     cluster_name = models.CharField(max_length=100, unique=True)
 
+    # Last complete V2 retirement snapshot, maintained by first_v2_bridge.
+    # Separate from Endpoint rows: a retirement must survive their deletion.
+    model_retirements = models.JSONField(default=list, blank=True, editable=False)
+
     # Inference serving framework
     # e.g. ["vllm"]
     frameworks = StrListJSONField(null=False)

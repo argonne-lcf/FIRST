@@ -88,6 +88,7 @@ nav:
           - Direct API Adaptors: admin-guide/connecting-gateway-to-backend/direct-api.md
           - Custom Adaptors: admin-guide/connecting-gateway-to-backend/custom.md
       - Deployment:
+          - Model Retirement: admin-guide/deployment/model-retirement.md
           - Kubernetes: admin-guide/deployment/kubernetes.md
           - Production Best Practices: admin-guide/deployment/production.md
       - Monitoring & Troubleshooting: admin-guide/monitoring.md

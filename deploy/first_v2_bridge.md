@@ -13,6 +13,12 @@ Note that the bridge and the V1 gateway use **two distinct Redis instances**!
 The bridge reads `router-cfg` from V2's Redis; it never writes to it. All
 writes go to the V1 Postgres `Endpoint`/`Cluster` tables.
 
+The bridge also persists V2 Model retirement metadata in the separate
+`Cluster.model_retirements` JSON field. Apply V1 migration
+`0015_cluster_model_retirements` before upgrading the API and bridge. Tombstones
+do not create serving endpoints and are retained when no replacement is healthy.
+See the [generic retirement procedure](../docs/admin-guide/deployment/model-retirement.md).
+
 
 ## Environment variables
 

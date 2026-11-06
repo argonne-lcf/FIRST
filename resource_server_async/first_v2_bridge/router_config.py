@@ -50,6 +50,7 @@ class DeploymentConfig(BaseModel):
 
     kind: str
     name: str
+    cluster_name: str | None = None
     backends: list[BackendConfig] = []
 
 
@@ -65,13 +66,27 @@ class UsageLimits(BaseModel):
     default: TPMLimits
 
 
-class ModelConfig(BaseModel):
+class RetiredDeployment(BaseModel):
+    name: str
+    cluster_name: str
+
+
+class ModelRetirementConfig(BaseModel):
+    """The non-secret catalog fields V1 needs even after an endpoint is gone."""
+
     model_config = ConfigDict(extra="ignore")
 
     name: str
     aliases: list[str] = []
     allowed_groups: list[str]
     allowed_domains: list[str]
+    retired: bool = False
+    retired_deployments: list[RetiredDeployment] = []
+    # Sanitized identities only, derived locally from V2's deployments.
+    active_deployments: list[RetiredDeployment] = []
+
+
+class ModelConfig(ModelRetirementConfig):
     usage_limits: UsageLimits
     # What the model can do. The V2 side sends these and we copy them into
     # the V1 row. Older configs have no such fields, so each one needs a

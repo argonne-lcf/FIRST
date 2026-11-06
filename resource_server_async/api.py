@@ -105,7 +105,15 @@ api.auth = [GlobalAuth()]
 def handle_app_error(request: HttpRequest, exc: BaseError) -> HttpResponse:
     return api.create_response(
         request,
-        {"error": {"code": exc.code, "message": str(exc), "info": exc.info}},
+        {
+            "type": "error",
+            "error": {
+                "type": exc.code,
+                "code": exc.code,
+                "message": str(exc),
+                "info": exc.info,
+            },
+        },
         status=exc.status_code,
     )
 
