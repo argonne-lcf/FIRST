@@ -91,6 +91,7 @@ nav:
           - Kubernetes: admin-guide/deployment/kubernetes.md
           - Production Best Practices: admin-guide/deployment/production.md
       - Monitoring & Troubleshooting: admin-guide/monitoring.md
+      - Retiring a Model: admin-guide/retiring-models.md
   - User Guide: user-guide/index.md
   - Reference:
       - Citation: reference/citation.md

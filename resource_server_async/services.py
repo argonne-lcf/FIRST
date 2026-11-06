@@ -34,6 +34,7 @@ from .errors import (
 )
 from .logging import RequestContext
 from .models import BatchLog, Cluster, Endpoint
+from .retirements import raise_if_retired
 from .schemas import GlobusStagingAreaPrepared
 from .schemas.batch import (
     BatchStatus,
@@ -286,6 +287,10 @@ async def submit_openai_inference_request(
     requested_model = control.model
 
     assert context.user is not None
+
+    # A retired identity need not exist in the endpoint table. Global auth has
+    # already run; enforce retained model/cluster ACLs without backend adapters.
+    await raise_if_retired(cluster_name, requested_model, context.user)
 
     # Get cluster wrapper from database
     cluster = await BaseCluster.load_adapter(cluster_name)
