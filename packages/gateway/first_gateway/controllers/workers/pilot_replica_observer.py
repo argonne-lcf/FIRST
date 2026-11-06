@@ -520,7 +520,10 @@ class PilotReplicaObserver(Worker):
             await sess.execute(
                 sa.update(PilotDeployment).where(dep_clause).values(**values)
             )
-        elif new_state in (ReplicaState.error, ReplicaState.start_timeout):
+        elif db_replica.state in (
+            ReplicaState.placed,
+            ReplicaState.launching,
+        ) and new_state in (ReplicaState.error, ReplicaState.start_timeout):
             await sess.execute(
                 sa.update(PilotDeployment)
                 .where(dep_clause)
