@@ -4,12 +4,15 @@ from datetime import datetime, timezone
 from typing import NoReturn
 
 from first_common.errors import (
+    DeploymentRetired,
     FirstError,
+    ModelRetired,
     NotFound,
     RequestTooLarge,
     ServiceUnavailable,
     TooManyRequests,
 )
+from first_common.schema.resources.spec import RetiredDeployment
 from first_common.schema.types import OverloadPolicy, UsageLimits
 from first_gateway.apiserver.dependencies import AuthUser
 
@@ -38,6 +41,21 @@ def get_shuffled_backends(
     if deployment_name:
         d = next((d for d in model.deployments if d.name == deployment_name), None)
         if d is None:
+            if retired := model.retired_deployment(deployment_name):
+                raise deployment_retired_error(
+                    model,
+                    retired,
+                    subject=f"Deployment '{retired.name}'",
+                    requested_base_path=deployment_base_path(retired.name),
+                    alternatives=[
+                        {
+                            "deployment": live.name,
+                            "cluster": live.cluster_name,
+                            "base_path": deployment_base_path(live.name),
+                        }
+                        for live in model.deployments
+                    ],
+                )
             raise NotFound(
                 f"{deployment_name=} was not found in the current configuration."
             )
@@ -300,6 +318,69 @@ def maintenance_suffix(notices: dict[str, str]) -> str:
 def _format_notices(notices: dict[str, str]) -> str:
     """`cluster: notice` pairs joined into one sentence."""
     return "; ".join(f"{c}: {n}" for c, n in notices.items()).rstrip(".") + "."
+
+
+# Retirement errors are 410s whose `message` must answer the user's question on
+# its own: chat UIs and coding agents surface only the message, never `info`.
+# Paths are relative to the gateway's base URL, hence the leading "...".
+FEDERATED_BASE_PATH = "/federated/v1"
+
+
+def deployment_base_path(deployment_name: str) -> str:
+    return f"/deployments/{get_slug_from_name(deployment_name)}/v1"
+
+
+def model_retired_error(model: ModelConfig) -> ModelRetired:
+    return ModelRetired(
+        f"Model '{model.name}' has been retired and is no longer available. "
+        "Please switch to a different model; "
+        f"GET ...{FEDERATED_BASE_PATH}/models lists the models available to you.",
+        info={"model": model.name},
+    )
+
+
+def deployment_retired_error(
+    model: ModelConfig,
+    retired: RetiredDeployment,
+    *,
+    subject: str,
+    requested_base_path: str,
+    alternatives: list[dict[str, str]],
+) -> DeploymentRetired:
+    """
+    410 for a request pinned to a retired deployment of a still-listed model.
+
+    `subject` names what was retired in the caller's terms (a deployment, or a
+    cluster on the V1 routes); each alternative is a dict with `deployment`,
+    `cluster` and `base_path` keys.
+    """
+    fix = (
+        f"Change your client's base URL from ...{requested_base_path} to "
+        f"...{FEDERATED_BASE_PATH}"
+    )
+    if alternatives:
+        pinned = ", ".join(f"...{a['base_path']}" for a in alternatives)
+        message = (
+            f"{subject} has been retired, but model '{model.name}' is still "
+            f"available. {fix} to use any available deployment automatically, "
+            f"or to one of: {pinned}."
+        )
+    else:
+        message = (
+            f"{subject} has been retired, and model '{model.name}' has no other "
+            f"deployment online right now. {fix} to use the model wherever it "
+            "is next available."
+        )
+    return DeploymentRetired(
+        message,
+        info={
+            "model": model.name,
+            "retired_deployment": retired.name,
+            "retired_cluster": retired.cluster_name,
+            "federated_base_path": FEDERATED_BASE_PATH,
+            "alternatives": alternatives,
+        },
+    )
 
 
 def get_name_from_slug(slug: str) -> str:

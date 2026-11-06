@@ -10,6 +10,20 @@ from first_common.errors import FirstError, TaskPending
 logger = logging.getLogger(__name__)
 
 
+def error_body(code: str, message: str, **extra: Any) -> dict[str, Any]:
+    """
+    Error envelope that validates as both an OpenAI error
+    (`{"error": {"message", "code"}}`) and an Anthropic error
+    (`{"type": "error", "error": {"type", "message"}}`).  SDKs that fail to
+    parse an error body (e.g. the Vercel AI SDK used by OpenCode) fall back to
+    the bare HTTP status text, hiding our message from the user.
+    """
+    return {
+        "type": "error",
+        "error": {"type": code, "code": code, "message": message, **extra},
+    }
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Install the shared FirstError/uncaught exception handlers."""
 
@@ -23,7 +37,7 @@ def register_error_handlers(app: FastAPI) -> None:
         if isinstance(exc, TaskPending):
             body = {"status": exc.code, "task_id": exc.task_id}
         else:
-            body = {"error": {"code": exc.code, "message": str(exc), "info": exc.info}}
+            body = error_body(exc.code, str(exc), info=exc.info)
 
         return JSONResponse(body, status_code=exc.status_code, headers=headers or None)
 
@@ -37,12 +51,6 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
         return JSONResponse(
-            {
-                "error": {
-                    "code": "internal_error",
-                    "message": "Internal Server Error",
-                    "error_id": error_id,
-                }
-            },
+            error_body("internal_error", "Internal Server Error", error_id=error_id),
             status_code=500,
         )

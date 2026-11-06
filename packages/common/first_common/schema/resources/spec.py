@@ -66,6 +66,19 @@ class AccessGroupSpec(ResourceSpec):
     allowed_domains: list[str] = []
 
 
+class RetiredDeployment(BaseModel):
+    """
+    Tombstone for a deployment that was removed from a still-listed Model.
+    Requests pinned to it (by deployment name, or by cluster on the V1 compat
+    routes) get a 410 naming the model's remaining deployments, not a 404.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: ResourceName
+    cluster_name: ResourceName
+
+
 class ModelSpec(ResourceSpec):
     """
     The top-level Model resource, which may be backed by multiple child
@@ -77,6 +90,11 @@ class ModelSpec(ResourceSpec):
     max_model_len specifies the maximum context window for LLM models.  It is shared
     across all deployments of the model.  The same model at different context lengths
     is represented by multiple entries (e.g. claude-opus-4-8 vs. claude-opus-4-8-1m).
+
+    A `retired` model is a tombstone: it has no deployments, is hidden from
+    model listings, and requests for it get a 410 instead of a 404.
+    `retired_deployments` records deployments removed from a model that is
+    still served elsewhere.
     """
 
     access_group_name: ResourceName
@@ -88,11 +106,23 @@ class ModelSpec(ResourceSpec):
     max_model_len: int | None = Field(None, ge=1)
     display_name: str | None = None
     capabilities: dict[str, Any] = {}
+    retired: bool = False
+    retired_deployments: list[RetiredDeployment] = []
 
     @field_validator("supported_endpoints")
     @classmethod
     def normalize_endpoints(cls, v: list[str]) -> list[str]:
         return [normalize_proxy_path(e) for e in v]
+
+    @field_validator("retired_deployments")
+    @classmethod
+    def unique_retired_deployments(
+        cls, v: list[RetiredDeployment]
+    ) -> list[RetiredDeployment]:
+        names = [d.name for d in v]
+        if len(names) != len(set(names)):
+            raise ValueError("retired_deployments names must be unique")
+        return v
 
 
 class ClusterSpec(ResourceSpec):

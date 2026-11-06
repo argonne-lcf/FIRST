@@ -5,6 +5,7 @@ from typing import Any, AsyncIterator, Literal, Self
 from pydantic import BaseModel, field_validator
 from redis.asyncio import Redis
 
+from first_common.schema.resources.spec import RetiredDeployment
 from first_common.schema.types import (
     MTLSClientConfig,
     OverloadPolicy,
@@ -64,6 +65,11 @@ class ModelConfig(BaseModel):
     usage_limits: UsagePolicy
     overload: OverloadPolicy
     deployments: list[DeploymentConfig]
+    retired: bool = False
+    retired_deployments: list[RetiredDeployment] = []
+
+    def retired_deployment(self, name: str) -> RetiredDeployment | None:
+        return next((d for d in self.retired_deployments if d.name == name), None)
 
     @field_validator("supported_endpoints")
     @classmethod
