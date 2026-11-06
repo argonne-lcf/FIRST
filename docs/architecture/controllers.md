@@ -705,12 +705,13 @@ Load the `Model` (with `DemandSignalConfig`) and its child `PilotDeployment`s.
 
   1. If `consecutive_launch_failures` exceeds `max_consecutive_launch_failures`,
      set `desired_replicas = 0`. Skip to the next deployment, including manual
-     deployments. Equality still allows a final retry. The budget counts
-     cold-start errors and startup timeouts, not an observed `ready -> error`
-     or native `unhealthy -> error` runtime failure; those replicas are replaced
-     normally without stopping healthy peers. Maintenance can mark a launching
-     replica unhealthy too, so an error following that explicit maintenance
-     marker remains conservatively counted: its prior readiness is unknown.
+     deployments. Equality still allows a final retry. The budget increments
+     only when a replica transitions from `placed` or `launching` to `error`
+     or `start_timeout`. Failures observed from `pending`, `ready` or `unhealthy`
+     do not count, including maintenance-induced unhealthy states. Failed
+     replicas are still replaced normally. Each transition and its accounting
+     commit atomically; repeated observations of a terminal state do not count
+     again.
      A transition to ready resets the counter, including an in-flight start
      that finishes after the target was set to zero; that does not restore a
      manual target. `first-admin reconcile-reset PilotDeployment.NAME` clears

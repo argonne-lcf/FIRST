@@ -509,28 +509,24 @@ async def test_consecutive_launch_failures_accumulates(
     assert dep.consecutive_launch_failures == 4
 
 
+@pytest.mark.parametrize("new_state", [ReplicaState.error, ReplicaState.start_timeout])
 @pytest.mark.parametrize(
-    ("prior_state", "message", "new_state", "increments"),
+    ("prior_state", "message", "increments"),
     [
-        (ReplicaState.pending, "created", ReplicaState.error, True),
-        (ReplicaState.placed, "placed", ReplicaState.error, True),
-        (ReplicaState.launching, "starting", ReplicaState.error, True),
-        (ReplicaState.launching, "starting", ReplicaState.start_timeout, True),
-        (ReplicaState.ready, "Running", ReplicaState.error, False),
-        (ReplicaState.unhealthy, "health failed", ReplicaState.error, False),
-        (
-            ReplicaState.unhealthy,
-            MAINTENANCE_UNREACHABLE,
-            ReplicaState.error,
-            True,
-        ),
-        (ReplicaState.unhealthy, "health failed", ReplicaState.start_timeout, True),
+        (ReplicaState.pending, "created", False),
+        (ReplicaState.placed, "placed", True),
+        (ReplicaState.launching, "starting", True),
+        (ReplicaState.ready, "Running", False),
+        (ReplicaState.unhealthy, "health failed", False),
+        (ReplicaState.unhealthy, MAINTENANCE_UNREACHABLE, False),
+        (ReplicaState.error, "crash", False),
+        (ReplicaState.start_timeout, "timeout", False),
     ],
 )
-async def test_failure_accounting_no_db(
+async def test_only_startup_transitions_increment_failures_no_db(
     prior_state: ReplicaState, message: str, new_state: ReplicaState, increments: bool
 ) -> None:
-    """Runtime faults do not spend the cold-start budget; uncertain starts do."""
+    """Only placed/launching failures spend the consecutive-launch budget."""
     session = MagicMock(spec=AsyncSession)
     session.execute = AsyncMock()
     replica = PilotReplica(
@@ -563,22 +559,26 @@ async def test_unhealthy_recovery_resets_failures_no_db() -> None:
     assert "last_startup_sec" not in str(statement)
 
 
+@pytest.mark.parametrize("new_state", [ReplicaState.error, ReplicaState.start_timeout])
 @pytest.mark.parametrize(
     ("prior_state", "message", "expected_failures"),
     [
+        (ReplicaState.pending, "created", 0),
         (ReplicaState.ready, "Running", 0),
         (ReplicaState.unhealthy, "health failed", 0),
+        (ReplicaState.unhealthy, MAINTENANCE_UNREACHABLE, 0),
+        (ReplicaState.placed, "placed", 2),
         (ReplicaState.launching, "starting", 2),
-        (ReplicaState.unhealthy, MAINTENANCE_UNREACHABLE, 2),
     ],
 )
-async def test_two_faults_preserve_only_proven_serving_capacity(
+async def test_only_startup_failures_trip_breaker(
     db: async_sessionmaker[AsyncSession],
     prior_state: ReplicaState,
     message: str,
     expected_failures: int,
+    new_state: ReplicaState,
 ) -> None:
-    """Two runtime faults replace only themselves; two cold failures still halt."""
+    """Other failures replace only themselves; two startup failures still halt."""
     async with db.begin() as sess:
         await _seed_base(sess)
         await _add_job(sess)
@@ -597,9 +597,7 @@ async def test_two_faults_preserve_only_proven_serving_capacity(
         uid = dep.uid
 
     remote = [
-        _replica_info(
-            name=name, state=ReplicaState.error if i < 2 else ReplicaState.ready
-        )
+        _replica_info(name=name, state=new_state if i < 2 else ReplicaState.ready)
         for i, name in enumerate(names)
     ]
     observer = _make_observer(
