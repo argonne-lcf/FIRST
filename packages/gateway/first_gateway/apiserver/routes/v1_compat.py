@@ -32,6 +32,7 @@ from ..dependencies import (
     RouterConfigDep,
 )
 from ..inference import InferenceService, InferenceServiceDep
+from ..retirements import raise_if_retired
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,7 @@ async def _submit(
     model = config.models_by_name.get(payload.model) or config.models_by_alias.get(
         payload.model
     )
+    raise_if_retired(inference.user, cluster, payload.model, model)
     deployment_name = _cluster_deployment(model, cluster)
     if deployment_name is None:
         if model is None:

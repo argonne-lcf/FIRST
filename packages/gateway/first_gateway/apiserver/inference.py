@@ -42,6 +42,7 @@ from .auth import enforce_permission
 from .backend_client_manager import UNARY_TIMEOUT, BackendClientManager
 from .context import get_request_id
 from .dependencies import AuthUser
+from .retirements import raise_if_retired
 from .router_config_manager import RouterConfigManager
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,13 @@ class InferenceService:
         Send the request to a backend, falling over to other backends on
         retryable failures.
         """
+
+        if deployment_name is not None:
+            cluster, _, _ = deployment_name.partition("/")
+            configured_model = self.router_config.models_by_name.get(
+                payload.model
+            ) or self.router_config.models_by_alias.get(payload.model)
+            raise_if_retired(self.user, cluster, payload.model, configured_model)
 
         model = self._resolve_model(payload)
 
