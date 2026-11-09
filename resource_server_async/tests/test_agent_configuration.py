@@ -119,9 +119,19 @@ class AgentConfigurationTests(unittest.TestCase):
         }
         client.list_models.side_effect = listings.__getitem__
         with patch.dict(cli_module._cli_state, {"client": client}):
-            result = CliRunner().invoke(agent.cli, [name, *options])
+            result = CliRunner().invoke(agent.cli, ["configure", name, *options])
         self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
         return result
+
+    def run_agent(self, name: str, *options: str):
+        cli_module = importlib.import_module("alcf_ai.cli")
+        client = Mock(base_url=BASE_URL)
+        client.list_models.return_value = [copy.deepcopy(MISTRAL)]
+        with patch.dict(cli_module._cli_state, {"client": client}):
+            return CliRunner().invoke(agent.cli, ["run", name, *options])
+
+    def run_claude(self, *options: str):
+        return self.run_agent("claude", *options)
 
     def test_allowlist_changes_only_minerva_nemotron(self) -> None:
         self.assertEqual(
@@ -395,6 +405,173 @@ class AgentConfigurationTests(unittest.TestCase):
         config = self.read_json(".claude/settings.json")
         self.assertNotIn("apiKeyHelper", config)
         self.assertEqual(config["env"]["ANTHROPIC_AUTH_TOKEN"], TOKEN)
+
+    def test_run_claude_execs_with_environment_and_forwards_arguments(self) -> None:
+        settings = self.write(".claude/settings.json", "invalid existing config")
+        with (
+            patch.dict(
+                os.environ,
+                {"KEEP_ME": "yes", "ANTHROPIC_MODEL": "parent-model"},
+            ),
+            patch.object(agent.os, "execvpe") as execvpe,
+        ):
+            result = self.run_claude(
+                "--default-model",
+                MODEL,
+                "--default-cluster",
+                "tara",
+                "--",
+                "--print",
+                "hello",
+            )
+            self.assertEqual(os.environ["ANTHROPIC_MODEL"], "parent-model")
+
+        self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
+        executable, argv, env = execvpe.call_args.args
+        self.assertEqual(executable, "claude")
+        self.assertEqual(argv, ["claude", "--print", "hello"])
+        self.assertEqual(env["KEEP_ME"], "yes")
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}tara/api")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], TOKEN)
+        for key in (
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        ):
+            self.assertEqual(env[key], MODEL)
+        self.assertEqual(settings.read_text(), "invalid existing config")
+        self.helper.assert_not_called()
+
+    def test_run_claude_uses_muse_by_default(self) -> None:
+        with patch.object(agent.os, "execvpe") as execvpe:
+            result = self.run_claude()
+
+        self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
+        env = execvpe.call_args.args[2]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "muse-spark-bf16")
+
+    def test_run_claude_reports_missing_executable(self) -> None:
+        settings = self.write(".claude/settings.json", "invalid existing config")
+        with patch.object(
+            agent.os,
+            "execvpe",
+            side_effect=FileNotFoundError(2, "No such file or directory"),
+        ):
+            result = self.run_claude()
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Could not execute claude", result.output)
+        self.assertEqual(settings.read_text(), "invalid existing config")
+
+    def test_run_opencode_uses_inline_config_and_forwards_arguments(self) -> None:
+        settings = self.write(
+            ".config/opencode/opencode.jsonc", "invalid existing config"
+        )
+        self.helper.return_value = None
+        with (
+            patch.object(agent.shutil, "which", return_value="/test/bin/opencode"),
+            patch.object(agent.subprocess, "check_output", return_value="2.1.0"),
+            patch.object(agent.os, "execvpe") as execvpe,
+        ):
+            result = self.run_agent(
+                "opencode", "--default-model", MODEL, "--", "run", "hello"
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
+        executable, argv, env = execvpe.call_args.args
+        self.assertEqual(executable, "opencode")
+        self.assertEqual(argv, ["opencode", "run", "hello"])
+        config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(config["model"], f"{PROVIDER}/{MODEL}")
+        provider = config["providers"][PROVIDER]
+        self.assertEqual(provider["settings"]["baseURL"], f"{BASE_URL}minerva/api/v1")
+        self.assertEqual(provider["settings"]["apiKey"], TOKEN)
+        self.assertIn(MODEL, provider["models"])
+        self.assertEqual(settings.read_text(), "invalid existing config")
+
+    def test_run_opencode_rejects_unavailable_model_before_exec(self) -> None:
+        with patch.object(agent.os, "execvpe") as execvpe:
+            result = self.run_agent("opencode", "--default-model", "missing-model")
+
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("not available", result.output)
+        execvpe.assert_not_called()
+
+    def test_run_codex_uses_cli_overrides_and_environment_credentials(self) -> None:
+        settings = self.write(".codex/config.toml", "invalid existing config")
+        with patch.object(agent.os, "execvpe") as execvpe:
+            result = self.run_agent(
+                "codex", "--default-model", MODEL, "--", "exec", "hello"
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
+        executable, argv, env = execvpe.call_args.args
+        self.assertEqual(executable, "codex")
+        self.assertEqual(argv[:3], ["codex", "--model", MODEL])
+        self.assertEqual(argv[-2:], ["exec", "hello"])
+        self.assertEqual(env["ALCF_API_KEY"], TOKEN)
+        self.assertEqual(env["ALCF_SESSION_ID"], "default")
+        self.assertNotIn(TOKEN, " ".join(argv))
+
+        overrides = {}
+        for index, value in enumerate(argv):
+            if value == "--config":
+                key, override = argv[index + 1].split("=", 1)
+                overrides[key] = override
+        self.assertEqual(overrides["model_provider"], json.dumps(PROVIDER))
+        self.assertEqual(
+            overrides[f"model_providers.{PROVIDER}.base_url"],
+            json.dumps(f"{BASE_URL}minerva/api/v1"),
+        )
+        self.assertEqual(
+            overrides[f"model_providers.{PROVIDER}.wire_api"],
+            json.dumps("responses"),
+        )
+        self.assertEqual(
+            overrides[f"model_providers.{PROVIDER}.env_key"],
+            json.dumps("ALCF_API_KEY"),
+        )
+        self.assertEqual(overrides["model_context_window"], "1048576")
+        self.assertEqual(settings.read_text(), "invalid existing config")
+        self.catalog_fetch.assert_not_called()
+
+    def test_run_codex_reports_version_detection_failure(self) -> None:
+        with (
+            patch.object(
+                agent,
+                "_codex_version",
+                side_effect=RuntimeError("codex CLI is not installed"),
+            ),
+            patch.object(agent.os, "execvpe") as execvpe,
+        ):
+            result = self.run_agent("codex", "--default-model", MODEL)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Could not configure codex", result.output)
+        execvpe.assert_not_called()
+
+    def test_run_aider_uses_openai_environment_and_forwards_arguments(self) -> None:
+        settings = self.write(".aider.conf.yml", "invalid existing config")
+        with (
+            patch.dict(os.environ, {"OPENAI_API_BASE": "parent-url"}),
+            patch.object(agent.os, "execvpe") as execvpe,
+        ):
+            result = self.run_agent(
+                "aider", "--default-model", MODEL, "--", "--message", "hello"
+            )
+            self.assertEqual(os.environ["OPENAI_API_BASE"], "parent-url")
+
+        self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
+        executable, argv, env = execvpe.call_args.args
+        self.assertEqual(executable, "aider")
+        self.assertEqual(argv, ["aider", "--message", "hello"])
+        self.assertEqual(env["OPENAI_API_BASE"], f"{BASE_URL}minerva/api/v1")
+        self.assertEqual(env["OPENAI_API_KEY"], TOKEN)
+        self.assertEqual(env["AIDER_MODEL"], f"openai/{MODEL}")
+        self.assertEqual(settings.read_text(), "invalid existing config")
+        self.helper.assert_not_called()
 
     def test_generated_files_are_idempotent(self) -> None:
         with (

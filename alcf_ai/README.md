@@ -54,6 +54,63 @@ Re-running `alcf-tokens login` with more `--authorize-transfer` entries
 re-consents with the wider set, so list every collection you want authorized in
 the same command.
 
+### Running Claude Code
+
+Launch Claude Code with the ALCF Inference Service configured through environment
+variables:
+
+```bash
+uvx alcf-ai agent run claude
+```
+
+This uses your cached ALCF credentials and does not create or modify
+`~/.claude/settings.json`. Select a different model or cluster with
+`--default-model` and `--default-cluster`. Arguments after `--` are passed to
+Claude Code:
+
+```bash
+uvx alcf-ai agent run claude --default-model mistral-large-4-nvfp4 -- --print "Hello"
+```
+
+Use `alcf-ai agent configure claude` instead if you want a persistent Claude Code
+configuration.
+
+### Running OpenCode
+
+Launch OpenCode with an inline provider configuration passed through
+`OPENCODE_CONFIG_CONTENT`:
+
+```bash
+uvx alcf-ai agent run opencode
+```
+
+Model and cluster selection and argument forwarding work the same way as for
+Claude Code. This does not create or modify `opencode.jsonc`.
+
+### Running Codex
+
+Launch Codex with one-off provider overrides and an environment-based API key:
+
+```bash
+uvx alcf-ai agent run codex
+```
+
+Model and cluster selection and argument forwarding work the same way as for
+Claude Code. This does not create or modify `~/.codex/config.toml` or model catalog
+files.
+
+### Running Aider
+
+Launch Aider against the selected model's OpenAI-compatible endpoint:
+
+```bash
+uvx alcf-ai agent run aider
+```
+
+The runner sets `OPENAI_API_BASE`, `OPENAI_API_KEY`, and `AIDER_MODEL` without
+creating or modifying `.aider.conf.yml`. Model and cluster selection and argument
+forwarding work the same way as for Claude Code.
+
 ### Discovering Models
 
 To list the models and corresponding API endpoints that are currently available, use:

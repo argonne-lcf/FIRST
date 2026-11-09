@@ -18,8 +18,9 @@ import tomlkit
 import typer
 from alcf_tokens.auth import get_access_token
 from httpx import URL
+from tomlkit.exceptions import TOMLKitError
 
-from .client import INFERENCE_SERVICE
+from .client import INFERENCE_SERVICE, InferenceClient
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ def _load_toml_config(path: Path) -> tomlkit.TOMLDocument:
             return tomlkit.load(f)
     except FileNotFoundError:
         return tomlkit.TOMLDocument()
-    except (OSError, UnicodeDecodeError, tomlkit.exceptions.TOMLKitError) as err:
+    except (OSError, UnicodeDecodeError, TOMLKitError) as err:
         raise ConfigLoadError(path, err) from err
 
 
@@ -138,6 +139,16 @@ def _group_by_framework(
         if framework := m.get("framework"):
             groups[framework].append(m)
     return dict(groups)
+
+
+def _select_model(client: InferenceClient, cluster: str, model: str) -> dict[str, Any]:
+    for model_info in client.list_models(cluster):
+        if model_info.get("id") == model and model_info.get("framework"):
+            return model_info
+    raise typer.BadParameter(
+        f"{model!r} is not available on cluster {cluster!r}",
+        param_hint="--default-model",
+    )
 
 
 def _provider_key(cluster_name: str, framework: str) -> str:
@@ -209,8 +220,12 @@ def _clear_opencode_plugin_cache() -> None:
         for path in (Path.home() / ".cache" / "opencode" / cache).glob(
             f"{OPENCODE_PLUGIN_PACKAGE}*"
         ):
-            shutil.rmtree(path, ignore_errors=True)
-            logger.info(f"Cleared the cached opencode plugin at {path}")
+            try:
+                shutil.rmtree(path)
+            except OSError as err:
+                logger.debug(f"Could not clear cached opencode plugin at {path}: {err}")
+            else:
+                logger.info(f"Cleared the cached opencode plugin at {path}")
 
 
 def _merge_capabilities(model: dict[str, Any]) -> dict[str, Any]:
@@ -576,14 +591,7 @@ def _edit_opencode_v2(
             del config["plugin"]
 
 
-def edit_opencode(
-    base_url: URL,
-    api_key: str,
-    model_infos: dict[str, list[dict[str, Any]]],
-) -> None:
-    path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
-    config = _load_json_config(path)
-
+def _opencode_supports_v2() -> bool:
     try:
         opencode = shutil.which("opencode")
         if opencode is None:
@@ -592,15 +600,24 @@ def edit_opencode(
         match = re.search(r"\d+(?:\.\d+)+", output)
         if match is None:
             raise ValueError(f"unrecognized version output: {output!r}")
-        supports_v2 = tuple(map(int, match.group().split("."))) >= (2,)
+        return tuple(map(int, match.group().split("."))) >= (2,)
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as err:
         logger.warning(
-            f"Could not detect the installed opencode version ({err}); writing "
+            f"Could not detect the installed opencode version ({err}); using "
             "the V1 configuration schema, which OpenCode 2 also reads."
         )
-        supports_v2 = False
+        return False
 
-    if supports_v2:
+
+def edit_opencode(
+    base_url: URL,
+    api_key: str,
+    model_infos: dict[str, list[dict[str, Any]]],
+) -> None:
+    path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
+    config = _load_json_config(path)
+
+    if _opencode_supports_v2():
         _edit_opencode_v2(config, base_url, api_key, model_infos)
     else:
         _edit_opencode_v1(config, base_url, api_key, model_infos)
@@ -609,6 +626,24 @@ def edit_opencode(
     _clear_opencode_plugin_cache()
 
     logger.info(f"Updated configuration at {path}")
+
+
+def _opencode_environment(
+    base_url: URL,
+    api_key: str,
+    cluster: str,
+    model_info: dict[str, Any],
+) -> dict[str, str]:
+    config: dict[str, Any] = {}
+    model_infos = {cluster: [model_info]}
+    if _opencode_supports_v2():
+        _edit_opencode_v2(config, base_url, api_key, model_infos)
+    else:
+        _edit_opencode_v1(config, base_url, api_key, model_infos)
+
+    provider = _provider_key(cluster, model_info["framework"])
+    config["model"] = f"{provider}/{model_info['id']}"
+    return {"OPENCODE_CONFIG_CONTENT": json.dumps(config)}
 
 
 def edit_pi(
@@ -769,6 +804,86 @@ def edit_codex(
     logger.info(f"Updated configuration at {path}")
 
 
+def _codex_launch(
+    base_url: URL,
+    api_key: str,
+    cluster: str,
+    model_info: dict[str, Any],
+) -> tuple[dict[str, str], list[str]]:
+    version = _codex_version()
+    version_tuple = tuple(map(int, version.split("-")[0].split(".")))
+    capabilities = _merge_capabilities(model_info)
+    protocols = capabilities.get("api_protocols", [])
+    if version_tuple > (0, 94, 0):
+        if "responses" not in protocols:
+            raise typer.BadParameter(
+                f"{model_info['id']!r} does not support the Responses API "
+                "required by this Codex version",
+                param_hint="--default-model",
+            )
+        wire_api = "responses"
+    else:
+        wire_api = "responses" if "responses" in protocols else "chat"
+
+    framework = model_info["framework"]
+    provider = _provider_key(cluster, framework)
+    overrides = {
+        "model_provider": json.dumps(provider),
+        f"model_providers.{provider}.name": json.dumps(
+            _provider_name(cluster, framework)
+        ),
+        f"model_providers.{provider}.base_url": json.dumps(
+            f"{base_url}{cluster}/{framework}/v1"
+        ),
+        f"model_providers.{provider}.wire_api": json.dumps(wire_api),
+        f"model_providers.{provider}.env_key": json.dumps("ALCF_API_KEY"),
+        f"model_providers.{provider}.env_http_headers": (
+            '{"X-ALCF-Session-ID"="ALCF_SESSION_ID"}'
+        ),
+    }
+    if context_window := capabilities.get("context_window_tokens"):
+        overrides["model_context_window"] = str(context_window)
+
+    args = ["--model", str(model_info["id"])]
+    for key, value in overrides.items():
+        args.extend(["--config", f"{key}={value}"])
+    env = {
+        "ALCF_API_KEY": api_key,
+        "ALCF_SESSION_ID": os.environ.get("ALCF_SESSION_ID", "default"),
+    }
+    return env, args
+
+
+def _aider_environment(
+    base_url: URL,
+    api_key: str,
+    cluster: str,
+    model_info: dict[str, Any],
+) -> dict[str, str]:
+    framework = model_info["framework"]
+    return {
+        "OPENAI_API_BASE": f"{base_url}{cluster}/{framework}/v1",
+        "OPENAI_API_KEY": api_key,
+        "AIDER_MODEL": f"openai/{model_info['id']}",
+    }
+
+
+def _claude_environment(
+    base_url: URL,
+    api_key: str,
+    default_model: str,
+    default_cluster: str,
+) -> dict[str, str]:
+    return {
+        "ANTHROPIC_BASE_URL": f"{base_url}{default_cluster}/api",
+        "ANTHROPIC_AUTH_TOKEN": api_key,
+        "ANTHROPIC_MODEL": default_model,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": default_model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": default_model,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": default_model,
+    }
+
+
 def edit_claude(
     base_url: URL,
     api_key: str,
@@ -779,26 +894,91 @@ def edit_claude(
     config = _load_json_config(path)
 
     env = config.get("env", {})
-    env.update(
-        {
-            "ANTHROPIC_BASE_URL": f"{base_url}{default_cluster}/api",
-            "ANTHROPIC_MODEL": default_model,
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": default_model,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": default_model,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": default_model,
-        }
-    )
+    env.update(_claude_environment(base_url, api_key, default_model, default_cluster))
     if token_helper := _token_helper_command():
         env.pop("ANTHROPIC_AUTH_TOKEN", None)
         config["apiKeyHelper"] = shlex.join(token_helper)
     else:
-        env["ANTHROPIC_AUTH_TOKEN"] = api_key
         config.pop("apiKeyHelper", None)
     config["env"] = env
 
     _write_json_config(path, config)
 
     logger.info(f"Updated configuration at {path}")
+
+
+@cli.command(
+    context_settings={
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+    }
+)
+def run(
+    ctx: typer.Context,
+    agent: Annotated[Literal["claude", "opencode", "codex", "aider"], typer.Argument()],
+    model: Annotated[
+        str,
+        typer.Option(
+            "--default-model",
+            "-m",
+            help="Model for the agent",
+        ),
+    ] = "muse-spark-bf16",
+    cluster: Annotated[
+        str,
+        typer.Option(
+            "--default-cluster",
+            "-c",
+            help="Cluster serving the model",
+        ),
+    ] = "minerva",
+) -> None:
+    """Run an agent with ALCF environment variables, without editing config files.
+
+    Additional arguments after ``--`` are forwarded to the agent.
+    """
+    from .cli import _cli_state
+
+    client = _cli_state.get("client")
+    if client is None:
+        raise RuntimeError("CLI client has not been initialized")
+    env = os.environ.copy()
+    api_key = get_access_token(INFERENCE_SERVICE)
+    launch_args: list[str] = []
+    match agent:
+        case "claude":
+            env.update(_claude_environment(client.base_url, api_key, model, cluster))
+        case "opencode":
+            model_info = _select_model(client, cluster, model)
+            env.update(
+                _opencode_environment(client.base_url, api_key, cluster, model_info)
+            )
+        case "codex":
+            model_info = _select_model(client, cluster, model)
+            try:
+                codex_env, launch_args = _codex_launch(
+                    client.base_url, api_key, cluster, model_info
+                )
+            except (
+                OSError,
+                RuntimeError,
+                subprocess.SubprocessError,
+                ValueError,
+            ) as err:
+                typer.echo(f"Could not configure codex: {err}", err=True)
+                raise typer.Exit(1) from err
+            env.update(codex_env)
+        case "aider":
+            model_info = _select_model(client, cluster, model)
+            env.update(
+                _aider_environment(client.base_url, api_key, cluster, model_info)
+            )
+
+    try:
+        os.execvpe(agent, [agent, *launch_args, *ctx.args], env)
+    except OSError as err:
+        typer.echo(f"Could not execute {agent}: {err}", err=True)
+        raise typer.Exit(1) from err
 
 
 @cli.command()
@@ -833,7 +1013,9 @@ def configure(
     """
     from .cli import _cli_state
 
-    client = _cli_state["client"]
+    client = _cli_state.get("client")
+    if client is None:
+        raise RuntimeError("CLI client has not been initialized")
     api_key = get_access_token(INFERENCE_SERVICE)
 
     model_infos: dict[str, list[dict[str, Any]]] = {
