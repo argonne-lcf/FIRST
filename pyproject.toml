@@ -2,7 +2,6 @@
 members = [
     "packages/client",
     "packages/common",
-    "packages/dashboard",
     "packages/gateway",
     "packages/pilot",
 ]
@@ -42,14 +41,13 @@ select = ["F", "I", "ARG"]
 "tests/**" = ["ARG001", "ARG002"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["alcf_ai", "first_common", "first_dashboard", "first_gateway", "first_pilot"]
+known-first-party = ["alcf_ai", "first_common", "first_gateway", "first_pilot"]
 
 [tool.mypy]
 python_version = "3.12"
 mypy_path = [
     "packages/client",
     "packages/common",
-    "packages/dashboard",
     "packages/gateway",
     "packages/pilot",
     "tests",
@@ -57,7 +55,6 @@ mypy_path = [
 packages = [
     "alcf_ai",
     "first_common",
-    "first_dashboard",
     "first_gateway",
     "first_pilot",
     "tests",

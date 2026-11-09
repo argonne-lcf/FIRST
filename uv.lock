@@ -10,7 +10,6 @@ resolution-markers = [
 members = [
     "alcf-ai",
     "first-common",
-    "first-dashboard",
     "first-gateway",
     "first-pilot",
 ]
@@ -558,17 +557,6 @@ requires-dist = [
     { name = "pydantic-settings" },
     { name = "pyyaml" },
 ]
-
-[[package]]
-name = "first-dashboard"
-version = "0.1.0"
-source = { editable = "packages/dashboard" }
-dependencies = [
-    { name = "first-common" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "first-common", editable = "packages/common" }]
 
 [[package]]
 name = "first-gateway"

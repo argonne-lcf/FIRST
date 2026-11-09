@@ -16,12 +16,10 @@ flowchart TB
     CLIENT["alcf_ai<br/><i>SDK / CLI</i>"]:::leaf
     GW["first_gateway<br/><i>apiserver + controllers</i>"]:::leaf
     PILOT["first_pilot<br/><i>on-node agent</i>"]:::leaf
-    DASH["first_dashboard<br/><i>analytics</i>"]:::leaf
 
     COMMON --> CLIENT
     COMMON --> GW
     COMMON --> PILOT
-    COMMON --> DASH
 ```
 
 | Package | Installed on | Purpose |
@@ -30,7 +28,6 @@ flowchart TB
 | `first_common` | everywhere | Shared schema (resource Specs, scheduler ABC, pilot wire types, structured logs) and error hierarchy |
 | `first_gateway` | Gateway VM | API server + controller manager |
 | `first_pilot` | HPC compute nodes | Per-job agent that hosts model replicas |
-| `first_dashboard` | analytics server | Log aggregation, queries, dashboards (skeleton only today) |
 
 ## Why split this way
 

@@ -10,7 +10,6 @@
   - packages/gateway -> `first_gateway` is installed on the user-facing server only.
   - packages/pilot -> `first_pilot` is installed on HPC systems running Pilot Jobs.
   - packages/client -> `alcf_ai` is installed by end users for a Python SDK and CLI to access the gateway.
-  - packages/dashboard -> `first_dashboard` is installed on the analytics server for log aggregation, queries, and dashboard hosting
 - Add tests under tests/ with common fixtures in tests/fixtures/
 
 # Local Testing

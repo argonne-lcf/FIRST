@@ -93,7 +93,6 @@ under `packages/`:
 | [`first_gateway`](packages/gateway.md) | user-facing server | API server + controller manager |
 | [`first_pilot`](packages/pilot.md) | HPC compute nodes | Pilot job agent (one per allocation) |
 | [`alcf_ai`](packages/client.md) | end users | Python SDK and CLI |
-| `first_dashboard` | analytics server | Log aggregation, queries, dashboards (skeleton only) |
 
 ## Where to next
 
