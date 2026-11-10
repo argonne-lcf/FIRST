@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -17,6 +18,7 @@ import httpx
 import tomlkit
 import typer
 from alcf_tokens.auth import get_access_token
+from click.core import ParameterSource
 from httpx import URL
 from tomlkit.exceptions import TOMLKitError
 
@@ -26,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 cli = typer.Typer(no_args_is_help=True)
 
+_AUTO_APPROVE_OVERWRITES: ContextVar[bool] = ContextVar(
+    "auto_approve_overwrites", default=False
+)
 ALLOWLIST: dict[str, list[str]] = {
     "sophia": ["openai/gpt-oss-120b"],
     # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
@@ -88,6 +93,15 @@ def _load_toml_config(path: Path) -> tomlkit.TOMLDocument:
         raise ConfigLoadError(path, err) from err
 
 
+def _confirm_overwrite(path: Path) -> None:
+    if not _AUTO_APPROVE_OVERWRITES.get():
+        typer.confirm(
+            f"Overwrite {path}? A backup will be created first",
+            default=False,
+            abort=True,
+        )
+
+
 def _write_config_file(path: Path, content: str) -> None:
     """
     Atomically write ``content`` to ``path``.
@@ -106,6 +120,7 @@ def _write_config_file(path: Path, content: str) -> None:
     if existing == content.encode():
         return
     if existing is not None:
+        _confirm_overwrite(path)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup = target.with_name(f"{target.name}.bak.{timestamp}")
         shutil.copy2(target, backup)
@@ -261,6 +276,29 @@ def _codex_version() -> str:
     return output.rsplit(maxsplit=1)[-1].lstrip("v")
 
 
+def _codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+
+
+def _codex_profile_path(profile: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", profile):
+        raise typer.BadParameter(
+            "Codex profile names must start with a letter or number and contain "
+            "only letters, numbers, underscores, and hyphens",
+            param_hint="--profile",
+        )
+    return _codex_home() / f"{profile}.config.toml"
+
+
+def _require_codex_profile_version(version: str) -> None:
+    if tuple(map(int, version.split("-")[0].split("."))) < (0, 134, 0):
+        raise typer.BadParameter(
+            f"Codex {version} does not support external profiles; "
+            "upgrade to Codex >= 0.134.0",
+            param_hint="--profile",
+        )
+
+
 def _fetch_catalog_and_prompt(version: str) -> tuple[str, str]:
     """Fetch the upstream catalog/prompt matching the Codex version."""
     base = f"https://raw.githubusercontent.com/openai/codex/rust-v{version}/codex-rs/models-manager"
@@ -350,10 +388,12 @@ def _build_codex_catalog(
 
 
 def generate_codex_model_configs(
-    model_infos: dict[str, list[dict[str, Any]]], version: str
+    model_infos: dict[str, list[dict[str, Any]]],
+    version: str,
+    providers: dict[str, Any] | None = None,
 ) -> None:
     """Build Codex model catalogs and per-model config files for exposed models."""
-    _CODEX_HOME = Path.home() / ".codex"
+    _CODEX_HOME = _codex_home()
     _CODEX_CATALOG_DIR = _CODEX_HOME / "catalogs"
 
     try:
@@ -411,6 +451,10 @@ def generate_codex_model_configs(
                     profile = tomlkit.TOMLDocument()
                     profile["model_provider"] = provider_key
                     profile["model"] = slug
+                    if providers is not None:
+                        profile["model_providers"] = {
+                            provider_key: copy.deepcopy(providers[provider_key])
+                        }
                     profile["model_catalog_json"] = str(catalog_path)
                     _write_toml_config(profile_path, profile)
                     logger.info(f"Created {profile_path}")
@@ -738,17 +782,24 @@ def edit_codex(
     model_infos: dict[str, list[dict[str, Any]]],
     default_model: str,
     default_cluster: str,
+    profile: str | None = "alcf",
 ) -> None:
-    path = Path.home() / ".codex" / "config.toml"
-    config = _load_toml_config(path)
+    path = (
+        _codex_profile_path(profile)
+        if profile is not None
+        else _codex_home() / "config.toml"
+    )
 
     try:
         version = _codex_version()
     except (OSError, RuntimeError, subprocess.SubprocessError) as err:
-        logger.warning(f"Skipping codex model catalog generation: {err}")
-        return
+        typer.echo(f"Could not detect Codex version: {err}", err=True)
+        raise typer.Exit(1) from err
 
     version_tuple = tuple(map(int, version.split("-")[0].split(".")))
+    if profile is not None:
+        _require_codex_profile_version(version)
+    config = _load_toml_config(path)
     # Command-based provider auth (auto token refresh) requires codex >= 0.118.0.
     supports_auth_command = version_tuple >= (0, 118, 0)
     if (token_helper := _token_helper_command()) and not supports_auth_command:
@@ -799,9 +850,13 @@ def edit_codex(
 
     _write_toml_config(path, config)
 
-    generate_codex_model_configs(model_infos, version)
+    generate_codex_model_configs(model_infos, version, providers)
 
-    logger.info(f"Updated configuration at {path}")
+    if profile is None:
+        logger.info(f"Updated configuration at {path}")
+    else:
+        logger.info(f"Updated Codex profile at {path}")
+        logger.info(f"Load it with `alcf-ai agent run codex --profile {profile}`")
 
 
 def _codex_launch(
@@ -884,13 +939,28 @@ def _claude_environment(
     }
 
 
+def _claude_profile_path(profile: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile):
+        raise typer.BadParameter(
+            "Profile names must start with a letter or number and contain only "
+            "letters, numbers, dots, underscores, and hyphens",
+            param_hint="--profile",
+        )
+    return Path.home() / ".claude" / "profiles" / f"{profile}.json"
+
+
 def edit_claude(
     base_url: URL,
     api_key: str,
     default_model: str,
     default_cluster: str,
+    profile: str | None = "alcf",
 ) -> None:
-    path = Path.home() / ".claude" / "settings.json"
+    path = (
+        _claude_profile_path(profile)
+        if profile is not None
+        else Path.home() / ".claude" / "settings.json"
+    )
     config = _load_json_config(path)
 
     env = config.get("env", {})
@@ -904,7 +974,11 @@ def edit_claude(
 
     _write_json_config(path, config)
 
-    logger.info(f"Updated configuration at {path}")
+    if profile is None:
+        logger.info(f"Updated configuration at {path}")
+    else:
+        logger.info(f"Updated Claude profile at {path}")
+        logger.info(f"Load it with `alcf-ai agent run claude --profile {profile}`")
 
 
 @cli.command(
@@ -932,8 +1006,15 @@ def run(
             help="Cluster serving the model",
         ),
     ] = "minerva",
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            help="Load a Claude or Codex settings profile instead of one-off overrides",
+        ),
+    ] = None,
 ) -> None:
-    """Run an agent with ALCF environment variables, without editing config files.
+    """Run an agent with ALCF configuration, without editing config files.
 
     Additional arguments after ``--`` are forwarded to the agent.
     """
@@ -942,23 +1023,72 @@ def run(
     client = _cli_state.get("client")
     if client is None:
         raise RuntimeError("CLI client has not been initialized")
+    if profile is not None:
+        if agent not in ("claude", "codex"):
+            raise typer.BadParameter(
+                "Profiles are only supported for Claude and Codex",
+                param_hint="--profile",
+            )
+        if any(
+            ctx.get_parameter_source(name) != ParameterSource.DEFAULT
+            for name in ("model", "cluster")
+        ):
+            raise typer.BadParameter(
+                "--profile cannot be combined with --default-model or "
+                "--default-cluster; configure the profile to change its model",
+                param_hint="--profile",
+            )
+
     env = os.environ.copy()
-    api_key = get_access_token(INFERENCE_SERVICE)
     launch_args: list[str] = []
     match agent:
         case "claude":
-            env.update(_claude_environment(client.base_url, api_key, model, cluster))
+            if profile is not None:
+                profile_path = _claude_profile_path(profile)
+                if not profile_path.is_file():
+                    raise typer.BadParameter(
+                        f"Claude profile {profile!r} does not exist at {profile_path}; "
+                        f"run `alcf-ai agent configure claude --profile {profile}` first",
+                        param_hint="--profile",
+                    )
+                launch_args = ["--settings", str(profile_path)]
+            else:
+                api_key = get_access_token(INFERENCE_SERVICE)
+                env.update(
+                    _claude_environment(client.base_url, api_key, model, cluster)
+                )
         case "opencode":
             model_info = _select_model(client, cluster, model)
             env.update(
-                _opencode_environment(client.base_url, api_key, cluster, model_info)
+                _opencode_environment(
+                    client.base_url,
+                    get_access_token(INFERENCE_SERVICE),
+                    cluster,
+                    model_info,
+                )
             )
         case "codex":
-            model_info = _select_model(client, cluster, model)
             try:
-                codex_env, launch_args = _codex_launch(
-                    client.base_url, api_key, cluster, model_info
-                )
+                if profile is not None:
+                    profile_path = _codex_profile_path(profile)
+                    if not profile_path.is_file():
+                        raise typer.BadParameter(
+                            f"Codex profile {profile!r} does not exist at "
+                            f"{profile_path}; run `alcf-ai agent configure codex "
+                            f"--profile {profile}` first",
+                            param_hint="--profile",
+                        )
+                    _require_codex_profile_version(_codex_version())
+                    launch_args = ["--profile", profile]
+                else:
+                    model_info = _select_model(client, cluster, model)
+                    codex_env, launch_args = _codex_launch(
+                        client.base_url,
+                        get_access_token(INFERENCE_SERVICE),
+                        cluster,
+                        model_info,
+                    )
+                    env.update(codex_env)
             except (
                 OSError,
                 RuntimeError,
@@ -967,11 +1097,15 @@ def run(
             ) as err:
                 typer.echo(f"Could not configure codex: {err}", err=True)
                 raise typer.Exit(1) from err
-            env.update(codex_env)
         case "aider":
             model_info = _select_model(client, cluster, model)
             env.update(
-                _aider_environment(client.base_url, api_key, cluster, model_info)
+                _aider_environment(
+                    client.base_url,
+                    get_access_token(INFERENCE_SERVICE),
+                    cluster,
+                    model_info,
+                )
             )
 
     try:
@@ -983,6 +1117,7 @@ def run(
 
 @cli.command()
 def configure(
+    ctx: typer.Context,
     agent: Annotated[Literal["opencode", "codex", "pi", "claude"], typer.Argument()],
     include_experimental: Annotated[
         bool,
@@ -1007,10 +1142,46 @@ def configure(
             help="Cluster serving the default model (codex and claude)",
         ),
     ] = "minerva",
+    profile: Annotated[
+        str,
+        typer.Option(
+            "--profile",
+            help="Settings profile name (Claude and Codex)",
+        ),
+    ] = "alcf",
+    no_profile: Annotated[
+        bool,
+        typer.Option(
+            "--no-profile",
+            help="Update the base config instead of creating a Claude/Codex profile",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Approve all configuration file overwrites without prompting",
+        ),
+    ] = False,
 ) -> None:
     """
     Generates a configuration template for the given agent.
     """
+    if no_profile:
+        if agent not in ("claude", "codex"):
+            raise typer.BadParameter(
+                "--no-profile is only supported for Claude and Codex",
+                param_hint="--no-profile",
+            )
+        if ctx.get_parameter_source("profile") != ParameterSource.DEFAULT:
+            raise typer.BadParameter(
+                "--no-profile cannot be combined with --profile",
+                param_hint="--no-profile",
+            )
+
+    profile_name = None if no_profile else profile
+
     from .cli import _cli_state
 
     client = _cli_state.get("client")
@@ -1030,19 +1201,24 @@ def configure(
         )
     }
 
+    approval = _AUTO_APPROVE_OVERWRITES.set(yes)
     try:
         match agent:
             case "opencode":
                 edit_opencode(client.base_url, api_key, model_infos)
             case "codex":
-                edit_codex(client.base_url, api_key, model_infos, model, cluster)
+                edit_codex(
+                    client.base_url, api_key, model_infos, model, cluster, profile_name
+                )
             case "pi":
                 edit_pi(client.base_url, api_key, model_infos)
             case "claude":
-                edit_claude(client.base_url, api_key, model, cluster)
+                edit_claude(client.base_url, api_key, model, cluster, profile_name)
     except ConfigLoadError as err:
         logger.error(str(err))
         raise typer.Exit(1) from err
+    finally:
+        _AUTO_APPROVE_OVERWRITES.reset(approval)
 
     if _token_helper_command() is None:
         logger.warning(

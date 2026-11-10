@@ -54,6 +54,26 @@ Re-running `alcf-tokens login` with more `--authorize-transfer` entries
 re-consents with the wider set, so list every collection you want authorized in
 the same command.
 
+### Configuration Overwrite Confirmation
+
+Before replacing an existing configuration file with different contents, `agent
+configure` asks for confirmation:
+
+```text
+Overwrite /home/user/.claude/profiles/alcf.json? A backup will be created first [y/N]:
+```
+
+Answering `n` or pressing Enter leaves that file unchanged. The backup is created
+only after approval. Creating a new file or writing identical content does not
+prompt.
+
+Use `-y` or `--yes` to approve all overwrites without prompting:
+
+```bash
+alcf-ai agent configure claude -y
+alcf-ai agent configure codex -y
+```
+
 ### Running Claude Code
 
 Launch Claude Code with the ALCF Inference Service configured through environment
@@ -72,8 +92,21 @@ Claude Code:
 uvx alcf-ai agent run claude --default-model mistral-large-4-nvfp4 -- --print "Hello"
 ```
 
-Use `alcf-ai agent configure claude` instead if you want a persistent Claude Code
-configuration.
+For a persistent named overlay, create the default `alcf` profile and then load it.
+This does not create or modify `~/.claude/settings.json`:
+
+```bash
+uvx alcf-ai agent configure claude
+uvx alcf-ai agent run claude --profile alcf
+```
+
+The profile is stored at `~/.claude/profiles/alcf.json` and loaded with Claude's
+`--settings` option. Unspecified settings continue to inherit from your normal
+configuration. Use `--profile NAME` with both commands to create and load another
+profile. Model and cluster selection belong to `agent configure` in profile mode.
+Use `--no-profile` with `agent configure claude` to restore the legacy behavior of
+updating `~/.claude/settings.json` directly instead of creating a profile.
+
 
 ### Running OpenCode
 
@@ -98,6 +131,22 @@ uvx alcf-ai agent run codex
 Model and cluster selection and argument forwarding work the same way as for
 Claude Code. This does not create or modify `~/.codex/config.toml` or model catalog
 files.
+For a persistent native Codex overlay, create and load the default `alcf` profile:
+
+```bash
+uvx alcf-ai agent configure codex
+uvx alcf-ai agent run codex --profile alcf
+```
+
+This writes `~/.codex/alcf.config.toml` without modifying `~/.codex/config.toml`.
+Select another profile name with `--profile NAME`. Native external profiles require
+Codex 0.134.0 or newer. Model and cluster selection belong to `agent configure` in
+profile mode.
+Use `--no-profile` with `agent configure codex` to update `~/.codex/config.toml`
+directly. This legacy mode does not require external-profile support from Codex
+0.134.0 or newer.
+
+
 
 ### Running Aider
 
