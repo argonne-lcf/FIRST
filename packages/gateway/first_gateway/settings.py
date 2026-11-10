@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from logging import getLogger
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Self
 
 from globus_compute_sdk import Client as ComputeClient
 from globus_sdk import ClientApp, ConfidentialAppAuthClient
@@ -9,6 +10,7 @@ from httpx import AsyncClient, Timeout
 from pydantic import (
     SecretStr,
     computed_field,
+    model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from redis.asyncio import Redis as AsyncRedis
@@ -22,6 +24,8 @@ from sqlalchemy.ext.asyncio import (
 from .database.redis.pubsub import RedisPubSub
 from .database.redis.repo import RedisRepo
 from .services.keycloak_client import KeycloakServiceTokenAuth
+
+logger = getLogger(__name__)
 
 
 @dataclass
@@ -52,6 +56,23 @@ class GlobusAuthSettings(BaseSettings):
     admin_group: str
     authorized_groups_per_idp: dict[str, list[str]] = {}
     authorized_service_usernames: list[str] = []
+
+    @model_validator(mode="after")
+    def validate_global_gates(self) -> Self:
+        if not self.policies:
+            raise ValueError("Globus policies must not be empty")
+        if not self.authorized_idp_domains:
+            raise ValueError("Globus authorized_idp_domains must not be empty")
+        unmatched = set(self.authorized_groups_per_idp) - set(
+            self.authorized_idp_domains
+        )
+        if unmatched:
+            logger.warning(
+                "Globus authorized_groups_per_idp contains domains absent from "
+                "authorized_idp_domains: %s",
+                ", ".join(sorted(unmatched)),
+            )
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property

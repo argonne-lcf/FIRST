@@ -3,7 +3,7 @@
 Three events, correlated by one ``request_id`` (a UUID generated in the ASGI
 middleware and stored in a contextvar):
 
-* :class:`RequestLog`   — emitted in ``get_auth_user`` once auth succeeds.
+* :class:`RequestLog`   — emitted in ``get_auth_user``; failed auth carries metadata only.
 * :class:`ResponseLog`  — emitted in the ASGI middleware after the response is sent.
 * :class:`InferenceLog` — emitted in ``InferenceService`` per completed inference.
 
@@ -132,7 +132,7 @@ class _StructuredLog(BaseModel):
 
 
 class RequestLog(_StructuredLog):
-    """An authenticated HTTP request reached the service (emitted post-auth)."""
+    """An HTTP auth attempt; rejected requests carry metadata only, never a body."""
 
     _body_subdir: ClassVar[str] = "large-requests"
 

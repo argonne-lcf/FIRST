@@ -40,6 +40,25 @@ first-admin audit
 alcf-ai clusters get sophia
 ```
 
+## Access groups
+
+Every `AccessGroup` must explicitly provide both `allowed_groups` and
+`allowed_domains`. Missing or null fields fail validation; neither silently
+becomes unrestricted. An empty list intentionally removes that restriction:
+
+```yaml
+kind: AccessGroup
+name: public
+spec:
+  allowed_groups: []
+  allowed_domains: []
+```
+
+A model's `access_group_name` must name an `AccessGroup` in the same complete
+desired-state catalog, or `plan` rejects it. These per-model restrictions are
+separate from the global Globus startup gates. See the
+[V1-to-V2 auth cutover checklist](../deployment/docker.md#v1-to-v2-auth-cutover-gate).
+
 ## Launch templates
 
 `LaunchTemplate` is a named resource holding the serve and optional pre/post-stop

@@ -238,6 +238,22 @@ async def test_invalid_reference(control_client: httpx.AsyncClient) -> None:
     body = resp.json()
     assert body["error"]["code"] == "resource_spec_invalid"
     assert "nonexistent-group" in body["error"]["message"]
+    assert "AccessGroup" in body["error"]["message"]
+
+
+async def test_plan_rejects_missing_access_group_from_complete_catalog(
+    control_client: httpx.AsyncClient,
+) -> None:
+    resources = [r for r in _load("baseline") if r.kind != "AccessGroup"]
+    response = await control_client.post(
+        "/control/v1/plan",
+        json={"resources": [r.model_dump(mode="json") for r in resources]},
+        headers=auth_header(ADMIN_TOKEN),
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "resource_spec_invalid"
+    assert "AccessGroup.research-team" in error["message"]
 
 
 async def test_duplicate_resources(control_client: httpx.AsyncClient) -> None:

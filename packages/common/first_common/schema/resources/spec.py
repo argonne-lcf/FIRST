@@ -62,8 +62,8 @@ class AccessGroupSpec(ResourceSpec):
     Specifies model access permissions by user group/domain membership.
     """
 
-    allowed_groups: list[str] = []
-    allowed_domains: list[str] = []
+    allowed_groups: list[str]
+    allowed_domains: list[str]
 
 
 class RetiredDeployment(BaseModel):
