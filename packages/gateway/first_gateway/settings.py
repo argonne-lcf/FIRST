@@ -7,6 +7,7 @@ from globus_compute_sdk import Client as ComputeClient
 from globus_sdk import ClientApp, ConfidentialAppAuthClient
 from httpx import AsyncClient, Timeout
 from pydantic import (
+    BaseModel,
     SecretStr,
     computed_field,
 )
@@ -93,6 +94,17 @@ class KeycloakSettings(BaseSettings):
         return f"{self.base_url}/realms/{self.realm}/protocol/openid-connect/token"
 
 
+class LogShippingSettings(BaseModel):
+    """
+    Where the health alerter finds the state of log shipping
+    """
+
+    prometheus_url: str = "http://prometheus:9090"
+    # One status file per prompt shipper named here: a missing one is an alert.
+    status_dir: Path = Path("/run/log-shipping")
+    prompt_shippers: list[str] = ["v2"]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Auto-detect and layer variables for local development (outside of containers)
@@ -128,6 +140,7 @@ class Settings(BaseSettings):
     health_slack_bot_token: SecretStr | None = None
     health_slack_channel: str | None = None
     gateway_health_url: str = "http://127.0.0.1/health"
+    log_shipping: LogShippingSettings | None = None
 
     keycloak_clients: dict[str, KeycloakSettings] = {}
 

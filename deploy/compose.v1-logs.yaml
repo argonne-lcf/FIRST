@@ -1,0 +1,35 @@
+# V1 log shipping: layer on top of the stack while the V1 gateway still runs.
+#   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml:deploy/compose.v1-logs.yaml
+#
+# V1 writes to host directories, not to Docker:
+#   $V1_LOG_DIR/out.log*           structured logs (rotatelogs)  -> Vector
+#   $V1_LOG_DIR/large-requests/    one file per large request    -> prompt-shipper-v1
+#
+# At V1 retirement delete this file and log-shipping/vector/v1.yaml, and drop
+# it from COMPOSE_FILE. Nothing else refers to V1.
+
+services:
+  vector:
+    volumes:
+      - ./log-shipping/vector/v1.yaml:/etc/log-shipping/vector/v1.yaml:ro
+      - ${V1_LOG_DIR:-/home/webportal/raw-prod-logs}:/var/log/v1:ro
+
+  prompt-shipper-v1:
+    extends:
+      file: compose.yaml
+      service: prompt-shipper
+    # Runs as 900:900 like the V2 shipper: `webportal`, which owns the V1
+    # files, has the same uid as the gateway image's `app`.
+    environment:
+      SHIPPER_NAME: v1
+      # Where V1 large requests have always gone: v1/raw/large-requests/<id>.json
+      DEST_PREFIX: v1/raw/large-requests
+      # V1 never had a local limit; its files leave only by upload.
+      MAX_AGE_DAYS: "0"
+    volumes:
+      - ${V1_LOG_DIR:-/home/webportal/raw-prod-logs}/large-requests:/data
+
+  # The health alerter expects a status file from each shipper named here.
+  controller-manager:
+    environment:
+      FIRST_LOG_SHIPPING__PROMPT_SHIPPERS: '["v2", "v1"]'

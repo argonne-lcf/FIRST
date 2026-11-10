@@ -19,6 +19,9 @@ from first_common.schema.types import (
     ReplicaState,
     ResourceName,
 )
+from first_gateway.controllers.workers.health_alerter.log_shipping import (
+    check_log_shipping,
+)
 from first_gateway.controllers.workers.health_alerter.types import Observation
 from first_gateway.controllers.workers.replica_placement import AT_CAPACITY
 from first_gateway.database.models import (
@@ -725,4 +728,5 @@ CHECK_REGISTRY = [
     Check(check_db_liveness, "Infrastructure"),
     Check(check_host, "Infrastructure"),
     Check(check_pilot_client_cert, "Infrastructure"),
+    Check(check_log_shipping, "Infrastructure"),
 ]

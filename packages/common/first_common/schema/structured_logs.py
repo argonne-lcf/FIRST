@@ -20,6 +20,7 @@ an empty body is ``body=""``. Only inference traffic spills to disk.
 """
 
 import asyncio
+import os
 import uuid
 from datetime import datetime, timezone
 from logging import getLogger
@@ -53,13 +54,32 @@ def _on_write_done(task: asyncio.Task[None]) -> None:
         logger.error("Structured-log body write failed", exc_info=exc)
 
 
+def _mkdir_owner_only(directory: Path) -> None:
+    """Create ``directory`` and its missing parents, each mode 0700.
+
+    ``Path.mkdir(mode=..., parents=True)`` applies the mode to the leaf only.
+    """
+    if directory.is_dir():
+        return
+    _mkdir_owner_only(directory.parent)
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError:
+        pass  # another writer created it first
+    else:
+        directory.chmod(0o700)  # whatever the umask
+
+
 async def _write_body_file(path: Path, raw: bytes) -> None:
     """Write ``raw`` to ``path`` on a worker thread.  Creates the date-partition
-    directory on first write."""
+    directory on first write.
+    """
 
     def _write() -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(raw)
+        _mkdir_owner_only(path.parent)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
 
     await anyio.to_thread.run_sync(_write)
 

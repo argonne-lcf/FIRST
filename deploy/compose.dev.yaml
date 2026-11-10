@@ -47,6 +47,14 @@ services:
     volumes:
       - grafana-dev:/var/lib/grafana
 
+  vector:
+    volumes:
+      - vector-dev:/var/lib/vector
+
+  prompt-shipper:
+    volumes:
+      - prompt-records-dev:/data
+
   migration:
     build:
       context: ..
@@ -73,3 +81,4 @@ volumes:
   prometheus-dev:
   grafana-dev:
   prompt-records-dev:
+  vector-dev:

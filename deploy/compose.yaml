@@ -27,17 +27,24 @@ services:
         target: pilot_client.crt
       - source: router_key
         target: pilot_client.key
-    volumes: &upstream-mtls
+    volumes:
       # StaticDeployment mTLS certificate sets (see the note under `secrets:`)
       - ../pki/upstream:/run/secrets/upstream:ro
     networks:
       - gateway
     restart: unless-stopped
-    logging: &logging
-      driver: "local"
+    # The gateway's stdout is the structured usage log. Vector ships it from
+    # these files (log-shipping/vector/v2.yaml), so they are json-file, and
+    # their size is how long shipping may be down before lines are lost:
+    # 80 x 500 MB = 40 GB, over two weeks at ~2.5 GB/day (V1 writes 1.8 GB
+    # a day; Docker's JSON wrapping adds about a third).
+    # `labels` records which container wrote each line.
+    logging:
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "500m"
+        max-file: "80"
+        labels: "com.docker.compose.project,com.docker.compose.service"
 
   controller-manager:
     build:
@@ -54,7 +61,10 @@ services:
         target: pilot_client.crt
       - source: control_key
         target: pilot_client.key
-    volumes: *upstream-mtls
+    volumes:
+      - ../pki/upstream:/run/secrets/upstream:ro
+      # What the prompt shippers last did, for the health alerter.
+      - log-shipping-status:/run/log-shipping:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,7 +79,11 @@ services:
       timeout: 3s
       retries: 6
       start_period: 10s
-    logging: *logging
+    logging: &logging
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   postgres:
     image: postgres:18@sha256:7157393f508fd8eb46119937fab39813783fe3e7d4c6316c45c12ce2ea25e61d
@@ -167,9 +181,80 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  # --- Log shipping (docs/deployment/log-shipping.md) --------------------------
+  # Off unless the `log-shipping` profile is on (COMPOSE_PROFILES in .env).
+  # The environment overlays add each service's data volume.
+
+  # Structured logs -> S3 and ClickHouse.
+  vector:
+    image: timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
+    profiles: [log-shipping]
+    command: ["--config", "/etc/log-shipping/vector/*.yaml"]
+    env_file: &log-shipping-env
+      - path: ../.env.secret.log-shipping # see .env.log-shipping.example
+        required: true
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+    volumes:
+      - ./log-shipping/vector/common.yaml:/etc/log-shipping/vector/common.yaml:ro
+      - ./log-shipping/vector/v2.yaml:/etc/log-shipping/vector/v2.yaml:ro
+      - ./log-shipping/vector/gateway_logs.vrl:/etc/log-shipping/vector/gateway_logs.vrl:ro
+      - ./log-shipping/vector/settings.sh:/etc/log-shipping/vector/settings.sh:ro
+      # Private CAs for S3 / ClickHouse, if they need one (*_CA_FILE).
+      - ../pki/log-shipping:/etc/log-shipping/pki:ro
+      # Docker's json-file logs. Read-only, and root in the container: the
+      # files are root's. `docker info -f '{{.DockerRootDir}}'` gives the path.
+      - ${DOCKER_ROOT_DIR:-/var/lib/docker}/containers:/var/lib/docker/containers:ro
+    networks:
+      - gateway
+    restart: unless-stopped
+    cpus: 1.0 # shares the VM with the gateway
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8686/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+
+  # Large request/response bodies -> S3, then deleted here.
+  prompt-shipper:
+    image: rclone/rclone:1.74.3@sha256:623378ad0ff3ebd5cebf77720843c0e02edfe46e2d5b5ac6bed54c6371780dfb
+    profiles: [log-shipping]
+    user: "900:900" # `app`, the gateway user that owns the files
+    entrypoint: ["/bin/sh", "/ship-prompts.sh"]
+    env_file: *log-shipping-env
+    environment:
+      SHIPPER_NAME: v2
+      # The gateway's own tree goes beneath it:
+      #   v2/raw/large-requests/YYYY/MM/DD/<request_id>.json
+      #   v2/raw/large-responses/YYYY/MM/DD/<request_id>.json
+      DEST_PREFIX: v2/raw
+      # Hard local limit: a file this old is deleted even if never uploaded.
+      MAX_AGE_DAYS: "14"
+    volumes:
+      - ./log-shipping/ship-prompts.sh:/ship-prompts.sh:ro
+      - ../pki/log-shipping:/etc/log-shipping/pki:ro
+      - log-shipping-status:/status
+    networks:
+      - gateway
+    restart: unless-stopped
+    cpus: 1.0 # shares the VM with the gateway
+    logging: *logging
+
 networks:
   gateway:
     driver: bridge
+
+volumes:
+  # One small status file per prompt shipper, read by controller-manager.
+  # tmpfs so that shippers running as different users can all write to it.
+  log-shipping-status:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: mode=1777,size=1m
 
 # Pilot mTLS identities, issued offline by `make pki` (pilot-certmanager).
 # Each service mounts the CA plus exactly one client identity, always at

@@ -42,6 +42,14 @@ services:
     volumes:
       - grafana_data_prod:/var/lib/grafana
 
+  vector:
+    volumes:
+      - vector_data_prod:/var/lib/vector
+
+  prompt-shipper:
+    volumes:
+      - prompt_records_prod:/data
+
 volumes:
   postgres_data_prod:
     external: true
@@ -52,4 +60,7 @@ volumes:
   grafana_data_prod:
     external: true
   prompt_records_prod:
+    external: true
+  # Vector's read positions and unsent buffers.
+  vector_data_prod:
     external: true
