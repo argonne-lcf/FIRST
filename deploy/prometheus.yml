@@ -6,6 +6,12 @@ scrape_configs:
     static_configs:
       - targets: ["controller-manager:9100"]
 
+  # The log shipper (log-shipping profile). The health alerter's
+  # check_log_shipping queries these metrics; `up` is 0 where it is not deployed.
+  - job_name: vector
+    static_configs:
+      - targets: ["vector:9598"]
+
   # One job per pilot cluster: each cluster's pilots carry their own TLS server
   # name (first_common.schema.pilot.pilot_server_name), and Prometheus applies
   # a single server_name per job. A new pilot cluster needs its own job here.

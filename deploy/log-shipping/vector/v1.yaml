@@ -1,0 +1,54 @@
+# Vector: the V1 gateway's stdout, read from its rotatelogs files.
+#
+# V1 ONLY. Mounted by deploy/compose.v1-logs.yaml; delete both at V1 retirement.
+
+sources:
+  # read_from: end applies to files found at startup with no checkpoint (the
+  # first start); files that appear later, like each day's new out.log.<date>,
+  # are read from their beginning. ignore_older_secs skips the rotated history.
+  lines_v1:
+    type: file
+    include:
+      - /var/log/v1/out.log.*
+    read_from: end
+    ignore_older_secs: 3600
+    max_line_bytes: 1048576
+
+transforms:
+  rows_v1:
+    type: remap
+    inputs: [lines_v1]
+    file: /etc/log-shipping/vector/gateway_logs.vrl
+
+sinks:
+  # The raw archive: every line as written, gzipped JSONL, filed by UTC day
+  # like the large bodies:
+  #   v1/raw/vector-logs/YYYY/MM/DD/<time>-<uuid>.jsonl.gz
+  # Not v1/raw/logs: that holds the whole out.log.<date> files.
+  s3_v1:
+    type: aws_s3
+    acknowledgements:
+      enabled: true
+    inputs: [lines_v1]
+    endpoint: "SECRET[env.S3_ENDPOINT]"
+    region: "SECRET[env.S3_REGION]"
+    bucket: "SECRET[env.S3_BUCKET]"
+    force_path_style: true
+    # Credentials: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the environment.
+    tls:
+      ca_file: "SECRET[env.S3_CA_FILE]"
+    key_prefix: "v1/raw/vector-logs/%Y/%m/%d/"
+    filename_time_format: "%Y%m%dT%H%M%SZ"
+    filename_append_uuid: true
+    filename_extension: jsonl.gz
+    compression: gzip
+    encoding:
+      codec: text # .message only: the line, byte for byte
+    # An object is written every 5 minutes, or sooner at 50 MB uncompressed.
+    batch:
+      max_bytes: 52428800
+      timeout_secs: 300
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block

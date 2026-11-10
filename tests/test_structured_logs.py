@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import stat
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -83,6 +85,24 @@ async def test_large_body_written_to_file(tmp_path: Path) -> None:
     assert written.name == "rid-big.json"
     assert written.parent.parent.parent.parent.name == "large-requests"
     assert written.read_bytes() == raw
+
+
+async def test_large_body_file_is_owner_only(tmp_path: Path) -> None:
+    """Bodies are user content: 0600 files in 0700 directories, at every
+    level the gateway creates and whatever the process umask."""
+    old_umask = os.umask(0o022)
+    try:
+        log = _request_log(request_id="rid-mode")
+        log.emit(raw_body=b"x" * INLINE_BODY_LIMIT, storage_dir=tmp_path)
+        await asyncio.gather(*list(_background_tasks))
+    finally:
+        os.umask(old_umask)
+
+    [written] = tmp_path.rglob("*.json")
+    assert stat.S_IMODE(written.stat().st_mode) == 0o600
+    created_dirs = [p for p in tmp_path.rglob("*") if p.is_dir()]
+    assert len(created_dirs) == 4  # large-requests/YYYY/MM/DD
+    assert {stat.S_IMODE(d.stat().st_mode) for d in created_dirs} == {0o700}
 
 
 async def test_large_inference_body_uses_responses_dir(tmp_path: Path) -> None:

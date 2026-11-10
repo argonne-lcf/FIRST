@@ -32,6 +32,7 @@ PILOT_CLUSTERS ?= tara sophia
 pki: sync
 	uv run pilot-certmanager standard --dir pki $(foreach c,$(PILOT_CLUSTERS),--cluster $(c))
 	mkdir -p pki/upstream  # StaticDeployment mTLS sets, mounted by compose
+	mkdir -p pki/log-shipping  # private CAs for S3 / ClickHouse, mounted by compose
 
 # The compose shortcuts below read COMPOSE_FILE / COMPOSE_PROJECT_NAME from .env.
 # For local dev, .env should contain:
@@ -83,7 +84,9 @@ attach-tunnel:
 
 # --- Production ---------------------------------------------------------------
 
-PROD_COMPOSE=COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml
+# Log shipping is part of prod (docs/deployment/log-shipping.md).
+# V1 retirement: drop deploy/compose.v1-logs.yaml from this line.
+PROD_COMPOSE=COMPOSE_PROFILES=log-shipping COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml:deploy/compose.v1-logs.yaml
 
 # One-time: create the external prod data volumes. `docker compose down -v`
 # refuses to delete external volumes, so prod data survives a full teardown.
@@ -93,6 +96,7 @@ prod-init:
 	docker volume create prometheus_data_prod
 	docker volume create grafana_data_prod
 	docker volume create prompt_records_prod
+	docker volume create vector_data_prod
 
 prod-up:
 	$(PROD_COMPOSE) docker compose up -d

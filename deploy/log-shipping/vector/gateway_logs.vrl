@@ -1,0 +1,35 @@
+# One gateway log line -> one analytics.gateway_logs row.
+#
+# Shared by the V1 and V2 pipelines (rows_v1, rows_v2). The mapping is the one
+# the table was built around (FIRST-analytics templates/vector.yaml.j2) and
+# the twin of FIRST-analytics scripts/backfill-gateway-logs.sql: keep them in
+# step.
+#
+# .message is the app's JSONL line on input. `raw` and `message` keep it whole;
+# the parsed fields are merged on top and the line's own `message` becomes
+# `log_message`.
+
+.raw = .message
+
+parsed, err = parse_json(.message)
+if err == null && is_object(parsed) {
+  . = merge(., object!(parsed))
+  .log_message = .message
+  .message = .raw
+} else {
+  .unparsed = true
+}
+
+# user.name and user.id are dotted keys that need remapping; they are
+# not duplicates (different event types).
+if exists(."user.name") {
+  .user_name = ."user.name"
+  del(."user.name")
+}
+if exists(."user.id") {
+  .user_id = ."user.id"
+  del(."user.id")
+}
+
+# Pipeline bookkeeping, not log content.
+del(.partial)

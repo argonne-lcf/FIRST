@@ -16,6 +16,8 @@ the differences for each environment. The base file never runs alone.
 | `deploy/nginx.prod.conf.example` | Template for the **host** nginx in prod (TLS, proxy to `127.0.0.1:7000`). |
 | `deploy/first.service.example` | Template systemd unit to run the prod stack on boot. |
 | `deploy/prometheus.yml` | Prometheus scrape config (controller-manager + discovered backends). |
+| `deploy/compose.v1-logs.yaml` | Opt-in overlay — ships the V1 gateway's logs until V1 retires. See [Log Shipping](log-shipping.md). |
+| `deploy/log-shipping/` | Vector config and the rclone script for the `vector` and `prompt-shipper` services (`log-shipping` profile). |
 | `deploy/grafana-*`, `deploy/dashboards.yaml` | Grafana datasource + dashboard provisioning. |
 
 ## Architecture
@@ -74,6 +76,8 @@ flowchart TB
   on `127.0.0.1:3000`. Runs in dev **and** prod.
 - **nginx** — reverse proxy + rate limiting + SSE-friendly buffering. A container
   in dev; the **host's** nginx in prod (see below).
+- **vector**, **prompt-shipper** *(`log-shipping` profile)* — move structured logs
+  and large request/response bodies off the VM. See [Log Shipping](log-shipping.md).
 - **tunnel** *(dev, opt-in)* — an SSH SOCKS proxy so a laptop with no direct route
   to the HPC systems can still reach pilot backends.
 - **migration** *(dev only)* — one-shot `alembic upgrade head` on startup. Prod

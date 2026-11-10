@@ -1,0 +1,100 @@
+# Vector: the V2 gateway's stdout, read from Docker's json-file logs.
+#
+# The `file` source is used instead of `docker_logs` because it checkpoints:
+# after an outage Vector resumes where it stopped, and the log files Docker
+# retains (see `logging:` on inference-gateway in compose.yaml) are the backlog.
+# `docker_logs` keeps no position and would skip everything logged meanwhile.
+
+sources:
+  v2_docker:
+    type: file
+    # Every json-file container on the host matches; v2_unwrap keeps one.
+    # Rotated files (-json.log.1, ...) are included so a backlog is finished.
+    include:
+      - /var/lib/docker/containers/*/*-json.log*
+    read_from: beginning
+    oldest_first: true
+    # Docker splits lines at 16 KB; one escaped chunk stays well under this.
+    max_line_bytes: 1048576
+
+transforms:
+  # {"log": "<line>\n", "stream": "stdout", "attrs": {...}, "time": "..."}
+  # -> .message = <line>. `attrs` holds the compose labels named by the
+  # service's logging options.
+  v2_unwrap:
+    type: remap
+    inputs: [v2_docker]
+    source: |
+      entry, err = parse_json(.message)
+      if err != null || !is_object(entry) {
+        log("Not a Docker json-file entry: " + (string(.file) ?? ""), level: "warn", rate_limit_secs: 60)
+        abort
+      }
+      entry = object!(entry)
+      attrs = object(entry.attrs) ?? {}
+      if attrs."com.docker.compose.service" != "inference-gateway" ||
+         attrs."com.docker.compose.project" != get_env_var!("COMPOSE_PROJECT_NAME") ||
+         entry.stream != "stdout" {
+        abort
+      }
+      line = string(entry.log) ?? ""
+      # A chunk without its newline is a piece of a longer line.
+      .partial = !ends_with(line, "\n")
+      .message = replace(line, r'\n\z', "")
+
+  # Rejoin lines Docker split at 16 KB.
+  lines_v2:
+    type: reduce
+    inputs: [v2_unwrap]
+    group_by: [file]
+    ends_when: .partial == false
+    expire_after_ms: 10000
+    merge_strategies:
+      message: concat_raw
+      partial: discard
+
+  parsed_v2:
+    type: remap
+    inputs: [lines_v2]
+    file: /etc/log-shipping/vector/gateway_logs.vrl
+
+  # ClickHouse gets the structured events only: RequestLog, ResponseLog and
+  # InferenceLog (first_common/schema/structured_logs.py). Everything else on
+  # stdout (access lines, application logs, tracebacks) stays in the S3
+  # archive.
+  rows_v2:
+    type: filter
+    inputs: [parsed_v2]
+    condition: exists(.event_id) && includes(["request", "response", "inference"], .stream)
+
+sinks:
+  # The raw archive: every line as written, gzipped JSONL, filed by UTC day
+  # like the large bodies:
+  #   v2/raw/logs/YYYY/MM/DD/<time>-<uuid>.jsonl.gz
+  s3_v2:
+    type: aws_s3
+    acknowledgements:
+      enabled: true
+    inputs: [lines_v2]
+    endpoint: "SECRET[env.S3_ENDPOINT]"
+    region: "SECRET[env.S3_REGION]"
+    bucket: "SECRET[env.S3_BUCKET]"
+    force_path_style: true
+    # Credentials: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the environment.
+    tls:
+      ca_file: "SECRET[env.S3_CA_FILE]"
+    key_prefix: "v2/raw/logs/%Y/%m/%d/"
+    filename_time_format: "%Y%m%dT%H%M%SZ"
+    filename_append_uuid: true
+    filename_extension: jsonl.gz
+    compression: gzip
+    encoding:
+      codec: text # .message only: the line, byte for byte
+    # An object is written every 5 minutes, or sooner at 50 MB uncompressed.
+    batch:
+      max_bytes: 52428800
+      timeout_secs: 300
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block

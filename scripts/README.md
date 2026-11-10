@@ -8,6 +8,7 @@ against a live stack. Backup destinations are configurable via `BACKUP_DIR`
 | --- | --- | --- |
 | `pg-backup.sh` | `pg_dump` the database to a gzipped SQL file, keep last N | `make db-backup` |
 | `prom-snapshot.sh` | Snapshot the Prometheus TSDB to a tarball, keep last N | `make prom-snapshot` |
+| `verify-log-shipping.sh` | End-to-end check that logs and large bodies reach S3 and ClickHouse ([docs](../docs/deployment/log-shipping.md)) | — |
 | `dozzle.sh` | Throwaway browser log viewer for the dev stack (not in compose) | — |
 | `sam3_create_webdataset.py` | Bundle images + prompts into WebDataset shards for `alcf-ai sam3 submit-batch` | — |
 | `sam3_preview.py` | Render SAM3 results (masks + boxes) to PNG previews | — |

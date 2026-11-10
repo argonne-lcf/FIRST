@@ -1,0 +1,73 @@
+# Vector: settings and sinks shared by every log pipeline (v2.yaml, and v1.yaml
+# until V1 retires). Vector loads every *.yaml in this directory; see
+# docs/deployment/log-shipping.md.
+#
+# Each pipeline file provides:
+#   lines_<version>  one event per raw log line, and an S3 sink that archives
+#                    them under that version's prefix
+#   rows_<version>   the lines that become ClickHouse rows, parsed: picked up
+#                    by the ClickHouse sink here, by name
+#
+# Values written as SECRET[env.<NAME>] are <NAME> from
+# .env.secret.log-shipping, resolved at startup by settings.sh (which also
+# holds the defaults). An unset one fails the start. `vector validate` does
+# not resolve them; test a change by starting Vector.
+
+data_dir: /var/lib/vector
+
+secret:
+  env:
+    type: exec
+    command: [/etc/log-shipping/vector/settings.sh]
+
+api:
+  enabled: true
+  address: 127.0.0.1:8686 # container healthcheck only
+
+sources:
+  vector_metrics:
+    type: internal_metrics
+    scrape_interval_secs: 15
+
+sinks:
+  # Scraped by Prometheus; the controller's health alerter queries them there
+  # (check_log_shipping). Reachable only on the compose network.
+  vector_metrics_exporter:
+    type: prometheus_exporter
+    inputs: [vector_metrics]
+    address: 0.0.0.0:9598
+
+  # Every log sink (this one and the S3 archives) retries forever, the default,
+  # and holds events in a disk buffer meanwhile. A full buffer blocks the
+  # source, which stops reading: the log files on the host are then the
+  # backlog, bounded by their own rotation.
+  #
+  # acknowledgements: a file source checkpoints a line only once its sinks
+  # have it in their disk buffers, so a crash re-reads lines, never skips them.
+
+  clickhouse:
+    type: clickhouse
+    acknowledgements:
+      enabled: true
+    inputs: ["rows_*"]
+    endpoint: "SECRET[env.CLICKHOUSE_ENDPOINT]"
+    database: "SECRET[env.CLICKHOUSE_DATABASE]"
+    table: "SECRET[env.CLICKHOUSE_TABLE]"
+    auth:
+      strategy: basic
+      user: "SECRET[env.CLICKHOUSE_USER]"
+      password: "SECRET[env.CLICKHOUSE_PASSWORD]"
+    tls:
+      ca_file: "SECRET[env.CLICKHOUSE_CA_FILE]"
+    # Fields with no column are dropped, not fatal: the table decides what is
+    # queryable, and `raw` keeps the whole line.
+    skip_unknown_fields: true
+    compression: gzip
+    # Few large inserts: ClickHouse writes one part per insert.
+    batch:
+      max_bytes: 10485760
+      timeout_secs: 10
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block

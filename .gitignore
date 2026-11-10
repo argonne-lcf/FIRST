@@ -3,6 +3,7 @@ pki/
 .DS_Store
 .env
 .env.secret
+.env.secret.*
 docs/images/.$Diagrams.drawio.bkp
 update_batch_status_error.log
 update_batch_status_output.log
