@@ -309,8 +309,9 @@ gates pass. These changes do not require a database migration.
    Compose environment changes). Use the established staging/listener layout;
    do not take V1's live port merely to run this check. Confirm startup and
    repeat parity against the exact configuration used to create those services.
-   V2 rejects empty policies or authorized-domain lists. Unmatched per-IDP group
-   keys produce warnings; resolve unintended ones without broadening access.
+   V2 refuses to start with empty policies or authorized-domain lists, or with a
+   per-IDP group key that is not an authorized domain. Fix the key or the domain
+   list; do not broaden access to make it start.
 6. On Dev, verify approved-domain access, per-IDP group admission and rejection,
    service clients, invalid tokens, model-specific restrictions and admin access.
    A rejected inference request must log only metadata, never its body or a body

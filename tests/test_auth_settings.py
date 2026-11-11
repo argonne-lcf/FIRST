@@ -1,4 +1,3 @@
-import logging
 from typing import Any
 
 import pytest
@@ -80,25 +79,21 @@ def test_valid_global_gates_allow_empty_optional_restrictions(
     assert not caplog.records
 
 
-def test_unknown_idp_group_keys_warn_without_mutation(
-    gateway_caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_unknown_idp_group_keys_are_rejected() -> None:
     data = _globus_settings()
-    groups = {"outside.edu": ["private-group-id"], "anl.gov": ["another-group"]}
-    data["authorized_groups_per_idp"] = groups
-    with gateway_caplog.at_level(logging.WARNING, logger="first_gateway.settings"):
-        settings = GlobusAuthSettings.model_validate(data)
-    assert settings.authorized_groups_per_idp == groups
-    assert settings.authorized_idp_domains == ["anl.gov"]
-    assert "outside.edu" in gateway_caplog.text
-    assert "private-group-id" not in gateway_caplog.text
-    assert "test-secret" not in gateway_caplog.text
+    data["authorized_groups_per_idp"] = {
+        "outside.edu": ["private-group-id"],
+        "anl.gov": ["another-group"],
+    }
+    with pytest.raises(ValidationError, match="outside.edu") as exc:
+        GlobusAuthSettings.model_validate(data)
+    # The message names the domain only, never group IDs.
+    assert "authorized_groups_per_idp" in str(exc.value)
+    assert all("private-group-id" not in e["msg"] for e in exc.value.errors())
 
 
-def test_known_idp_group_keys_do_not_warn(
-    gateway_caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_known_idp_group_keys_are_accepted() -> None:
     data = _globus_settings()
     data["authorized_groups_per_idp"] = {"anl.gov": ["group"]}
-    GlobusAuthSettings.model_validate(data)
-    assert not gateway_caplog.records
+    settings = GlobusAuthSettings.model_validate(data)
+    assert settings.authorized_groups_per_idp == {"anl.gov": ["group"]}

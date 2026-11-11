@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from logging import getLogger
 from pathlib import Path
 from typing import AsyncGenerator, Self
 
@@ -24,8 +23,6 @@ from sqlalchemy.ext.asyncio import (
 from .database.redis.pubsub import RedisPubSub
 from .database.redis.repo import RedisRepo
 from .services.keycloak_client import KeycloakServiceTokenAuth
-
-logger = getLogger(__name__)
 
 
 @dataclass
@@ -67,10 +64,11 @@ class GlobusAuthSettings(BaseSettings):
             self.authorized_idp_domains
         )
         if unmatched:
-            logger.warning(
+            # A misspelled key would leave the real domain without its group
+            # restriction, admitting every identity from it.
+            raise ValueError(
                 "Globus authorized_groups_per_idp contains domains absent from "
-                "authorized_idp_domains: %s",
-                ", ".join(sorted(unmatched)),
+                f"authorized_idp_domains: {', '.join(sorted(unmatched))}"
             )
         return self
 
