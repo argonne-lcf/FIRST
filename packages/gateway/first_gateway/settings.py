@@ -39,15 +39,17 @@ class ClientState:
     db_engine: AsyncEngine
     db_sessionmaker: async_sessionmaker[AsyncSession]
     auth_client: ConfidentialAppAuthClient
-    compute_client: ComputeClient
+    # Cluster credentials: only controller-manager holds them (the gateway
+    # refuses to start with them, see apiserver/api.py).
+    compute_client: ComputeClient | None
     keycloak_clients: dict[str, AsyncClient]
 
 
 class GlobusAuthSettings(BaseSettings):
     app_id: str
     app_secret: SecretStr
-    compute_client_id: str
-    compute_client_secret: SecretStr
+    compute_client_id: str | None = None
+    compute_client_secret: SecretStr | None = None
     policies: list[str] = []
     authorized_idp_domains: list[str] = []
     user_groups: list[str] = []
@@ -151,6 +153,10 @@ class Settings(BaseSettings):
 
     globus: GlobusAuthSettings
     data_staging_globus_collection_id: str = ""
+    # Transfer-only confidential client with access-manager on the staging
+    # collection (gateway only). Unset: the staging route returns 503.
+    data_staging_client_id: str | None = None
+    data_staging_client_secret: SecretStr | None = None
     # Pilot mTLS: the CA that signs pilot server certs, and this service's own
     # client identity. Compose decides which role's cert is mounted here.
     pilot_ca_crt_file: Path = Path("/run/secrets/pilot_ca.crt")
@@ -162,6 +168,24 @@ class Settings(BaseSettings):
     log_shipping: LogShippingSettings | None = None
 
     keycloak_clients: dict[str, KeycloakSettings] = {}
+
+    def _build_compute_client(self) -> ComputeClient | None:
+        """The Globus Compute client, if configured (controller-manager only)."""
+        secret = self.globus.compute_client_secret
+        if secret is None or not secret.get_secret_value():
+            return None
+        if not self.globus.compute_client_id:
+            raise ValueError(
+                "FIRST_GLOBUS__COMPUTE_CLIENT_SECRET is set without "
+                "FIRST_GLOBUS__COMPUTE_CLIENT_ID"
+            )
+        return ComputeClient(
+            app=ClientApp(
+                client_id=self.globus.compute_client_id,
+                client_secret=secret.get_secret_value(),
+            ),
+            do_version_check=False,
+        )
 
     @asynccontextmanager
     async def build_clients(self) -> AsyncGenerator[ClientState, None]:
@@ -188,13 +212,7 @@ class Settings(BaseSettings):
                 auth_client=ConfidentialAppAuthClient(
                     self.globus.app_id, self.globus.app_secret.get_secret_value()
                 ),
-                compute_client=ComputeClient(
-                    app=ClientApp(
-                        client_id=self.globus.compute_client_id,
-                        client_secret=self.globus.compute_client_secret.get_secret_value(),
-                    ),
-                    do_version_check=False,
-                ),
+                compute_client=self._build_compute_client(),
                 keycloak_clients={
                     name: AsyncClient(
                         auth=KeycloakServiceTokenAuth(cfg),

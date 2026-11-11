@@ -108,16 +108,37 @@ def mock_globus(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def gateway_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The environment of a correctly scoped gateway: the resource-server app
+    (its network calls faked by mock_globus) and no cluster credentials.
+
+    The gateway lifespan never reads the shared .env.secret (see
+    GATEWAY_ENV_FILES), so the tests do not depend on the developer's secrets.
+    """
+    monkeypatch.setenv("FIRST_GLOBUS__APP_ID", "test-app-id")
+    monkeypatch.setenv("FIRST_GLOBUS__APP_SECRET", "test-app-secret")
+    for name in (
+        "FIRST_GLOBUS__COMPUTE_CLIENT_ID",
+        "FIRST_GLOBUS__COMPUTE_CLIENT_SECRET",
+        "FIRST_KEYCLOAK_CLIENTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
 async def client(
     db: async_sessionmaker[AsyncSession],
     mock_globus: None,
     pilot_mtls_settings: None,
+    gateway_env: None,
 ) -> AsyncGenerator[httpx.AsyncClient, None]:
     """
     An httpx client bound to the user-facing apiserver app, with its lifespan run.
 
-    Relies on db, mock_globus, and pilot_mtls_settings fixtures to patch
-    postgres, redis, globus auth, and the pilot mTLS cert files.
+    Relies on db, mock_globus, pilot_mtls_settings and gateway_env fixtures to
+    patch postgres, redis, globus auth, the pilot mTLS cert files and the
+    gateway's credentials.
     """
 
     # See https://fastapi.tiangolo.com/advanced/async-tests/

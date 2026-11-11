@@ -44,8 +44,6 @@ jobs:
     env:
       FIRST_GLOBUS__APP_ID: ci-dummy-app-id
       FIRST_GLOBUS__APP_SECRET: ci-dummy-app-secret
-      FIRST_GLOBUS__COMPUTE_CLIENT_ID: dummy-compute-client-id
-      FIRST_GLOBUS__COMPUTE_CLIENT_SECRET: dummy-compute-client-secret
 
     steps:
       - uses: actions/checkout@v4

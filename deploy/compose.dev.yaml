@@ -2,7 +2,8 @@
 #   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml
 #
 # Adds the local nginx front-end, auto-running migrations, dev data volumes, and
-# the dev-specific env (.env.compose: dev DB name, credentials, service URLs).
+# the dev-specific env (.env.compose: dev DB URL and service URLs). Secrets come
+# from the per-service files named in compose.yaml, as in prod.
 
 services:
   nginx:
@@ -29,7 +30,10 @@ services:
     env_file: *dev-env
 
   postgres:
-    env_file: *dev-env
+    environment:
+      POSTGRES_DB: first_gateway_dev
+      POSTGRES_USER: first_gateway
+      POSTGRES_PASSWORD: password # dev only; FIRST_DB_URL in .env.compose matches
     volumes:
       - postgres-dev:/var/lib/postgresql
 
@@ -59,13 +63,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    env_file:
-      - path: ../.env.default
-        required: true
-      - path: ../.env.secret
-        required: true
-      - path: ../.env.compose
-        required: true
+    # Alembic needs only FIRST_DB_URL (dev credentials, in .env.compose).
+    env_file: *dev-env
     depends_on:
       postgres:
         condition: service_healthy

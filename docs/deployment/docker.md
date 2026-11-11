@@ -122,8 +122,9 @@ The stack bind-mounts a few host paths. They must exist before `up`:
   nginx container. Build it (in `packages/admin-console`) before relying on the
   console; in **prod** you deploy `dist/` to a host path that host-nginx serves
   (see `nginx.prod.conf.example`).
-- **`.env.secret`** (repo root, `.gitignore`d) — required by the stack; see
-  [Environment files](#environment-files).
+- **`.env.secret.gateway`, `.env.secret.controller`** (and in prod
+  **`.env.secret.postgres`**; repo root, `.gitignore`d) — per-service secrets,
+  required by the stack; see [Environment files](#environment-files).
 - **`backups/`** — created on demand by the backup scripts (`.gitignore`d);
   override with `BACKUP_DIR`.
 
@@ -155,13 +156,11 @@ The stack bind-mounts a few host paths. They must exist before `up`:
 adds its environment-specific file, so **no dev value can leak into prod**:
 
 1. `.env.default` — common, non-secret defaults, checked in (base).
-2. `.env.secret` — secrets (Globus credentials, `POSTGRES_PASSWORD`,
-   `FIRST_DB_URL`). `.gitignore`d (base).
-3. `.env.compose` — **dev only** (added by `compose.dev.yaml`): dev DB
-   name/credentials and in-network `redis`/`postgres` URLs.
-4. `.env.prod` — **prod only** (added by `compose.prod.yaml`): non-secret prod DB
-   name and service URLs. It also documents which secret keys prod expects in
-   `.env.secret` on the host.
+2. Per-service secrets, `.gitignore`d (base, see below).
+3. `.env.compose` — **dev only** (added by `compose.dev.yaml`): the dev
+   `FIRST_DB_URL` and in-network `redis`/`postgres` URLs.
+4. `.env.prod` — **prod only** (added by `compose.prod.yaml`): non-secret
+   service URLs and prod settings.
 
 `.env.local` is **not** loaded inside Compose; it only helps host-side test runs
 reach the published `localhost` ports. `.env` (dev, `.gitignore`d) selects the
@@ -170,6 +169,41 @@ stack via `COMPOSE_FILE` and holds dev conveniences like `TUNNEL_SSH_TARGET`.
 All settings use the `FIRST_` prefix with `__` for nesting — e.g. `FIRST_DB_URL`,
 `FIRST_GLOBUS__APP_ID`. See
 [`settings.py`](https://github.com/argonne-lcf/inference-gateway/blob/main/packages/gateway/first_gateway/settings.py).
+
+### Secrets are scoped per service
+
+Each service reads only the secrets it needs. Above all, the internet-facing
+`inference-gateway` holds **no credential that can submit work to a cluster**:
+the Globus Compute client and the Keycloak impersonation clients live only in
+`controller-manager`. A compromised gateway yields data-plane access only (the
+read-only `first-router` pilot identity, static backend API keys, user-token
+introspection).
+
+Copy each example to its secret file and fill it in:
+
+| Secret file | Example | Read by | Holds |
+|---|---|---|---|
+| `.env.secret.gateway` | `.env.gateway.example` | `inference-gateway` | Globus resource-server app, data-staging client, static backend API keys, `FIRST_DB_URL` |
+| `.env.secret.controller` | `.env.controller.example` | `controller-manager` | Globus resource-server app (control-server admin API), Globus Compute client, Keycloak impersonation clients, Slack token, static backend API keys (health checks), `FIRST_DB_URL` |
+| `.env.secret.postgres` | `.env.postgres.example` | `postgres` (prod) | `POSTGRES_PASSWORD` |
+| `.env.secret.log-shipping` | `.env.log-shipping.example` | `vector`, `prompt-shipper*` | see [Log Shipping](log-shipping.md) |
+
+`postgres` gets nothing but `POSTGRES_DB`/`POSTGRES_USER` (set in the overlay)
+and `POSTGRES_PASSWORD` (prod: `.env.secret.postgres`; dev: a throwaway value
+in `compose.dev.yaml`). The dev `migration` service reads only `.env.compose`,
+for `FIRST_DB_URL`. Prometheus, Grafana, Redis, nginx and the tunnel get no
+secrets file.
+
+The gateway fails closed to keep it that way: it refuses to start if it is
+configured with `FIRST_GLOBUS__COMPUTE_CLIENT_SECRET` or any
+`FIRST_KEYCLOAK_CLIENTS` entry, so a compose regression breaks the deployment
+instead of passing silently.
+
+Replica logs follow from this: the API tails a **live** replica's log through
+its pilot, but a finished replica's log stays on the cluster (`409`, naming the
+path), since reading it would take a scheduler credential. The data-staging
+routes use their own Transfer-only Globus client (`FIRST_DATA_STAGING_CLIENT_*`)
+and return `503` when it is not configured.
 
 ## Dev environment
 
@@ -234,10 +268,11 @@ delete them).
 ### First-time setup
 
 ```bash
-# 1. Populate .env.secret on the host with prod secrets:
-#      POSTGRES_PASSWORD=...
+# 1. Write the per-service secret files from their examples (see
+#    "Secrets are scoped per service" above):
+#      .env.secret.gateway, .env.secret.controller, .env.secret.postgres
+#    FIRST_DB_URL (gateway and controller) carries POSTGRES_PASSWORD:
 #      FIRST_DB_URL=postgresql+psycopg://first_gateway:...@postgres:5432/first_gateway
-#    plus the Globus secrets. .env.prod documents the required keys.
 #    Copy the prod ca.crt and client cert pairs (issued offline, see
 #    packages/certmanager.md) into pki/.
 

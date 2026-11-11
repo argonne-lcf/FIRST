@@ -121,6 +121,12 @@ class GlobusComputePBSAdapter(SchedulerAdapter):
         """
         global _func_registry
         client = deps.compute_client
+        if client is None:
+            raise RuntimeError(
+                "GlobusComputePBSAdapter needs the Globus Compute client "
+                "(FIRST_GLOBUS__COMPUTE_CLIENT_ID/SECRET), which only "
+                "controller-manager is configured with"
+            )
 
         if _func_registry is None:
             async with asyncio.timeout(_RPC_TIMEOUT):

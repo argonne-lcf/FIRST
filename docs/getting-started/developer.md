@@ -36,7 +36,17 @@ COMPOSE_PROJECT_NAME=first
 inference_base_url=http://localhost:8000
 ```
 
-`.env.secret` must be written and contain:
+Secrets live in `.gitignore`d files, scoped per process so that the
+internet-facing gateway never holds a credential that can submit work to a
+cluster (see [Environment files](../deployment/docker.md#environment-files)):
+
+- `.env.secret.gateway` and `.env.secret.controller` — what the Compose
+  `inference-gateway` and `controller-manager` services read. Copy them from
+  `.env.gateway.example` and `.env.controller.example`. Cluster credentials
+  (`FIRST_GLOBUS__COMPUTE_CLIENT_*`, `FIRST_KEYCLOAK_CLIENTS`) go only in the
+  controller file: the gateway refuses to start with them.
+- `.env.secret` — for processes run on the host (a host-run controller,
+  `first-admin`, scripts). At a minimum:
 
 ```ini
 FIRST_GLOBUS__APP_ID="globus auth app id" # use same as previous
@@ -107,7 +117,8 @@ only what's valid everywhere; each overlay adds its own file, so no dev value ca
 leak into prod:
 
 1. `.env.default` — common, non-secret variables (base).
-2. `.env.secret` — the secrets defined above (base).
+2. `.env.secret.gateway` / `.env.secret.controller` — each service's own
+   secrets (base). `postgres` gets only its `POSTGRES_*` settings.
 3. `.env.compose` — **dev only**: variables specific to services inside compose,
    mostly the network (the redis/postgres hostnames are `redis`/`postgres`, not
    `localhost`) and dev DB credentials.
@@ -129,6 +140,12 @@ The `Settings` class uses Pydantic `BaseSettings` to load and validate all setti
 Docker Compose works by the former path: Compose `env_files` sets environment variables for each container, and the `Settings` class parses the environment variables without seeing any `.env.*` files.  This is why the .compose.yaml file is never mentioned in the `Settings` class.
 
 Local development uses the `env_file` configured on the Settings class instead.  It discovers and layers the variables in the `.env.default`, `.env.local`, and `.env.secret` files.
+
+The gateway (apiserver) is the exception: it layers `.env.secret.gateway` in
+place of `.env.secret` (`GATEWAY_ENV_FILES` in `apiserver/api.py`), because the
+shared host file also holds the controller's cluster credentials and the
+gateway refuses to start with those. The test suite does not depend on either
+file: its `client` fixture gives the gateway dummy Globus app settings.
 
 Environment variables use the `first_` env prefix and `__` nested delimiter.  So `settings.db_url` is loaded from `FIRST_DB_URL` and `settings.globus.app_id` comes from `FIRST_GLOBUS__APP_ID`.
 

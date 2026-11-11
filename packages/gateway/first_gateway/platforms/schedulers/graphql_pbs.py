@@ -130,6 +130,11 @@ class GraphQLPBSAdapter(SchedulerAdapter):
             job_owner: str — PBS username whose jobs this adapter manages.
         """
         name = config["keycloak_client_name"]
+        if name not in deps.keycloak_clients:
+            raise RuntimeError(
+                f"Keycloak client {name!r} is not configured "
+                "(FIRST_KEYCLOAK_CLIENTS); only controller-manager holds these"
+            )
         owner = config["job_owner"]
         graphql_url = config["graphql_url"]
         options = TaskResourceConfig.model_validate(

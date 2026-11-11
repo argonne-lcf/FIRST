@@ -7,7 +7,9 @@
 #   - No tunnel (prod egress goes through the host conduit).
 #   - Data volumes are `external` so `docker compose down -v` cannot delete them.
 #     Create them once with `make prod-init`.
-#   - Prod env (.env.prod, non-secret) + secrets from .env.secret on the host.
+#   - Prod env (.env.prod, non-secret) + per-service secrets on the host:
+#     .env.secret.gateway, .env.secret.controller, .env.secret.postgres
+#     (docs/deployment/docker.md, "Environment files").
 
 services:
   inference-gateway:
@@ -24,7 +26,12 @@ services:
     env_file: *prod-env
 
   postgres:
-    env_file: *prod-env
+    environment:
+      POSTGRES_DB: first_gateway
+      POSTGRES_USER: first_gateway
+    env_file:
+      - path: ../.env.secret.postgres # POSTGRES_PASSWORD only; see .env.postgres.example
+        required: true
     volumes:
       - postgres_data_prod:/var/lib/postgresql
 

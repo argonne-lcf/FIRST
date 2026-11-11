@@ -13,7 +13,7 @@
 - Add tests under tests/ with common fixtures in tests/fixtures/
 
 # Local Testing
-- When creating a worktree, symlink the gitignored `.env` and `.env.secret` from the main checkout.
+- When creating a worktree, symlink the gitignored `.env` and `.env.secret*` files (`.env.secret` for host-run processes; `.env.secret.gateway`, `.env.secret.controller` for Compose) from the main checkout.
 - The tests require a database running: use `make db-up` to bring up Redis and
 Postgres correctly before `make test`.
 - To run the gateway stack locally, use `make compose-up`. Then test it at http://localhost:8000.

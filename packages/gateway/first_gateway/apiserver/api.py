@@ -18,6 +18,31 @@ from .routes import routers
 
 logger = logging.getLogger(__name__)
 
+# Host-run (outside containers) dotenv layering for the gateway.
+# In Compose, the service's `env_file` alone decides what it gets.
+GATEWAY_ENV_FILES = (".env.default", ".env.local", ".env.secret.gateway")
+
+
+def assert_gateway_secret_scope(settings: Settings) -> None:
+    """
+    Refuse to run the internet-facing gateway with a credential that can
+    submit work to a cluster.
+    """
+    present = []
+    if settings.globus.compute_client_secret is not None:
+        present.append("FIRST_GLOBUS__COMPUTE_CLIENT_SECRET")
+    if settings.keycloak_clients:
+        present.append(
+            f"FIRST_KEYCLOAK_CLIENTS ({', '.join(settings.keycloak_clients)})"
+        )
+    if present:
+        raise RuntimeError(
+            "Refusing to start the gateway: it must not hold cluster credentials, "
+            f"but these are configured: {'; '.join(present)}. They belong to "
+            "controller-manager only (.env.secret.controller); see "
+            "docs/deployment/docker.md."
+        )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -25,7 +50,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Initializes ClientState and stashes it on app.state so request handlers
     can reach it via request.app.state.client_state.
     """
-    settings = Settings()
+    settings = Settings(_env_file=GATEWAY_ENV_FILES)
+    assert_gateway_secret_scope(settings)
     config_logging(settings.log_level, settings.log_levels)
 
     settings.prompt_storage_dir.mkdir(parents=True, exist_ok=True)

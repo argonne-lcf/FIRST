@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
+from globus_sdk import TransferClient
 
 from first_gateway.services import staging
 
@@ -116,3 +117,84 @@ async def test_staging_route_returns_area_for_caller(
         "/resource_server/data/staging", headers=auth_header(USER_TOKEN)
     )
     assert resp.status_code == 200 and resp.json()["path"] == body["path"]
+
+
+# --- the staging client --------------------------------------------------------
+
+
+@pytest.fixture
+def fresh_transfer_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the module's cached TransferClient for this test only."""
+    monkeypatch.setattr(staging, "_transfer_client", None)
+
+
+@pytest.fixture
+def staging_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure the Transfer-only staging client before the lifespan runs."""
+    monkeypatch.setenv("FIRST_DATA_STAGING_CLIENT_ID", "staging-app")
+    monkeypatch.setenv("FIRST_DATA_STAGING_CLIENT_SECRET", "staging-secret")
+
+
+@pytest.fixture
+def no_staging_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the staging client unconfigured (overriding any .env.secret.gateway)."""
+    monkeypatch.setenv("FIRST_DATA_STAGING_CLIENT_ID", "")
+
+
+async def test_staging_route_uses_the_staging_client(
+    staging_collection: str,
+    staging_app: None,
+    fresh_transfer_client: None,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The TransferClient authenticates as the staging app (not Compute)."""
+    app_clients: list[tuple[str, str]] = []
+    tc = _FakeTransferClient(existing_dir=False, existing_rule=False)
+
+    def fake_app_client(client_id: str, client_secret: str) -> object:
+        app_clients.append((client_id, client_secret))
+        return object()
+
+    transfer_scope = TransferClient.scopes.all
+    requested_scopes: list[object] = []
+
+    def fake_authorizer(app_client: object, scope: object) -> object:
+        requested_scopes.append(scope)
+        return app_client
+
+    class _TransferClientFactory:
+        scopes = TransferClient.scopes
+
+        def __new__(cls, authorizer: object) -> _FakeTransferClient:  # type: ignore[misc]
+            assert authorizer is not None
+            return tc
+
+    monkeypatch.setattr(staging, "ConfidentialAppAuthClient", fake_app_client)
+    monkeypatch.setattr(staging, "ClientCredentialsAuthorizer", fake_authorizer)
+    monkeypatch.setattr(staging, "TransferClient", _TransferClientFactory)
+
+    resp = await client.put("/data/v1/staging", headers=auth_header(USER_TOKEN))
+    assert resp.status_code == 200, resp.text
+    # One app client, from the staging settings, asking for Transfer only.
+    assert app_clients == [("staging-app", "staging-secret")]
+    assert requested_scopes == [transfer_scope]
+    assert tc.added_rules[0]["permissions"] == "rw"
+
+
+async def test_staging_route_503_without_staging_client(
+    staging_collection: str,
+    no_staging_app: None,
+    fresh_transfer_client: None,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_globus(*args: object, **kwargs: object) -> object:
+        raise AssertionError("no Globus client without the staging app")
+
+    monkeypatch.setattr(staging, "ConfidentialAppAuthClient", no_globus)
+
+    for path in ("/data/v1/staging", "/resource_server/data/staging"):
+        resp = await client.put(path, headers=auth_header(USER_TOKEN))
+        assert resp.status_code == 503, resp.text
+        assert "FIRST_DATA_STAGING_CLIENT_ID" in resp.text

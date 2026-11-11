@@ -25,18 +25,26 @@ _transfer_client: TransferClient | None = None
 
 def get_transfer_client(state: ClientState) -> TransferClient:
     """
-    Cache a TransferClient authenticated as the compute service account.
+    Cache a TransferClient authenticated as the data-staging client.
 
-    This must not use `state.auth_client` (the resource-server app), which is
-    not permitted the client_credentials grant. As in V1, the service account
-    identity is the one granted access-manager rights on the staging collection.
+    That is a Transfer-only confidential app granted access-manager rights on
+    the staging collection. It must not be `state.auth_client` (the
+    resource-server app, which is not permitted the client_credentials grant),
+    nor the Globus Compute client, which can submit jobs to clusters and is
+    held only by controller-manager.
     """
     global _transfer_client
     if _transfer_client is None:
-        globus = state.settings.globus
+        settings = state.settings
+        client_id = settings.data_staging_client_id
+        client_secret = settings.data_staging_client_secret
+        if not client_id or client_secret is None:
+            raise ServiceUnavailable(
+                "Data staging is not configured on this gateway "
+                "(FIRST_DATA_STAGING_CLIENT_ID/SECRET are unset)"
+            )
         service_client = ConfidentialAppAuthClient(
-            globus.compute_client_id,
-            globus.compute_client_secret.get_secret_value(),
+            client_id, client_secret.get_secret_value()
         )
         _transfer_client = TransferClient(
             authorizer=ClientCredentialsAuthorizer(

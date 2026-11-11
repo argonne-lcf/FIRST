@@ -10,10 +10,13 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    env_file: &base-env
+    # Secrets are scoped per service (docs/deployment/docker.md, "Environment
+    # files"): the internet-facing gateway gets no credential that can submit
+    # work to a cluster, and refuses to start if handed one.
+    env_file:
       - path: ../.env.default # common, non-secret
         required: true
-      - path: ../.env.secret  # .gitignored secrets
+      - path: ../.env.secret.gateway # see .env.gateway.example
         required: true
     depends_on:
       postgres:
@@ -50,7 +53,11 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    env_file: *base-env
+    env_file:
+      - path: ../.env.default
+        required: true
+      - path: ../.env.secret.controller # see .env.controller.example
+        required: true
     command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
     ports:
       - "127.0.0.1:9100:9100"
@@ -87,7 +94,7 @@ services:
 
   postgres:
     image: postgres:18@sha256:7157393f508fd8eb46119937fab39813783fe3e7d4c6316c45c12ce2ea25e61d
-    env_file: *base-env
+    # Only POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD, set by the overlays.
     networks:
       - gateway
     ports:
