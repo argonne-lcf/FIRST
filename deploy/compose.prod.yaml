@@ -48,7 +48,11 @@ services:
 
   prompt-shipper:
     volumes:
-      - prompt_records_prod:/data
+      - type: volume
+        source: prompt_records_prod
+        target: /data
+        volume:
+          nocopy: true
 
 volumes:
   postgres_data_prod:
