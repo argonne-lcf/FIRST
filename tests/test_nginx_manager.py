@@ -2,6 +2,7 @@ import re
 import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
+from ipaddress import IPv4Network
 from pathlib import Path
 
 import pytest
@@ -55,7 +56,7 @@ def _runtime_config(tmp_path: Path) -> PilotRuntimeConfig:
         server_key=key,
         external_port=18443,
         nginx_path=Path(shutil.which("nginx") or "/usr/sbin/nginx"),
-        ip_allowlist=["192.0.2.10/32"],
+        ip_allowlist=[IPv4Network("192.0.2.10/32")],
         workdir=tmp_path,
         node_file_env="TEST_NODEFILE",
         num_nodes=1,

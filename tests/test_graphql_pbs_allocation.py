@@ -86,6 +86,7 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
         "queue": "test-queue",
         "account": "test-account",
         "max_num_nodes": 2,
+        "max_nodes_per_job": 2,
         "gpus_per_node": 4,
         "workdir": "/opt/test/pilot-workdir",
         "external_port": 18443,
@@ -134,7 +135,8 @@ async def test_graphql_submitter_propagates_exact_runtime_allocation() -> None:
         "PILOT_JOB_NAME": pilot_job.name,
         "PILOT_EXTERNAL_PORT": str(config.external_port),
         "PILOT_NGINX_PATH": str(config.nginx_path),
-        "PILOT_IP_ALLOWLIST": json.dumps(config.ip_allowlist, separators=(",", ":")),
+        # Unchanged wire format: a JSON list of network strings.
+        "PILOT_IP_ALLOWLIST": '["192.0.2.10/32"]',
         "PILOT_WORKDIR": str(config.workdir),
         "PILOT_NODE_FILE_ENV": config.node_file_env,
         "PILOT_GPU_DISCOVERY": json.dumps(

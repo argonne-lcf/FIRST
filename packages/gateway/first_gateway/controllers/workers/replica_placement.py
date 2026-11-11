@@ -30,6 +30,10 @@ _PLACEABLE_JOB_STATES = [
 AT_CAPACITY = "Waiting for free cluster capacity to place this replica."
 IN_MAINTENANCE = "Waiting for cluster maintenance to end: {notice}"
 SCHEDULER_UNREACHABLE = "Waiting for cluster scheduler to become reachable."
+EXCEEDS_NODES_PER_JOB = (
+    "Refused: this deployment needs {req} nodes per pilot job, but cluster "
+    "{cluster} allows at most {limit} (pilot_system.max_nodes_per_job)."
+)
 SUBMISSIONS_HALTED = (
     "Pilot submissions on this cluster are halted after {n} consecutive pilot "
     "start failures; an admin must reset the cluster."
@@ -143,9 +147,30 @@ class ReplicaPlacer(Controller):
             )
             return
 
-        # First, prefer to place on an existing PilotJob:
         req_nodes = int(deploy.launch_spec["num_nodes"])
         req_gpus = int(deploy.launch_spec["gpus_per_node"])
+
+        pilot_cfg = PilotConfig.model_validate(cluster.pilot_system)
+        if req_nodes > pilot_cfg.max_nodes_per_job:
+            await self._mark_pending(
+                replica.uid,
+                EXCEEDS_NODES_PER_JOB.format(
+                    req=req_nodes,
+                    cluster=cluster.name,
+                    limit=pilot_cfg.max_nodes_per_job,
+                ),
+            )
+            logger.warning(
+                "Replica %s cannot be placed: %d nodes exceeds cluster %s "
+                "max_nodes_per_job %d",
+                replica.name,
+                req_nodes,
+                cluster.name,
+                pilot_cfg.max_nodes_per_job,
+            )
+            return
+
+        # First, prefer to place on an existing PilotJob:
 
         candidates = [j for j in jobs if j.num_nodes == req_nodes]
 
@@ -164,7 +189,6 @@ class ReplicaPlacer(Controller):
             return
 
         # If no existing job fits, add one, if the cluster can take it.
-        pilot_cfg = PilotConfig.model_validate(cluster.pilot_system)
         if cluster.scheduler_unreachable:
             await self._mark_pending(replica.uid, SCHEDULER_UNREACHABLE)
             logger.info(

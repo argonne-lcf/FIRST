@@ -460,7 +460,7 @@ def test_runtime_config_loads_public_fields_from_environment(
     assert config.cluster == "alpha"
     assert config.external_port == 19443
     assert config.nginx_path == Path("/opt/test/nginx")
-    assert config.ip_allowlist == ["192.0.2.10/32"]
+    assert [str(net) for net in config.ip_allowlist] == ["192.0.2.10/32"]
     assert config.workdir == Path("/opt/test/workdir")
     assert config.node_file_env == "TEST_NODEFILE"
     assert config.gpu_discovery == PalsDiscovery(

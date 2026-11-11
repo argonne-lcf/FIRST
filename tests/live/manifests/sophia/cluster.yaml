@@ -16,6 +16,7 @@ spec:
     job_walltime_min: 120
     max_concurrent_jobs: 3
     max_num_nodes: 10
+    max_nodes_per_job: 1
     gpus_per_node: 8
     queue: "infer-svc-test"
     account: inference_service

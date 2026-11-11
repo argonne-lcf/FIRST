@@ -143,6 +143,7 @@ def _make_pilot_config(workdir: Path, pilot_pki: PilotPKI, cluster: str) -> Pilo
             "queue": "test",
             "account": "test",
             "max_num_nodes": 8,
+            "max_nodes_per_job": 8,
             "gpus_per_node": 8,
             "scheduler_flags": "",
             "workdir": str(workdir),

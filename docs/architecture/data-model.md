@@ -90,7 +90,24 @@ configuration.
 - `pilot_system: PilotConfig | None` — if set, the cluster supports
   pilot-job submissions. The `PilotConfig` carries the scheduler
   adapter import path, queue/account, workdir, NGINX path, pilot
-  version pin, etc.
+  version pin, etc. Two of its fields are security boundaries that the
+  schema enforces rather than leaving to convention:
+    - `ip_allowlist` — the source networks pilot NGINX admits (besides
+      loopback). It must be a non-empty list of IP networks. A `/0`
+      entry, an IPv4 network wider than `/24` and an IPv6 network wider
+      than `/64` (including IPv4-mapped `::ffff:a.b.c.d/n` wider than an
+      IPv4 `/24`) are rejected. A bare address means one host (`/32`,
+      `/128`). A network with host bits set (e.g. `10.0.0.1/24`) is
+      rejected as ambiguous rather than widened. Entries are stored and
+      shown as strings such as `140.221.33.155/32`.
+    - `max_nodes_per_job` (required, `>= 1`) — the most nodes any single
+      pilot job may request. Plan/apply rejects a `PilotDeployment` whose
+      `launch_spec.num_nodes` exceeds it, the placer leaves such replicas
+      pending with an explanatory `state_message`, and the pilot job
+      controller refuses to submit an oversized job (it records a
+      `failure_reason` and deletes the job without contacting the
+      scheduler). It is separate from `max_num_nodes`, the cap on the
+      total nodes of all the cluster's active pilot jobs. Sophia sets 1.
 
 ### `LaunchTemplate` — admin Spec only
 

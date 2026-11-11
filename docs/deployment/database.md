@@ -62,6 +62,16 @@ In prod migrations are **manual** — there is no `migration` service in
 `deploy/compose.prod.yaml`. Run `make prod-migrate` after deploying a new
 image; it runs `alembic upgrade head` in a one-off container.
 
+Some revisions must run *before* the new image starts serving. Revision
+`a68035973f3a` backfills `max_nodes_per_job` into every stored
+`cluster.pilot_system` (as that row's `max_num_nodes`, so behavior is
+unchanged until the Cluster manifests are re-applied). The previous image
+ignores the added key, but the new image cannot read a pilot cluster without
+it: pull/build the new image, run `make prod-migrate`, then restart the
+services. The revision also refuses to run, and changes nothing, if a stored
+`ip_allowlist` would fail the new validation (a wildcard, or IPv4 wider than
+`/24`); fix that Cluster with the previous version first.
+
 ## Test fixtures
 
 The `template_db` pytest fixture (`tests/fixtures/db.py`) runs

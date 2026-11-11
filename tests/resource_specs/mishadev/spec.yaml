@@ -16,6 +16,7 @@ spec:
     job_walltime_min: 10080
     max_concurrent_jobs: 3
     max_num_nodes: 10
+    max_nodes_per_job: 1
     gpus_per_node: 8
     queue: "infer-svc-test"
     account: inference_service
@@ -23,7 +24,7 @@ spec:
     workdir: /eagle/inference_service/firstv2-pilot/workdir
     external_port: 8000
     nginx_path: /eagle/inference_service/nginx/sbin/nginx
-    ip_allowlist: ["0.0.0.0/0"]
+    ip_allowlist: ["140.221.33.155/32"]
     node_file_env: PBS_NODEFILE
     pilot_path: /eagle/inference_service/env/firstv2-pilot/bin/first-pilot
     pilot_config_path: /eagle/inference_service/firstv2-pilot/config.yaml
@@ -57,6 +58,7 @@ spec:
     job_walltime_min: 10080
     max_concurrent_jobs: 5
     max_num_nodes: 20
+    max_nodes_per_job: 8
     gpus_per_node: 4
     queue: "workq"
     account: inference_service
@@ -64,7 +66,7 @@ spec:
     workdir: /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/workdir
     external_port: 8000
     nginx_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/nginx/sbin/nginx
-    ip_allowlist: ["0.0.0.0/0"]
+    ip_allowlist: ["140.221.33.155/32"]
     node_file_env: PBS_NODEFILE
     pilot_path: /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/FIRST/.venv/bin/first-pilot
     pilot_config_path:  /vast/draco/tara/projects/Tara_Deployment/inference_service/first-pilot/config.yaml

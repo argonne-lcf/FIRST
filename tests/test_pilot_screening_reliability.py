@@ -38,7 +38,7 @@ def config(tmp_path: Path) -> PilotRuntimeConfig:
             "server_key": "key",
             "external_port": 8443,
             "nginx_path": "/opt/test/nginx",
-            "ip_allowlist": [],
+            "ip_allowlist": ["192.0.2.10/32"],
             "workdir": tmp_path,
             "node_file_env": "TEST_NODEFILE",
             "num_nodes": 2,

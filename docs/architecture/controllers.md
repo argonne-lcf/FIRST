@@ -428,7 +428,10 @@ of defense to what should otherwise remain consistent on its own.
      teardown.
   4. If manager has been unhealthy (control APIs not responding with 200s) past debounce: set
      `scheduled_deletion_at = now()` and return.
-  5. If `state = pending_submit`: check cluster's pilot_system
+  5. If `state = pending_submit`: if the job's `num_nodes` exceeds the cluster's
+     `max_nodes_per_job`, refuse it: record `failure_reason`, set
+     `scheduled_deletion_at`, and let step 1 delete it without ever submitting.
+     Otherwise check cluster's pilot_system
      `max_concurrent_jobs` and `max_num_nodes`. If all pending/submitted/starting/running jobs are
      under the caps, `PilotSubmitter.submit()`, record `scheduler_job_id`, advance state.
 
@@ -536,6 +539,11 @@ If the Replica fits in any job, confirm the assignment using
 `PilotJob.assign_replica()`.  This re-reads the PilotJob using `SELECT ... FOR
 UPDATE` and ensures that no invariant is violated during the Replica placement.
 Update the Replica state from `pending` to `placed` and commit the DB transaction.
+
+A replica whose deployment needs more nodes than the cluster's
+`pilot_system.max_nodes_per_job` is never placed, not even on an existing job:
+it stays `pending` with a `state_message` naming the limit. (Plan/apply rejects
+such deployments; this guards rows applied before the limit existed.)
 
 If the Replica cannot be placed in any existing `PilotJob`:
 

@@ -270,6 +270,37 @@ class PilotJobController(Controller):
                     f"PilotJob {job.name}: mark_scheduled_deletion stale"
                 )
 
+    async def _refuse_oversized(self, job: PilotJob, pilot_config: PilotConfig) -> None:
+        """Never submit a job larger than the cluster's per-job node limit.
+
+        The job is recorded as failed (listed with the system health's failed
+        pilot jobs; it does not count toward the cluster's start failure streak)
+        and deleted without reaching the scheduler. The Replica Reconciler then
+        replaces its replicas, which the placer keeps pending with the reason.
+        """
+        reason = (
+            f"Refused before submission: {job.num_nodes} nodes exceeds cluster "
+            f"{job.cluster_name} pilot_system.max_nodes_per_job "
+            f"({pilot_config.max_nodes_per_job})"
+        )
+        logger.warning("PilotJob %s: %s", job.name, reason)
+        async with self.client_state.db_sessionmaker.begin() as sess:
+            result = await sess.execute(
+                sa.update(PilotJob)
+                .where(
+                    PilotJob.uid == job.uid,
+                    PilotJob.scheduler_state == SchedulerJobState.pending_submit.value,
+                    PilotJob.scheduler_job_id.is_(None),
+                    PilotJob.scheduled_deletion_at.is_(None),
+                )
+                .values(
+                    failure_reason=reason,
+                    scheduled_deletion_at=datetime.now(timezone.utc),
+                )
+            )
+            if result.rowcount == 0:  # type: ignore[attr-defined]
+                raise StaleReconcile(f"PilotJob {job.name}: refusal stale")
+
     @staticmethod
     def _no_live_assigned_replicas() -> sa.ColumnElement[bool]:
         """Return a correlated guard against deleting an assigned pilot."""
@@ -290,6 +321,10 @@ class PilotJobController(Controller):
         )
 
     async def _submit(self, job: PilotJob, pilot_config: PilotConfig) -> None:
+        if job.num_nodes > pilot_config.max_nodes_per_job:
+            await self._refuse_oversized(job, pilot_config)
+            return
+
         async with self.client_state.db_sessionmaker() as sess:
             active_jobs = await sess.scalar(
                 sa.select(sa.func.count())

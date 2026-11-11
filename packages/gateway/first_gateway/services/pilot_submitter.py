@@ -46,7 +46,9 @@ class PilotSubmitter:
             "PILOT_CLUSTER": pilot_job.cluster_name,
             "PILOT_EXTERNAL_PORT": str(pc.external_port),
             "PILOT_NGINX_PATH": str(pc.nginx_path),
-            "PILOT_IP_ALLOWLIST": json.dumps(pc.ip_allowlist, separators=(",", ":")),
+            "PILOT_IP_ALLOWLIST": json.dumps(
+                [str(net) for net in pc.ip_allowlist], separators=(",", ":")
+            ),
             "PILOT_WORKDIR": str(pc.workdir),
             "PILOT_NODE_FILE_ENV": pc.node_file_env,
             "PILOT_GPU_DISCOVERY": json.dumps(

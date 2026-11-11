@@ -111,6 +111,24 @@ def validate_resources(
                     "requests using the full context can never be admitted."
                 )
 
+    # A pilot job hosts exactly one PilotDeployment replica's nodes, so the
+    # cluster's per-job limit bounds every deployment's num_nodes.
+    clusters_by_name = {r.name: r.spec for r in by_kind["Cluster"]}
+    for deployment in by_kind["PilotDeployment"]:
+        spec = deployment.spec
+        assert isinstance(spec, PilotDeploymentSpec)
+        cluster = clusters_by_name[spec.cluster_name]
+        assert isinstance(cluster, ClusterSpec)
+        if cluster.pilot_system is None:
+            continue
+        limit = cluster.pilot_system.max_nodes_per_job
+        if spec.launch_spec.num_nodes > limit:
+            raise InvalidSpecError(
+                f"PilotDeployment.{deployment.name}: launch_spec.num_nodes "
+                f"({spec.launch_spec.num_nodes}) exceeds Cluster."
+                f"{spec.cluster_name} pilot_system.max_nodes_per_job ({limit})."
+            )
+
     # Resolve every deployment against its template so a template edit that
     # breaks a dependent (or an invalid launch_spec) fails at plan time.
     templates = {r.name: r.spec for r in by_kind["LaunchTemplate"]}

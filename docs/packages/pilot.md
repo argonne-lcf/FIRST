@@ -62,7 +62,7 @@ per-job fields as `PILOT_*` overrides:
 | `external_port` | Single externally-exposed TCP port. NGINX listens here; control API and replicas live on `+1`, `+2…` internally |
 | `network_interfaces` | IPv4 interfaces (e.g. `[hsn0, hsn1, hsn2, hsn3]`) NGINX binds, in preference order, alongside `127.0.0.1`. Interfaces that are missing, down, or have no IPv4 address are skipped; at least one must resolve. The first resolved address is advertised as the pilot endpoint and in replica URLs. Under GraphQL PBS the gateway dials an unordered `hsn_ips[0]`, so list every HSN interface |
 | `nginx_path` | Absolute path to the `nginx` binary on the compute node |
-| `ip_allowlist` | NGINX `allow` ACL — typically the gateway's egress range |
+| `ip_allowlist` | NGINX `allow` ACL: the gateway hosts' addresses. Non-empty; no `/0`, IPv4 wider than `/24` or IPv6 wider than `/64` (same rules as the gateway's `PilotConfig`, so a pilot also refuses to start with a wildcard) |
 | `workdir` | Rendezvous directory: pidfiles, ready-file, replica workdirs, nginx tmp, audit |
 | `node_file_env` | Name of the env var (e.g. `PBS_NODEFILE`) that holds the scheduler's host list |
 | `job_name` | Unique pilot job name, used in file naming and the ready-file |

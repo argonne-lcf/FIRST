@@ -4,6 +4,7 @@ import shlex
 import ssl
 from enum import Enum
 from http import HTTPMethod
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 from typing import (
     Annotated,
@@ -19,11 +20,14 @@ from typing import (
 from dotenv import dotenv_values
 from jinja2 import Environment, StrictUndefined, TemplateError, TemplateSyntaxError
 from pydantic import (
+    AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
     ImportString,
+    IPvAnyNetwork,
     PrivateAttr,
     SecretStr,
     field_validator,
@@ -355,6 +359,60 @@ class NodeAdmission(BaseModel):
         return self
 
 
+# Broadest network an `ip_allowlist` entry may name, per IP version.
+IP_ALLOWLIST_MIN_PREFIXLEN = {4: 24, 6: 64}
+
+
+def _parse_allowlist_entry(value: Any) -> Any:
+    """
+    Parse an allow-list entry strictly: a network with host bits set (e.g.
+    10.0.0.1/24) is a typo for either a host or a network, so it is rejected
+    rather than silently widened. A bare address is a single host (/32, /128).
+    """
+    if isinstance(value, (IPv4Network, IPv6Network)):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"must be a string IP network, not {type(value).__name__}")
+    try:
+        return ip_network(value, strict=True)
+    except ValueError as exc:
+        raise ValueError(f"not a valid IP network: {exc}") from exc
+
+
+def _check_allowlist_breadth(
+    net: IPv4Network | IPv6Network,
+) -> IPv4Network | IPv6Network:
+    """Reject wildcard and overly broad networks."""
+    if net.prefixlen == 0:
+        raise ValueError(f"{net} matches every address; list the gateway hosts")
+    version, prefixlen = net.version, net.prefixlen
+    # An IPv4-mapped IPv6 network (::ffff:a.b.c.d/n) admits IPv4 clients.
+    if isinstance(net, IPv6Network) and net.network_address.ipv4_mapped is not None:
+        version, prefixlen = 4, prefixlen - 96
+    minimum = IP_ALLOWLIST_MIN_PREFIXLEN[version]
+    if prefixlen < minimum:
+        raise ValueError(
+            f"{net} is too broad: IPv{version} entries must be /{minimum} or narrower"
+        )
+    return net
+
+
+IpAllowlist = Annotated[
+    list[
+        Annotated[
+            IPvAnyNetwork,
+            BeforeValidator(_parse_allowlist_entry),
+            AfterValidator(_check_allowlist_breadth),
+        ]
+    ],
+    Field(min_length=1),
+]
+"""
+Source networks the pilot NGINX admits (besides loopback). Serializes as
+strings such as "140.221.33.155/32".
+"""
+
+
 class PilotConfig(BaseModel):
     """
     HPC Cluster-wide configuration for the pilot system.
@@ -372,7 +430,11 @@ class PilotConfig(BaseModel):
     # Consecutive pilots ending before their manager comes up that halt new
     # submissions on the cluster until an admin reset (see Cluster).
     max_consecutive_pilot_start_failures: int = 3
+    # Total nodes across all of the cluster's active pilot jobs.
     max_num_nodes: int
+    # A PilotDeployment whose num_nodes exceeds this is rejected at plan/apply,
+    # and the controller refuses to place or submit it.
+    max_nodes_per_job: int = Field(ge=1)
     gpus_per_node: int
     queue: str
     account: str
@@ -380,7 +442,7 @@ class PilotConfig(BaseModel):
     workdir: Path
     external_port: int
     nginx_path: Path
-    ip_allowlist: list[str]
+    ip_allowlist: IpAllowlist
     node_file_env: str
     gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)
     node_admission: NodeAdmission = Field(default_factory=NodeAdmission)

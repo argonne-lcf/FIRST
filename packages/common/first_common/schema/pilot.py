@@ -19,6 +19,7 @@ from .types import (
     RESOURCE_NAME_PATTERN,
     GpuClaim,
     GpuDiscovery,
+    IpAllowlist,
     NodeAdmission,
     ReplicaState,
     ResolvedLaunchSpec,
@@ -214,7 +215,7 @@ class PilotRuntimeConfig(BaseSettings):
 
     external_port: int
     nginx_path: Path
-    ip_allowlist: list[str]
+    ip_allowlist: IpAllowlist
     workdir: Path
     node_file_env: str
     gpu_discovery: GpuDiscovery = Field(default_factory=SSHDiscovery)

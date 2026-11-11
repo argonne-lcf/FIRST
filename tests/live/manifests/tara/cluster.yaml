@@ -27,6 +27,7 @@ spec:
     pilot_max_unhealthy_time_min: 15
     max_concurrent_jobs: 20
     max_num_nodes: 20
+    max_nodes_per_job: 8
     gpus_per_node: 4
     queue: workq
     account: inference_service

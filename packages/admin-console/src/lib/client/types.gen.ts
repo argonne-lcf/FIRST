@@ -1313,6 +1313,10 @@ export type PilotConfig = {
    */
   max_num_nodes: number;
   /**
+   * Max Nodes Per Job
+   */
+  max_nodes_per_job: number;
+  /**
    * Gpus Per Node
    */
   gpus_per_node: number;

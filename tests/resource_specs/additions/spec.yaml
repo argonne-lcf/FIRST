@@ -21,13 +21,14 @@ spec:
     pilot_config_path: /eagle/inference-service/pilot-config/
     job_walltime_min: 2592000
     max_num_nodes: 64
+    max_nodes_per_job: 64
     gpus_per_node: 8
     queue: infer-svc
     account: inference_svc
     workdir: /eagle/inference-service/pilot-workdir/
     external_port: 8443
     nginx_path: /eagle/inference-service/bin/nginx
-    ip_allowlist: ["10.0.0.0/8"]
+    ip_allowlist: ["10.0.0.0/24"]
     node_file_env: PBS_NODEFILE
     submit_script_preamble: |
       #!/bin/bash
