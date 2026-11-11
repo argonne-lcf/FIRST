@@ -31,7 +31,7 @@ from first_gateway.database.redis.router_config import (
 )
 from first_gateway.log_config import RequestIdFilter
 
-from .fixtures.auth import USER_TOKEN, auth_header
+from .fixtures.auth import INVALID_TOKEN, USER_TOKEN, auth_header
 
 # --------------------------------------------------------------------------
 # Body inline-vs-file decision
@@ -430,6 +430,54 @@ async def test_non_inference_request_body_not_logged(
     assert by_stream["request"]["body"] is None
     assert by_stream["request"]["body_stored"] is False
     assert by_stream["response"]["body"] is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/federated/v1/chat/completions",
+        "/deployments/test/v1/responses",
+        "/resource_server/minerva/api/v1/messages",
+    ],
+)
+@pytest.mark.parametrize("body_size", [100, 3072])
+async def test_rejected_auth_drops_body_without_storage(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    body_size: int,
+) -> None:
+    monkeypatch.setattr(app.state.client_state.settings, "prompt_storage_dir", tmp_path)
+    # Valid JSON of exactly body_size bytes, above the file-spill threshold at 3 KB.
+    body = b'{"private":"' + b"x" * (body_size - 14) + b'"}'
+    assert len(body) == body_size
+    response = await client.post(
+        path,
+        headers={
+            **auth_header(INVALID_TOKEN),
+            "Content-Type": "application/json",
+            "X-Forwarded-For": "192.0.2.42",
+        },
+        content=body,
+    )
+    assert response.status_code == 401
+    # Await any mistakenly scheduled spill, so checking the filesystem cannot race it.
+    await asyncio.gather(*list(_background_tasks))
+    assert list(tmp_path.rglob("*")) == []
+    requests = [r for r in capture_events if r["stream"] == "request"]
+    assert len(requests) == 1
+    event = requests[0]
+    assert event["body"] is None
+    assert event["body_stored"] is False
+    assert event["user_id"] is None
+    assert event["request_id"]
+    assert event["method"] == "POST"
+    assert event["path"] == path
+    assert event["origin_ip"] == "192.0.2.42"
+    assert event["content_length"] == body_size
+    assert not any(r["stream"] == "inference" for r in capture_events)
 
 
 def test_inference_routes_match_body_logging_prefixes() -> None:

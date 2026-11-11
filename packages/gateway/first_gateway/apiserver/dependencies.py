@@ -102,14 +102,14 @@ async def get_auth_user(
 
     try:
         user = await auth_svc.validate_access_token(token)
-    except:
+    except Exception:
         RequestLog(
             request_id=get_request_id() or str(uuid.uuid4()),
             method=request.method,
             path=request.url.path,
             origin_ip=origin_ip,
             content_length=int(content_length) if content_length else None,
-        ).emit(raw_body=raw_body, storage_dir=storage_dir)
+        ).emit()
         raise
 
     RequestLog(
@@ -143,7 +143,10 @@ async def get_admin_user(
     """
     settings = state.settings
     enforce_permission(
-        user, AccessGroupSpec(allowed_groups=[settings.globus.admin_group])
+        user,
+        AccessGroupSpec(
+            allowed_groups=[settings.globus.admin_group], allowed_domains=[]
+        ),
     )
     return user
 

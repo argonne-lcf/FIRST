@@ -260,6 +260,72 @@ make prod-migrate   # after deploying a new image
 make prod-down      # stop (never uses -v)
 ```
 
+### V1-to-V2 auth cutover gate
+
+This is a cutover checklist, not authorization to switch production traffic.
+Keep the current V1 request path until the normal review and Dev qualification
+gates pass. These changes do not require a database migration.
+
+1. Back up the deployed V1/V2 auth configuration securely and record the current
+   application versions and NGINX upstream. Confirm the V1 `.env` is the file
+   actually loaded by V1; account for any deployment-specific overrides.
+2. Audit the **complete** Dev and Prod fixture catalogs. Every `AccessGroup` must
+   explicitly declare both lists (including `[]` on `public`), and every Model
+   must reference an existing group. Preview the full plan; never apply a
+   partial catalog as desired state.
+3. Copy these three settings from V1 into V2 **in one configuration change**, not
+   successive access-policy changes:
+
+   | V1 `.env` | V2 environment |
+   | --- | --- |
+   | `AUTHORIZED_IDP_DOMAINS` | `FIRST_GLOBUS__AUTHORIZED_IDP_DOMAINS` |
+   | `AUTHORIZED_GROUPS_PER_IDP` | `FIRST_GLOBUS__AUTHORIZED_GROUPS_PER_IDP` |
+   | `AUTHORIZED_GLOBUS_SERVICE_USERNAMES` | `FIRST_GLOBUS__AUTHORIZED_SERVICE_USERNAMES` |
+
+   V1 domain/policy/group text lists use whitespace or semicolons. V1's per-IDP
+   JSON maps domains to comma-separated group **strings**; V2 maps them to JSON
+   **lists**. V2 list settings, including service usernames, are JSON lists.
+   Preserve exact identifiers and membership. Policy and global user groups
+   were already equal in the November 8 snapshot, but verify them again rather
+   than assuming that remains true.
+4. Check the rendered production overlay, without writing its secrets to an
+   artifact. From the V2 checkout, with the workspace dependencies installed:
+
+   ```bash
+   set -o pipefail
+   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml \
+     docker compose config --format json \
+     | uv run python scripts/check-auth-parity.py \
+         --v1-env /secure/path/to/v1/.env --v2-compose -
+   ```
+
+   Require exit `0` and `No differences in the five auth gates.` before the
+   NGINX switch. Exit `1` names differing gates; exit `2` means invalid input.
+   The checker neither sources the V1 file nor prints gate values or secrets.
+   It rejects unresolved `${...}` in V1 gate values: provide the effective,
+   resolved values in a protected comparison file if the deployment uses
+   interpolation. File input is also supported with `--v2-compose FILE`;
+   rendered Compose files contain secrets, so protect and remove them.
+   Use the documented JSON list/map settings, not deeper `__` overrides within
+   a gate; the checker rejects those rather than silently comparing partial values.
+5. Recreate the affected V2 gateway/controller services with the reviewed
+   settings **before** switching traffic (a restart alone does not reload
+   Compose environment changes). Use the established staging/listener layout;
+   do not take V1's live port merely to run this check. Confirm startup and
+   repeat parity against the exact configuration used to create those services.
+   V2 refuses to start with empty policies or authorized-domain lists, or with a
+   per-IDP group key that is not an authorized domain. Fix the key or the domain
+   list; do not broaden access to make it start.
+6. On Dev, verify approved-domain access, per-IDP group admission and rejection,
+   service clients, invalid tokens, model-specific restrictions and admin access.
+   A rejected inference request must log only metadata, never its body or a body
+   file. Keep normal authenticated request logging intact. Do not bypass V1's
+   startup policy guard or relax allowlists to make Dev start.
+7. Record parity and acceptance results as production cutover prerequisites.
+   Change NGINX only through the separately approved cutover. If qualification
+   fails, retain V1 traffic and restore the saved V2 configuration; after an
+   approved switch, rollback restores the recorded V1 upstream and versions.
+
 ### Host nginx
 
 In prod the host runs nginx and proxies to the loopback-published apiserver.
