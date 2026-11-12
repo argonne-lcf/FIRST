@@ -236,8 +236,9 @@ of ORM data.
 
 ## Observability
 
-The manager process exposes a small FastAPI on a local port (e.g.
-`127.0.0.1:9100`) with three routes:
+The manager process exposes a small FastAPI on port 9100 with three routes.
+It binds `0.0.0.0` inside the Compose network so Prometheus can scrape it;
+Compose publishes the port only on the host's loopback (`127.0.0.1:9100`):
 
 - `GET /healthz` — returns 200 iff every registered `Worker` has a fresh
   heartbeat across all its named beats. Used as the docker healthcheck.

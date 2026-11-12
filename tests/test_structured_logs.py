@@ -433,6 +433,30 @@ async def test_non_inference_request_body_not_logged(
 
 
 @pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        # The fronting NGINX's X-Real-IP wins over a spoofed X-Forwarded-For.
+        ({"X-Real-IP": "192.0.2.7", "X-Forwarded-For": "203.0.113.9"}, "192.0.2.7"),
+        # X-Forwarded-For alone is ignored: fall back to the socket peer
+        # (httpx.ASGITransport's default client address).
+        ({"X-Forwarded-For": "203.0.113.9"}, "127.0.0.1"),
+        ({}, "127.0.0.1"),
+    ],
+)
+async def test_request_log_origin_ip(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    headers: dict[str, str],
+    expected: str,
+) -> None:
+    resp = await client.get("/whoami", headers={**auth_header(USER_TOKEN), **headers})
+    assert resp.status_code == 200
+    requests = [r for r in capture_events if r["stream"] == "request"]
+    assert len(requests) == 1
+    assert requests[0]["origin_ip"] == expected
+
+
+@pytest.mark.parametrize(
     "path",
     [
         "/federated/v1/chat/completions",
@@ -458,7 +482,7 @@ async def test_rejected_auth_drops_body_without_storage(
         headers={
             **auth_header(INVALID_TOKEN),
             "Content-Type": "application/json",
-            "X-Forwarded-For": "192.0.2.42",
+            "X-Real-IP": "192.0.2.42",
         },
         content=body,
     )

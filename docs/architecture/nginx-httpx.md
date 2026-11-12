@@ -185,7 +185,8 @@ controls cold-start waiting, not the HTTP timeout. Callers using another SDK or
 an explicit shorter timeout must configure it separately.
 
 The Dev frontdoor (`deploy/nginx.conf`) and Production host example
-(`deploy/nginx.prod.conf.example`) allow 16 MiB request bodies and use 900-second
+(`deploy/nginx.prod.conf.example`) allow 16 MiB and 20 MiB request bodies
+respectively, and use 900-second
 proxy read/send and downstream send inactivity limits. Their existing connect
 timeout is unchanged. These templates are not evidence of deployed settings:
 inspect the selected Compose mounts and running host/edge configurations before

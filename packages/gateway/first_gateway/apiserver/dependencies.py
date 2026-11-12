@@ -84,7 +84,10 @@ async def get_auth_user(
         storage_dir = state.settings.prompt_storage_dir
     else:
         raw_body, storage_dir = None, None
-    origin_ip = request.headers.get("X-Forwarded-For")
+    # The fronting NGINX sets X-Real-IP to the client address it resolved from
+    # trusted proxies only. X-Forwarded-For is not read: clients can set its
+    # leading entries.
+    origin_ip = request.headers.get("X-Real-IP")
     if not origin_ip and request.client is not None:
         origin_ip = request.client.host
     content_length = request.headers.get("Content-Length")

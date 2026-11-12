@@ -105,13 +105,18 @@ def _block(rendered: str, header: str) -> str:
     return rendered.split(header + " {", 1)[1].split("}", 1)[0]
 
 
-@pytest.mark.parametrize("filename", ["nginx.conf", "nginx.prod.conf.example"])
-def test_gateway_frontdoor_templates_allow_large_silent_prefill(filename: str) -> None:
+@pytest.mark.parametrize(
+    ("filename", "body_size"),
+    [("nginx.conf", "16m"), ("nginx.prod.conf.example", "20M")],
+)
+def test_gateway_frontdoor_templates_allow_large_silent_prefill(
+    filename: str, body_size: str
+) -> None:
     config = (Path(__file__).resolve().parents[1] / "deploy" / filename).read_text()
     server_preamble = re.split(r"(?m)^server \{", config, maxsplit=1)[1].split(
         "location", 1
     )[0]
-    assert re.findall(r"client_max_body_size\s+(\w+);", server_preamble) == ["16m"]
+    assert re.findall(r"client_max_body_size\s+(\w+);", server_preamble) == [body_size]
     proxy = _block(config, "location /")
     for name in ("proxy_read_timeout", "proxy_send_timeout", "send_timeout"):
         assert re.findall(rf"\b{name}\s+(\d+)s;", proxy) == ["900"]

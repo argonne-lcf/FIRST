@@ -8,12 +8,12 @@ the differences for each environment. The base file never runs alone.
 |---|---|
 | `deploy/compose.yaml` | Base services common to dev and prod: apiserver, controller-manager, postgres, redis, prometheus, grafana. |
 | `deploy/compose.dev.yaml` | **Dev** overlay — nginx container, auto-migration, dev data volumes, dev env (`.env.compose`). |
-| `deploy/compose.prod.yaml` | **Prod** overlay — publishes apiserver on `127.0.0.1:7000`, external data volumes, prod env (`.env.prod`); no nginx, no auto-migration. |
+| `deploy/compose.prod.yaml` | **Prod** overlay — publishes apiserver on `127.0.0.1:7001`, external data volumes, prod env (`.env.prod`); no nginx, no auto-migration. |
 | `deploy/compose.tunnel.yaml` | Opt-in **dev** overlay — SOCKS tunnel + `*PROXY` injection. |
 | `deploy/Dockerfile` | Image for both apiserver and controller-manager (same image, different `command`). |
 | `deploy/Dockerfile.tunnel` | Tiny image (openssh) for the SOCKS tunnel container. |
 | `deploy/nginx.conf` | **Dev** reverse-proxy config; publishes the apiserver on `:8000`. |
-| `deploy/nginx.prod.conf.example` | Template for the **host** nginx in prod (TLS, proxy to `127.0.0.1:7000`). |
+| `deploy/nginx.prod.conf.example` | Template for the **host** nginx in prod (TLS, proxy to `127.0.0.1:7001`). |
 | `deploy/first.service.example` | Template systemd unit to run the prod stack on boot. |
 | `deploy/prometheus.yml` | Prometheus scrape config (controller-manager + discovered backends). |
 | `deploy/compose.v1-logs.yaml` | Opt-in overlay — ships the V1 gateway's logs until V1 retires. See [Log Shipping](log-shipping.md). |
@@ -69,6 +69,9 @@ flowchart TB
   the apiserver or proxied by nginx; operators reach it on the host or through
   an SSH tunnel (`ssh -L 9100:localhost:9100 <host>`). Same image as the
   apiserver.
+  It binds `0.0.0.0` inside the Compose network so
+  Prometheus can scrape it; the port is published only on the host's loopback
+  (`127.0.0.1:9100`). Same image as the apiserver.
 - **postgres:18** — application database. Published on `127.0.0.1:5433` for host
   access. Healthcheck gates the apiserver/controller startup.
 - **redis:8** — control-plane state / coordination on `127.0.0.1:6380`. Tuned for
@@ -372,8 +375,10 @@ gates pass. These changes do not require a database migration.
 ### Host nginx
 
 In prod the host runs nginx and proxies to the loopback-published apiserver.
-`deploy/nginx.prod.conf.example` mirrors the dev config (rate limits, SSE-friendly
-buffering) but terminates TLS and targets `127.0.0.1:7000`:
+`deploy/nginx.prod.conf.example` mirrors the dev config (SSE-friendly buffering)
+but terminates TLS, targets `127.0.0.1:7001`, takes the client address from
+`X-Forwarded-For` only for requests from the front-end proxies (`real_ip`), and
+rate-limits per client address rather than per token:
 
 ```bash
 sudo cp deploy/nginx.prod.conf.example /etc/nginx/conf.d/first.conf

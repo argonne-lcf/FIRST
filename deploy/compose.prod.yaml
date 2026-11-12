@@ -2,7 +2,7 @@
 #   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml
 #
 # Differences from dev:
-#   - No nginx (the host runs nginx and proxy_passes to 127.0.0.1:7000).
+#   - No nginx (the host runs nginx and proxy_passes to 127.0.0.1:7001).
 #   - No auto migration (run `make prod-migrate` manually after deploy).
 #   - No tunnel (prod egress goes through the host conduit).
 #   - Data volumes are `external` so `docker compose down -v` cannot delete them.
