@@ -20,6 +20,7 @@ from first_gateway.controllers.workers.health_alerter.checks import (
     CHECK_REGISTRY,
     Check,
 )
+from first_gateway.controllers.workers.health_alerter.redact import Redactor
 from first_gateway.controllers.workers.health_alerter.slack import (
     build_alert_blocks,
     build_digest_blocks,
@@ -181,6 +182,7 @@ class HealthAlerter(Worker):
         )
         self.http = httpx.AsyncClient(timeout=10.0)
         self._slack_warned = False
+        self._redactor = Redactor.from_settings(client_state.settings)
 
     async def run(self) -> None:
         hb = self.register_heartbeat("poll")
@@ -235,9 +237,14 @@ class HealthAlerter(Worker):
                 self._slack_warned = True
             return ""
 
-        payload: dict[str, Any] = {"channel": channel, "blocks": blocks}
+        # The one choke point for Slack: every header, summary and thread
+        # detail is redacted here, whichever check produced it.
+        payload: dict[str, Any] = {
+            "channel": channel,
+            "blocks": self._redactor.redact_blocks(blocks),
+        }
         if text is not None:
-            payload["text"] = text
+            payload["text"] = self._redactor.redact(text)
         if thread_ts is not None:
             payload["thread_ts"] = thread_ts
         try:
