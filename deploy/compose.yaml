@@ -77,6 +77,16 @@ services:
       - ../packages/admin-console/dist:/app/admin-console:ro
       # What the prompt shippers last did, for the health alerter.
       - log-shipping-status:/run/log-shipping:ro
+      # Disk alerts (health_alerter/disk.py). The container can only stat a
+      # host filesystem that something is mounted from, so mount an empty,
+      # read-only directory from each one we must not let fill up. Alerts name
+      # the device (e.g. /dev/sda2) with the label below as a hint.
+      #   docker-data: a named volume, so it sits in Docker's data root (with
+      #     the images, volumes and container logs); Docker creates it.
+      #   checkout: the empty, committed deploy/disk-watch/ in this checkout,
+      #     on the filesystem holding the env/secret files and pki/.
+      - disk-watch:/run/disk-watch/docker-data:ro
+      - ./disk-watch:/run/disk-watch/checkout:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -267,6 +277,8 @@ volumes:
       type: tmpfs
       device: tmpfs
       o: mode=1777,size=1m
+  # Stays empty: see controller-manager's /run/disk-watch mounts.
+  disk-watch:
 
 # Pilot mTLS identities, issued offline by `make pki` (pilot-certmanager).
 # Each service mounts the CA plus exactly one client identity, always at

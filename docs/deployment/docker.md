@@ -406,6 +406,22 @@ sudo systemctl enable --now first.service
 Run `make prod-init` once before the first start. Migrations remain manual
 (`make prod-migrate`) so a schema change never runs unattended on boot.
 
+### Disk alerts
+
+The health alerter in `controller-manager` alerts when a block device it can
+see is over 70% (info), 80% (warn) or 90% (crit) full, once per device, e.g.
+`/dev/sda2 88% full (docker-data)`. A container sees a host filesystem only
+through something mounted from it, so `compose.yaml` mounts one empty,
+read-only directory per filesystem to watch, under `/run/disk-watch/<label>`:
+
+| Label | Host directory | Filesystem on the VMs |
+|---|---|---|
+| `docker-data` | the `disk-watch` named volume, in Docker's data root | `/dev/sda2` (`/`) |
+| `checkout` | `deploy/disk-watch/` in this checkout (committed, empty) | `/dev/mapper/vg01-webportal` (`/home/webportal`) |
+
+Both exist without any setup step, on the VMs and on a laptop. To watch
+another filesystem, mount an empty directory from it the same way.
+
 ## Backups
 
 Both scripts are safe against a live stack and pick up the stack selected by

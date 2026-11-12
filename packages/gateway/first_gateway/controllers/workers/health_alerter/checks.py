@@ -19,6 +19,7 @@ from first_common.schema.types import (
     ReplicaState,
     ResourceName,
 )
+from first_gateway.controllers.workers.health_alerter.disk import disk_observations
 from first_gateway.controllers.workers.health_alerter.log_shipping import (
     check_log_shipping,
 )
@@ -77,16 +78,6 @@ _PILOT_DEPLOYMENT_SEVERITY: dict[str, Severity] = {
 class Check:
     func: Callable[[ClientState], Awaitable[list[Observation]]]
     group: AlertGroup
-
-
-def _disk_severity(use: int) -> Severity | None:
-    if use > 90:
-        return "crit"
-    if use > 80:
-        return "warn"
-    if use > 70:
-        return "info"
-    return None
 
 
 def _probe_hint(health_check: dict[str, Any] | None) -> str:
@@ -650,43 +641,7 @@ async def check_host(client_state: ClientState) -> list[Observation]:
                 )
             )
 
-    proc = await asyncio.create_subprocess_exec(
-        "df",
-        "-P",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-    except Exception:
-        logger.exception("df check failed")
-        proc.kill()
-        await asyncio.wait_for(proc.wait(), timeout=10)
-    else:
-        for line in out.decode(errors="replace").splitlines()[1:]:
-            fields = line.split()
-            if len(fields) < 6:
-                continue
-            source = fields[0]
-            if source in ("tmpfs", "devfs") or not fields[5].startswith("/"):
-                continue
-            try:
-                use = int(fields[4].rstrip("%"))
-            except ValueError:
-                continue
-            mount = " ".join(fields[5:])
-            sev = _disk_severity(use)
-            if sev is not None:
-                obs.append(
-                    Observation(
-                        key=f"disk:{mount}",
-                        status=sev,
-                        summary=f"{mount} {use}% full",
-                        display_name=f"Disk {mount}",
-                        severity=sev,
-                    )
-                )
-
+    obs.extend(await asyncio.to_thread(disk_observations))
     return obs
 
 
