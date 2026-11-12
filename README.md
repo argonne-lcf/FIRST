@@ -99,7 +99,7 @@ spec:
   model_name: google/gemma-4-31B-it
   cluster_name: metis
   api_url: https://metis.example.org/api/v1/
-  api_key: env_var://METIS_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_METIS
   health_check:
     url: https://metis.example.org/health
 ```

@@ -9,7 +9,7 @@ from socksio import ProtocolError
 from first_common.health import HealthCheckOutcome, perform_health_check_sync
 from first_common.schema.types import HealthCheckParams, HealthCheckResult
 
-_KEY_VAR = "TEST_HEALTH_CHECK_KEY"
+_KEY_VAR = "FIRST_UPSTREAM_KEY_TEST_HEALTH_CHECK"
 
 
 def _check(
@@ -99,13 +99,13 @@ def test_body_echoing_secret_is_redacted(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_unresolvable_secret_names_the_ref(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TEST_HEALTH_CHECK_MISSING", raising=False)
+    monkeypatch.delenv("FIRST_UPSTREAM_KEY_TEST_HEALTH_CHECK_MISSING", raising=False)
     outcome = _check(
         lambda _: Response(200),
         monkeypatch,
-        api_key="env_var://TEST_HEALTH_CHECK_MISSING",
+        api_key="env_var://FIRST_UPSTREAM_KEY_TEST_HEALTH_CHECK_MISSING",
     )
     assert outcome == HealthCheckOutcome(
         HealthCheckResult.unhealthy,
-        "Could not resolve api_key env_var://TEST_HEALTH_CHECK_MISSING (ValueError)",
+        "Could not resolve api_key env_var://FIRST_UPSTREAM_KEY_TEST_HEALTH_CHECK_MISSING (ValueError)",
     )

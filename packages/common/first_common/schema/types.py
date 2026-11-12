@@ -635,15 +635,31 @@ class SecretRef(str):
     A pydantic field that allows secrets to be included as references to a
     remote resource in the declarative configuration.
 
-    For example: the value SecretRef("env_var://METIS_API_KEY") is used so that the
-    declarative configuration can be applied on a machine without access to the secret
-    values. The gateway will resolve() the secret value just-in-time.
+    For example: the value SecretRef("env_var://FIRST_UPSTREAM_KEY_METIS") is used so
+    that the declarative configuration can be applied on a machine without access to
+    the secret values. The gateway will resolve() the secret value just-in-time.
+
+    `env_var://` may only name variables matching `ENV_VAR_PATTERN`, so a manifest
+    cannot send other gateway secrets (e.g. the database URL) to an upstream.
 
     Extend `_resolvers` to add support for additional Secret Vaulting strategies.
     """
 
+    ENV_VAR_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"FIRST_UPSTREAM_KEY_[A-Z0-9_]+"
+    )
+
+    @classmethod
+    def _check_env_var_name(cls, name: str) -> None:
+        if cls.ENV_VAR_PATTERN.fullmatch(name) is None:
+            raise ValueError(
+                f"env_var:// secret refs must name a variable matching "
+                f"^{cls.ENV_VAR_PATTERN.pattern}$; got {name!r}"
+            )
+
     @staticmethod
     def _from_env_var(name: str) -> str:
+        SecretRef._check_env_var_name(name)
         envs = {
             **(dotenv_values(".env")),
             **(dotenv_values(".env.secret")),
@@ -665,6 +681,9 @@ class SecretRef(str):
     def _validate(cls, value: str) -> "SecretRef":
         if not any(value.startswith(pfx) for pfx in cls._prefixes):
             raise ValueError(f"Secret Ref must be prefixed by one of: {cls._prefixes}")
+        scheme, _, payload = value.partition("://")
+        if scheme == "env_var":
+            cls._check_env_var_name(payload)
         return cls(value)
 
     def resolve(self) -> SecretStr:
