@@ -1,8 +1,10 @@
 # Admin Console
 
-Internal-only React SPA that reads the first-gateway control plane and renders
-what's happening. Served in production from behind the **same nginx** as the
-FastAPI gateway, so the app and API share an origin.
+Internal-only React SPA that reads the first-gateway admin API and renders
+what's happening. Both are served by controller-manager's **loopback-only
+control server** (`http://localhost:9100`, console at `/admin-console/`), so the
+app and API share an origin and neither is reachable from the internet. The
+user-facing gateway (:8000) serves no admin routes.
 
 ## Stack
 
@@ -34,8 +36,9 @@ schema change. Never "fix" errors by editing generated files or loosening types.
 
 ## Regenerating the SDK (`npm run gen-sdk`)
 
-- Pulls from `http://localhost:8000/openapi.json` — **the gateway must be
-  running** (`make compose-up` at the repo root brings up the stack on :8000).
+- Pulls from `http://localhost:9100/openapi.json`, the control server's admin
+  API schema — **the stack must be running** (`make compose-up` at the repo
+  root brings up controller-manager on :9100).
 - Output goes to `src/lib/client/` — see Generated / do not edit above.
 
 ## Auth wiring
@@ -134,5 +137,5 @@ Pages compose: `src/queries/` for data, `@/components/ui/` for presentation.
 ### Live Testing with Playwright MCP
 
 - `npm run dev`: start background vite dev server on http://localhost:4040
-  (already proxies API calls to localhost:8000 correctly)
+  (already proxies API calls to the admin API on localhost:9100)
 - Use Playwright MCP to interact with this dev deployment

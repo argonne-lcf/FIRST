@@ -8,76 +8,41 @@ import {
 
 import { client } from "../client.gen";
 import {
-  chatCompletionsFederatedV1ChatCompletionsPost,
-  chatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPost,
-  clusterJobsResourceServerClusterJobsGet,
-  clusterModelsResourceServerClusterModelsGet,
-  deploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPost,
-  deploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPost,
-  deploymentMessagesDeploymentsDeploymentSlugV1MessagesPost,
-  deploymentResponsesDeploymentsDeploymentSlugV1ResponsesPost,
-  deploymentTasksDeploymentsDeploymentSlugV1TasksPost,
-  embeddingsFederatedV1EmbeddingsPost,
-  embeddingsResourceServerClusterFrameworkV1EmbeddingsPost,
-  ensureStagingAreaDataV1StagingPut,
-  ensureStagingAreaResourceServerStagingPut,
+  applyResourcesControlV1ApplyPost,
+  controllersListControllersGet,
   getClusterCatalogV1ClustersNameGet,
+  getConfigVersionControlV1ConfigVersionsUidGet,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGet,
   getRouterConfigCatalogV1RouterConfigGet,
   getSystemHealthCatalogV1SystemHealthGet,
-  healthHealthGet,
-  healthResourceServerHealthGet,
+  healthzHealthzGet,
   listAccessGroupsCatalogV1AccessGroupsGet,
   listClustersCatalogV1ClustersGet,
-  listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGet,
-  listEndpointsResourceServerListEndpointsGet,
+  listConfigVersionsControlV1ConfigVersionsGet,
   listLaunchTemplatesCatalogV1LaunchTemplatesGet,
   listModelsCatalogV1ModelsGet,
-  listModelsFederatedV1ModelsGet,
   listPilotDeploymentsCatalogV1DeploymentsPilotGet,
   listStaticDeploymentsCatalogV1DeploymentsStaticGet,
-  messagesFederatedV1MessagesPost,
-  messagesResourceServerClusterFrameworkV1MessagesPost,
   type Options,
-  responsesFederatedV1ResponsesPost,
-  responsesResourceServerClusterFrameworkV1ResponsesPost,
+  planResourcesControlV1PlanPost,
+  prometheusServiceDiscoveryDiscoveryV1PrometheusGet,
+  reconcileResetControlV1ReconcileResetPost,
+  setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut,
   tailReplicaLogsCatalogV1PilotReplicasSlugLogsGet,
-  tasksFederatedV1TasksPost,
-  whoamiResourceServerWhoamiGet,
   whoamiWhoamiGet,
 } from "../sdk.gen";
 import type {
-  ChatCompletionsFederatedV1ChatCompletionsPostData,
-  ChatCompletionsFederatedV1ChatCompletionsPostError,
-  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData,
-  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostError,
-  ClusterJobsResourceServerClusterJobsGetData,
-  ClusterJobsResourceServerClusterJobsGetError,
-  ClusterJobsResourceServerClusterJobsGetResponse,
-  ClusterModelsResourceServerClusterModelsGetData,
-  ClusterModelsResourceServerClusterModelsGetError,
-  ClusterModelsResourceServerClusterModelsGetResponse,
-  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData,
-  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostError,
-  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData,
-  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostError,
-  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData,
-  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostError,
-  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData,
-  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostError,
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData,
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostError,
-  EmbeddingsFederatedV1EmbeddingsPostData,
-  EmbeddingsFederatedV1EmbeddingsPostError,
-  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData,
-  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostError,
-  EnsureStagingAreaDataV1StagingPutData,
-  EnsureStagingAreaDataV1StagingPutResponse,
-  EnsureStagingAreaResourceServerStagingPutData,
-  EnsureStagingAreaResourceServerStagingPutResponse,
+  ApplyResourcesControlV1ApplyPostData,
+  ApplyResourcesControlV1ApplyPostError,
+  ApplyResourcesControlV1ApplyPostResponse,
+  ControllersListControllersGetData,
+  ControllersListControllersGetResponse,
   GetClusterCatalogV1ClustersNameGetData,
   GetClusterCatalogV1ClustersNameGetError,
   GetClusterCatalogV1ClustersNameGetResponse,
+  GetConfigVersionControlV1ConfigVersionsUidGetData,
+  GetConfigVersionControlV1ConfigVersionsUidGetError,
+  GetConfigVersionControlV1ConfigVersionsUidGetResponse,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetError,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponse,
@@ -85,43 +50,36 @@ import type {
   GetRouterConfigCatalogV1RouterConfigGetResponse,
   GetSystemHealthCatalogV1SystemHealthGetData,
   GetSystemHealthCatalogV1SystemHealthGetResponse,
-  HealthHealthGetData,
-  HealthResourceServerHealthGetData,
-  HealthResourceServerHealthGetResponse,
+  HealthzHealthzGetData,
   ListAccessGroupsCatalogV1AccessGroupsGetData,
   ListAccessGroupsCatalogV1AccessGroupsGetResponse,
   ListClustersCatalogV1ClustersGetData,
   ListClustersCatalogV1ClustersGetResponse,
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetData,
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetError,
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponse,
-  ListEndpointsResourceServerListEndpointsGetData,
-  ListEndpointsResourceServerListEndpointsGetResponse,
+  ListConfigVersionsControlV1ConfigVersionsGetData,
+  ListConfigVersionsControlV1ConfigVersionsGetResponse,
   ListLaunchTemplatesCatalogV1LaunchTemplatesGetData,
   ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponse,
   ListModelsCatalogV1ModelsGetData,
   ListModelsCatalogV1ModelsGetResponse,
-  ListModelsFederatedV1ModelsGetData,
-  ListModelsFederatedV1ModelsGetResponse,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetData,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponse,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetData,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponse,
-  MessagesFederatedV1MessagesPostData,
-  MessagesFederatedV1MessagesPostError,
-  MessagesResourceServerClusterFrameworkV1MessagesPostData,
-  MessagesResourceServerClusterFrameworkV1MessagesPostError,
-  ResponsesFederatedV1ResponsesPostData,
-  ResponsesFederatedV1ResponsesPostError,
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostData,
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostError,
+  PlanResourcesControlV1PlanPostData,
+  PlanResourcesControlV1PlanPostError,
+  PlanResourcesControlV1PlanPostResponse,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetError,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse,
+  ReconcileResetControlV1ReconcileResetPostData,
+  ReconcileResetControlV1ReconcileResetPostError,
+  ReconcileResetControlV1ReconcileResetPostResponse,
+  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
+  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError,
+  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetError,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponse,
-  TasksFederatedV1TasksPostData,
-  TasksFederatedV1TasksPostError,
-  WhoamiResourceServerWhoamiGetData,
-  WhoamiResourceServerWhoamiGetResponse,
   WhoamiWhoamiGetData,
   WhoamiWhoamiGetResponse,
 } from "../types.gen";
@@ -166,84 +124,148 @@ const createQueryKey = <TOptions extends Options>(
   return [params];
 };
 
-export const healthHealthGetQueryKey = (
-  options?: Options<HealthHealthGetData>,
-) => createQueryKey("healthHealthGet", options);
+export const prometheusServiceDiscoveryDiscoveryV1PrometheusGetQueryKey = (
+  options?: Options<PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData>,
+) =>
+  createQueryKey("prometheusServiceDiscoveryDiscoveryV1PrometheusGet", options);
 
 /**
- * Health
+ * Prometheus Service Discovery
  *
- * Health probe: 503 with a short public-safe reason when degraded.
- */
-export const healthHealthGetOptions = (
-  options?: Options<HealthHealthGetData>,
-) =>
-  queryOptions<
-    unknown,
-    DefaultError,
-    unknown,
-    ReturnType<typeof healthHealthGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await healthHealthGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: healthHealthGetQueryKey(options),
-  });
-
-export const healthResourceServerHealthGetQueryKey = (
-  options?: Options<HealthResourceServerHealthGetData>,
-) => createQueryKey("healthResourceServerHealthGet", options);
-
-/**
- * Health
- */
-export const healthResourceServerHealthGetOptions = (
-  options?: Options<HealthResourceServerHealthGetData>,
-) =>
-  queryOptions<
-    HealthResourceServerHealthGetResponse,
-    DefaultError,
-    HealthResourceServerHealthGetResponse,
-    ReturnType<typeof healthResourceServerHealthGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await healthResourceServerHealthGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: healthResourceServerHealthGetQueryKey(options),
-  });
-
-export const whoamiWhoamiGetQueryKey = (
-  options?: Options<WhoamiWhoamiGetData>,
-) => createQueryKey("whoamiWhoamiGet", options);
-
-/**
- * Whoami
+ * Prometheus HTTP Service Discovery endpoint for live model backends.
  *
- * Return the authenticated caller's identity.
+ * Advertises every live backend whose deployment exposes a
+ * `prometheus_metrics_path` as a scrape target.  The metrics URL is split
+ * into the `__address__`/`__scheme__`/`__metrics_path__` magic labels so a
+ * single host:port can host many distinct metrics paths; `__scrape_interval__`
+ * carries the deployment's scrape interval.  `instance` is pinned to the
+ * unique, non-recycling backend id rather than the (shared) address.
+ *
+ * Prometheus sets one `tls_config` per scrape job, so each mTLS certificate
+ * set and each pilot cluster (whose pilots carry their own TLS server name)
+ * needs its own job. `pilot_cluster` selects only the pilot backends on that
+ * cluster; `mtls_cert_file` selects the static backends presenting that
+ * client cert. With neither, only static backends without mTLS are listed.
+ *
+ * Returns HTTP 200 with an empty list when there are no targets.  The whole
+ * target list is returned on every scrape; Prometheus keeps its cached list
+ * if a refresh fails.
  */
-export const whoamiWhoamiGetOptions = (
-  options?: Options<WhoamiWhoamiGetData>,
+export const prometheusServiceDiscoveryDiscoveryV1PrometheusGetOptions = (
+  options?: Options<PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData>,
 ) =>
   queryOptions<
-    WhoamiWhoamiGetResponse,
-    DefaultError,
-    WhoamiWhoamiGetResponse,
-    ReturnType<typeof whoamiWhoamiGetQueryKey>
+    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse,
+    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetError,
+    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse,
+    ReturnType<
+      typeof prometheusServiceDiscoveryDiscoveryV1PrometheusGetQueryKey
+    >
   >({
     queryFn: async ({ queryKey, signal }) => {
-      const { data } = await whoamiWhoamiGet({
+      const { data } = await prometheusServiceDiscoveryDiscoveryV1PrometheusGet(
+        {
+          ...options,
+          ...queryKey[0],
+          signal,
+          throwOnError: true,
+        },
+      );
+      return data;
+    },
+    queryKey:
+      prometheusServiceDiscoveryDiscoveryV1PrometheusGetQueryKey(options),
+  });
+
+/**
+ * Plan Resources
+ *
+ * Create a plan for applying a set of resources without actually applying them.
+ *
+ * Returns a ResourceChangePlan describing what would be added, updated,
+ * deleted, or left unchanged.  This is the "Plan" phase of a Plan/Apply
+ * workflow.  The caller reviews the plan and then submits it back to the Apply
+ * endpoint to commit changes.
+ */
+export const planResourcesControlV1PlanPostMutation = (
+  options?: Partial<Options<PlanResourcesControlV1PlanPostData>>,
+): UseMutationOptions<
+  PlanResourcesControlV1PlanPostResponse,
+  PlanResourcesControlV1PlanPostError,
+  Options<PlanResourcesControlV1PlanPostData>
+> => {
+  const mutationOptions: UseMutationOptions<
+    PlanResourcesControlV1PlanPostResponse,
+    PlanResourcesControlV1PlanPostError,
+    Options<PlanResourcesControlV1PlanPostData>
+  > = {
+    mutationFn: async (fnOptions) => {
+      const { data } = await planResourcesControlV1PlanPost({
+        ...options,
+        ...fnOptions,
+        throwOnError: true,
+      });
+      return data;
+    },
+  };
+  return mutationOptions;
+};
+
+/**
+ * Apply Resources
+ *
+ * Apply a previously-approved plan.
+ *
+ * Takes the same resources and an approved ResourceChangePlan (one that
+ * was returned by the /plan endpoint and reviewed by the caller).
+ * Performs a two-phase commit: replans the current state and only
+ * proceeds if it matches the approved plan, ensuring no concurrent
+ * modifications have occurred.
+ */
+export const applyResourcesControlV1ApplyPostMutation = (
+  options?: Partial<Options<ApplyResourcesControlV1ApplyPostData>>,
+): UseMutationOptions<
+  ApplyResourcesControlV1ApplyPostResponse,
+  ApplyResourcesControlV1ApplyPostError,
+  Options<ApplyResourcesControlV1ApplyPostData>
+> => {
+  const mutationOptions: UseMutationOptions<
+    ApplyResourcesControlV1ApplyPostResponse,
+    ApplyResourcesControlV1ApplyPostError,
+    Options<ApplyResourcesControlV1ApplyPostData>
+  > = {
+    mutationFn: async (fnOptions) => {
+      const { data } = await applyResourcesControlV1ApplyPost({
+        ...options,
+        ...fnOptions,
+        throwOnError: true,
+      });
+      return data;
+    },
+  };
+  return mutationOptions;
+};
+
+export const listConfigVersionsControlV1ConfigVersionsGetQueryKey = (
+  options?: Options<ListConfigVersionsControlV1ConfigVersionsGetData>,
+) => createQueryKey("listConfigVersionsControlV1ConfigVersionsGet", options);
+
+/**
+ * List Config Versions
+ *
+ * List all recorded ConfigVersions
+ */
+export const listConfigVersionsControlV1ConfigVersionsGetOptions = (
+  options?: Options<ListConfigVersionsControlV1ConfigVersionsGetData>,
+) =>
+  queryOptions<
+    ListConfigVersionsControlV1ConfigVersionsGetResponse,
+    DefaultError,
+    ListConfigVersionsControlV1ConfigVersionsGetResponse,
+    ReturnType<typeof listConfigVersionsControlV1ConfigVersionsGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await listConfigVersionsControlV1ConfigVersionsGet({
         ...options,
         ...queryKey[0],
         signal,
@@ -251,8 +273,102 @@ export const whoamiWhoamiGetOptions = (
       });
       return data;
     },
-    queryKey: whoamiWhoamiGetQueryKey(options),
+    queryKey: listConfigVersionsControlV1ConfigVersionsGetQueryKey(options),
   });
+
+export const getConfigVersionControlV1ConfigVersionsUidGetQueryKey = (
+  options: Options<GetConfigVersionControlV1ConfigVersionsUidGetData>,
+) => createQueryKey("getConfigVersionControlV1ConfigVersionsUidGet", options);
+
+/**
+ * Get Config Version
+ *
+ * Get a single ConfigVersion by uid, including the full `changes` record.
+ */
+export const getConfigVersionControlV1ConfigVersionsUidGetOptions = (
+  options: Options<GetConfigVersionControlV1ConfigVersionsUidGetData>,
+) =>
+  queryOptions<
+    GetConfigVersionControlV1ConfigVersionsUidGetResponse,
+    GetConfigVersionControlV1ConfigVersionsUidGetError,
+    GetConfigVersionControlV1ConfigVersionsUidGetResponse,
+    ReturnType<typeof getConfigVersionControlV1ConfigVersionsUidGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await getConfigVersionControlV1ConfigVersionsUidGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: getConfigVersionControlV1ConfigVersionsUidGetQueryKey(options),
+  });
+
+/**
+ * Set Desired Pilot Replicas
+ *
+ * Manually set desired scale of a PilotDeployment
+ */
+export const setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutMutation =
+  (
+    options?: Partial<
+      Options<SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData>
+    >,
+  ): UseMutationOptions<
+    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse,
+    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError,
+    Options<SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData>
+  > => {
+    const mutationOptions: UseMutationOptions<
+      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponse,
+      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutError,
+      Options<SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData>
+    > = {
+      mutationFn: async (fnOptions) => {
+        const { data } =
+          await setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut(
+            {
+              ...options,
+              ...fnOptions,
+              throwOnError: true,
+            },
+          );
+        return data;
+      },
+    };
+    return mutationOptions;
+  };
+
+/**
+ * Reconcile Reset
+ *
+ * Reset reconcile backoff state for a resource and its children.
+ */
+export const reconcileResetControlV1ReconcileResetPostMutation = (
+  options?: Partial<Options<ReconcileResetControlV1ReconcileResetPostData>>,
+): UseMutationOptions<
+  ReconcileResetControlV1ReconcileResetPostResponse,
+  ReconcileResetControlV1ReconcileResetPostError,
+  Options<ReconcileResetControlV1ReconcileResetPostData>
+> => {
+  const mutationOptions: UseMutationOptions<
+    ReconcileResetControlV1ReconcileResetPostResponse,
+    ReconcileResetControlV1ReconcileResetPostError,
+    Options<ReconcileResetControlV1ReconcileResetPostData>
+  > = {
+    mutationFn: async (fnOptions) => {
+      const { data } = await reconcileResetControlV1ReconcileResetPost({
+        ...options,
+        ...fnOptions,
+        throwOnError: true,
+      });
+      return data;
+    },
+  };
+  return mutationOptions;
+};
 
 export const listAccessGroupsCatalogV1AccessGroupsGetQueryKey = (
   options?: Options<ListAccessGroupsCatalogV1AccessGroupsGetData>,
@@ -260,9 +376,6 @@ export const listAccessGroupsCatalogV1AccessGroupsGetQueryKey = (
 
 /**
  * List Access Groups
- *
- * List AccessGroups.  Admins see all; ordinary users see only the AccessGroups
- * they qualify for.
  */
 export const listAccessGroupsCatalogV1AccessGroupsGetOptions = (
   options?: Options<ListAccessGroupsCatalogV1AccessGroupsGetData>,
@@ -292,8 +405,7 @@ export const listModelsCatalogV1ModelsGetQueryKey = (
 /**
  * List Models
  *
- * List Models.  Admins see all; ordinary users see only Models whose
- * AccessGroup grants them access.
+ * Every Model with its deployments, live runtime and maintenance notices.
  */
 export const listModelsCatalogV1ModelsGetOptions = (
   options?: Options<ListModelsCatalogV1ModelsGetData>,
@@ -316,6 +428,34 @@ export const listModelsCatalogV1ModelsGetOptions = (
     queryKey: listModelsCatalogV1ModelsGetQueryKey(options),
   });
 
+export const listLaunchTemplatesCatalogV1LaunchTemplatesGetQueryKey = (
+  options?: Options<ListLaunchTemplatesCatalogV1LaunchTemplatesGetData>,
+) => createQueryKey("listLaunchTemplatesCatalogV1LaunchTemplatesGet", options);
+
+/**
+ * List Launch Templates
+ */
+export const listLaunchTemplatesCatalogV1LaunchTemplatesGetOptions = (
+  options?: Options<ListLaunchTemplatesCatalogV1LaunchTemplatesGetData>,
+) =>
+  queryOptions<
+    ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponse,
+    DefaultError,
+    ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponse,
+    ReturnType<typeof listLaunchTemplatesCatalogV1LaunchTemplatesGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await listLaunchTemplatesCatalogV1LaunchTemplatesGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: listLaunchTemplatesCatalogV1LaunchTemplatesGetQueryKey(options),
+  });
+
 export const listPilotDeploymentsCatalogV1DeploymentsPilotGetQueryKey = (
   options?: Options<ListPilotDeploymentsCatalogV1DeploymentsPilotGetData>,
 ) =>
@@ -323,9 +463,6 @@ export const listPilotDeploymentsCatalogV1DeploymentsPilotGetQueryKey = (
 
 /**
  * List Pilot Deployments
- *
- * List PilotDeployments.  Admins see all; ordinary users see only deployments
- * whose parent Model authorizes them.
  */
 export const listPilotDeploymentsCatalogV1DeploymentsPilotGetOptions = (
   options?: Options<ListPilotDeploymentsCatalogV1DeploymentsPilotGetData>,
@@ -356,7 +493,7 @@ export const getPilotDeploymentCatalogV1DeploymentsPilotNameGetQueryKey = (
 /**
  * Get Pilot Deployment
  *
- * Get a single PilotDeployment with its replicas.
+ * Get a single PilotDeployment with its replicas and their live runtime.
  */
 export const getPilotDeploymentCatalogV1DeploymentsPilotNameGetOptions = (
   options: Options<GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData>,
@@ -391,9 +528,6 @@ export const listStaticDeploymentsCatalogV1DeploymentsStaticGetQueryKey = (
 
 /**
  * List Static Deployments
- *
- * List StaticDeployments.  Admins see all; ordinary users see only deployments
- * whose parent Model authorizes them.
  */
 export const listStaticDeploymentsCatalogV1DeploymentsStaticGetOptions = (
   options?: Options<ListStaticDeploymentsCatalogV1DeploymentsStaticGetData>,
@@ -427,8 +561,6 @@ export const listClustersCatalogV1ClustersGetQueryKey = (
 
 /**
  * List Clusters
- *
- * List all configured Cluster resources.  Visible to all users.
  */
 export const listClustersCatalogV1ClustersGetOptions = (
   options?: Options<ListClustersCatalogV1ClustersGetData>,
@@ -451,695 +583,6 @@ export const listClustersCatalogV1ClustersGetOptions = (
     queryKey: listClustersCatalogV1ClustersGetQueryKey(options),
   });
 
-/**
- * Chat Completions
- */
-export const chatCompletionsFederatedV1ChatCompletionsPostMutation = (
-  options?: Partial<Options<ChatCompletionsFederatedV1ChatCompletionsPostData>>,
-): UseMutationOptions<
-  unknown,
-  ChatCompletionsFederatedV1ChatCompletionsPostError,
-  Options<ChatCompletionsFederatedV1ChatCompletionsPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    ChatCompletionsFederatedV1ChatCompletionsPostError,
-    Options<ChatCompletionsFederatedV1ChatCompletionsPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await chatCompletionsFederatedV1ChatCompletionsPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Responses
- */
-export const responsesFederatedV1ResponsesPostMutation = (
-  options?: Partial<Options<ResponsesFederatedV1ResponsesPostData>>,
-): UseMutationOptions<
-  unknown,
-  ResponsesFederatedV1ResponsesPostError,
-  Options<ResponsesFederatedV1ResponsesPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    ResponsesFederatedV1ResponsesPostError,
-    Options<ResponsesFederatedV1ResponsesPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await responsesFederatedV1ResponsesPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Messages
- */
-export const messagesFederatedV1MessagesPostMutation = (
-  options?: Partial<Options<MessagesFederatedV1MessagesPostData>>,
-): UseMutationOptions<
-  unknown,
-  MessagesFederatedV1MessagesPostError,
-  Options<MessagesFederatedV1MessagesPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    MessagesFederatedV1MessagesPostError,
-    Options<MessagesFederatedV1MessagesPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await messagesFederatedV1MessagesPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Embeddings
- */
-export const embeddingsFederatedV1EmbeddingsPostMutation = (
-  options?: Partial<Options<EmbeddingsFederatedV1EmbeddingsPostData>>,
-): UseMutationOptions<
-  unknown,
-  EmbeddingsFederatedV1EmbeddingsPostError,
-  Options<EmbeddingsFederatedV1EmbeddingsPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    EmbeddingsFederatedV1EmbeddingsPostError,
-    Options<EmbeddingsFederatedV1EmbeddingsPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await embeddingsFederatedV1EmbeddingsPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Tasks
- */
-export const tasksFederatedV1TasksPostMutation = (
-  options?: Partial<Options<TasksFederatedV1TasksPostData>>,
-): UseMutationOptions<
-  unknown,
-  TasksFederatedV1TasksPostError,
-  Options<TasksFederatedV1TasksPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    TasksFederatedV1TasksPostError,
-    Options<TasksFederatedV1TasksPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await tasksFederatedV1TasksPost({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-export const listModelsFederatedV1ModelsGetQueryKey = (
-  options?: Options<ListModelsFederatedV1ModelsGetData>,
-) => createQueryKey("listModelsFederatedV1ModelsGet", options);
-
-/**
- * List Models
- */
-export const listModelsFederatedV1ModelsGetOptions = (
-  options?: Options<ListModelsFederatedV1ModelsGetData>,
-) =>
-  queryOptions<
-    ListModelsFederatedV1ModelsGetResponse,
-    DefaultError,
-    ListModelsFederatedV1ModelsGetResponse,
-    ReturnType<typeof listModelsFederatedV1ModelsGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await listModelsFederatedV1ModelsGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: listModelsFederatedV1ModelsGetQueryKey(options),
-  });
-
-/**
- * Deployment Chat Completions
- */
-export const deploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostMutation =
-  (
-    options?: Partial<
-      Options<DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData>
-    >,
-  ): UseMutationOptions<
-    unknown,
-    DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostError,
-    Options<DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData>
-  > => {
-    const mutationOptions: UseMutationOptions<
-      unknown,
-      DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostError,
-      Options<DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData>
-    > = {
-      mutationFn: async (fnOptions) => {
-        const { data } =
-          await deploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPost(
-            {
-              ...options,
-              ...fnOptions,
-              throwOnError: true,
-            },
-          );
-        return data;
-      },
-    };
-    return mutationOptions;
-  };
-
-/**
- * Deployment Responses
- */
-export const deploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostMutation =
-  (
-    options?: Partial<
-      Options<DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData>
-    >,
-  ): UseMutationOptions<
-    unknown,
-    DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostError,
-    Options<DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData>
-  > => {
-    const mutationOptions: UseMutationOptions<
-      unknown,
-      DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostError,
-      Options<DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData>
-    > = {
-      mutationFn: async (fnOptions) => {
-        const { data } =
-          await deploymentResponsesDeploymentsDeploymentSlugV1ResponsesPost({
-            ...options,
-            ...fnOptions,
-            throwOnError: true,
-          });
-        return data;
-      },
-    };
-    return mutationOptions;
-  };
-
-/**
- * Deployment Messages
- */
-export const deploymentMessagesDeploymentsDeploymentSlugV1MessagesPostMutation =
-  (
-    options?: Partial<
-      Options<DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData>
-    >,
-  ): UseMutationOptions<
-    unknown,
-    DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostError,
-    Options<DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData>
-  > => {
-    const mutationOptions: UseMutationOptions<
-      unknown,
-      DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostError,
-      Options<DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData>
-    > = {
-      mutationFn: async (fnOptions) => {
-        const { data } =
-          await deploymentMessagesDeploymentsDeploymentSlugV1MessagesPost({
-            ...options,
-            ...fnOptions,
-            throwOnError: true,
-          });
-        return data;
-      },
-    };
-    return mutationOptions;
-  };
-
-/**
- * Deployment Embeddings
- */
-export const deploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostMutation =
-  (
-    options?: Partial<
-      Options<DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData>
-    >,
-  ): UseMutationOptions<
-    unknown,
-    DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostError,
-    Options<DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData>
-  > => {
-    const mutationOptions: UseMutationOptions<
-      unknown,
-      DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostError,
-      Options<DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData>
-    > = {
-      mutationFn: async (fnOptions) => {
-        const { data } =
-          await deploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPost({
-            ...options,
-            ...fnOptions,
-            throwOnError: true,
-          });
-        return data;
-      },
-    };
-    return mutationOptions;
-  };
-
-/**
- * Deployment Tasks
- */
-export const deploymentTasksDeploymentsDeploymentSlugV1TasksPostMutation = (
-  options?: Partial<
-    Options<DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData>
-  >,
-): UseMutationOptions<
-  unknown,
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostError,
-  Options<DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    DeploymentTasksDeploymentsDeploymentSlugV1TasksPostError,
-    Options<DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } =
-        await deploymentTasksDeploymentsDeploymentSlugV1TasksPost({
-          ...options,
-          ...fnOptions,
-          throwOnError: true,
-        });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-export const listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetQueryKey =
-  (
-    options: Options<ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetData>,
-  ) =>
-    createQueryKey(
-      "listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGet",
-      options,
-    );
-
-/**
- * List Deployment Models
- *
- * List the model served by this deployment (visible to the caller).
- */
-export const listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetOptions = (
-  options: Options<ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetData>,
-) =>
-  queryOptions<
-    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponse,
-    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetError,
-    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponse,
-    ReturnType<
-      typeof listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetQueryKey
-    >
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } =
-        await listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGet({
-          ...options,
-          ...queryKey[0],
-          signal,
-          throwOnError: true,
-        });
-      return data;
-    },
-    queryKey:
-      listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetQueryKey(options),
-  });
-
-/**
- * Ensure Staging Area
- *
- * Idempotently create a Globus staging area for the caller: a per-user
- * directory on the data-staging collection with a read/write ACL, for moving
- * inputs to (and results from) the clusters serving task models.
- */
-export const ensureStagingAreaDataV1StagingPutMutation = (
-  options?: Partial<Options<EnsureStagingAreaDataV1StagingPutData>>,
-): UseMutationOptions<
-  EnsureStagingAreaDataV1StagingPutResponse,
-  DefaultError,
-  Options<EnsureStagingAreaDataV1StagingPutData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    EnsureStagingAreaDataV1StagingPutResponse,
-    DefaultError,
-    Options<EnsureStagingAreaDataV1StagingPutData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await ensureStagingAreaDataV1StagingPut({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-export const whoamiResourceServerWhoamiGetQueryKey = (
-  options?: Options<WhoamiResourceServerWhoamiGetData>,
-) => createQueryKey("whoamiResourceServerWhoamiGet", options);
-
-/**
- * Whoami
- */
-export const whoamiResourceServerWhoamiGetOptions = (
-  options?: Options<WhoamiResourceServerWhoamiGetData>,
-) =>
-  queryOptions<
-    WhoamiResourceServerWhoamiGetResponse,
-    DefaultError,
-    WhoamiResourceServerWhoamiGetResponse,
-    ReturnType<typeof whoamiResourceServerWhoamiGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await whoamiResourceServerWhoamiGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: whoamiResourceServerWhoamiGetQueryKey(options),
-  });
-
-export const listEndpointsResourceServerListEndpointsGetQueryKey = (
-  options?: Options<ListEndpointsResourceServerListEndpointsGetData>,
-) => createQueryKey("listEndpointsResourceServerListEndpointsGet", options);
-
-/**
- * List Endpoints
- *
- * List available frameworks and models, grouped by the cluster each model is
- * deployed on.  Models with no deployment are invisible here.
- */
-export const listEndpointsResourceServerListEndpointsGetOptions = (
-  options?: Options<ListEndpointsResourceServerListEndpointsGetData>,
-) =>
-  queryOptions<
-    ListEndpointsResourceServerListEndpointsGetResponse,
-    DefaultError,
-    ListEndpointsResourceServerListEndpointsGetResponse,
-    ReturnType<typeof listEndpointsResourceServerListEndpointsGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await listEndpointsResourceServerListEndpointsGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: listEndpointsResourceServerListEndpointsGetQueryKey(options),
-  });
-
-export const clusterJobsResourceServerClusterJobsGetQueryKey = (
-  options: Options<ClusterJobsResourceServerClusterJobsGetData>,
-) => createQueryKey("clusterJobsResourceServerClusterJobsGet", options);
-
-/**
- * Cluster Jobs
- *
- * Status of all (visible) models on a cluster, mapped into V1's grouped-by-state
- * shape.  Deployment states are mapped to running/queued/stopped/others as best
- * they fit; this is a shim, not a faithful translation.
- */
-export const clusterJobsResourceServerClusterJobsGetOptions = (
-  options: Options<ClusterJobsResourceServerClusterJobsGetData>,
-) =>
-  queryOptions<
-    ClusterJobsResourceServerClusterJobsGetResponse,
-    ClusterJobsResourceServerClusterJobsGetError,
-    ClusterJobsResourceServerClusterJobsGetResponse,
-    ReturnType<typeof clusterJobsResourceServerClusterJobsGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await clusterJobsResourceServerClusterJobsGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: clusterJobsResourceServerClusterJobsGetQueryKey(options),
-  });
-
-export const clusterModelsResourceServerClusterModelsGetQueryKey = (
-  options: Options<ClusterModelsResourceServerClusterModelsGetData>,
-) => createQueryKey("clusterModelsResourceServerClusterModelsGet", options);
-
-/**
- * Cluster Models
- */
-export const clusterModelsResourceServerClusterModelsGetOptions = (
-  options: Options<ClusterModelsResourceServerClusterModelsGetData>,
-) =>
-  queryOptions<
-    ClusterModelsResourceServerClusterModelsGetResponse,
-    ClusterModelsResourceServerClusterModelsGetError,
-    ClusterModelsResourceServerClusterModelsGetResponse,
-    ReturnType<typeof clusterModelsResourceServerClusterModelsGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await clusterModelsResourceServerClusterModelsGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: clusterModelsResourceServerClusterModelsGetQueryKey(options),
-  });
-
-/**
- * Ensure Staging Area
- *
- * Idempotently create a Globus staging area for the caller (see /data/v1).
- */
-export const ensureStagingAreaResourceServerStagingPutMutation = (
-  options?: Partial<Options<EnsureStagingAreaResourceServerStagingPutData>>,
-): UseMutationOptions<
-  EnsureStagingAreaResourceServerStagingPutResponse,
-  DefaultError,
-  Options<EnsureStagingAreaResourceServerStagingPutData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    EnsureStagingAreaResourceServerStagingPutResponse,
-    DefaultError,
-    Options<EnsureStagingAreaResourceServerStagingPutData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } = await ensureStagingAreaResourceServerStagingPut({
-        ...options,
-        ...fnOptions,
-        throwOnError: true,
-      });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Chat Completions
- */
-export const chatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostMutation =
-  (
-    options?: Partial<
-      Options<ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData>
-    >,
-  ): UseMutationOptions<
-    unknown,
-    ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostError,
-    Options<ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData>
-  > => {
-    const mutationOptions: UseMutationOptions<
-      unknown,
-      ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostError,
-      Options<ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData>
-    > = {
-      mutationFn: async (fnOptions) => {
-        const { data } =
-          await chatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPost(
-            {
-              ...options,
-              ...fnOptions,
-              throwOnError: true,
-            },
-          );
-        return data;
-      },
-    };
-    return mutationOptions;
-  };
-
-/**
- * Responses
- */
-export const responsesResourceServerClusterFrameworkV1ResponsesPostMutation = (
-  options?: Partial<
-    Options<ResponsesResourceServerClusterFrameworkV1ResponsesPostData>
-  >,
-): UseMutationOptions<
-  unknown,
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostError,
-  Options<ResponsesResourceServerClusterFrameworkV1ResponsesPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    ResponsesResourceServerClusterFrameworkV1ResponsesPostError,
-    Options<ResponsesResourceServerClusterFrameworkV1ResponsesPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } =
-        await responsesResourceServerClusterFrameworkV1ResponsesPost({
-          ...options,
-          ...fnOptions,
-          throwOnError: true,
-        });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Messages
- */
-export const messagesResourceServerClusterFrameworkV1MessagesPostMutation = (
-  options?: Partial<
-    Options<MessagesResourceServerClusterFrameworkV1MessagesPostData>
-  >,
-): UseMutationOptions<
-  unknown,
-  MessagesResourceServerClusterFrameworkV1MessagesPostError,
-  Options<MessagesResourceServerClusterFrameworkV1MessagesPostData>
-> => {
-  const mutationOptions: UseMutationOptions<
-    unknown,
-    MessagesResourceServerClusterFrameworkV1MessagesPostError,
-    Options<MessagesResourceServerClusterFrameworkV1MessagesPostData>
-  > = {
-    mutationFn: async (fnOptions) => {
-      const { data } =
-        await messagesResourceServerClusterFrameworkV1MessagesPost({
-          ...options,
-          ...fnOptions,
-          throwOnError: true,
-        });
-      return data;
-    },
-  };
-  return mutationOptions;
-};
-
-/**
- * Embeddings
- */
-export const embeddingsResourceServerClusterFrameworkV1EmbeddingsPostMutation =
-  (
-    options?: Partial<
-      Options<EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData>
-    >,
-  ): UseMutationOptions<
-    unknown,
-    EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostError,
-    Options<EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData>
-  > => {
-    const mutationOptions: UseMutationOptions<
-      unknown,
-      EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostError,
-      Options<EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData>
-    > = {
-      mutationFn: async (fnOptions) => {
-        const { data } =
-          await embeddingsResourceServerClusterFrameworkV1EmbeddingsPost({
-            ...options,
-            ...fnOptions,
-            throwOnError: true,
-          });
-        return data;
-      },
-    };
-    return mutationOptions;
-  };
-
-export const listLaunchTemplatesCatalogV1LaunchTemplatesGetQueryKey = (
-  options?: Options<ListLaunchTemplatesCatalogV1LaunchTemplatesGetData>,
-) => createQueryKey("listLaunchTemplatesCatalogV1LaunchTemplatesGet", options);
-
-/**
- * List Launch Templates
- */
-export const listLaunchTemplatesCatalogV1LaunchTemplatesGetOptions = (
-  options?: Options<ListLaunchTemplatesCatalogV1LaunchTemplatesGetData>,
-) =>
-  queryOptions<
-    ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponse,
-    DefaultError,
-    ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponse,
-    ReturnType<typeof listLaunchTemplatesCatalogV1LaunchTemplatesGetQueryKey>
-  >({
-    queryFn: async ({ queryKey, signal }) => {
-      const { data } = await listLaunchTemplatesCatalogV1LaunchTemplatesGet({
-        ...options,
-        ...queryKey[0],
-        signal,
-        throwOnError: true,
-      });
-      return data;
-    },
-    queryKey: listLaunchTemplatesCatalogV1LaunchTemplatesGetQueryKey(options),
-  });
-
 export const getClusterCatalogV1ClustersNameGetQueryKey = (
   options: Options<GetClusterCatalogV1ClustersNameGetData>,
 ) => createQueryKey("getClusterCatalogV1ClustersNameGet", options);
@@ -1147,7 +590,7 @@ export const getClusterCatalogV1ClustersNameGetQueryKey = (
 /**
  * Get Cluster
  *
- * Get a Cluster with its pilot jobs. Admin-only.
+ * Get a Cluster with its pilot jobs.
  */
 export const getClusterCatalogV1ClustersNameGetOptions = (
   options: Options<GetClusterCatalogV1ClustersNameGetData>,
@@ -1179,7 +622,7 @@ export const getSystemHealthCatalogV1SystemHealthGetQueryKey = (
  *
  * One-glance operational snapshot: the health/state and any reconcile error
  * of every operational resource, grouped by type, plus pilot jobs that died
- * before their manager came up.  Admin-only.
+ * before their manager came up.
  */
 export const getSystemHealthCatalogV1SystemHealthGetOptions = (
   options?: Options<GetSystemHealthCatalogV1SystemHealthGetData>,
@@ -1208,6 +651,8 @@ export const getRouterConfigCatalogV1RouterConfigGetQueryKey = (
 
 /**
  * Get Router Config
+ *
+ * The RouterConfig currently published to the gateway workers.
  */
 export const getRouterConfigCatalogV1RouterConfigGetOptions = (
   options?: Options<GetRouterConfigCatalogV1RouterConfigGetData>,
@@ -1238,7 +683,7 @@ export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetQueryKey = (
 /**
  * Tail Replica Logs
  *
- * Read tail of logs generated by replica.
+ * Read tail of logs generated by a live replica, from its pilot.
  */
 export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetOptions = (
   options: Options<TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData>,
@@ -1259,4 +704,90 @@ export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetOptions = (
       return data;
     },
     queryKey: tailReplicaLogsCatalogV1PilotReplicasSlugLogsGetQueryKey(options),
+  });
+
+export const whoamiWhoamiGetQueryKey = (
+  options?: Options<WhoamiWhoamiGetData>,
+) => createQueryKey("whoamiWhoamiGet", options);
+
+/**
+ * Whoami
+ *
+ * Return the authenticated admin's identity.
+ */
+export const whoamiWhoamiGetOptions = (
+  options?: Options<WhoamiWhoamiGetData>,
+) =>
+  queryOptions<
+    WhoamiWhoamiGetResponse,
+    DefaultError,
+    WhoamiWhoamiGetResponse,
+    ReturnType<typeof whoamiWhoamiGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await whoamiWhoamiGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: whoamiWhoamiGetQueryKey(options),
+  });
+
+export const healthzHealthzGetQueryKey = (
+  options?: Options<HealthzHealthzGetData>,
+) => createQueryKey("healthzHealthzGet", options);
+
+/**
+ * Healthz
+ */
+export const healthzHealthzGetOptions = (
+  options?: Options<HealthzHealthzGetData>,
+) =>
+  queryOptions<
+    unknown,
+    DefaultError,
+    unknown,
+    ReturnType<typeof healthzHealthzGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await healthzHealthzGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: healthzHealthzGetQueryKey(options),
+  });
+
+export const controllersListControllersGetQueryKey = (
+  options?: Options<ControllersListControllersGetData>,
+) => createQueryKey("controllersListControllersGet", options);
+
+/**
+ * Controllers List
+ */
+export const controllersListControllersGetOptions = (
+  options?: Options<ControllersListControllersGetData>,
+) =>
+  queryOptions<
+    ControllersListControllersGetResponse,
+    DefaultError,
+    ControllersListControllersGetResponse,
+    ReturnType<typeof controllersListControllersGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await controllersListControllersGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: controllersListControllersGetQueryKey(options),
   });

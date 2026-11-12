@@ -9,46 +9,17 @@ import type {
 } from "./client";
 import { client } from "./client.gen";
 import type {
-  ChatCompletionsFederatedV1ChatCompletionsPostData,
-  ChatCompletionsFederatedV1ChatCompletionsPostErrors,
-  ChatCompletionsFederatedV1ChatCompletionsPostResponses,
-  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData,
-  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostErrors,
-  ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostResponses,
-  ClusterJobsResourceServerClusterJobsGetData,
-  ClusterJobsResourceServerClusterJobsGetErrors,
-  ClusterJobsResourceServerClusterJobsGetResponses,
-  ClusterModelsResourceServerClusterModelsGetData,
-  ClusterModelsResourceServerClusterModelsGetErrors,
-  ClusterModelsResourceServerClusterModelsGetResponses,
-  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData,
-  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostErrors,
-  DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostResponses,
-  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData,
-  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostErrors,
-  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostResponses,
-  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData,
-  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostErrors,
-  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostResponses,
-  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData,
-  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostErrors,
-  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostResponses,
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData,
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostErrors,
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostResponses,
-  EmbeddingsFederatedV1EmbeddingsPostData,
-  EmbeddingsFederatedV1EmbeddingsPostErrors,
-  EmbeddingsFederatedV1EmbeddingsPostResponses,
-  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData,
-  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostErrors,
-  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostResponses,
-  EnsureStagingAreaDataV1StagingPutData,
-  EnsureStagingAreaDataV1StagingPutResponses,
-  EnsureStagingAreaResourceServerStagingPutData,
-  EnsureStagingAreaResourceServerStagingPutResponses,
+  ApplyResourcesControlV1ApplyPostData,
+  ApplyResourcesControlV1ApplyPostErrors,
+  ApplyResourcesControlV1ApplyPostResponses,
+  ControllersListControllersGetData,
+  ControllersListControllersGetResponses,
   GetClusterCatalogV1ClustersNameGetData,
   GetClusterCatalogV1ClustersNameGetErrors,
   GetClusterCatalogV1ClustersNameGetResponses,
+  GetConfigVersionControlV1ConfigVersionsUidGetData,
+  GetConfigVersionControlV1ConfigVersionsUidGetErrors,
+  GetConfigVersionControlV1ConfigVersionsUidGetResponses,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
@@ -56,49 +27,37 @@ import type {
   GetRouterConfigCatalogV1RouterConfigGetResponses,
   GetSystemHealthCatalogV1SystemHealthGetData,
   GetSystemHealthCatalogV1SystemHealthGetResponses,
-  HealthHealthGetData,
-  HealthHealthGetResponses,
-  HealthResourceServerHealthGetData,
-  HealthResourceServerHealthGetResponses,
+  HealthzHealthzGetData,
+  HealthzHealthzGetResponses,
   ListAccessGroupsCatalogV1AccessGroupsGetData,
   ListAccessGroupsCatalogV1AccessGroupsGetResponses,
   ListClustersCatalogV1ClustersGetData,
   ListClustersCatalogV1ClustersGetResponses,
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetData,
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetErrors,
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses,
-  ListEndpointsResourceServerListEndpointsGetData,
-  ListEndpointsResourceServerListEndpointsGetResponses,
+  ListConfigVersionsControlV1ConfigVersionsGetData,
+  ListConfigVersionsControlV1ConfigVersionsGetResponses,
   ListLaunchTemplatesCatalogV1LaunchTemplatesGetData,
   ListLaunchTemplatesCatalogV1LaunchTemplatesGetResponses,
   ListModelsCatalogV1ModelsGetData,
   ListModelsCatalogV1ModelsGetResponses,
-  ListModelsFederatedV1ModelsGetData,
-  ListModelsFederatedV1ModelsGetResponses,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetData,
   ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponses,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetData,
   ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponses,
-  MessagesFederatedV1MessagesPostData,
-  MessagesFederatedV1MessagesPostErrors,
-  MessagesFederatedV1MessagesPostResponses,
-  MessagesResourceServerClusterFrameworkV1MessagesPostData,
-  MessagesResourceServerClusterFrameworkV1MessagesPostErrors,
-  MessagesResourceServerClusterFrameworkV1MessagesPostResponses,
-  ResponsesFederatedV1ResponsesPostData,
-  ResponsesFederatedV1ResponsesPostErrors,
-  ResponsesFederatedV1ResponsesPostResponses,
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostData,
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostErrors,
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostResponses,
+  PlanResourcesControlV1PlanPostData,
+  PlanResourcesControlV1PlanPostErrors,
+  PlanResourcesControlV1PlanPostResponses,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetErrors,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses,
+  ReconcileResetControlV1ReconcileResetPostData,
+  ReconcileResetControlV1ReconcileResetPostErrors,
+  ReconcileResetControlV1ReconcileResetPostResponses,
+  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
+  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors,
+  SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetData,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetErrors,
   TailReplicaLogsCatalogV1PilotReplicasSlugLogsGetResponses,
-  TasksFederatedV1TasksPostData,
-  TasksFederatedV1TasksPostErrors,
-  TasksFederatedV1TasksPostResponses,
-  WhoamiResourceServerWhoamiGetData,
-  WhoamiResourceServerWhoamiGetResponses,
   WhoamiWhoamiGetData,
   WhoamiWhoamiGetResponses,
 } from "./types.gen";
@@ -122,60 +81,226 @@ export type Options<
 };
 
 /**
- * Health
+ * Prometheus Service Discovery
  *
- * Health probe: 503 with a short public-safe reason when degraded.
+ * Prometheus HTTP Service Discovery endpoint for live model backends.
+ *
+ * Advertises every live backend whose deployment exposes a
+ * `prometheus_metrics_path` as a scrape target.  The metrics URL is split
+ * into the `__address__`/`__scheme__`/`__metrics_path__` magic labels so a
+ * single host:port can host many distinct metrics paths; `__scrape_interval__`
+ * carries the deployment's scrape interval.  `instance` is pinned to the
+ * unique, non-recycling backend id rather than the (shared) address.
+ *
+ * Prometheus sets one `tls_config` per scrape job, so each mTLS certificate
+ * set and each pilot cluster (whose pilots carry their own TLS server name)
+ * needs its own job. `pilot_cluster` selects only the pilot backends on that
+ * cluster; `mtls_cert_file` selects the static backends presenting that
+ * client cert. With neither, only static backends without mTLS are listed.
+ *
+ * Returns HTTP 200 with an empty list when there are no targets.  The whole
+ * target list is returned on every scrape; Prometheus keeps its cached list
+ * if a refresh fails.
  */
-export const healthHealthGet = <ThrowOnError extends boolean = false>(
-  options?: Options<HealthHealthGetData, ThrowOnError>,
-): RequestResult<HealthHealthGetResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    HealthHealthGetResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/health", ...options });
-
-/**
- * Health
- */
-export const healthResourceServerHealthGet = <
+export const prometheusServiceDiscoveryDiscoveryV1PrometheusGet = <
   ThrowOnError extends boolean = false,
 >(
-  options?: Options<HealthResourceServerHealthGetData, ThrowOnError>,
+  options?: Options<
+    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetData,
+    ThrowOnError
+  >,
 ): RequestResult<
-  HealthResourceServerHealthGetResponses,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses,
+  PrometheusServiceDiscoveryDiscoveryV1PrometheusGetErrors,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses,
+    PrometheusServiceDiscoveryDiscoveryV1PrometheusGetErrors,
+    ThrowOnError
+  >({ url: "/discovery/v1/prometheus", ...options });
+
+/**
+ * Plan Resources
+ *
+ * Create a plan for applying a set of resources without actually applying them.
+ *
+ * Returns a ResourceChangePlan describing what would be added, updated,
+ * deleted, or left unchanged.  This is the "Plan" phase of a Plan/Apply
+ * workflow.  The caller reviews the plan and then submits it back to the Apply
+ * endpoint to commit changes.
+ */
+export const planResourcesControlV1PlanPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<PlanResourcesControlV1PlanPostData, ThrowOnError>,
+): RequestResult<
+  PlanResourcesControlV1PlanPostResponses,
+  PlanResourcesControlV1PlanPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    PlanResourcesControlV1PlanPostResponses,
+    PlanResourcesControlV1PlanPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/control/v1/plan",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Apply Resources
+ *
+ * Apply a previously-approved plan.
+ *
+ * Takes the same resources and an approved ResourceChangePlan (one that
+ * was returned by the /plan endpoint and reviewed by the caller).
+ * Performs a two-phase commit: replans the current state and only
+ * proceeds if it matches the approved plan, ensuring no concurrent
+ * modifications have occurred.
+ */
+export const applyResourcesControlV1ApplyPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ApplyResourcesControlV1ApplyPostData, ThrowOnError>,
+): RequestResult<
+  ApplyResourcesControlV1ApplyPostResponses,
+  ApplyResourcesControlV1ApplyPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    ApplyResourcesControlV1ApplyPostResponses,
+    ApplyResourcesControlV1ApplyPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/control/v1/apply",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List Config Versions
+ *
+ * List all recorded ConfigVersions
+ */
+export const listConfigVersionsControlV1ConfigVersionsGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<
+    ListConfigVersionsControlV1ConfigVersionsGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ListConfigVersionsControlV1ConfigVersionsGetResponses,
   unknown,
   ThrowOnError
 > =>
   (options?.client ?? client).get<
-    HealthResourceServerHealthGetResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/resource_server/health", ...options });
-
-/**
- * Whoami
- *
- * Return the authenticated caller's identity.
- */
-export const whoamiWhoamiGet = <ThrowOnError extends boolean = false>(
-  options?: Options<WhoamiWhoamiGetData, ThrowOnError>,
-): RequestResult<WhoamiWhoamiGetResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    WhoamiWhoamiGetResponses,
+    ListConfigVersionsControlV1ConfigVersionsGetResponses,
     unknown,
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/whoami",
+    url: "/control/v1/config-versions",
     ...options,
   });
 
 /**
- * List Access Groups
+ * Get Config Version
  *
- * List AccessGroups.  Admins see all; ordinary users see only the AccessGroups
- * they qualify for.
+ * Get a single ConfigVersion by uid, including the full `changes` record.
+ */
+export const getConfigVersionControlV1ConfigVersionsUidGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    GetConfigVersionControlV1ConfigVersionsUidGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  GetConfigVersionControlV1ConfigVersionsUidGetResponses,
+  GetConfigVersionControlV1ConfigVersionsUidGetErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetConfigVersionControlV1ConfigVersionsUidGetResponses,
+    GetConfigVersionControlV1ConfigVersionsUidGetErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/control/v1/config-versions/{uid}",
+    ...options,
+  });
+
+/**
+ * Set Desired Pilot Replicas
+ *
+ * Manually set desired scale of a PilotDeployment
+ */
+export const setDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPut =
+  <ThrowOnError extends boolean = false>(
+    options: Options<
+      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutData,
+      ThrowOnError
+    >,
+  ): RequestResult<
+    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses,
+    SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors,
+    ThrowOnError
+  > =>
+    (options.client ?? client).put<
+      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutResponses,
+      SetDesiredPilotReplicasControlV1DeploymentsPilotNameDesiredReplicasPutErrors,
+      ThrowOnError
+    >({
+      security: [{ scheme: "bearer", type: "http" }],
+      url: "/control/v1/deployments/pilot/{name}/desired-replicas",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+
+/**
+ * Reconcile Reset
+ *
+ * Reset reconcile backoff state for a resource and its children.
+ */
+export const reconcileResetControlV1ReconcileResetPost = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<ReconcileResetControlV1ReconcileResetPostData, ThrowOnError>,
+): RequestResult<
+  ReconcileResetControlV1ReconcileResetPostResponses,
+  ReconcileResetControlV1ReconcileResetPostErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    ReconcileResetControlV1ReconcileResetPostResponses,
+    ReconcileResetControlV1ReconcileResetPostErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/control/v1/reconcile-reset",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * List Access Groups
  */
 export const listAccessGroupsCatalogV1AccessGroupsGet = <
   ThrowOnError extends boolean = false,
@@ -199,8 +324,7 @@ export const listAccessGroupsCatalogV1AccessGroupsGet = <
 /**
  * List Models
  *
- * List Models.  Admins see all; ordinary users see only Models whose
- * AccessGroup grants them access.
+ * Every Model with its deployments, live runtime and maintenance notices.
  */
 export const listModelsCatalogV1ModelsGet = <
   ThrowOnError extends boolean = false,
@@ -219,706 +343,6 @@ export const listModelsCatalogV1ModelsGet = <
     security: [{ scheme: "bearer", type: "http" }],
     url: "/catalog/v1/models",
     ...options,
-  });
-
-/**
- * List Pilot Deployments
- *
- * List PilotDeployments.  Admins see all; ordinary users see only deployments
- * whose parent Model authorizes them.
- */
-export const listPilotDeploymentsCatalogV1DeploymentsPilotGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<
-    ListPilotDeploymentsCatalogV1DeploymentsPilotGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/catalog/v1/deployments/pilot",
-    ...options,
-  });
-
-/**
- * Get Pilot Deployment
- *
- * Get a single PilotDeployment with its replicas.
- */
-export const getPilotDeploymentCatalogV1DeploymentsPilotNameGet = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
-  GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
-    GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/catalog/v1/deployments/pilot/{name}",
-    ...options,
-  });
-
-/**
- * List Static Deployments
- *
- * List StaticDeployments.  Admins see all; ordinary users see only deployments
- * whose parent Model authorizes them.
- */
-export const listStaticDeploymentsCatalogV1DeploymentsStaticGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<
-    ListStaticDeploymentsCatalogV1DeploymentsStaticGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/catalog/v1/deployments/static",
-    ...options,
-  });
-
-/**
- * List Clusters
- *
- * List all configured Cluster resources.  Visible to all users.
- */
-export const listClustersCatalogV1ClustersGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<ListClustersCatalogV1ClustersGetData, ThrowOnError>,
-): RequestResult<
-  ListClustersCatalogV1ClustersGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    ListClustersCatalogV1ClustersGetResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/catalog/v1/clusters",
-    ...options,
-  });
-
-/**
- * Chat Completions
- */
-export const chatCompletionsFederatedV1ChatCompletionsPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    ChatCompletionsFederatedV1ChatCompletionsPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ChatCompletionsFederatedV1ChatCompletionsPostResponses,
-  ChatCompletionsFederatedV1ChatCompletionsPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    ChatCompletionsFederatedV1ChatCompletionsPostResponses,
-    ChatCompletionsFederatedV1ChatCompletionsPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/federated/v1/chat/completions",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Responses
- */
-export const responsesFederatedV1ResponsesPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<ResponsesFederatedV1ResponsesPostData, ThrowOnError>,
-): RequestResult<
-  ResponsesFederatedV1ResponsesPostResponses,
-  ResponsesFederatedV1ResponsesPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    ResponsesFederatedV1ResponsesPostResponses,
-    ResponsesFederatedV1ResponsesPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/federated/v1/responses",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Messages
- */
-export const messagesFederatedV1MessagesPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<MessagesFederatedV1MessagesPostData, ThrowOnError>,
-): RequestResult<
-  MessagesFederatedV1MessagesPostResponses,
-  MessagesFederatedV1MessagesPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    MessagesFederatedV1MessagesPostResponses,
-    MessagesFederatedV1MessagesPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/federated/v1/messages",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Embeddings
- */
-export const embeddingsFederatedV1EmbeddingsPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<EmbeddingsFederatedV1EmbeddingsPostData, ThrowOnError>,
-): RequestResult<
-  EmbeddingsFederatedV1EmbeddingsPostResponses,
-  EmbeddingsFederatedV1EmbeddingsPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    EmbeddingsFederatedV1EmbeddingsPostResponses,
-    EmbeddingsFederatedV1EmbeddingsPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/federated/v1/embeddings",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Tasks
- */
-export const tasksFederatedV1TasksPost = <ThrowOnError extends boolean = false>(
-  options: Options<TasksFederatedV1TasksPostData, ThrowOnError>,
-): RequestResult<
-  TasksFederatedV1TasksPostResponses,
-  TasksFederatedV1TasksPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    TasksFederatedV1TasksPostResponses,
-    TasksFederatedV1TasksPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/federated/v1/tasks",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * List Models
- */
-export const listModelsFederatedV1ModelsGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<ListModelsFederatedV1ModelsGetData, ThrowOnError>,
-): RequestResult<
-  ListModelsFederatedV1ModelsGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    ListModelsFederatedV1ModelsGetResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/federated/v1/models",
-    ...options,
-  });
-
-/**
- * Deployment Chat Completions
- */
-export const deploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPost =
-  <ThrowOnError extends boolean = false>(
-    options: Options<
-      DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostData,
-      ThrowOnError
-    >,
-  ): RequestResult<
-    DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostResponses,
-    DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostErrors,
-    ThrowOnError
-  > =>
-    (options.client ?? client).post<
-      DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostResponses,
-      DeploymentChatCompletionsDeploymentsDeploymentSlugV1ChatCompletionsPostErrors,
-      ThrowOnError
-    >({
-      security: [{ scheme: "bearer", type: "http" }],
-      url: "/deployments/{deployment_slug}/v1/chat/completions",
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
-    });
-
-/**
- * Deployment Responses
- */
-export const deploymentResponsesDeploymentsDeploymentSlugV1ResponsesPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostResponses,
-  DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostResponses,
-    DeploymentResponsesDeploymentsDeploymentSlugV1ResponsesPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/deployments/{deployment_slug}/v1/responses",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Deployment Messages
- */
-export const deploymentMessagesDeploymentsDeploymentSlugV1MessagesPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostResponses,
-  DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostResponses,
-    DeploymentMessagesDeploymentsDeploymentSlugV1MessagesPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/deployments/{deployment_slug}/v1/messages",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Deployment Embeddings
- */
-export const deploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostResponses,
-  DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostResponses,
-    DeploymentEmbeddingsDeploymentsDeploymentSlugV1EmbeddingsPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/deployments/{deployment_slug}/v1/embeddings",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Deployment Tasks
- */
-export const deploymentTasksDeploymentsDeploymentSlugV1TasksPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    DeploymentTasksDeploymentsDeploymentSlugV1TasksPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostResponses,
-  DeploymentTasksDeploymentsDeploymentSlugV1TasksPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    DeploymentTasksDeploymentsDeploymentSlugV1TasksPostResponses,
-    DeploymentTasksDeploymentsDeploymentSlugV1TasksPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/deployments/{deployment_slug}/v1/tasks",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * List Deployment Models
- *
- * List the model served by this deployment (visible to the caller).
- */
-export const listDeploymentModelsDeploymentsDeploymentSlugV1ModelsGet = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses,
-  ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetResponses,
-    ListDeploymentModelsDeploymentsDeploymentSlugV1ModelsGetErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/deployments/{deployment_slug}/v1/models",
-    ...options,
-  });
-
-/**
- * Ensure Staging Area
- *
- * Idempotently create a Globus staging area for the caller: a per-user
- * directory on the data-staging collection with a read/write ACL, for moving
- * inputs to (and results from) the clusters serving task models.
- */
-export const ensureStagingAreaDataV1StagingPut = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<EnsureStagingAreaDataV1StagingPutData, ThrowOnError>,
-): RequestResult<
-  EnsureStagingAreaDataV1StagingPutResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).put<
-    EnsureStagingAreaDataV1StagingPutResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/data/v1/staging",
-    ...options,
-  });
-
-/**
- * Whoami
- */
-export const whoamiResourceServerWhoamiGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<WhoamiResourceServerWhoamiGetData, ThrowOnError>,
-): RequestResult<
-  WhoamiResourceServerWhoamiGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    WhoamiResourceServerWhoamiGetResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/whoami",
-    ...options,
-  });
-
-/**
- * List Endpoints
- *
- * List available frameworks and models, grouped by the cluster each model is
- * deployed on.  Models with no deployment are invisible here.
- */
-export const listEndpointsResourceServerListEndpointsGet = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<
-    ListEndpointsResourceServerListEndpointsGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ListEndpointsResourceServerListEndpointsGetResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).get<
-    ListEndpointsResourceServerListEndpointsGetResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/list-endpoints",
-    ...options,
-  });
-
-/**
- * Cluster Jobs
- *
- * Status of all (visible) models on a cluster, mapped into V1's grouped-by-state
- * shape.  Deployment states are mapped to running/queued/stopped/others as best
- * they fit; this is a shim, not a faithful translation.
- */
-export const clusterJobsResourceServerClusterJobsGet = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<ClusterJobsResourceServerClusterJobsGetData, ThrowOnError>,
-): RequestResult<
-  ClusterJobsResourceServerClusterJobsGetResponses,
-  ClusterJobsResourceServerClusterJobsGetErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    ClusterJobsResourceServerClusterJobsGetResponses,
-    ClusterJobsResourceServerClusterJobsGetErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/{cluster}/jobs",
-    ...options,
-  });
-
-/**
- * Cluster Models
- */
-export const clusterModelsResourceServerClusterModelsGet = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    ClusterModelsResourceServerClusterModelsGetData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ClusterModelsResourceServerClusterModelsGetResponses,
-  ClusterModelsResourceServerClusterModelsGetErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    ClusterModelsResourceServerClusterModelsGetResponses,
-    ClusterModelsResourceServerClusterModelsGetErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/{cluster}/models",
-    ...options,
-  });
-
-/**
- * Ensure Staging Area
- *
- * Idempotently create a Globus staging area for the caller (see /data/v1).
- */
-export const ensureStagingAreaResourceServerStagingPut = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<
-    EnsureStagingAreaResourceServerStagingPutData,
-    ThrowOnError
-  >,
-): RequestResult<
-  EnsureStagingAreaResourceServerStagingPutResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options?.client ?? client).put<
-    EnsureStagingAreaResourceServerStagingPutResponses,
-    unknown,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/staging",
-    ...options,
-  });
-
-/**
- * Chat Completions
- */
-export const chatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPost =
-  <ThrowOnError extends boolean = false>(
-    options: Options<
-      ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostData,
-      ThrowOnError
-    >,
-  ): RequestResult<
-    ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostResponses,
-    ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostErrors,
-    ThrowOnError
-  > =>
-    (options.client ?? client).post<
-      ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostResponses,
-      ChatCompletionsResourceServerClusterFrameworkV1ChatCompletionsPostErrors,
-      ThrowOnError
-    >({
-      security: [{ scheme: "bearer", type: "http" }],
-      url: "/resource_server/{cluster}/{framework}/v1/chat/completions",
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
-    });
-
-/**
- * Responses
- */
-export const responsesResourceServerClusterFrameworkV1ResponsesPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    ResponsesResourceServerClusterFrameworkV1ResponsesPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostResponses,
-  ResponsesResourceServerClusterFrameworkV1ResponsesPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    ResponsesResourceServerClusterFrameworkV1ResponsesPostResponses,
-    ResponsesResourceServerClusterFrameworkV1ResponsesPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/{cluster}/{framework}/v1/responses",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Messages
- */
-export const messagesResourceServerClusterFrameworkV1MessagesPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    MessagesResourceServerClusterFrameworkV1MessagesPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  MessagesResourceServerClusterFrameworkV1MessagesPostResponses,
-  MessagesResourceServerClusterFrameworkV1MessagesPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    MessagesResourceServerClusterFrameworkV1MessagesPostResponses,
-    MessagesResourceServerClusterFrameworkV1MessagesPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/{cluster}/{framework}/v1/messages",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Embeddings
- */
-export const embeddingsResourceServerClusterFrameworkV1EmbeddingsPost = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostData,
-    ThrowOnError
-  >,
-): RequestResult<
-  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostResponses,
-  EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostResponses,
-    EmbeddingsResourceServerClusterFrameworkV1EmbeddingsPostErrors,
-    ThrowOnError
-  >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/resource_server/{cluster}/{framework}/v1/embeddings",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
   });
 
 /**
@@ -947,9 +371,108 @@ export const listLaunchTemplatesCatalogV1LaunchTemplatesGet = <
   });
 
 /**
+ * List Pilot Deployments
+ */
+export const listPilotDeploymentsCatalogV1DeploymentsPilotGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<
+    ListPilotDeploymentsCatalogV1DeploymentsPilotGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    ListPilotDeploymentsCatalogV1DeploymentsPilotGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/catalog/v1/deployments/pilot",
+    ...options,
+  });
+
+/**
+ * Get Pilot Deployment
+ *
+ * Get a single PilotDeployment with its replicas and their live runtime.
+ */
+export const getPilotDeploymentCatalogV1DeploymentsPilotNameGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
+  GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
+    GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/catalog/v1/deployments/pilot/{name}",
+    ...options,
+  });
+
+/**
+ * List Static Deployments
+ */
+export const listStaticDeploymentsCatalogV1DeploymentsStaticGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<
+    ListStaticDeploymentsCatalogV1DeploymentsStaticGetData,
+    ThrowOnError
+  >,
+): RequestResult<
+  ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    ListStaticDeploymentsCatalogV1DeploymentsStaticGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/catalog/v1/deployments/static",
+    ...options,
+  });
+
+/**
+ * List Clusters
+ */
+export const listClustersCatalogV1ClustersGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<ListClustersCatalogV1ClustersGetData, ThrowOnError>,
+): RequestResult<
+  ListClustersCatalogV1ClustersGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    ListClustersCatalogV1ClustersGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/catalog/v1/clusters",
+    ...options,
+  });
+
+/**
  * Get Cluster
  *
- * Get a Cluster with its pilot jobs. Admin-only.
+ * Get a Cluster with its pilot jobs.
  */
 export const getClusterCatalogV1ClustersNameGet = <
   ThrowOnError extends boolean = false,
@@ -975,7 +498,7 @@ export const getClusterCatalogV1ClustersNameGet = <
  *
  * One-glance operational snapshot: the health/state and any reconcile error
  * of every operational resource, grouped by type, plus pilot jobs that died
- * before their manager came up.  Admin-only.
+ * before their manager came up.
  */
 export const getSystemHealthCatalogV1SystemHealthGet = <
   ThrowOnError extends boolean = false,
@@ -998,6 +521,8 @@ export const getSystemHealthCatalogV1SystemHealthGet = <
 
 /**
  * Get Router Config
+ *
+ * The RouterConfig currently published to the gateway workers.
  */
 export const getRouterConfigCatalogV1RouterConfigGet = <
   ThrowOnError extends boolean = false,
@@ -1021,7 +546,7 @@ export const getRouterConfigCatalogV1RouterConfigGet = <
 /**
  * Tail Replica Logs
  *
- * Read tail of logs generated by replica.
+ * Read tail of logs generated by a live replica, from its pilot.
  */
 export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGet = <
   ThrowOnError extends boolean = false,
@@ -1044,3 +569,51 @@ export const tailReplicaLogsCatalogV1PilotReplicasSlugLogsGet = <
     url: "/catalog/v1/pilot-replicas/{slug}/logs",
     ...options,
   });
+
+/**
+ * Whoami
+ *
+ * Return the authenticated admin's identity.
+ */
+export const whoamiWhoamiGet = <ThrowOnError extends boolean = false>(
+  options?: Options<WhoamiWhoamiGetData, ThrowOnError>,
+): RequestResult<WhoamiWhoamiGetResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    WhoamiWhoamiGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/whoami",
+    ...options,
+  });
+
+/**
+ * Healthz
+ */
+export const healthzHealthzGet = <ThrowOnError extends boolean = false>(
+  options?: Options<HealthzHealthzGetData, ThrowOnError>,
+): RequestResult<HealthzHealthzGetResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    HealthzHealthzGetResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/healthz", ...options });
+
+/**
+ * Controllers List
+ */
+export const controllersListControllersGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<ControllersListControllersGetData, ThrowOnError>,
+): RequestResult<
+  ControllersListControllersGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    ControllersListControllersGetResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/controllers", ...options });

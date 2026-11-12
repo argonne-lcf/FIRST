@@ -157,17 +157,19 @@ async def control_client(
 ) -> AsyncGenerator[httpx.AsyncClient, None]:
     """
     An httpx client bound to the localhost-only control server app, which serves
-    the /control/v1 and /discovery/v1 routes.
+    the admin API: /control/v1, the admin /catalog/v1 and /discovery/v1.
 
     The control server has no lifespan; instead of running one we build a
     ClientState directly and stash it on app.state.
     """
     from first_gateway import Settings
     from first_gateway.controllers.control_server import app as control_app
+    from first_gateway.services.pilot_control import PilotControlClient
 
     settings = Settings()
     async with settings.build_clients() as client_state:
         control_app.state.client_state = client_state
+        control_app.state.pilot_control_client = PilotControlClient(client_state)
         transport = httpx.ASGITransport(app=control_app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver"

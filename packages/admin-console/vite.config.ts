@@ -11,9 +11,10 @@ export default defineConfig({
     port: 4040,
     strictPort: true,
     proxy: {
-      "/catalog": "http://localhost:8000",
-      "/control": "http://localhost:8000",
-      "/whoami": "http://localhost:8000",
+      // The admin API: controller-manager's loopback-only control server.
+      "/catalog": "http://localhost:9100",
+      "/control": "http://localhost:9100",
+      "/whoami": "http://localhost:9100",
     },
   },
 });

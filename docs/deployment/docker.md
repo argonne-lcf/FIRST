@@ -62,8 +62,13 @@ flowchart TB
 - **inference-gateway (apiserver)** — the user-facing API (gunicorn/uvicorn on
   `:7000`). Fronted by nginx. Dev doesn't publish `:7000` (nginx proxies it
   inside the network); prod publishes `127.0.0.1:7000` for the host nginx.
-- **controller-manager** — runs the control loops; exposes metrics and pilot
-  service-discovery on `127.0.0.1:9100`. Same image as the apiserver.
+- **controller-manager** — runs the control loops; exposes metrics, pilot
+  service-discovery and the **admin API** on `127.0.0.1:9100`: the control plane
+  (`/control/v1`), the full catalog (`/catalog/v1`), the admin console
+  (`/admin-console/`) and its OpenAPI docs (`/docs`). Nothing admin is served by
+  the apiserver or proxied by nginx; operators reach it on the host or through
+  an SSH tunnel (`ssh -L 9100:localhost:9100 <host>`). Same image as the
+  apiserver.
 - **postgres:18** — application database. Published on `127.0.0.1:5433` for host
   access. Healthcheck gates the apiserver/controller startup.
 - **redis:8** — control-plane state / coordination on `127.0.0.1:6380`. Tuned for
@@ -118,10 +123,13 @@ The stack bind-mounts a few host paths. They must exist before `up`:
   Files are read when clients are built: after rotating a set, restart
   `inference-gateway` and `controller-manager`. `make pki` creates the empty
   directory.
-- **`packages/admin-console/dist`** — the built admin UI, mounted into the dev
-  nginx container. Build it (in `packages/admin-console`) before relying on the
-  console; in **prod** you deploy `dist/` to a host path that host-nginx serves
-  (see `nginx.prod.conf.example`).
+- **`packages/admin-console/dist`** — the built admin UI, mounted into
+  `controller-manager`, which serves it at
+  `http://localhost:9100/admin-console/`. Build it (`npm run build` in
+  `packages/admin-console`) before `compose up`, in dev and prod alike, and
+  restart `controller-manager` after the first build. The console's Globus
+  login redirects to `http://localhost:9100/admin-console/callback`, so tunnel
+  to local port 9100.
 - **`.env.secret.gateway`, `.env.secret.controller`** (and in prod
   **`.env.secret.postgres`**; repo root, `.gitignore`d) — per-service secrets,
   required by the stack; see [Environment files](#environment-files).
@@ -369,12 +377,13 @@ buffering) but terminates TLS and targets `127.0.0.1:7000`:
 
 ```bash
 sudo cp deploy/nginx.prod.conf.example /etc/nginx/conf.d/first.conf
-# edit server_name, TLS cert paths, and the admin-console root
+# edit server_name and TLS cert paths
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Deploy the built admin console (`packages/admin-console/dist`) to the host path
-referenced by that config.
+Host nginx serves only the user-facing API. The admin console and admin API
+stay on `127.0.0.1:9100` (see [Components](#components)); never add a
+`proxy_pass` to that port.
 
 !!! warning "Grafana is anonymous-admin"
     Grafana runs with anonymous admin access and binds to `127.0.0.1:3000`. That's

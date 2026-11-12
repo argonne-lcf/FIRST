@@ -59,6 +59,9 @@ services:
       - path: ../.env.secret.controller # see .env.controller.example
         required: true
     command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
+    environment:
+      FIRST_ADMIN_CONSOLE_DIR: /app/admin-console
+    # The admin API and admin console: loopback only, never behind nginx.
     ports:
       - "127.0.0.1:9100:9100"
     secrets:
@@ -70,6 +73,8 @@ services:
         target: pilot_client.key
     volumes:
       - ../pki/upstream:/run/secrets/upstream:ro
+      # The built admin console, served at http://localhost:9100/admin-console/
+      - ../packages/admin-console/dist:/app/admin-console:ro
       # What the prompt shippers last did, for the health alerter.
       - log-shipping-status:/run/log-shipping:ro
     depends_on:

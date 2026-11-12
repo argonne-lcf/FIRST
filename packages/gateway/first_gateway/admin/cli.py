@@ -27,12 +27,26 @@ from first_common.schema.resources import (
     ResourceManifest,
 )
 
+from .catalog_cli import (
+    access_groups_cli,
+    clusters_cli,
+    deployments_cli,
+    models_cli,
+)
 from .client import DEFAULT_BASE_URL, AdminClient
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
 
 cli = Typer(no_args_is_help=True)
+
+for _name, _sub, _help in [
+    ("models", models_cli, "Inspect Models in full"),
+    ("deployments", deployments_cli, "Inspect deployments and their replicas"),
+    ("clusters", clusters_cli, "Inspect clusters and their pilot jobs"),
+    ("access-groups", access_groups_cli, "Inspect AccessGroups"),
+]:
+    cli.add_typer(_sub, name=_name, help=_help)
 
 
 @cli.callback()
@@ -416,7 +430,7 @@ def set_desired_replicas(
 
     Scale a group at once by piping names from alcf-ai:
 
-        alcf-ai deployments ls -q 'sophia/amsc-d3/*' | first-admin set-desired-replicas - 0
+        first-admin deployments ls -q 'sophia/amsc-d3/*' | first-admin set-desired-replicas - 0
     """
     client: AdminClient = ctx.obj
     names = [

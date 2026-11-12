@@ -28,19 +28,8 @@ server {
     ssl_certificate     /etc/ssl/first/fullchain.pem;
     ssl_certificate_key /etc/ssl/first/privkey.pem;
 
-    location = /admin-console {
-        return 301 /admin-console/;
-    }
-    location /admin-console/assets/ {
-        root /srv/first/admin-console;          # <-- host path holding dist/
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-    location /admin-console/ {
-        root /srv/first/admin-console;          # <-- host path holding dist/
-        add_header Cache-Control "no-store";
-        try_files $uri /admin-console/index.html;
-    }
+    # No admin routes here: the admin API and the admin console are served only
+    # by controller-manager on 127.0.0.1:9100. Do not proxy to that port.
 
     location / {
         limit_req zone=anon burst=20;

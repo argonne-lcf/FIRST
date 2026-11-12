@@ -84,7 +84,27 @@ async def test_plan_forbidden_for_non_admin(
     assert resp.status_code == 403
 
 
-async def test_clusters_allowed_for_admin(client: httpx.AsyncClient) -> None:
-    resp = await client.get("/catalog/v1/clusters", headers=auth_header(ADMIN_TOKEN))
+async def test_admin_catalog_forbidden_for_non_admin(
+    control_client: httpx.AsyncClient,
+) -> None:
+    for path in ("/catalog/v1/clusters", "/catalog/v1/system-health", "/whoami"):
+        assert (await control_client.get(path)).status_code == 401
+        resp = await control_client.get(path, headers=auth_header(USER_TOKEN))
+        assert resp.status_code == 403, path
+
+
+async def test_admin_whoami_on_control_server(
+    control_client: httpx.AsyncClient,
+) -> None:
+    resp = await control_client.get("/whoami", headers=auth_header(ADMIN_TOKEN))
+    assert resp.status_code == 200
+    assert resp.json()["username"] == "admin@anl.gov"
+
+
+@pytest.mark.parametrize("token", [ADMIN_TOKEN, USER_TOKEN])
+async def test_clusters_allowed_for_any_user(
+    client: httpx.AsyncClient, token: str
+) -> None:
+    resp = await client.get("/catalog/v1/clusters", headers=auth_header(token))
     assert resp.status_code == 200
     assert resp.json() == []

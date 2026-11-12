@@ -81,14 +81,14 @@ and re-apply the `# livetest` edits.
 | Chaos (added by the `chaos` fixture) | `livetest/chaos` on `LIVE_CHAOS_CLUSTER` (tara) | 4 static backends a–d, weights 1000/1/1000/1000; rpm 6 / tpm 600 (one request is easy to read off the buckets); cooldown threshold 3, window 30s, bench 20s |
 
 Expectations are derived from **your effective limits** as reported by
-`/catalog/v1/models`. If a limit is unlimited for you, the test skips.
+the admin API's `/catalog/v1/models`. If a limit is unlimited for you, the test skips.
 
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
 | `inference_base_url` | `http://localhost:8000` | gateway (nginx) |
-| `admin_base_url` | `http://localhost:9100` | control API |
+| `admin_base_url` | `http://localhost:9100` | admin API (control plane and full catalog) |
 | `LIVE_REDIS_URL` | `FIRST_REDIS_URL` from `.env.compose`, host `127.0.0.1` | |
 | `LIVE_CHAOS_CLUSTER` / `LIVE_CHAOS_PORT` | `tara` / `18765` | chaos deployments' cluster; sidecar control port on 127.0.0.1 |
 | `LIVE_APISERVER_SERVICE` / `LIVE_CONTROLLER_SERVICE` | `inference-gateway` / `controller-manager` | compose services |

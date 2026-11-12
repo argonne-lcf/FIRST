@@ -7,7 +7,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Protocol, Sequence, TypeVar
 
 import typer
 from pydantic import BaseModel
@@ -16,9 +16,8 @@ from rich.status import Status
 
 from first_common.errors import NotFound, ServiceUnavailable
 from first_common.schema.resources.read import (
-    ModelSummary,
-    PilotDeploymentSummary,
-    StaticDeploymentDetail,
+    PilotDeploymentPublic,
+    StaticDeploymentPublic,
 )
 from first_common.schema.types import HealthCheckResult, PilotDeploymentState
 
@@ -55,7 +54,7 @@ def model_for(ctx: typer.Context, model: str | None, deployment: str | None) -> 
         raise typer.BadParameter("Specify a Model, or a deployment with -d.")
     name = deployment.replace("~", "/")
     catalog = get_client(ctx).catalog
-    deployments: list[PilotDeploymentSummary | StaticDeploymentDetail] = [
+    deployments: list[PilotDeploymentPublic | StaticDeploymentPublic] = [
         *catalog.pilot_deployments(),
         *catalog.static_deployments(),
     ]
@@ -146,11 +145,32 @@ def endpoint_list(endpoints: list[str]) -> str:
     return ", ".join(short_endpoint(e) for e in endpoints) or "—"
 
 
-def llm_endpoints(model: ModelSummary) -> list[str]:
+class _HasState(Protocol):
+    @property
+    def state(self) -> PilotDeploymentState: ...
+
+
+class _HasHealth(Protocol):
+    @property
+    def health(self) -> HealthCheckResult: ...
+
+
+class ModelLike(Protocol):
+    """What these helpers read from a Model: its public or its admin view."""
+
+    @property
+    def supported_endpoints(self) -> list[str]: ...
+    @property
+    def pilot_deployments(self) -> Sequence[_HasState]: ...
+    @property
+    def static_deployments(self) -> Sequence[_HasHealth]: ...
+
+
+def llm_endpoints(model: ModelLike) -> list[str]:
     return [e for e in model.supported_endpoints if e in LLM_ENDPOINTS]
 
 
-def model_state(model: ModelSummary) -> str:
+def model_state(model: ModelLike) -> str:
     """
     Aggregate one state for a Model from its deployments: ready when any
     deployment can serve, starting when a pilot deployment is on its way up.
@@ -172,7 +192,7 @@ def model_state(model: ModelSummary) -> str:
     return "offline"
 
 
-def ready_deployments(model: ModelSummary) -> tuple[int, int]:
+def ready_deployments(model: ModelLike) -> tuple[int, int]:
     """(ready, total) deployment counts."""
     ready = sum(
         d.state in (PilotDeploymentState.healthy, PilotDeploymentState.degraded)

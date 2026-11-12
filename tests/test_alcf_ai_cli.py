@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 import httpx
@@ -13,7 +13,7 @@ import alcf_ai.cli as cli_module
 from alcf_ai import InferenceClient
 from alcf_ai.cli import cli
 
-from .fixtures.alcf_ai import FakeGateway, cold_start_response, sse
+from .fixtures.alcf_ai import FakeGateway, cold_start_response, pilot_deployment, sse
 
 runner = CliRunner()
 
@@ -61,7 +61,7 @@ def test_models_get_shows_capabilities_and_deployments() -> None:
     assert "tool_calling" in out
     assert "sophia/openai/gpt-oss-120b" in out
     assert "healthy" in out
-    assert "tokens/min" in out
+    assert "Your limits" in out and "5,000 tokens/min" in out
 
 
 def test_deployments_ls_and_get(gateway: FakeGateway) -> None:
@@ -77,12 +77,13 @@ def test_deployments_ls_and_get(gateway: FakeGateway) -> None:
         httpx.Response(
             200,
             json={
-                **gateway_pilot_detail(),
+                **pilot_deployment("sophia/openai/gpt-oss-120b", "openai/gpt-oss-120b"),
+                "replica_counts": {"ready": 2, "unhealthy": 1},
             },
         )
     )
     out = run("deployments", "get", "sophia/openai/gpt-oss-120b")
-    assert "Replicas" in out and "rep-1" in out and "ready" in out
+    assert "2 ready, 1 unhealthy" in out
 
     # Static deployments fall back to the listing when no pilot matches.
     out = run("deployments", "get", "metis/google/gemma-4-31B-it")
@@ -90,8 +91,6 @@ def test_deployments_ls_and_get(gateway: FakeGateway) -> None:
 
 
 def gateway_pilot_detail() -> dict[str, Any]:
-    from .fixtures.alcf_ai import pilot_deployment
-
     return {
         **pilot_deployment("sophia/openai/gpt-oss-120b", "openai/gpt-oss-120b"),
         "launch_template_name": "vllm",
@@ -113,6 +112,106 @@ def gateway_pilot_detail() -> dict[str, Any]:
             }
         ],
     }
+
+
+def test_catalog_models_are_public_views(sdk_client: InferenceClient) -> None:
+    from first_common.schema.resources.read import ModelPublic
+
+    models = sdk_client.catalog.models()
+    assert models and all(type(m) is ModelPublic for m in models)
+    # Operational detail the fake serves never reaches the SDK's models.
+    dumped = json.dumps([m.model_dump(mode="json") for m in models])
+    assert "api_url" not in dumped and "upstream_model_name" not in dumped
+
+
+def test_clusters_ls(gateway: FakeGateway) -> None:
+    gateway.routes["GET /catalog/v1/clusters"] = httpx.Response(
+        200,
+        json=[
+            {
+                "kind": "Cluster",
+                "name": "sophia",
+                "health": "healthy",
+                "maintenance_notice": "Down Tuesday",
+            }
+        ],
+    )
+    out = run("clusters", "ls")
+    assert "sophia" in out and "Down Tuesday" in out
+
+
+def test_admin_only_commands_are_not_in_alcf_ai() -> None:
+    for args in (["clusters", "get", "sophia"], ["deployments", "logs", "rep"]):
+        assert runner.invoke(cli, args).exit_code == 2
+
+
+@pytest.fixture
+def admin_run(
+    gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> Callable[..., str]:
+    """Run `first-admin` against the fake as the admin API (full resources)."""
+    from first_gateway.admin import cli as admin_cli
+    from first_gateway.admin.client import AdminClient
+
+    def fake_client(*_: Any) -> AdminClient:
+        client = AdminClient.__new__(AdminClient)
+        httpx.Client.__init__(
+            client, base_url="http://admin.test", transport=httpx.MockTransport(gateway)
+        )
+        return client
+
+    monkeypatch.setattr(admin_cli, "AdminClient", fake_client)
+
+    def run_admin(*args: str) -> str:
+        result = runner.invoke(admin_cli.cli, list(args), catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    return run_admin
+
+
+def test_admin_catalog_commands_show_full_resources(
+    gateway: FakeGateway, admin_run: Callable[..., str]
+) -> None:
+    out = admin_run("models", "get", "gpt-oss-120b")
+    assert "Default limits" in out and "tool_calling" in out
+
+    out = admin_run("models", "get", "google/gemma-4-31B-it")
+    assert "Upstream model" in out and "gemma-4-31B-it" in out
+
+    assert admin_run("deployments", "ls", "-q", "metis/*").splitlines() == [
+        "metis/google/gemma-4-31B-it"
+    ]
+
+    gateway.routes["GET /catalog/v1/deployments/pilot/sophia/openai/gpt-oss-120b"] = (
+        httpx.Response(200, json=gateway_pilot_detail())
+    )
+    out = admin_run("deployments", "get", "sophia/openai/gpt-oss-120b")
+    assert "Replicas" in out and "rep-1" in out and "job-1" in out
+
+    out = admin_run("deployments", "get", "metis/google/gemma-4-31B-it")
+    assert "StaticDeployment" in out and "In-flight requests" in out
+
+    gateway.routes["GET /catalog/v1/pilot-replicas/a~b/logs"] = httpx.Response(
+        200, json="log tail"
+    )
+    assert "log tail" in admin_run("deployments", "logs", "a/b")
+
+    gateway.routes["GET /catalog/v1/clusters"] = httpx.Response(
+        200,
+        json=[
+            {
+                "kind": "Cluster",
+                "name": "sophia",
+                "uid": 1,
+                "created_at": "2026-09-11T12:00:00Z",
+                "health": "healthy",
+                "health_check": {"url": "https://status.example"},
+                "pilot_system": None,
+            }
+        ],
+    )
+    assert "static only" in admin_run("clusters", "ls")
 
 
 def test_whoami() -> None:

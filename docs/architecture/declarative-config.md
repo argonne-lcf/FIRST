@@ -37,7 +37,7 @@ first-admin apply tests/resource_specs/baseline/
 
 # Inspect what's currently configured (Spec) vs. what's live (Status):
 first-admin audit
-alcf-ai clusters get sophia
+first-admin clusters get sophia
 ```
 
 ## Access groups

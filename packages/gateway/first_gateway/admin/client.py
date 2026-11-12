@@ -1,11 +1,13 @@
 import logging
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 from httpx import Client, Timeout
 
 from alcf_ai._http import raise_for_status
 from alcf_ai.client import AutoGlobusAuth
+from first_common.errors import NotFound
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
@@ -13,7 +15,15 @@ from first_common.schema.resources import (
     ResourceManifest,
 )
 from first_common.schema.resources.read import (
+    AccessGroup,
+    ClusterDetail,
+    ClusterSummary,
+    LaunchTemplate,
+    ModelSummary,
+    PilotDeploymentDetail,
     PilotDeploymentSummary,
+    StaticDeploymentDetail,
+    SystemHealth,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,3 +89,63 @@ class AdminClient(Client):
         )
         raise_for_status(resp)
         return PilotDeploymentSummary.model_validate(resp.json())
+
+    # --- Admin catalog: every resource, in full ------------------------------
+
+    def _catalog(self, path: str) -> Any:
+        resp = self.get(f"/catalog/v1/{path}")
+        raise_for_status(resp)
+        return resp.json()
+
+    def models(self) -> list[ModelSummary]:
+        """Every Model with its deployments and live runtime counters."""
+        return [ModelSummary.model_validate(o) for o in self._catalog("models")]
+
+    def get_model(self, name: str) -> ModelSummary:
+        """Look up one Model by name or alias."""
+        for model in self.models():
+            if name == model.name or name in model.aliases:
+                return model
+        raise NotFound(f"Model {name!r} not found.")
+
+    def access_groups(self) -> list[AccessGroup]:
+        return [AccessGroup.model_validate(o) for o in self._catalog("access-groups")]
+
+    def launch_templates(self) -> list[LaunchTemplate]:
+        return [
+            LaunchTemplate.model_validate(o) for o in self._catalog("launch-templates")
+        ]
+
+    def pilot_deployments(self) -> list[PilotDeploymentSummary]:
+        return [
+            PilotDeploymentSummary.model_validate(o)
+            for o in self._catalog("deployments/pilot")
+        ]
+
+    def get_pilot_deployment(self, name: str) -> PilotDeploymentDetail:
+        """A PilotDeployment with its replicas and their live runtime counters."""
+        return PilotDeploymentDetail.model_validate(
+            self._catalog(f"deployments/pilot/{name}")
+        )
+
+    def static_deployments(self) -> list[StaticDeploymentDetail]:
+        return [
+            StaticDeploymentDetail.model_validate(o)
+            for o in self._catalog("deployments/static")
+        ]
+
+    def clusters(self) -> list[ClusterSummary]:
+        return [ClusterSummary.model_validate(o) for o in self._catalog("clusters")]
+
+    def get_cluster(self, name: str) -> ClusterDetail:
+        """A Cluster with its pilot jobs."""
+        return ClusterDetail.model_validate(self._catalog(f"clusters/{name}"))
+
+    def system_health(self) -> SystemHealth:
+        """One-glance health of every operational resource."""
+        return SystemHealth.model_validate(self._catalog("system-health"))
+
+    def replica_logs(self, replica_slug: str) -> str:
+        """Tail of a live PilotReplica's log."""
+        logs: str = self._catalog(f"pilot-replicas/{replica_slug}/logs")
+        return logs

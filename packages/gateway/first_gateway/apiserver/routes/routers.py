@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 
 from first_common.schema.auth import UserAuthEvent
 
-from ..dependencies import AuthUser, get_admin_user, get_auth_user
+from ..dependencies import AuthUser, get_auth_user
 from ..router_config_manager import RouterConfigManager
 from . import catalog, inference, staging, v1_compat
 
@@ -15,8 +15,9 @@ anon = APIRouter()
 # Requires authentication:
 auth = APIRouter(dependencies=[Depends(get_auth_user)])
 
-# Requires authentication and admin group membership:
-admin = APIRouter(dependencies=[Depends(get_admin_user)])
+# There are no admin routes here: the admin API (control plane, full catalog,
+# admin console) is served only by the loopback-only control server; see
+# controllers/control_server.py.
 
 
 @anon.get("/health")
@@ -34,8 +35,7 @@ async def whoami(user: AuthUser) -> UserAuthEvent:
     return user
 
 
-admin.include_router(catalog.admin_router)
-auth.include_router(catalog.user_router)
+auth.include_router(catalog.router)
 auth.include_router(inference.router)
 auth.include_router(staging.router)
 

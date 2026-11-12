@@ -26,7 +26,7 @@ from alcf_ai.agent import (
     token_helper_command,
 )
 from alcf_ai.cli import cli
-from first_common.schema.resources.read import ModelSummary
+from first_common.schema.resources.read import ModelPublic
 
 from .fixtures.alcf_ai import CATALOG_MODELS
 
@@ -47,11 +47,11 @@ def opencode_v1(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def models() -> list[AgentModel]:
-    return select_models([ModelSummary.model_validate(m) for m in CATALOG_MODELS], [])
+    return select_models([ModelPublic.model_validate(m) for m in CATALOG_MODELS], [])
 
 
 def test_select_models_keeps_llms_and_filters_by_name_or_alias() -> None:
-    summaries = [ModelSummary.model_validate(m) for m in CATALOG_MODELS]
+    summaries = [ModelPublic.model_validate(m) for m in CATALOG_MODELS]
     assert [m.id for m in select_models(summaries, [])] == [
         "google/gemma-4-31B-it",
         "openai/gpt-oss-120b",
@@ -64,7 +64,7 @@ def test_select_models_keeps_llms_and_filters_by_name_or_alias() -> None:
 
 
 def test_select_models_orders_by_names_and_filters_endpoints() -> None:
-    summaries = [ModelSummary.model_validate(m) for m in CATALOG_MODELS]
+    summaries = [ModelPublic.model_validate(m) for m in CATALOG_MODELS]
     assert [
         m.id
         for m in select_models(summaries, ["gpt-oss-120b", "google/gemma-4-31B-it"])
@@ -273,7 +273,7 @@ def test_configure_codex_new_versions_drop_chat_only_models(
 
 
 def test_configure_claude(home: Path) -> None:
-    summaries = [ModelSummary.model_validate(m) for m in CATALOG_MODELS]
+    summaries = [ModelPublic.model_validate(m) for m in CATALOG_MODELS]
     models = select_models(summaries, [], AGENT_ENDPOINTS["claude"])
     path = home / ".claude" / "settings.json"
     path.parent.mkdir()

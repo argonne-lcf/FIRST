@@ -14,7 +14,6 @@ from first_common.schema.structured_logs import RequestLog
 from ..database.redis.pubsub import RedisPubSub as _RedisPubSub
 from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
-from ..services.pilot_control import PilotControlClient
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
 from .context import get_request_id
@@ -39,14 +38,6 @@ async def get_router_config(request: Request) -> _RouterConfig:
 
 
 RouterConfigDep = Annotated[_RouterConfig, Depends(get_router_config)]
-
-
-async def get_pilot_control(request: Request) -> PilotControlClient:
-    """Process-wide pilot mTLS client (built once in the lifespan)."""
-    return cast(PilotControlClient, request.app.state.pilot_control_client)
-
-
-PilotControl = Annotated[PilotControlClient, Depends(get_pilot_control)]
 
 
 async def get_session(state: AppState) -> AsyncGenerator[AsyncSession, None]:
@@ -152,14 +143,3 @@ async def get_admin_user(
 
 
 AdminUser = Annotated[UserAuthEvent, Depends(get_admin_user)]
-
-
-async def is_user_admin(
-    state: AppState, user: UserAuthEvent = Depends(get_auth_user)
-) -> bool:
-    """Returns True if the user belongs to the admin group"""
-    admin_group = state.settings.globus.admin_group
-    return admin_group in user.user_group_uuids
-
-
-IsUserAdmin = Annotated[bool, Depends(is_user_admin)]

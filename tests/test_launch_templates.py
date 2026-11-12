@@ -313,20 +313,26 @@ async def test_plan_apply_roundtrip_and_catalog_views(
     assert not unchanged.to_update and not unchanged.to_add
     assert len(unchanged.no_change) == 6
 
-    response = await client.get(
+    response = await control_client.get(
         "/catalog/v1/launch-templates", headers=auth_header(ADMIN_TOKEN)
     )
     assert response.status_code == 200, response.text
     [template_row] = response.json()
     assert template_row["name"] == "vllm"
     assert template_row["parameters"]["context_window"]["default"] == 65536
-    response = await client.get(
+    response = await control_client.get(
         "/catalog/v1/launch-templates", headers=auth_header(USER_TOKEN)
     )
     assert response.status_code == 403
+    response = await client.get(
+        "/catalog/v1/launch-templates", headers=auth_header(ADMIN_TOKEN)
+    )
+    assert response.status_code == 404
 
     # Model facts reach the catalog, the V1 per-cluster view and the router config.
-    response = await client.get("/catalog/v1/models", headers=auth_header(ADMIN_TOKEN))
+    response = await control_client.get(
+        "/catalog/v1/models", headers=auth_header(ADMIN_TOKEN)
+    )
     assert response.status_code == 200, response.text
     [model] = response.json()
     assert model["max_model_len"] == MAX_MODEL_LEN
@@ -346,7 +352,7 @@ async def test_plan_apply_roundtrip_and_catalog_views(
     assert config.max_model_len == MAX_MODEL_LEN
     assert config.capabilities == {"tool_calling": True}
 
-    response = await client.get(
+    response = await control_client.get(
         f"/catalog/v1/deployments/pilot/{deployment.name}",
         headers=auth_header(ADMIN_TOKEN),
     )

@@ -303,11 +303,13 @@ async def test_concurrent_update_diverged_plan(
 
 
 async def test_list_access_groups_admin_and_user(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
+    baseline_plan: ResourceChangePlan,
 ) -> None:
-    """Admin sees the baseline AccessGroup; ordinary user fails its group +
-    domain restrictions and sees nothing."""
-    admin_resp = await client.get(
+    """The admin API lists the baseline AccessGroup; on the gateway an ordinary
+    user fails its group + domain restrictions and sees nothing."""
+    admin_resp = await control_client.get(
         "/catalog/v1/access-groups", headers=auth_header(ADMIN_TOKEN)
     )
     user_resp = await client.get(
@@ -320,9 +322,11 @@ async def test_list_access_groups_admin_and_user(
 
 
 async def test_list_models(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
-    resp = await client.get("/catalog/v1/models", headers=auth_header(ADMIN_TOKEN))
+    resp = await control_client.get(
+        "/catalog/v1/models", headers=auth_header(ADMIN_TOKEN)
+    )
     assert resp.status_code == 200
     [model] = resp.json()
     assert model["name"] == "meta-llama/llama-3-8b"
@@ -332,9 +336,9 @@ async def test_list_models(
 
 
 async def test_list_static_deployments(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
-    resp = await client.get(
+    resp = await control_client.get(
         "/catalog/v1/deployments/static", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 200
@@ -344,9 +348,9 @@ async def test_list_static_deployments(
 
 
 async def test_list_and_get_pilot_deployment(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
 ) -> None:
-    list_resp = await client.get(
+    list_resp = await control_client.get(
         "/catalog/v1/deployments/pilot", headers=auth_header(ADMIN_TOKEN)
     )
     assert list_resp.status_code == 200
@@ -354,7 +358,7 @@ async def test_list_and_get_pilot_deployment(
     assert summary["name"] == "sophia/pilot/llama-3-8b"
     assert "replicas" not in summary  # summary view defers replicas
 
-    detail_resp = await client.get(
+    detail_resp = await control_client.get(
         f"/catalog/v1/deployments/pilot/{summary['name']}",
         headers=auth_header(ADMIN_TOKEN),
     )
@@ -366,19 +370,21 @@ async def test_list_and_get_pilot_deployment(
 
 
 async def test_list_and_get_cluster(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
+    baseline_plan: ResourceChangePlan,
 ) -> None:
-    # List visible to ordinary users
+    # The gateway lists every cluster to ordinary users, as a public view
     user_list = await client.get(
         "/catalog/v1/clusters", headers=auth_header(USER_TOKEN)
     )
     assert user_list.status_code == 200
     [summary] = user_list.json()
     assert summary["name"] == "sophia"
-    assert "pilot_jobs" not in summary
+    assert "pilot_system" not in summary
 
-    # Detail visible to admins
-    admin_detail = await client.get(
+    # Detail comes from the admin API
+    admin_detail = await control_client.get(
         "/catalog/v1/clusters/sophia", headers=auth_header(ADMIN_TOKEN)
     )
     assert admin_detail.status_code == 200
@@ -386,30 +392,40 @@ async def test_list_and_get_cluster(
     assert detail["name"] == "sophia"
     assert detail["pilot_jobs"] == []
 
-    # Ordinary users forbidden from cluster detail
-    user_detail = await client.get(
+    # ... which refuses ordinary users, and which the gateway does not serve
+    user_detail = await control_client.get(
         "/catalog/v1/clusters/sophia", headers=auth_header(USER_TOKEN)
     )
     assert user_detail.status_code == 403
     assert user_detail.json()["error"]["code"] == "access_denied"
+    for token in (USER_TOKEN, ADMIN_TOKEN):
+        resp = await client.get(
+            "/catalog/v1/clusters/sophia", headers=auth_header(token)
+        )
+        assert resp.status_code == 404
 
 
 async def test_user_filtered_out_when_no_access(
-    client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
+    baseline_plan: ResourceChangePlan,
 ) -> None:
-    """Resources gated by an AccessGroup the user fails should disappear from
-    user-scoped listings, while admins still see them."""
+    """Resources gated by an AccessGroup the caller fails disappear from the
+    gateway's listings (admins get no bypass there), while the admin API still
+    lists them."""
 
-    async def names(path: str, token: str) -> set[str]:
-        resp = await client.get(path, headers=auth_header(token))
+    async def names(http: httpx.AsyncClient, path: str, token: str) -> set[str]:
+        resp = await http.get(path, headers=auth_header(token))
         assert resp.status_code == 200, resp.text
         return {o["name"] for o in resp.json()}
 
-    assert await names("/catalog/v1/models", USER_TOKEN) == set()
-    assert await names("/catalog/v1/deployments/pilot", USER_TOKEN) == set()
-    assert await names("/catalog/v1/deployments/static", USER_TOKEN) == set()
-    # Admin still sees the underlying resources.
-    assert await names("/catalog/v1/models", ADMIN_TOKEN) == {"meta-llama/llama-3-8b"}
+    for token in (USER_TOKEN, ADMIN_TOKEN):
+        assert await names(client, "/catalog/v1/models", token) == set()
+        assert await names(client, "/catalog/v1/deployments/pilot", token) == set()
+        assert await names(client, "/catalog/v1/deployments/static", token) == set()
+    assert await names(control_client, "/catalog/v1/models", ADMIN_TOKEN) == {
+        "meta-llama/llama-3-8b"
+    }
 
 
 async def test_get_pilot_deployment_forbidden_for_unauthorized_user(

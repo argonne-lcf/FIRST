@@ -36,7 +36,7 @@ async def _insert_dead_job(sess: AsyncSession, name: str, deleted_at: datetime) 
 
 
 async def test_system_health_reports_backoff_and_pilot_start_failures(
-    db: async_sessionmaker[AsyncSession], client: httpx.AsyncClient
+    db: async_sessionmaker[AsyncSession], control_client: httpx.AsyncClient
 ) -> None:
     now = datetime.now(timezone.utc)
     async with db.begin() as sess:
@@ -59,7 +59,7 @@ async def test_system_health_reports_backoff_and_pilot_start_failures(
             )
         )
 
-    health = await _system_health(client)
+    health = await _system_health(control_client)
 
     [cluster] = health["clusters"]
     assert cluster["pilot_start_failures"] == 2

@@ -80,6 +80,10 @@ def _exchange(
         # TIME_WAIT on the probe port would make the confirming probe's bind fail.
         client.shutdown(socket.SHUT_WR)
         connection.recv(1)  # wait for the client's FIN before closing
+    # Wait for the accepted socket's FIN too. Until the client has acknowledged
+    # it, that socket still holds the probe port, and a probe that returned
+    # now could make the confirming probe's bind fail.
+    client.recv(1)
     return "pass"
 
 

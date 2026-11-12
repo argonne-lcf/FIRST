@@ -315,10 +315,16 @@ class Gateway:
             timeout=httpx.Timeout(30.0, read=900.0),
             limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
         )
+        self.admin = httpx.AsyncClient(
+            base_url=cfg.admin_base_url,
+            auth=_CachedTokenAuth(),
+            timeout=httpx.Timeout(30.0),
+        )
         self._seq = 0
 
     async def aclose(self) -> None:
         await self.http.aclose()
+        await self.admin.aclose()
 
     def marker(self, tag: str = "") -> str:
         self._seq += 1
@@ -475,14 +481,23 @@ class Gateway:
         resp.raise_for_status()
         return resp.json()
 
+    async def admin_json(self, path: str) -> Any:
+        """
+        Read from the admin API (loopback-only control server), which serves
+        the catalog in full; the gateway serves only narrow public views.
+        """
+        resp = await self.admin.get(path)
+        resp.raise_for_status()
+        return resp.json()
+
     async def whoami(self) -> UserAuthEvent:
         return UserAuthEvent.model_validate(await self.get_json("/whoami"))
 
     async def model(self, name: str) -> dict[str, Any]:
-        for m in await self.get_json("/catalog/v1/models"):
+        for m in await self.admin_json("/catalog/v1/models"):
             if m["name"] == name:
                 return m  # type: ignore[no-any-return]
-        raise LookupError(f"Model {name!r} is not visible in /catalog/v1/models")
+        raise LookupError(f"Model {name!r} is not in the admin /catalog/v1/models")
 
     async def model_runtime(self, name: str) -> dict[str, Any]:
         return (await self.model(name))["runtime"]  # type: ignore[no-any-return]
@@ -491,13 +506,13 @@ class Gateway:
         return int((await self.model_runtime(name))["total_inflight"])
 
     async def pilot_deployment(self, name: str) -> dict[str, Any]:
-        return await self.get_json(f"/catalog/v1/deployments/pilot/{name}")  # type: ignore[no-any-return]
+        return await self.admin_json(f"/catalog/v1/deployments/pilot/{name}")  # type: ignore[no-any-return]
 
     async def router_config(self) -> dict[str, Any]:
-        return await self.get_json("/catalog/v1/router-config")  # type: ignore[no-any-return]
+        return await self.admin_json("/catalog/v1/router-config")  # type: ignore[no-any-return]
 
     async def clusters(self) -> list[dict[str, Any]]:
-        return await self.get_json("/catalog/v1/clusters")  # type: ignore[no-any-return]
+        return await self.admin_json("/catalog/v1/clusters")  # type: ignore[no-any-return]
 
     async def effective_limits(self, model_name: str) -> UsageLimits:
         """The caller's limits for a model, resolved exactly as the gateway
@@ -541,7 +556,7 @@ class Gateway:
                 if r.get("deleted_at") is None
             )
         if model["static_deployments"]:
-            for sd in await self.get_json("/catalog/v1/deployments/static"):
+            for sd in await self.admin_json("/catalog/v1/deployments/static"):
                 if sd["model_name"] == model_name:
                     out[sd["name"]] = sd["runtime"]["inflight"]
         return out

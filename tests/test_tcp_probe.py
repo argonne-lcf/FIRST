@@ -18,10 +18,11 @@ def unused_port() -> int:
 
 
 def test_pass_twice_on_the_same_port() -> None:
-    # The second probe binds the same port without SO_REUSEADDR, so this also
-    # checks that the first closed in an order that left no TIME_WAIT on it.
+    # Each probe binds the same port without SO_REUSEADDR, so this also checks
+    # that the one before it left nothing on the port: no TIME_WAIT, and no
+    # accepted socket still closing (a race, hence the repeats).
     port = unused_port()
-    for _ in range(2):
+    for _ in range(50):
         result = tcp_probe.probe("127.0.0.1", port)
         assert result.result == "pass"
         assert result.host == host_identity(socket.gethostname())

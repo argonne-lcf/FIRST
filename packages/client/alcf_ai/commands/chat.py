@@ -12,7 +12,7 @@ import typer
 from rich.markdown import Markdown
 
 from first_common.errors import NotFound
-from first_common.schema.resources.read import ModelSummary
+from first_common.schema.resources.read import ModelPublic
 
 from ..client import InferenceClient
 from ..inference import (
@@ -64,7 +64,7 @@ def resolve_target(
 
     models = client.catalog.models()
     model = model or os.environ.get("ALCF_AI_MODEL") or None
-    chosen: ModelSummary | None
+    chosen: ModelPublic | None
     if model:
         chosen = next(
             (m for m in models if m.name == model or model in m.aliases), None

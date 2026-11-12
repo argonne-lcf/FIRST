@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_common.schema.types import ReplicaState
 from first_gateway.apiserver.api import GATEWAY_ENV_FILES, app
+from first_gateway.controllers.control_server import app as control_app
 from first_gateway.database.models import (
     AccessGroup,
     Cluster,
@@ -202,7 +203,7 @@ def no_scheduler(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
 async def test_finished_replica_logs_409_without_scheduler_call(
     db_session: AsyncSession,
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     no_scheduler: list[Any],
 ) -> None:
     await _seed_replica(
@@ -210,7 +211,7 @@ async def test_finished_replica_logs_409_without_scheduler_call(
         scheduler_state=SchedulerJobState.gone,
         replica_state=ReplicaState.terminated,
     )
-    resp = await client.get(
+    resp = await control_client.get(
         "/catalog/v1/pilot-replicas/rep/logs", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 409, resp.text
@@ -220,7 +221,7 @@ async def test_finished_replica_logs_409_without_scheduler_call(
 
 async def test_live_replica_logs_come_from_the_pilot(
     db_session: AsyncSession,
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     no_scheduler: list[Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -229,7 +230,7 @@ async def test_live_replica_logs_come_from_the_pilot(
         scheduler_state=SchedulerJobState.running,
         replica_state=ReplicaState.ready,
     )
-    pilot_control = app.state.pilot_control_client
+    pilot_control = control_app.state.pilot_control_client
     seen: list[tuple[str, str, str]] = []
 
     async def fake_get_logs(
@@ -239,10 +240,20 @@ async def test_live_replica_logs_come_from_the_pilot(
         return "log tail"
 
     monkeypatch.setattr(pilot_control, "get_logs", fake_get_logs)
-    resp = await client.get(
+    resp = await control_client.get(
         "/catalog/v1/pilot-replicas/rep/logs", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 200, resp.text
     assert resp.json() == "log tail"
     assert seen == [("https://pilot.invalid:8443", "rep", "cl")]
     assert no_scheduler == []
+
+
+async def test_gateway_serves_no_replica_logs_and_holds_no_pilot_control_client(
+    client: httpx.AsyncClient,
+) -> None:
+    resp = await client.get(
+        "/catalog/v1/pilot-replicas/rep/logs", headers=auth_header(ADMIN_TOKEN)
+    )
+    assert resp.status_code == 404
+    assert not hasattr(app.state, "pilot_control_client")

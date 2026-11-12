@@ -1,7 +1,8 @@
 """
-Catalog API: read-only discovery of the gateway's declarative resources.
+Catalog API: read-only discovery of the resources your AccessGroups grant, as
+the gateway's public views (``*Public``).
 
-Ordinary users see the resources their AccessGroups grant; admins see all.
+Operators read the full resources from the admin API instead (`first-admin`).
 """
 
 from typing import TYPE_CHECKING, Any
@@ -9,14 +10,11 @@ from typing import TYPE_CHECKING, Any
 from first_common.errors import NotFound
 from first_common.schema.resources.read import (
     AccessGroup,
-    ClusterDetail,
-    ClusterSummary,
-    LaunchTemplate,
-    ModelSummary,
-    PilotDeploymentDetail,
-    PilotDeploymentSummary,
-    StaticDeploymentDetail,
-    SystemHealth,
+    ClusterPublic,
+    ModelPublic,
+    PilotDeploymentPublic,
+    PilotDeploymentPublicDetail,
+    StaticDeploymentPublic,
 )
 
 from ._http import raise_for_status
@@ -38,11 +36,11 @@ class CatalogAPI:
 
     # --- Models ---------------------------------------------------------------
 
-    def models(self) -> list[ModelSummary]:
+    def models(self) -> list[ModelPublic]:
         """Visible Models with their deployments and live runtime counters."""
-        return [ModelSummary.model_validate(o) for o in self._get("models")]
+        return [ModelPublic.model_validate(o) for o in self._get("models")]
 
-    def get_model(self, name: str) -> ModelSummary:
+    def get_model(self, name: str) -> ModelPublic:
         """Look up one Model by name or alias."""
         for model in self.models():
             if name == model.name or name in model.aliases:
@@ -54,44 +52,25 @@ class CatalogAPI:
 
     # --- Deployments ----------------------------------------------------------
 
-    def pilot_deployments(self) -> list[PilotDeploymentSummary]:
+    def pilot_deployments(self) -> list[PilotDeploymentPublic]:
         return [
-            PilotDeploymentSummary.model_validate(o)
+            PilotDeploymentPublic.model_validate(o)
             for o in self._get("deployments/pilot")
         ]
 
-    def get_pilot_deployment(self, name: str) -> PilotDeploymentDetail:
-        """A PilotDeployment with its replicas and their live runtime counters."""
-        return PilotDeploymentDetail.model_validate(
+    def get_pilot_deployment(self, name: str) -> PilotDeploymentPublicDetail:
+        """A PilotDeployment with the number of its live replicas in each state."""
+        return PilotDeploymentPublicDetail.model_validate(
             self._get(f"deployments/pilot/{name}")
         )
 
-    def static_deployments(self) -> list[StaticDeploymentDetail]:
+    def static_deployments(self) -> list[StaticDeploymentPublic]:
         return [
-            StaticDeploymentDetail.model_validate(o)
+            StaticDeploymentPublic.model_validate(o)
             for o in self._get("deployments/static")
         ]
 
     # --- Clusters -------------------------------------------------------------
 
-    def clusters(self) -> list[ClusterSummary]:
-        return [ClusterSummary.model_validate(o) for o in self._get("clusters")]
-
-    def get_cluster(self, name: str) -> ClusterDetail:
-        """A Cluster with its pilot jobs.  Admin-only."""
-        return ClusterDetail.model_validate(self._get(f"clusters/{name}"))
-
-    # --- Admin-only operational reads ----------------------------------------
-
-    def launch_templates(self) -> list[LaunchTemplate]:
-        """Admin-only."""
-        return [LaunchTemplate.model_validate(o) for o in self._get("launch-templates")]
-
-    def system_health(self) -> SystemHealth:
-        """Admin-only one-glance health of every operational resource."""
-        return SystemHealth.model_validate(self._get("system-health"))
-
-    def replica_logs(self, replica_slug: str) -> str:
-        """Tail of a PilotReplica's log.  Admin-only."""
-        logs: str = self._get(f"pilot-replicas/{replica_slug}/logs")
-        return logs
+    def clusters(self) -> list[ClusterPublic]:
+        return [ClusterPublic.model_validate(o) for o in self._get("clusters")]

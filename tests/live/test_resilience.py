@@ -251,7 +251,7 @@ async def test_maintenance_notice_and_pilot_loss(
         tl.start()
         run.step(f"Started background load on {cfg.fleet_model}")
         try:
-            detail = await gw.get_json(f"/catalog/v1/clusters/{cluster}")
+            detail = await gw.admin_json(f"/catalog/v1/clusters/{cluster}")
             jobs = [
                 j
                 for j in detail["pilot_jobs"]
@@ -270,7 +270,7 @@ async def test_maintenance_notice_and_pilot_loss(
                 names = {j["name"] for j in jobs}
 
                 async def jobs_gone() -> bool:
-                    d = await gw.get_json(f"/catalog/v1/clusters/{cluster}")
+                    d = await gw.admin_json(f"/catalog/v1/clusters/{cluster}")
                     return not [
                         j
                         for j in d["pilot_jobs"]

@@ -13,6 +13,7 @@ from ..types import (
     ReplicaState,
     ResourceName,
     RouterParams,
+    UsageLimits,
 )
 from . import spec
 from .runtime import BackendRuntime, ModelRuntime, PilotJobRuntime
@@ -242,6 +243,78 @@ class ClusterDetail(ClusterSummary):
 
     kind: Literal["Cluster"] = "Cluster"
     pilot_jobs: list[PilotJob]
+
+
+class PublicView(BaseModel):
+    """
+    What ordinary (non-admin) users see from the catalog
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def merge(cls, obj: Any, **overrides: Any) -> Self:
+        """Validate `obj` with additional attributes defined in overrides."""
+        return cls.model_validate(_Overlay(obj, **overrides), from_attributes=True)
+
+
+class ClusterPublic(PublicView):
+    """A Cluster's health and maintenance notice."""
+
+    kind: Literal["Cluster"] = "Cluster"
+    name: str
+    health: HealthCheckResult
+    maintenance_notice: str | None = None
+
+
+class PilotDeploymentPublic(PublicView):
+    """A PilotDeployment's aggregate state."""
+
+    kind: Literal["PilotDeployment"] = "PilotDeployment"
+    name: str
+    model_name: str
+    cluster_name: str
+    state: PilotDeploymentState
+    desired_replicas: int
+    last_startup_sec: float | None = None
+
+
+class PilotDeploymentPublicDetail(PilotDeploymentPublic):
+    """A PilotDeployment with the number of its live replicas in each state."""
+
+    replica_counts: dict[ReplicaState, int]
+
+
+class StaticDeploymentPublic(PublicView):
+    """A StaticDeployment's health."""
+
+    kind: Literal["StaticDeployment"] = "StaticDeployment"
+    name: str
+    model_name: str
+    cluster_name: str
+    health: HealthCheckResult
+
+
+class ModelPublic(PublicView):
+    """
+    A Model as an ordinary user sees it: endpoints, context window,
+    capabilities, the caller's own usage `limits`, and deployment states.
+    """
+
+    kind: Literal["Model"] = "Model"
+    name: str
+    created_at: datetime
+    display_name: str | None = None
+    aliases: list[str] = []
+    access_group_name: str
+    supported_endpoints: list[str]
+    max_model_len: int | None = None
+    capabilities: dict[str, Any] = {}
+    limits: UsageLimits
+    pilot_deployments: list[PilotDeploymentPublic]
+    static_deployments: list[StaticDeploymentPublic]
+    maintenance_notices: dict[str, str] = {}
+    runtime: ModelRuntime = ModelRuntime()
 
 
 class ResourceHealth(BaseModel):

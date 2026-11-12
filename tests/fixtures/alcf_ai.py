@@ -81,6 +81,7 @@ def model(
         "capabilities": capabilities or {},
         "pilot_deployments": pilot_deployments or [],
         "static_deployments": static_deployments or [],
+        "limits": {"tpm": 5000},
         "runtime": {"total_inflight": 3, "capacity_rejects_total": 0},
     }
 

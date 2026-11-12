@@ -9,7 +9,6 @@ from first_gateway.settings import Settings
 
 from ..database.redis.admission import AdmissionController
 from ..log_config import config_logging, drain_logs
-from ..services.pilot_control import PilotControlClient
 from .backend_client_manager import BackendClientManager
 from .error_handlers import register_error_handlers
 from .log_middleware import ResponseLogMiddleware
@@ -71,14 +70,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.router_config_manager = router_config_manager
         app.state.backend_client_manager = backend_client_manager
         app.state.admission_controller = admission_controller
-        app.state.pilot_control_client = PilotControlClient(client_state)
         try:
             yield
         finally:
             await admission_controller.stop()
             await router_config_manager.stop()
             await backend_client_manager.close_all()
-            await app.state.pilot_control_client.aclose()
             drain_logs()
 
 
@@ -87,6 +84,5 @@ app = FastAPI(title="ALCF Inference Service", lifespan=lifespan)
 app.add_middleware(ResponseLogMiddleware)
 app.include_router(routers.anon)
 app.include_router(routers.auth)
-app.include_router(routers.admin)
 
 register_error_handlers(app)

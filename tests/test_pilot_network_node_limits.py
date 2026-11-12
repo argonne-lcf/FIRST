@@ -347,8 +347,8 @@ async def test_bare_address_round_trips_without_plan_drift(
     assert replan.status_code == 200
     assert replan.json()["to_update"] == []
 
-    # The API (and so the alcf_ai CLI's JSON output) shows plain strings.
-    detail = await client.get("/catalog/v1/clusters/sophia", headers=headers)
+    # The admin API (and so the first-admin CLI's JSON output) shows plain strings.
+    detail = await control_client.get("/catalog/v1/clusters/sophia", headers=headers)
     assert detail.status_code == 200, detail.text
     pilot_system = detail.json()["pilot_system"]
     assert pilot_system["ip_allowlist"] == ["140.221.33.155/32"]

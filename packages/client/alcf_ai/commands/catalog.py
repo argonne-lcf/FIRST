@@ -1,5 +1,6 @@
 """
-Catalog commands: models, deployments, clusters, access-groups.
+Catalog commands: models, deployments, clusters, access-groups, as the
+gateway's public views.  `first-admin` has the operator equivalents.
 """
 
 from fnmatch import fnmatchcase
@@ -12,9 +13,9 @@ from rich.table import Table
 
 from first_common.errors import NotFound
 from first_common.schema.resources.read import (
-    ModelSummary,
-    PilotDeploymentDetail,
-    StaticDeploymentDetail,
+    ModelPublic,
+    PilotDeploymentPublicDetail,
+    StaticDeploymentPublic,
 )
 
 from ..inference import StartupStatus
@@ -44,7 +45,7 @@ access_groups_cli = typer.Typer(no_args_is_help=True)
 # --- models -------------------------------------------------------------------------
 
 
-def _deployments_table(model: ModelSummary) -> Table:
+def _deployments_table(model: ModelPublic) -> Table:
     table = Table(title="Deployments", title_justify="left")
     table.add_column("Name", style="bold")
     table.add_column("Kind")
@@ -52,7 +53,6 @@ def _deployments_table(model: ModelSummary) -> Table:
     table.add_column("State")
     table.add_column("Desired", justify="right")
     table.add_column("Last startup", justify="right")
-    table.add_column("Upstream model")
     for pd in model.pilot_deployments:
         table.add_row(
             pd.name,
@@ -61,17 +61,10 @@ def _deployments_table(model: ModelSummary) -> Table:
             styled_state(pd.state.value),
             str(pd.desired_replicas),
             fmt_seconds(pd.last_startup_sec),
-            "—",
         )
     for sd in model.static_deployments:
         table.add_row(
-            sd.name,
-            "static",
-            sd.cluster_name,
-            styled_state(sd.health.value),
-            "—",
-            "—",
-            sd.upstream_model_name,
+            sd.name, "static", sd.cluster_name, styled_state(sd.health.value), "—", "—"
         )
     return table
 
@@ -81,7 +74,7 @@ def _longest(names: Iterable[str]) -> int:
     return max((len(n) for n in names), default=0)
 
 
-def _maintenance(model: ModelSummary) -> str:
+def _maintenance(model: ModelPublic) -> str:
     notices = model.maintenance_notices.items()
     return "\n".join(f"{c}: {n}" for c, n in notices) or "—"
 
@@ -140,7 +133,7 @@ def models_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> None:
         print_json(m)
         return
 
-    limits = m.usage_limits.default
+    limits = m.limits
     facts = Table(show_header=False, box=None, pad_edge=False)
     facts.add_column(style="bold")
     facts.add_column()
@@ -158,7 +151,7 @@ def models_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> None:
     facts.add_row("Access group", m.access_group_name)
     facts.add_row("Maintenance", _maintenance(m))
     facts.add_row(
-        "Default limits",
+        "Your limits",
         f"{fmt_int(limits.tpm)} tokens/min · {limits.rpm} req/min · "
         f"{limits.max_user_concurrency} concurrent",
     )
@@ -243,9 +236,7 @@ def deployments_ls(
     """
     List pilot and static deployments with their live state.
 
-    Pipe names into first-admin to scale a group at once:
-
-        alcf-ai deployments ls -q 'sophia/amsc-d3/*' | first-admin set-desired-replicas - 0
+    Print bare names with -q to feed other commands.
     """
     catalog = get_client(ctx).catalog
     pilots = catalog.pilot_deployments()
@@ -258,9 +249,9 @@ def deployments_ls(
         statics = [d for d in statics if any(fnmatchcase(d.name, p) for p in patterns)]
     pilots.sort(key=lambda d: d.name)
     statics.sort(key=lambda d: d.name)
+    names = [d.name for d in pilots] + [d.name for d in statics]
     if names_only:
-        for d in [*pilots, *statics]:
-            print(d.name)
+        print("\n".join(names))
         return
     if as_json:
         print_json([*pilots, *statics])
@@ -271,7 +262,7 @@ def deployments_ls(
         "Name",
         style="bold",
         no_wrap=True,
-        min_width=_longest(d.name for d in [*pilots, *statics]),
+        min_width=_longest(names),
     )
     table.add_column("Kind")
     table.add_column("Model")
@@ -279,7 +270,6 @@ def deployments_ls(
     table.add_column("State")
     table.add_column("Desired", justify="right")
     table.add_column("Last startup", justify="right")
-    table.add_column("In-flight", justify="right")
 
     for pd in pilots:
         table.add_row(
@@ -290,7 +280,6 @@ def deployments_ls(
             styled_state(pd.state.value),
             str(pd.desired_replicas),
             fmt_seconds(pd.last_startup_sec),
-            "—",
         )
     for sd in statics:
         table.add_row(
@@ -301,12 +290,11 @@ def deployments_ls(
             styled_state(sd.health.value),
             "—",
             "—",
-            str(sd.runtime.inflight),
         )
     console.print(table)
 
 
-def _print_pilot_deployment(d: PilotDeploymentDetail) -> None:
+def _print_pilot_deployment(d: PilotDeploymentPublicDetail) -> None:
     facts = Table(show_header=False, box=None, pad_edge=False)
     facts.add_column(style="bold")
     facts.add_column()
@@ -314,58 +302,24 @@ def _print_pilot_deployment(d: PilotDeploymentDetail) -> None:
     facts.add_row("Cluster", d.cluster_name)
     facts.add_row("State", styled_state(d.state.value))
     facts.add_row("Desired replicas", str(d.desired_replicas))
-    facts.add_row("Replica range", f"{d.min_replicas}–{d.max_replicas}")
     facts.add_row(
-        "Autoscaling",
-        d.scaling_strategy.strategy if d.scaling_strategy else "[dim]manual[/]",
-    )
-    facts.add_row("Launch template", d.launch_template_name)
-    facts.add_row(
-        "Shape",
-        f"{d.launch_spec.num_nodes} node(s) × {d.launch_spec.gpus_per_node} GPU(s)",
+        "Replicas",
+        ", ".join(f"{n} {styled_state(s.value)}" for s, n in d.replica_counts.items())
+        or "—",
     )
     facts.add_row("Last startup", fmt_seconds(d.last_startup_sec))
-    facts.add_row("Launch failures", str(d.consecutive_launch_failures))
-    if d.reconcile_last_error:
-        facts.add_row("Reconcile error", f"[red]{d.reconcile_last_error}[/]")
     console.print(
         Panel(facts, title=f"PilotDeployment [bold]{d.name}[/]", title_align="left")
     )
 
-    table = Table(title="Replicas", title_justify="left")
-    table.add_column("Replica", style="bold")
-    table.add_column("State")
-    table.add_column("Pilot job")
-    table.add_column("GPUs")
-    table.add_column("In-flight", justify="right")
-    table.add_column("Started")
-    table.add_column("Message")
-    for r in d.replicas:
-        gpus = ", ".join(f"{c.hostname}:{','.join(c.gpu_ids)}" for c in r.resources)
-        table.add_row(
-            r.name,
-            styled_state(r.state.value),
-            r.pilot_job_name or "—",
-            gpus or "—",
-            str(r.runtime.inflight),
-            fmt_age(r.started_at),
-            r.state_message,
-        )
-    console.print(table)
 
-
-def _print_static_deployment(d: StaticDeploymentDetail) -> None:
+def _print_static_deployment(d: StaticDeploymentPublic) -> None:
     facts = Table(show_header=False, box=None, pad_edge=False)
     facts.add_column(style="bold")
     facts.add_column()
     facts.add_row("Model", d.model_name)
     facts.add_row("Cluster", d.cluster_name)
     facts.add_row("Health", styled_state(d.health.value))
-    facts.add_row("Upstream model", d.upstream_model_name)
-    facts.add_row("In-flight requests", str(d.runtime.inflight))
-    facts.add_row("Cooldown errors", str(d.runtime.cooldown_errors))
-    if d.reconcile_last_error:
-        facts.add_row("Reconcile error", f"[red]{d.reconcile_last_error}[/]")
     console.print(
         Panel(facts, title=f"StaticDeployment [bold]{d.name}[/]", title_align="left")
     )
@@ -373,9 +327,9 @@ def _print_static_deployment(d: StaticDeploymentDetail) -> None:
 
 @deployments_cli.command("get")
 def deployments_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> None:
-    """Show one deployment (pilot deployments include their replicas)."""
+    """Show one deployment (pilot deployments include their replica counts)."""
     catalog = get_client(ctx).catalog
-    detail: PilotDeploymentDetail | StaticDeploymentDetail
+    detail: PilotDeploymentPublicDetail | StaticDeploymentPublic
     try:
         detail = catalog.get_pilot_deployment(name)
     except NotFound:
@@ -386,17 +340,10 @@ def deployments_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> 
 
     if as_json:
         print_json(detail)
-    elif isinstance(detail, PilotDeploymentDetail):
+    elif isinstance(detail, PilotDeploymentPublicDetail):
         _print_pilot_deployment(detail)
     else:
         _print_static_deployment(detail)
-
-
-@deployments_cli.command("logs")
-def deployments_logs(ctx: typer.Context, replica: str) -> None:
-    """Tail a PilotReplica's log by replica name or slug.  (Admin-only.)"""
-    slug = replica.replace("/", "~")
-    print(get_client(ctx).catalog.replica_logs(slug))
 
 
 # --- clusters ----------------------------------------------------------------------
@@ -404,7 +351,7 @@ def deployments_logs(ctx: typer.Context, replica: str) -> None:
 
 @clusters_cli.command("ls")
 def clusters_ls(ctx: typer.Context, as_json: bool = JsonFlag) -> None:
-    """List all configured Clusters."""
+    """List all Clusters with their health and maintenance notice."""
     clusters = get_client(ctx).catalog.clusters()
     if as_json:
         print_json(clusters)
@@ -413,60 +360,9 @@ def clusters_ls(ctx: typer.Context, as_json: bool = JsonFlag) -> None:
     table = Table(title="Clusters")
     table.add_column("Name", style="bold")
     table.add_column("Health")
-    table.add_column("Pilot jobs")
     table.add_column("Maintenance notice")
     for c in sorted(clusters, key=lambda c: c.name):
-        pilot = (
-            f"{c.pilot_system.queue} · {c.pilot_system.max_num_nodes}×"
-            f"{c.pilot_system.gpus_per_node} GPU"
-            if c.pilot_system
-            else "[dim]static only[/]"
-        )
-        table.add_row(
-            c.name,
-            styled_state(c.health.value),
-            pilot,
-            c.maintenance_notice or "—",
-        )
-    console.print(table)
-
-
-@clusters_cli.command("get")
-def clusters_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> None:
-    """Show a Cluster with its pilot jobs.  (Admin-only.)"""
-    c = get_client(ctx).catalog.get_cluster(name)
-    if as_json:
-        print_json(c)
-        return
-
-    console.print(
-        Panel(
-            f"Health: {styled_state(c.health.value)}\n"
-            f"Maintenance: {c.maintenance_notice or '—'}",
-            title=f"Cluster [bold]{c.name}[/]",
-            title_align="left",
-        )
-    )
-    table = Table(title="Pilot jobs", title_justify="left")
-    table.add_column("Job", style="bold")
-    table.add_column("Scheduler ID")
-    table.add_column("State")
-    table.add_column("Manager")
-    table.add_column("Nodes", justify="right")
-    table.add_column("Replicas", justify="right")
-    table.add_column("Started")
-    table.add_column("Idle since")
-    for j in c.pilot_jobs:
-        table.add_row(
-            j.name,
-            j.scheduler_job_id or "—",
-            styled_state(j.scheduler_state.value),
-            styled_state(j.manager_health.value),
-            f"{j.num_nodes}×{j.gpus_per_node}",
-            str(len(j.assigned_replicas)),
-            fmt_age(j.time_started),
-            fmt_age(j.idle_since),
-        )
+        table.add_row(c.name, styled_state(c.health.value), c.maintenance_notice or "—")
     console.print(table)
 
 

@@ -25,7 +25,7 @@ import tomlkit
 from pydantic import BaseModel, ConfigDict
 from tomlkit.items import InlineTable
 
-from first_common.schema.resources.read import ModelSummary
+from first_common.schema.resources.read import ModelPublic
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class AgentModel:
     capabilities: ModelCapabilities
 
     @classmethod
-    def from_summary(cls, m: ModelSummary) -> "AgentModel":
+    def from_summary(cls, m: ModelPublic) -> "AgentModel":
         return cls(
             id=m.name,
             name=m.display_name or m.name,
@@ -126,7 +126,7 @@ class AgentModel:
 
 
 def select_models(
-    models: list[ModelSummary],
+    models: list[ModelPublic],
     names: list[str],
     endpoints: frozenset[str] = _OPENAI_ENDPOINTS,
 ) -> list[AgentModel]:
@@ -136,7 +136,7 @@ def select_models(
     lists them, else sorted by name; the first is the agent's default.
     """
 
-    def matches(n: str, m: ModelSummary) -> bool:
+    def matches(n: str, m: ModelPublic) -> bool:
         return n == m.name or n in m.aliases
 
     if names:

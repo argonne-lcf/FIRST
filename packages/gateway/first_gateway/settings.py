@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     )
 
     prompt_storage_dir: Path = Path("prompt-records")
+    # The built admin console (packages/admin-console/dist), served by the
+    # loopback-only control server at /admin-console/ when set.
+    admin_console_dir: Path | None = None
     log_level: str = "INFO"
     # Per-logger overrides (for selective debugging):
     # FIRST_LOG_LEVELS='{"first_gateway.platforms.schedulers.graphql_pbs": "DEBUG"}'

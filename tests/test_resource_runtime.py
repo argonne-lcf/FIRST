@@ -31,8 +31,8 @@ async def redis() -> AsyncGenerator[Redis, None]:
 
 @pytest.fixture
 async def baseline(control_client: httpx.AsyncClient) -> None:
-    # Seeding goes through the control plane, which now lives on the localhost-only
-    # control server; the tests below read it back via the apiserver ``client``.
+    # Seeding and the full (admin) catalog reads below both go through the
+    # localhost-only control server.
     resources = _load("baseline")
     plan = await _plan(control_client, resources)
     await _apply(control_client, resources, plan)
@@ -45,7 +45,7 @@ async def _get_models(client: httpx.AsyncClient) -> list[dict[str, Any]]:
 
 
 async def test_list_models_runtime(
-    client: httpx.AsyncClient, baseline: None, redis: Redis
+    control_client: httpx.AsyncClient, baseline: None, redis: Redis
 ) -> None:
     """list_models populates ModelRuntime from model_reservations ZSET + model_demand hash."""
     model_name = "meta-llama/llama-3-8b"
@@ -57,7 +57,7 @@ async def test_list_models_runtime(
         mapping={"capacity_rejects_total": "3"},
     )
 
-    models = await _get_models(client)
+    models = await _get_models(control_client)
     assert len(models) == 1
     rt = models[0]["runtime"]
     assert rt["total_inflight"] == 7
@@ -65,10 +65,10 @@ async def test_list_models_runtime(
 
 
 async def test_list_static_deployments_runtime(
-    client: httpx.AsyncClient, baseline: None, redis: Redis
+    control_client: httpx.AsyncClient, baseline: None, redis: Redis
 ) -> None:
     """list_static_deployments populates BackendRuntime from Redis."""
-    resp = await client.get(
+    resp = await control_client.get(
         "/catalog/v1/deployments/static", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 200
@@ -84,7 +84,7 @@ async def test_list_static_deployments_runtime(
         )
     await redis.set(Keys.backend_errors(backend_id), "4")
 
-    resp = await client.get(
+    resp = await control_client.get(
         "/catalog/v1/deployments/static", headers=auth_header(ADMIN_TOKEN)
     )
     assert resp.status_code == 200
@@ -95,7 +95,7 @@ async def test_list_static_deployments_runtime(
 
 
 async def test_catalog_reports_health_detail(
-    client: httpx.AsyncClient,
+    control_client: httpx.AsyncClient,
     baseline: None,
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -107,17 +107,17 @@ async def test_catalog_reports_health_detail(
             )
 
     for path in ("/catalog/v1/clusters", "/catalog/v1/deployments/static"):
-        resp = await client.get(path, headers=auth_header(ADMIN_TOKEN))
+        resp = await control_client.get(path, headers=auth_header(ADMIN_TOKEN))
         assert resp.status_code == 200
         assert {r["health_detail"] for r in resp.json()} == {"HTTP 503"}
 
 
 async def test_get_pilot_deployment_replica_runtime(
-    client: httpx.AsyncClient, baseline: None, redis: Redis
+    control_client: httpx.AsyncClient, baseline: None, redis: Redis
 ) -> None:
     """get_pilot_deployment populates BackendRuntime on each PilotReplica."""
     dep_name = "sophia/pilot/llama-3-8b"
-    resp = await client.get(
+    resp = await control_client.get(
         f"/catalog/v1/deployments/pilot/{dep_name}",
         headers=auth_header(ADMIN_TOKEN),
     )

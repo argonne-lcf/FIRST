@@ -27,7 +27,7 @@ WINDOW_SEC = CHAOS_ROUTER["cooldown_window_sec"]
 
 
 async def _static_cooldown_errors(gw: Gateway, deployment: str) -> int:
-    for sd in await gw.get_json("/catalog/v1/deployments/static"):
+    for sd in await gw.admin_json("/catalog/v1/deployments/static"):
         if sd["name"] == deployment:
             return int(sd["runtime"]["cooldown_errors"])
     raise LookupError(deployment)
