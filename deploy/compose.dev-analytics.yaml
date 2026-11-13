@@ -1,0 +1,7 @@
+# Dev-gateway Analytics listener: select this overlay in .env, then compose-up.
+# The base keeps loopback access for local snapshots. The private listener is
+# direct HTTP and must stay restricted to inference-olap-01 by the host firewall.
+services:
+  prometheus:
+    ports:
+      - "140.221.33.155:9090:9090"

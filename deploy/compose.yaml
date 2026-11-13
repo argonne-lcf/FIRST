@@ -186,23 +186,6 @@ services:
     restart: unless-stopped
     logging: *logging
 
-  grafana:
-    image: grafana/grafana:latest@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
-    environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_AUTH_DISABLE_LOGIN_FORM: "true"
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
-      - ./dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
-      - ./grafana-dashboards:/var/lib/grafana/dashboards
-    networks:
-      - gateway
-    restart: unless-stopped
-    logging: *logging
-
   # --- Log shipping (docs/deployment/log-shipping.md) --------------------------
   # Off unless the `log-shipping` profile is on (COMPOSE_PROFILES in .env).
   # The environment overlays add each service's data volume.
