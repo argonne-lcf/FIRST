@@ -248,8 +248,17 @@ def check_session_info(
             session_domain = identity["username"].split("@")[1]
             session_info_identities.append(identity)
 
-            # If the domain is authorized by the service ...
+            # Check if IdP could be authorized
+            session_domain_in_authorized = False
             if session_domain in settings.AUTHORIZED_IDP_DOMAINS:
+                session_domain_in_authorized = True
+            else:
+                for idp_wildcard in settings.AUTHORIZED_IDP_WILDCARD_DOMAINS:
+                    if session_domain.endswith(idp_wildcard):
+                        session_domain_in_authorized = True
+
+            # If the domain is authorized by the service ...
+            if session_domain_in_authorized:
                 # Create the User object from the Globus introspection
                 try:
                     user = UserPydantic(
@@ -318,12 +327,31 @@ def check_groups_per_idp(
             None,
         )
 
-    # If there is a Globus Group check tied to this identity provider ...
+    # Initially set the group overlap to None
+    # (meaning there is no group per IdP restriction)
+    group_overlap = None
+
+    # Check if IdP could be authorized based on one-to-one IdP match
     if idp_domain in settings.AUTHORIZED_GROUPS_PER_IDP:
-        # Error if the user is a member of any authorized Globus Groups
         group_overlap = set(user_groups) & set(
             settings.AUTHORIZED_GROUPS_PER_IDP[idp_domain]
         )
+
+    # Check if IdP could be authorized based on a wildcard
+    else:
+        for idp_wildcard in settings.AUTHORIZED_GROUPS_PER_IDP_WILDCARD:
+            if idp_domain.endswith(idp_wildcard):
+                group_overlap = set(user_groups) & set(
+                    settings.AUTHORIZED_GROUPS_PER_IDP[idp_wildcard]
+                )
+
+    # Grant access if no group restriction was found
+    if group_overlap is None:
+        return True, "", None
+
+    # If there was a group restriction found ...
+    else:
+        # Error if user not in authorized group
         if len(group_overlap) == 0:
             return (
                 False,
@@ -335,9 +363,6 @@ def check_groups_per_idp(
         else:
             group_overlap_str = ", ".join(list(group_overlap))
             return True, "", group_overlap_str
-
-    # Grant request if no group restriction was found
-    return True, "", None
 
 
 # Extract service account client
