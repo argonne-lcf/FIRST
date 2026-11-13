@@ -1,7 +1,9 @@
 import difflib
+import json
 import logging
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from typer import Typer
 from yaml import safe_load_all
 
 from alcf_ai.cli import _print_error
+from alcf_ai.client import DEFAULT_BASE_URL as DEFAULT_GATEWAY_URL
 from first_common.errors import FirstError, InvalidSpecError
 from first_common.schema.resources import (
     ConfigVersion,
@@ -28,6 +31,17 @@ from first_common.schema.resources import (
 )
 
 from .client import DEFAULT_BASE_URL, AdminClient
+from .workflow import (
+    SavedPlan,
+    capture_catalog,
+    check_target_plan,
+    deployment_status,
+    load_saved_plan,
+    overlay_targets,
+    service_urls,
+    write_export,
+    write_private,
+)
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
@@ -39,6 +53,7 @@ cli = Typer(no_args_is_help=True)
 def _root(
     ctx: typer.Context,
     base_url: str | None = DEFAULT_BASE_URL,
+    gateway_url: str = DEFAULT_GATEWAY_URL,
     log_level: str = "INFO",
 ) -> None:
     """
@@ -50,7 +65,8 @@ def _root(
         handlers=[RichHandler(console=console)],
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    client = AdminClient(base_url)
+    client = AdminClient(base_url, gateway_url)
+    ctx.call_on_close(client.close)
     ctx.obj = client
     logger.debug(f"Using client: {client.base_url}")
 
@@ -313,25 +329,109 @@ def print_plan(plan: ResourceChangePlan, labels: _ChangeLabels = PLAN_LABELS) ->
 
 
 @cli.command()
-def plan(ctx: typer.Context, spec_dir: Path) -> None:
+def export(
+    ctx: typer.Context,
+    output: Path = typer.Option(
+        ..., help="New directory for catalog and runtime reads."
+    ),
+) -> None:
+    """Export one complete live catalog, preserving runtime state separately."""
+    client: AdminClient = ctx.obj
+    resources, snapshot = capture_catalog(client)
+    try:
+        write_export(output, resources, snapshot)
+    except FileExistsError as exc:
+        raise typer.BadParameter(
+            "Export directory already exists; choose a new one."
+        ) from exc
+    Console().print(f"Exported ConfigVersion {snapshot['config_version']} to {output}")
+
+
+def _print_target_impact(resources: list[ResourceManifest], targets: list[str]) -> None:
+    """A Model/template edit can affect deployments beyond the selected object."""
+    affected = []
+    for resource in resources:
+        values = resource.spec.model_dump()
+        if (
+            f"Model.{values.get('model_name')}" in targets
+            or f"LaunchTemplate.{values.get('launch_template_name')}" in targets
+        ):
+            affected.append(f"{resource.kind}.{resource.name}")
+    if affected:
+        Console().print("Dependent deployments (including other clusters):")
+        for identity in sorted(affected):
+            Console().print(f"  {identity}")
+
+
+@cli.command()
+def plan(
+    ctx: typer.Context,
+    spec_dir: Path,
+    only: list[str] | None = typer.Option(
+        None,
+        help="Overlay only this Kind.name on live state; repeat for each resource.",
+    ),
+    out: Path | None = typer.Option(
+        None, help="Save the exact reviewed apply payload."
+    ),
+) -> None:
     """
     Compare manifest to current state to review planned changes.
     """
     client: AdminClient = ctx.obj
     resources = load_resources_from_yaml(spec_dir)
+    if only:
+        live, snapshot = capture_catalog(client)
+        resources = overlay_targets(live, resources, only)
+        Console().print(f"Overlay base: ConfigVersion {snapshot['config_version']}")
+        Console().print(
+            f"Manual desired counts preserved: {snapshot['desired_replicas']}"
+        )
+        _print_target_impact(resources, only)
+    else:
+        Console().print(
+            "Complete-catalog mode: resources omitted from input are deleted."
+        )
     result = client.plan(resources)
+    if only:
+        check_target_plan(result, only)
     print_plan(result)
+    if out is not None:
+        saved = SavedPlan(
+            **service_urls(client),
+            resources=resources,
+            approved_plan=result,
+            targets=only or [],
+        )
+        write_private(out, saved.model_dump_json(indent=2) + "\n")
+        Console().print(
+            f"Saved plan to {out}; apply it without refreshing or rebasing."
+        )
 
 
 @cli.command()
-def apply(ctx: typer.Context, spec_dir: Path) -> None:
+def apply(
+    ctx: typer.Context,
+    spec_dir: Path | None = typer.Argument(None),
+    plan_file: Path | None = typer.Option(
+        None, "--plan", help="Exact saved plan to apply."
+    ),
+) -> None:
     """
     Apply manifests to current state.
     """
     client: AdminClient = ctx.obj
     console = Console()
-    resources = load_resources_from_yaml(spec_dir)
-    plan = client.plan(resources)
+    if (spec_dir is None) == (plan_file is None):
+        raise typer.BadParameter("Supply a complete catalog directory OR --plan FILE.")
+    if plan_file is not None:
+        saved = load_saved_plan(plan_file, client)
+        resources, plan = saved.resources, saved.approved_plan
+    else:
+        assert spec_dir is not None
+        console.print("Complete-catalog mode: omitted resources will be deleted.")
+        resources = load_resources_from_yaml(spec_dir)
+        plan = client.plan(resources)
     print_plan(plan)
 
     if not (plan.to_add or plan.to_update or plan.to_delete):
@@ -347,6 +447,56 @@ def apply(ctx: typer.Context, spec_dir: Path) -> None:
         )
     else:
         console.print("\nUnexpectedly, there was no ConfigVersion change.")
+
+
+@cli.command()
+def status(
+    ctx: typer.Context,
+    deployment: str,
+    wait_ready: int | None = typer.Option(
+        None, min=0, help="Wait for this many state-ready replicas."
+    ),
+    timeout: float = typer.Option(900, min=0.01, help="Maximum wait in seconds."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print the final observation as JSON."
+    ),
+) -> None:
+    """Join deployment/pilot/PBS state; readiness is not a routed request test."""
+    client: AdminClient = ctx.obj
+    deadline = time.monotonic() + timeout
+    observation: dict[str, Any] | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if observation is not None:
+                observation["wait_timed_out"] = True
+                if as_json:
+                    typer.echo(json.dumps(observation, indent=2))
+                else:
+                    Console().print(Pretty(observation))
+            raise typer.Exit(1)
+        previous_timeout = client.gateway.timeout
+        client.gateway.timeout = httpx.Timeout(min(10.0, remaining / 2))
+        try:
+            observation = deployment_status(client, deployment)
+        finally:
+            client.gateway.timeout = previous_timeout
+        count = observation["state_ready_replicas"]
+        passed = wait_ready is None or (
+            count == 0 if wait_ready == 0 else count >= wait_ready
+        )
+        expired = time.monotonic() >= deadline
+        passed = passed and not expired
+        if passed or expired:
+            observation["wait_timed_out"] = not passed
+            if as_json:
+                typer.echo(json.dumps(observation, indent=2))
+            else:
+                Console().print(Pretty(observation))
+            if not passed:
+                raise typer.Exit(1)
+            return
+        time.sleep(min(2.0, max(0, deadline - time.monotonic())))
 
 
 def print_config_version(version: ConfigVersion) -> None:

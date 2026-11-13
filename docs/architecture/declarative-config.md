@@ -40,6 +40,82 @@ first-admin audit
 alcf-ai clusters get sophia
 ```
 
+## Scoped operator changes
+
+`plan DIRECTORY` and `apply DIRECTORY` treat the directory as a **complete
+catalog**: omitted resources are deleted. Never use a one-model directory as
+an authoritative catalog or point at a parent containing multiple environments.
+
+For routine additions or updates, select the exact resources to overlay on a
+fresh complete live catalog. The gateway URL serves catalog reads; the separate
+controller URL serves authenticated admin operations. Select both explicitly:
+
+```bash
+first-admin --base-url http://localhost:9100 --gateway-url http://localhost:8000 \
+  export --output ./before-change
+
+first-admin --base-url http://localhost:9100 --gateway-url http://localhost:8000 \
+  plan ./manifests/dev \
+  --only Model.example/model \
+  --only PilotDeployment.tara/example-model \
+  --out ./reviewed-plan.json
+
+first-admin --base-url http://localhost:9100 --gateway-url http://localhost:8000 \
+  apply --plan ./reviewed-plan.json
+```
+
+These are examples for an existing local forwarding arrangement, not universal
+Dev/Production addresses. Use the approved URLs for the intended environment.
+All operations retain normal authentication and permissions.
+
+The export creates `catalog.yaml`, `runtime-state.json` and `export.json` in a
+new directory; it refuses to overwrite an earlier export. It projects catalog
+reads back to exact Spec fields. Manual desired replica counts and other runtime
+observations are recorded separately and are not silently turned into manifests.
+The new directory is private (0700), and export/saved-plan files are private
+(0600). Catalogs may contain credentials: share them only through approved means.
+ConfigVersion is checked around the reads, with at most three attempts. Runtime
+counters/counts can still change independently and are explicitly non-atomic.
+A no-change server plan verifies that the selected gateway catalog agrees with
+the selected controller before it becomes an overlay base.
+
+`--only` may be repeated. Only selected identities are taken from the source
+directory; unrelated live specs remain unchanged. Required new parent resources
+must be selected explicitly—dependencies are not silently imported. Deletions
+are not supported in scoped mode. Deliberate removal still requires reviewing
+a complete-catalog plan. Model and template selections also list dependent
+deployments, including those on other clusters; a shared Model edit affects all
+of those deployments.
+
+`--out` saves the complete assembled resources, exact approved plan/base version,
+target identities and both service URLs. `apply --plan` sends that payload without
+replanning or rebasing. Different URLs, stale ConfigVersions and divergent plans
+are rejected. Export and review a new plan after a conflict. Existing
+`apply DIRECTORY` retains its interactive complete-catalog behavior.
+
+A successful apply changes configuration, not existing model processes. Pending
+or placed replicas resolve current configuration when they launch. Already-running
+replicas keep their launch configuration until explicitly replaced. Applying a
+spec also resets the affected reconcile/failure latches; it is not a read-only
+operation. Manual desired counts remain runtime state, and `max_replicas` remains
+an autoscaling bound rather than a limit to synchronize with a manual count.
+
+Inspect one deployment or wait with an explicit deadline:
+
+```bash
+first-admin --base-url http://localhost:9100 --gateway-url http://localhost:8000 \
+  status tara/example-model --wait-ready 1 --timeout 900 --json
+```
+
+Status joins replica, pilot, scheduler job, manager health, allocation and log
+references. A running PBS job is not a reachable pilot manager; a reachable
+manager is not a ready model. `state_ready_replicas` is a state observation, **not
+a routability count**: the current catalog read schema does not identify every
+draining-ready replica. Successful routed requests and independently observed
+process/GPU/socket cleanup remain separate qualification requirements. Waiting
+for zero state-ready replicas likewise does not prove cleanup. No command above
+establishes the exact running source revision from a checkout HEAD.
+
 ## Access groups
 
 Every `AccessGroup` must explicitly provide both `allowed_groups` and
@@ -104,10 +180,30 @@ spec:
       weights_path: /immutable/weights/inkling-bf16
 ```
 
-Parameter types are `str`, `int` and `float` with optional `minimum`/`maximum`
-bounds. Types are strict (no string-to-number coercion) and unknown parameters
-are errors. A null or omitted value inherits the template default; a `required`
-parameter with no default must be supplied.
+Parameter types are `str`, `int`, `float` and `json`. Numeric types support
+optional `minimum`/`maximum` bounds. Types are strict (no string-to-number
+coercion) and unknown parameters are errors. A null or omitted value inherits
+the template default; a `required` parameter with no default must be supplied.
+
+`json` accepts a native YAML object or array, including nested booleans and
+nulls—not a string containing JSON. FIRST preserves that structure in the
+catalog, then encodes it once as canonical JSON when resolving the launch
+parameter. The pilot still receives a scalar string. Quote the resolved value
+directly; applying `tojson` again would double-encode it:
+
+```yaml
+parameters:
+  configuration:
+    type: json
+    required: true
+serve_script_template: |
+  exec shared-launcher --configuration {{ parameters.configuration | quote }}
+```
+
+FIRST validates JSON representation and template resolution. The shared
+launcher's existing configuration validator remains responsible for supported
+model arguments, topology and protected settings before model initialization.
+No new database column or pilot parameter-wire format is required.
 
 Templates are Jinja2 with a strict context of three names:
 

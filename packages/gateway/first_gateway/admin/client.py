@@ -1,11 +1,13 @@
 import logging
 import os
+from types import TracebackType
 
 from dotenv import load_dotenv
 from httpx import Client, Timeout
 
 from alcf_ai._http import raise_for_status
-from alcf_ai.client import AutoGlobusAuth
+from alcf_ai.client import DEFAULT_BASE_URL as DEFAULT_GATEWAY_URL
+from alcf_ai.client import AutoGlobusAuth, InferenceClient
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
@@ -22,7 +24,9 @@ DEFAULT_BASE_URL = os.environ.get("admin_base_url", "http://localhost:9100")
 
 
 class AdminClient(Client):
-    def __init__(self, base_url: str | None = None) -> None:
+    def __init__(
+        self, base_url: str | None = None, gateway_url: str | None = None
+    ) -> None:
         if base_url is None:
             base_url = DEFAULT_BASE_URL
 
@@ -31,6 +35,22 @@ class AdminClient(Client):
             base_url=base_url,
             timeout=Timeout(10.0),
         )
+        self.gateway = InferenceClient(
+            gateway_url or DEFAULT_GATEWAY_URL, timeout=Timeout(10.0)
+        )
+
+    def close(self) -> None:
+        self.gateway.close()
+        super().close()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        self.gateway.close()
+        super().__exit__(exc_type, exc_value, traceback)
 
     def plan(self, resources: list[ResourceManifest]) -> ResourceChangePlan:
         resp = self.post(

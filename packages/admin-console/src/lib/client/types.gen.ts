@@ -725,6 +725,14 @@ export type JobsByStatus = {
   };
 };
 
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
 /**
  * LaunchSpec
  *
@@ -748,7 +756,7 @@ export type LaunchSpec = {
    * Parameters
    */
   parameters?: {
-    [key: string]: string | number | number | null;
+    [key: string]: string | number | number | { [key: string]: JsonValue } | JsonValue[] | null;
   };
   /**
    * Env
@@ -1973,7 +1981,7 @@ export type ScriptParameter = {
   /**
    * Type
    */
-  type: "str" | "int" | "float";
+  type: "str" | "int" | "float" | "json";
   /**
    * Required
    */
@@ -1981,7 +1989,7 @@ export type ScriptParameter = {
   /**
    * Default
    */
-  default?: string | number | number | null;
+  default?: string | number | number | { [key: string]: JsonValue } | JsonValue[] | null;
   /**
    * Minimum
    */

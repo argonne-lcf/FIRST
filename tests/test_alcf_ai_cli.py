@@ -462,6 +462,8 @@ def test_admin_set_desired_replicas_many_and_stdin(
 
         def __init__(self, *_: Any) -> None: ...
 
+        def close(self) -> None: ...
+
         def set_desired_pilot_deployment_replicas(self, name: str, n: int) -> None:
             if name == "missing":
                 raise NotFound("nope")

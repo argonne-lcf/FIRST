@@ -1,3 +1,5 @@
+import json
+import math
 import shlex
 from typing import Annotated, Any, ClassVar, Literal, Self
 
@@ -5,6 +7,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     StrictFloat,
     StrictInt,
     StrictStr,
@@ -30,7 +33,11 @@ from ..types import (
     render_script,
 )
 
-ParameterValue = StrictStr | StrictInt | StrictFloat | None
+# Structured inputs are catalog data. Resolution encodes them once into the
+# existing scalar script/pilot contract; pilots do not need a new wire schema.
+ParameterValue = (
+    StrictStr | StrictInt | StrictFloat | dict[str, JsonValue] | list[JsonValue] | None
+)
 PreStopTimeout = Annotated[float, Field(gt=0, le=150.0)]
 PostStopTimeout = Annotated[float, Field(gt=0, le=50.0)]
 
@@ -174,14 +181,19 @@ class ScriptParameter(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["str", "int", "float"]
+    type: Literal["str", "int", "float", "json"]
     required: bool = False
     default: ParameterValue = None
     minimum: float | None = None
     maximum: float | None = None
 
-    def coerce(self, name: str, value: ParameterValue) -> ParameterValue:
-        """Validate a supplied value; null (or absent) inherits the default."""
+    def coerce(self, name: str, value: ParameterValue) -> str | int | float | None:
+        """Resolve defaults; structured YAML becomes one shell-quotable JSON value.
+
+        Null (or absent) inherits the default. Nested nulls remain ordinary JSON
+        data. JSON inputs are objects/arrays, not strings containing JSON; this
+        prevents double encoding and leaves legacy scalar parameters unchanged.
+        """
         if value is None:
             value = self.default
         if value is None:
@@ -192,10 +204,21 @@ class ScriptParameter(BaseModel):
             if not isinstance(value, str):
                 raise ValueError(f"parameter {name!r} must be str")
             return value
-        if isinstance(value, str) or (
-            self.type == "int" and not isinstance(value, int)
-        ):
+        if self.type == "json":
+            if not isinstance(value, (dict, list)):
+                raise ValueError(f"parameter {name!r} must be a JSON object or array")
+            try:
+                return json.dumps(
+                    value, sort_keys=True, separators=(",", ":"), allow_nan=False
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"parameter {name!r} must contain valid JSON") from exc
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"parameter {name!r} must be {self.type}")
+        if self.type == "int" and not isinstance(value, int):
+            raise ValueError(f"parameter {name!r} must be int")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"parameter {name!r} must be finite")
         if self.minimum is not None and value < self.minimum:
             raise ValueError(f"parameter {name!r} must be >= {self.minimum}")
         if self.maximum is not None and value > self.maximum:
@@ -230,7 +253,12 @@ class LaunchSpec(BaseModel):
     health_check: HealthCheckParams | None = None
 
 
-_SAMPLE_VALUES: dict[str, ParameterValue] = {"str": "x", "int": 1, "float": 1.0}
+_SAMPLE_VALUES: dict[str, ParameterValue] = {
+    "str": "x",
+    "int": 1,
+    "float": 1.0,
+    "json": {},
+}
 _SAMPLE_RUNTIME = RuntimeScriptContext(
     replica_name="replica",
     served_model_name="model",
@@ -276,7 +304,9 @@ class LaunchTemplateSpec(ResourceSpec):
         context = ScriptTemplateContext(
             runtime=_SAMPLE_RUNTIME,
             parameters={
-                name: p.default if p.default is not None else _SAMPLE_VALUES[p.type]
+                name: p.coerce(
+                    name, p.default if p.default is not None else _SAMPLE_VALUES[p.type]
+                )
                 for name, p in self.parameters.items()
             },
             quote=shlex.quote,

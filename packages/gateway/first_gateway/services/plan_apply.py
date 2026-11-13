@@ -25,10 +25,16 @@ from first_gateway.database import models
 
 def validate_resources(
     resources: list[ResourceManifest],
+    *,
+    check_mtls_files: bool = True,
 ) -> dict[str, list[ResourceManifest]]:
     """
     Validate resource uniqueness and referential integrity, then return
     resources grouped by kind.
+
+    Offline callers may omit VM-local certificate-file checks. All schema,
+    references and launch-template checks still run; server plan/apply keeps
+    the default file validation. This is not an HTTP request option.
     """
     # Uniqueness
     id_counts = Counter((r.kind, r.name) for r in resources)
@@ -150,7 +156,7 @@ def validate_resources(
     for deployment in by_kind["StaticDeployment"]:
         spec = deployment.spec
         assert isinstance(spec, StaticDeploymentSpec)
-        if spec.mtls is None:
+        if spec.mtls is None or not check_mtls_files:
             continue
         try:
             spec.mtls.ssl_context()
