@@ -30,7 +30,9 @@ RULES = {rule.name: rule for rule in _VECTOR_RULES}
 
 def _client_state(tmp_path: Path) -> MagicMock:
     client_state = MagicMock()
-    client_state.settings.log_shipping = LogShippingSettings(status_dir=tmp_path)
+    client_state.settings.log_shipping = LogShippingSettings(
+        status_dir=tmp_path, prometheus_ca_crt_file=None
+    )
     return client_state
 
 
@@ -61,6 +63,19 @@ def _prometheus(results: dict[str, Series]) -> Any:
 
 def test_registered() -> None:
     assert check_log_shipping in [c.func for c in CHECK_REGISTRY]
+
+
+def test_prometheus_defaults_to_verified_tls() -> None:
+    settings = LogShippingSettings()
+    assert settings.prometheus_url == "https://prometheus:9090"
+    assert settings.prometheus_ca_crt_file == Path("/run/secrets/pilot_ca.crt")
+
+
+async def test_vector_client_uses_private_ca(tmp_path: Path) -> None:
+    ca_file = tmp_path / "ca.crt"
+    with _prometheus({}), patch.object(log_shipping, "AsyncClient") as client:
+        await log_shipping._check_vector("https://prometheus:9090", ca_file)
+    client.assert_called_once_with(timeout=10.0, verify=str(ca_file))
 
 
 async def test_skipped_where_not_deployed() -> None:

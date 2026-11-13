@@ -16,6 +16,7 @@ the differences for each environment. The base file never runs alone.
 | `deploy/nginx.prod.conf.example` | Template for the **host** nginx in prod (TLS, proxy to `127.0.0.1:7001`). |
 | `deploy/first.service.example` | Template systemd unit to run the prod stack on boot. |
 | `deploy/prometheus.yml` | Prometheus scrape config (controller-manager + discovered backends). |
+| `deploy/prometheus-web.yml` | TLS 1.3 configuration for Prometheus's HTTPS API/UI. |
 | `deploy/compose.v1-logs.yaml` | Opt-in overlay — ships the V1 gateway's logs until V1 retires. See [Log Shipping](log-shipping.md). |
 | `deploy/log-shipping/` | Vector config and the rclone script for the `vector` and `prompt-shipper` services (`log-shipping` profile). |
 | `deploy/compose.dev-analytics.yaml` | Opt-in dev-gateway overlay — exposes Prometheus privately to FIRST-analytics. |
@@ -51,7 +52,7 @@ flowchart TB
     PROM -->|scrape| CM
     PROM -->|http_sd + scrape| Pilot
     ANALYTICS["Analytics Grafana<br/>separate VM"]:::obs
-    ANALYTICS -->|private :9090| PROM
+    ANALYTICS -->|HTTPS :9090| PROM
     API -.egress via.-> TUN
     CM -.egress via.-> TUN
     TUN -.SSH -D.-> Pilot
@@ -80,11 +81,11 @@ flowchart TB
 - **prometheus** — scrapes the controller-manager and the pilot backends it
   discovers. Bounded footprint (retain ~15 days / 5 GB) with the admin API enabled
   for snapshots. Published on `127.0.0.1:9090`. Managed gateway deployment paths
-  can additionally publish a private-VM listener for Analytics Grafana. That
-  plaintext, admin-capable endpoint must be firewalled to the Analytics VM only.
+  can additionally publish a private-VM listener for Analytics Grafana. Prometheus
+  requires TLS 1.3; keep the admin-capable endpoint firewalled to Analytics only.
 - **Analytics Grafana** — deployed separately in FIRST-analytics. It provisions
-  the control-plane and vLLM dashboards and queries gateway Prometheus over the
-  private listener. No standalone Grafana runs in this Compose stack.
+  the control-plane and vLLM dashboards and queries gateway Prometheus over verified
+  HTTPS using that environment's public CA. No standalone Grafana runs here.
 - **nginx** — reverse proxy + rate limiting + SSE-friendly buffering. A container
   in dev; the **host's** nginx in prod (see below).
 - **vector**, **prompt-shipper** *(`log-shipping` profile)* — move structured logs
@@ -98,13 +99,15 @@ flowchart TB
 
 The stack bind-mounts a few host paths. They must exist before `up`:
 
-- **`pki/`** (repo root, `.gitignore`d) — pilot mTLS material, mounted as Docker
-  secrets: `ca.crt` into every service, plus one client pair per service
+- **`pki/`** (repo root, `.gitignore`d) — internal PKI, mounted as Docker
+  secrets: `ca.crt` into each service, plus one client pair per service
   (`first-router` → `inference-gateway`, `first-control` → `controller-manager`,
   `first-metrics` → `prometheus`), always at `/run/secrets/pilot_client.{crt,key}`.
-  `make pki` generates a dev set; prod certificates are issued offline (see the
-  [Certificate Manager](../packages/certmanager.md)). The CA key is never
-  deployed. See the ownership note below for Linux hosts.
+  `first-prometheus.{crt,key}` is the HTTPS identity mounted at
+  `/run/secrets/prometheus_server.{crt,key}`. `make pki` generates a dev set;
+  use `PROMETHEUS_DNS` / `PROMETHEUS_IP` for an analytics listener. Prod certs
+  are issued offline (see [Certificate Manager](../packages/certmanager.md)).
+  The CA key is never deployed. See the ownership note below for Linux hosts.
 - **`pki/upstream/`** — client certificate sets for StaticDeployments whose
   externally-managed upstream requires mutual TLS (unrelated to the pilot CA).
   One directory per set, typically one per cluster, shared by all of that
@@ -147,10 +150,10 @@ The stack bind-mounts a few host paths. They must exist before `up`:
     and mode. On a Linux host, each `0600` key must be owned by the container
     user that reads it: `app` (uid 900, see `deploy/Dockerfile`) for
     `first-router.key` and `first-control.key`, and `nobody` (uid 65534) for
-    `first-metrics.key`, which Prometheus reads.
+    `first-metrics.key` and `first-prometheus.key`, which Prometheus reads.
 
         sudo chown 900 pki/first-router.key pki/first-control.key
-        sudo chown 65534 pki/first-metrics.key
+        sudo chown 65534 pki/first-metrics.key pki/first-prometheus.key
 
     For `pki/upstream/`, the gateway services run as uid 900 and Prometheus
     reads through its supplementary group 900 (`group_add` in the overlays), so
@@ -236,7 +239,7 @@ make db-reset        # wipe DEV db/redis volumes and re-run migrations (prompts)
 ```
 
 Once up: apiserver via nginx at <http://localhost:8000> and Prometheus at
-<http://localhost:9090>. Postgres and Redis are on `127.0.0.1:5433` /
+<https://localhost:9090>. Use `curl --cacert pki/ca.crt` for local API checks.
 `127.0.0.1:6380`. Use the consolidated FIRST-analytics Grafana for dashboards.
 
 ### Dev-gateway Analytics listener
@@ -256,10 +259,13 @@ make compose-up
 ```
 
 The overlay preserves `127.0.0.1:9090` for local snapshot tooling and adds
-`140.221.33.155:9090` for the consolidated Analytics Grafana. The conduit and
-host firewall must allow that plaintext listener only from
-`inference-olap-01`. Ordinary local development does not select the VM-specific
-overlay and remains loopback-only.
+`140.221.33.155:9090` for consolidated Analytics Grafana. The conduit and host
+firewall must continue to allow that listener only from `inference-olap-01`.
+Issue the dev certificate with
+`make pki PROMETHEUS_DNS=inference-api-dev.cels.anl.gov` (or the equivalent
+offline `pilot-certmanager standard --prometheus-dns ...`) and stage that
+environment's public CA in FIRST-analytics. Ordinary local development does not
+select the VM-specific overlay and remains loopback-only.
 ### Dozzle (browser log viewer)
 
 Dozzle is intentionally **not** in the Compose stack. Run it on demand:
@@ -307,8 +313,8 @@ delete them).
 #      .env.secret.gateway, .env.secret.controller, .env.secret.postgres
 #    FIRST_DB_URL (gateway and controller) carries POSTGRES_PASSWORD:
 #      FIRST_DB_URL=postgresql+psycopg://first_gateway:...@postgres:5432/first_gateway
-#    Copy the prod ca.crt and client cert pairs (issued offline, see
-#    packages/certmanager.md) into pki/.
+#    Copy the prod ca.crt, client cert pairs, and first-prometheus HTTPS pair
+#    (issued offline, see packages/certmanager.md) into pki/.
 
 # 2. Create the external data volumes once:
 make prod-init
@@ -330,9 +336,10 @@ make prod-down      # stop (never uses -v)
 ```
 
 The prod overlay preserves `127.0.0.1:9090` for local snapshots and additionally
-publishes `140.221.33.25:9090` for consolidated Analytics Grafana queries. Keep
-that private listener restricted to `inference-olap-01` in the conduit and host
-firewall: it is plaintext HTTP and includes the enabled Prometheus admin API.
+publishes `140.221.33.25:9090` for consolidated Analytics Grafana queries. Issue
+`first-prometheus` with `DNS:data-portal-dev-vmw-01.cels.anl.gov` and stage the
+public production CA in FIRST-analytics. Keep the listener restricted to
+`inference-olap-01`: it includes the enabled Prometheus admin API.
 
 ### V1-to-V2 auth cutover gate
 

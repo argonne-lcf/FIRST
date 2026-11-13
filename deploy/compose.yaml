@@ -165,6 +165,7 @@ services:
     # take offline snapshots.
     command:
       - --config.file=/etc/prometheus/prometheus.yml
+      - --web.config.file=/etc/prometheus/web.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=15d
       - --storage.tsdb.retention.size=5GB
@@ -175,6 +176,7 @@ services:
       - gateway
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-web.yml:/etc/prometheus/web.yml:ro
       - ../pki/upstream:/run/secrets/upstream:ro
     secrets:
       - source: pilot_ca
@@ -183,6 +185,10 @@ services:
         target: pilot_client.crt
       - source: metrics_key
         target: pilot_client.key
+      - source: prometheus_crt
+        target: prometheus_server.crt
+      - source: prometheus_key
+        target: prometheus_server.key
     restart: unless-stopped
     logging: *logging
 
@@ -263,7 +269,7 @@ volumes:
   # Stays empty: see controller-manager's /run/disk-watch mounts.
   disk-watch:
 
-# Pilot mTLS identities, issued offline by `make pki` (pilot-certmanager).
+# Pilot mTLS and Prometheus HTTPS identities, issued offline by `make pki`.
 # Each service mounts the CA plus exactly one client identity, always at
 # /run/secrets/pilot_{ca.crt,client.crt,client.key}; the pilot authorizes
 # requests by the client cert's CN. No CA key is mounted anywhere.
@@ -290,3 +296,7 @@ secrets:
     file: ../pki/first-metrics.crt
   metrics_key:
     file: ../pki/first-metrics.key
+  prometheus_crt:
+    file: ../pki/first-prometheus.crt
+  prometheus_key:
+    file: ../pki/first-prometheus.key

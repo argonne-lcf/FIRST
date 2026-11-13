@@ -2,7 +2,7 @@
 
 `pilot-certmanager` is a small [Typer](https://typer.tiangolo.com/) CLI, shipped
 with `first-gateway`, that wraps `openssl` to run the private CA for the
-gateway ⇄ pilot mTLS link. It is an **offline** tool: an administrator runs it
+gateway ⇄ pilot mTLS and analytics Grafana ⇄ Prometheus TLS links. It is an
 on a trusted host, and no running service imports it or holds a CA key.
 
 This page is the issuing and renewal runbook. For why the model looks like
@@ -12,13 +12,15 @@ this, see the [F-01 response](../security/control-plane-mtls-response.md).
 ## Identities
 
 Every environment (dev, prod) has its own CA, one pilot server certificate per
-pilot cluster, and one fixed set of client certificates. The subjects and names
-come from `first_common.schema.pilot` (`PILOT_SERVER_CN`, `pilot_server_name`,
-`PilotClientRole`):
+pilot cluster, one Prometheus HTTPS server certificate, and one fixed set of
+client certificates. The pilot subjects and names come from
+`first_common.schema.pilot` (`PILOT_SERVER_CN`, `pilot_server_name`,
+`PilotClientRole`); Prometheus identity constants live in the certmanager:
 
 | Subject | EKU | SAN | Holder | Pilot role |
 |---|---|---|---|---|
 | `CN=first-pilot` | serverAuth | `DNS:<cluster>.first-pilot.internal` | pilot NGINX on `<cluster>` | — |
+| `CN=first-prometheus` | serverAuth | `DNS:prometheus`, `DNS:localhost`, `IP:127.0.0.1`, plus analytics addresses | Prometheus HTTPS API/UI | — |
 | `CN=first-control` | clientAuth | — | `controller-manager` | control |
 | `CN=first-router` | clientAuth | — | `inference-gateway` (API server) | router |
 | `CN=first-metrics` | clientAuth | — | `prometheus` | metrics |
@@ -55,23 +57,32 @@ OpenSSL 3.x. Keys are EC P-256, certificates SHA-256, and private keys are
 unencrypted (services start unattended).
 
 ```bash
-# CA (if absent) + one pilot server cert per cluster + the three client certificates
+# CA (if absent) + server identities + the three client certificates
 pilot-certmanager standard --dir pki-prod/ --ca-name "FIRST Pilot CA (prod)" \
-    --cluster tara --cluster sophia
+    --cluster tara --cluster sophia \
+    --prometheus-dns data-portal-dev-vmw-01.cels.anl.gov
 ```
 
 The command creates `ca.{key,crt}` only if the directory has no `ca.crt`, then
 (re)issues `pilot-server-<cluster>.{crt,key}` for each `--cluster` (at least
-one is required) and `first-control`, `first-router` and `first-metrics`, each
-as `<cn>.{crt,key}` (`--days`, default 365, sets leaf validity). For local
-development, `make pki` runs it into the repo's `.gitignore`d `pki/` for the
-clusters in `PILOT_CLUSTERS` (default `tara sophia`), which is all the Compose
-stack needs.
+one is required), `first-prometheus.{crt,key}`, and the three client identities.
+Prometheus always includes `DNS:prometheus`, `DNS:localhost` and `IP:127.0.0.1`;
+repeat `--prometheus-dns` / `--prometheus-ip` to add its analytics addresses.
+`--days` (default 365) sets leaf validity. For local development, `make pki`
+uses `PILOT_CLUSTERS` (default `tara sophia`), `PROMETHEUS_DNS`, and
+`PROMETHEUS_IP` in the repo's `.gitignore`d `pki/`.
 
 To issue one cluster's server certificate alone:
 
 ```bash
 pilot-certmanager pilot-server tara --dir pki-prod/ [--days 365]
+```
+
+To issue only the Prometheus HTTPS pair, including its analytics FQDN:
+
+```bash
+pilot-certmanager prometheus-server --dir pki-prod/ \
+    --dns data-portal-dev-vmw-01.cels.anl.gov [--days 365]
 ```
 
 The lower-level `ca` and `client <cn>` commands remain for one-off issuing;
@@ -88,12 +99,13 @@ see `pilot-certmanager --help`.
 | `first-control.{crt,key}` | key | Gateway `pki/` → `controller-manager` |
 | `first-router.{crt,key}` | key | Gateway `pki/` → `inference-gateway` |
 | `first-metrics.{crt,key}` | key | Gateway `pki/` → `prometheus` |
+| `first-prometheus.{crt,key}` | key | Gateway `pki/` → `prometheus` HTTPS server |
 
 ### Gateway host
 
-Copy `ca.crt` and the three client pairs into `pki/` at the repo root
-(`chmod 600 *.key`; on Linux also match the key owners to the container
-users, see [Docker](../deployment/docker.md#filesystem-dependencies)).
+Copy `ca.crt`, the three client pairs, and the `first-prometheus` pair into `pki/`
+at the repo root (`chmod 600 *.key`; on Linux also match the key owners to the
+container users, see [Docker](../deployment/docker.md#filesystem-dependencies)).
 `deploy/compose.yaml` declares them as Docker secrets and
 mounts a **different identity behind the same names** in each service:
 
@@ -103,11 +115,18 @@ mounts a **different identity behind the same names** in each service:
 | `controller-manager` | `first-control` |
 | `prometheus` | `first-metrics` |
 
-Every service also gets `/run/secrets/pilot_ca.crt`. The gateway reads these
-through `pilot_ca_crt_file`, `pilot_client_crt_file` and `pilot_client_key_file`
-(env `FIRST_PILOT_CA_CRT_FILE`, `FIRST_PILOT_CLIENT_CRT_FILE`,
-`FIRST_PILOT_CLIENT_KEY_FILE`), which default to those paths, so code never
-knows which role it holds. No CA material belongs in `.env.secret`.
+The three gateway services above also get `/run/secrets/pilot_ca.crt`. The gateway
+reads these through `pilot_ca_crt_file`, `pilot_client_crt_file` and
+`pilot_client_key_file` (env `FIRST_PILOT_CA_CRT_FILE`,
+`FIRST_PILOT_CLIENT_CRT_FILE`, `FIRST_PILOT_CLIENT_KEY_FILE`), which default to
+those paths, so code never knows which role it holds. No CA material belongs in
+`.env.secret`.
+
+Prometheus also receives `first-prometheus` as
+`/run/secrets/prometheus_server.{crt,key}`. Copy the **public** `ca.crt` for each
+environment into FIRST-analytics as documented there; never copy `ca.key`.
+Analytics Grafana validates the chain and the analytics FQDN, while the internal
+log-shipping health check validates the `prometheus` SAN against the same CA.
 
 ### Each cluster
 
@@ -147,10 +166,11 @@ would reject it anyway.
 Leaf certificates default to 1 year; the CA to 10. Renewal re-issues leaves
 against the **same CA**, so nothing else needs to change:
 
-1. Re-run `pilot-certmanager standard --cluster …` (every pilot cluster)
-   against the environment's CA directory.
-2. Replace the client pairs in the gateway's `pki/` and restart the stack
-   (`docker compose up -d --force-recreate`).
+1. Re-run `pilot-certmanager standard --cluster …` (every pilot cluster) against
+   the environment's CA directory, repeating the same `--prometheus-dns` and
+   `--prometheus-ip` options so the analytics SANs are preserved.
+2. Replace the client pairs and `first-prometheus` pair in the gateway's `pki/`
+   and restart the stack (`docker compose up -d --force-recreate`).
 3. Replace `server_crt`/`server_key` in each cluster's runtime config with
    that cluster's `pilot-server-<cluster>` pair. Running
    pilots keep their old certificate until they exit; new submissions pick up
@@ -193,3 +213,6 @@ whole standard set for that environment:
 5. Destroy the old CA key.
 
 Rotation at the CA's 10-year expiry follows the same steps.
+
+After rotating either environment's CA, stage its new public `ca.crt` in
+FIRST-analytics before validating dashboards again.
