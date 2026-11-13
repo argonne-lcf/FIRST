@@ -1037,11 +1037,9 @@ def run(
 
     Additional arguments after ``--`` are forwarded to the agent.
     """
-    from .cli import _cli_state
+    from .cli import _get_client
 
-    client = _cli_state.get("client")
-    if client is None:
-        raise RuntimeError("CLI client has not been initialized")
+    client = _get_client()
     if profile is not None:
         if agent not in ("claude", "codex"):
             raise typer.BadParameter(
@@ -1204,11 +1202,9 @@ def configure(
 
     profile_name = None if no_profile else profile
 
-    from .cli import _cli_state
+    from .cli import _get_client
 
-    client = _cli_state.get("client")
-    if client is None:
-        raise RuntimeError("CLI client has not been initialized")
+    client = _get_client()
     api_key = get_access_token(INFERENCE_SERVICE)
 
     model_infos: dict[str, list[dict[str, Any]]] = {
