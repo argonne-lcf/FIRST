@@ -187,13 +187,17 @@ def test_export_does_not_resolve_secret_references(
     client: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SOPHIA_API_KEY", "MUST_NOT_ENTER_EXPORT")
+    upstream = client.gateway.catalog.static_deployments.return_value[0]
+    reference = upstream.api_key
+    assert isinstance(reference, SecretRef)
+    assert reference.startswith("env_var://")
+    monkeypatch.setenv(reference.removeprefix("env_var://"), "MUST_NOT_ENTER_EXPORT")
     monkeypatch.setattr(
         SecretRef, "resolve", lambda _: pytest.fail("resolved a secret")
     )
     resources, snapshot = capture_catalog(client)
     serialized = json.dumps([r.model_dump(mode="json") for r in resources])
-    assert "env_var://SOPHIA_API_KEY" in serialized
+    assert reference in serialized
     assert "MUST_NOT_ENTER_EXPORT" not in serialized + json.dumps(snapshot)
 
 
