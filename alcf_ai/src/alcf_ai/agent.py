@@ -354,7 +354,7 @@ def _build_codex_catalog(
             "support_verbosity": False,
             "default_verbosity": None,
             "shell_type": "shell_command",
-            "apply_patch_tool_type": "freeform",
+            "apply_patch_tool_type": None,
             "supports_search_tool": False,
             "web_search_tool_type": "text",
             "experimental_supported_tools": [],
@@ -391,17 +391,18 @@ def generate_codex_model_configs(
     model_infos: dict[str, list[dict[str, Any]]],
     version: str,
     providers: dict[str, Any] | None = None,
-) -> None:
+) -> dict[tuple[str, str], Path]:
     """Build Codex model catalogs and per-model config files for exposed models."""
     _CODEX_HOME = _codex_home()
     _CODEX_CATALOG_DIR = _CODEX_HOME / "catalogs"
+    catalog_paths: dict[tuple[str, str], Path] = {}
 
     try:
         upstream, prompt_text = _fetch_catalog_and_prompt(version)
         template = json.loads(upstream)
     except (httpx.HTTPError, OSError, ValueError) as err:
         logger.warning(f"Skipping codex model catalog generation: {err}")
-        return
+        return {}
 
     for cluster_name, models in model_infos.items():
         for framework, group in _group_by_framework(models).items():
@@ -442,6 +443,7 @@ def generate_codex_model_configs(
                         version=version,
                     )
                     _write_json_config(catalog_path, catalog)
+                    catalog_paths[(provider_key, slug)] = catalog_path
                     logger.info(f"Created {catalog_path} for Codex {version}")
 
                     profile_path = (
@@ -458,6 +460,7 @@ def generate_codex_model_configs(
                     profile["model_catalog_json"] = str(catalog_path)
                     _write_toml_config(profile_path, profile)
                     logger.info(f"Created {profile_path}")
+    return catalog_paths
 
 
 def _edit_opencode_v1(
@@ -848,9 +851,11 @@ def edit_codex(
     config.setdefault("model", default_model)
     config.setdefault("model_provider", _provider_key(default_cluster, "api"))
 
-    _write_toml_config(path, config)
+    catalog_paths = generate_codex_model_configs(model_infos, version, providers)
+    if catalog_path := catalog_paths.get((config["model_provider"], config["model"])):
+        config["model_catalog_json"] = str(catalog_path)
 
-    generate_codex_model_configs(model_infos, version, providers)
+    _write_toml_config(path, config)
 
     if profile is None:
         logger.info(f"Updated configuration at {path}")
@@ -928,8 +933,9 @@ def _claude_environment(
     api_key: str,
     default_model: str,
     default_cluster: str,
+    model_info: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    return {
+    env = {
         "ANTHROPIC_BASE_URL": f"{base_url}{default_cluster}/api",
         "ANTHROPIC_AUTH_TOKEN": api_key,
         "ANTHROPIC_MODEL": default_model,
@@ -937,6 +943,14 @@ def _claude_environment(
         "ANTHROPIC_DEFAULT_SONNET_MODEL": default_model,
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": default_model,
     }
+    if model_info is not None:
+        capabilities = model_info.get("capabilities") or {}
+        context_window = capabilities.get("context_window_tokens") or model_info.get(
+            "max_model_len"
+        )
+        if context_window:
+            env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_window)
+    return env
 
 
 def _claude_profile_path(profile: str) -> Path:
@@ -955,6 +969,7 @@ def edit_claude(
     default_model: str,
     default_cluster: str,
     profile: str | None = "alcf",
+    model_info: dict[str, Any] | None = None,
 ) -> None:
     path = (
         _claude_profile_path(profile)
@@ -964,7 +979,11 @@ def edit_claude(
     config = _load_json_config(path)
 
     env = config.get("env", {})
-    env.update(_claude_environment(base_url, api_key, default_model, default_cluster))
+    env.update(
+        _claude_environment(
+            base_url, api_key, default_model, default_cluster, model_info
+        )
+    )
     if token_helper := _token_helper_command():
         env.pop("ANTHROPIC_AUTH_TOKEN", None)
         config["apiKeyHelper"] = shlex.join(token_helper)
@@ -1053,9 +1072,12 @@ def run(
                     )
                 launch_args = ["--settings", str(profile_path)]
             else:
+                model_info = _select_model(client, cluster, model)
                 api_key = get_access_token(INFERENCE_SERVICE)
                 env.update(
-                    _claude_environment(client.base_url, api_key, model, cluster)
+                    _claude_environment(
+                        client.base_url, api_key, model, cluster, model_info
+                    )
                 )
         case "opencode":
             model_info = _select_model(client, cluster, model)
@@ -1213,7 +1235,13 @@ def configure(
             case "pi":
                 edit_pi(client.base_url, api_key, model_infos)
             case "claude":
-                edit_claude(client.base_url, api_key, model, cluster, profile_name)
+                model_info = next(
+                    (m for m in model_infos.get(cluster, []) if m.get("id") == model),
+                    None,
+                )
+                edit_claude(
+                    client.base_url, api_key, model, cluster, profile_name, model_info
+                )
     except ConfigLoadError as err:
         logger.error(str(err))
         raise typer.Exit(1) from err

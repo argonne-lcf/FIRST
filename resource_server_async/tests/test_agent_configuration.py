@@ -40,6 +40,13 @@ MISTRAL = {
         },
     },
 }
+MUSE = {
+    "id": "muse-spark-bf16",
+    "display_name": "Muse Spark Open BF16",
+    "framework": "api",
+    "capabilities": {"context_window_tokens": 1048576},
+}
+
 # Catalog fetches are mocked. Unknown upstream fields must survive adaptation.
 UPSTREAM = {
     "models": [
@@ -134,7 +141,10 @@ class AgentConfigurationTests(unittest.TestCase):
     def run_agent(self, name: str, *options: str) -> Result:
         cli_module = importlib.import_module("alcf_ai.cli")
         client = Mock(base_url=BASE_URL)
-        client.list_models.return_value = [copy.deepcopy(MISTRAL)]
+        client.list_models.return_value = [
+            copy.deepcopy(MISTRAL),
+            copy.deepcopy(MUSE),
+        ]
         with patch.dict(cli_module._cli_state, {"client": client}):
             return CliRunner().invoke(agent.cli, ["run", name, *options])
 
@@ -326,6 +336,7 @@ class AgentConfigurationTests(unittest.TestCase):
         )
         catalog_path = self.home / ".codex/catalogs" / f"{MODEL}.json"
         self.assertEqual(profile["model_catalog_json"], str(catalog_path))
+        self.assertEqual(config["model_catalog_json"], str(catalog_path))
         entry = json.loads(catalog_path.read_text())["models"][0]
         self.assertEqual(entry["slug"], MODEL)
         self.assertEqual(entry["context_window"], 1048576)
@@ -339,6 +350,7 @@ class AgentConfigurationTests(unittest.TestCase):
         self.assertFalse(entry["supports_reasoning_summary_parameter"])
         self.assertFalse(entry["supports_search_tool"])
         self.assertFalse(entry["prefer_websockets"])
+        self.assertIsNone(entry["apply_patch_tool_type"])
         self.catalog_fetch.assert_called_once_with("0.149.1")
         self.assertNotIn(TOKEN, (self.home / ".codex/alcf.config.toml").read_text())
         self.assertFalse((self.home / ".codex/config.toml").exists())
@@ -403,6 +415,7 @@ class AgentConfigurationTests(unittest.TestCase):
         self.assertEqual(config["permissions"], {"allow": ["Read"]})
         self.assertEqual(config["env"]["KEEP_ME"], "yes")
         self.assertEqual(config["env"]["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
+        self.assertEqual(config["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1048576")
         for key in (
             "ANTHROPIC_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
@@ -492,6 +505,7 @@ class AgentConfigurationTests(unittest.TestCase):
         self.assertEqual(env["KEEP_ME"], "yes")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}tara/api")
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], TOKEN)
+        self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1048576")
         for key in (
             "ANTHROPIC_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
@@ -510,6 +524,7 @@ class AgentConfigurationTests(unittest.TestCase):
         env = execvpe.call_args.args[2]
         self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
         self.assertEqual(env["ANTHROPIC_MODEL"], "muse-spark-bf16")
+        self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1048576")
 
     def test_run_claude_reports_missing_executable(self) -> None:
         settings = self.write(".claude/settings.json", "invalid existing config")

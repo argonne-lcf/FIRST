@@ -91,6 +91,10 @@ Claude Code:
 ```bash
 uvx alcf-ai agent run claude --default-model mistral-large-4-nvfp4 -- --print "Hello"
 ```
+The runner also sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from the selected model's
+catalog metadata so Claude Code does not assume a 200K window for custom model IDs.
+Use Claude Code 2.1.193 or newer for this override.
+
 
 For a persistent named overlay, create the default `alcf` profile and then load it.
 This does not create or modify `~/.claude/settings.json`:
