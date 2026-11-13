@@ -104,9 +104,8 @@ prod-up:
 prod-down:
 	$(PROD_COMPOSE) docker compose down
 
-# Migrations are manual in prod. Run after deploying a new image.
-prod-migrate:
-	$(PROD_COMPOSE) docker compose run --rm inference-gateway \
+migrate:
+	docker compose run --rm inference-gateway \
 		.venv/bin/alembic -c packages/gateway/first_gateway/database/alembic.ini upgrade head
 
 # --- Backups (safe to run against a live stack; see scripts/README.md) --------
