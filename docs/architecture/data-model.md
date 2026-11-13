@@ -144,7 +144,9 @@ endpoint), not by the pilot system. FIRST just proxies to it.
 - FK → `Model`, FK → `Cluster`.
 - `api_url`, `upstream_model_name`, optional `api_key: SecretRef`
   (`env_var://NAME` resolved JIT, so manifests can be applied without
-  the secret material on the local machine).
+  the secret material on the local machine). `NAME` must match
+  `FIRST_UPSTREAM_KEY_[A-Z0-9_]+`, and a keyed `api_url` (or keyed
+  `health_check.url`) must be `https`.
 - Status: `health`, `last_health_check`.
 
 ### `PilotJob` — controller-managed

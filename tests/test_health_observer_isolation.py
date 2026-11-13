@@ -51,7 +51,7 @@ async def test_missing_secret_does_not_block_healthy_neighbor_or_log_credentials
 ) -> None:
     observer = _observer()
     broken, healthy = _resource(1), _resource(2)
-    broken.health_check["api_key"] = "env_var://TEST_MISSING_HEALTH_KEY"
+    broken.health_check["api_key"] = "env_var://FIRST_UPSTREAM_KEY_TEST_MISSING_HEALTH"
     broken.health_check["url"] += "?credential=url-secret-sentinel"
 
     with patch.object(SecretRef, "resolve", side_effect=ValueError("secret-sentinel")):
@@ -59,7 +59,7 @@ async def test_missing_secret_does_not_block_healthy_neighbor_or_log_credentials
             observer._check(broken), observer._check(healthy)
         )
 
-    detail = "Could not resolve api_key env_var://TEST_MISSING_HEALTH_KEY (ValueError)"
+    detail = "Could not resolve api_key env_var://FIRST_UPSTREAM_KEY_TEST_MISSING_HEALTH (ValueError)"
     assert tuple(results) == (
         ("StaticDeployment", 1, HealthCheckResult.unhealthy, detail),
         ("StaticDeployment", 2, HealthCheckResult.healthy, None),
@@ -176,7 +176,7 @@ async def test_poll_writes_both_bad_and_healthy_resource_transitions() -> None:
     factory.return_value.__aenter__.return_value = read_session
     factory.begin.return_value.__aenter__.return_value = write_session
     broken, healthy = _resource(1), _resource(2)
-    broken.health_check["api_key"] = "env_var://TEST_MISSING_HEALTH_KEY"
+    broken.health_check["api_key"] = "env_var://FIRST_UPSTREAM_KEY_TEST_MISSING_HEALTH"
 
     with (
         patch.object(Cluster, "list", new=AsyncMock(return_value=[])),
@@ -199,7 +199,7 @@ async def test_poll_writes_both_bad_and_healthy_resource_transitions() -> None:
     assert {update["health"]: update["health_detail"] for update in updates} == {
         "healthy": None,
         "unhealthy": "Could not resolve api_key "
-        "env_var://TEST_MISSING_HEALTH_KEY (ValueError)",
+        "env_var://FIRST_UPSTREAM_KEY_TEST_MISSING_HEALTH (ValueError)",
     }
 
 

@@ -201,7 +201,7 @@ async def test_timed_out_task_is_not_retried(monkeypatch: pytest.MonkeyPatch) ->
 async def test_bad_backend_does_not_block_others(
     pilot_mtls_settings: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("FIRST_TEST_UNSET_KEY", raising=False)
+    monkeypatch.delenv("FIRST_UPSTREAM_KEY_TEST_UNSET", raising=False)
     cfg = _config("http://good/v1")
     backends = cfg.models[0].deployments[0].backends
     backends.insert(
@@ -210,7 +210,7 @@ async def test_bad_backend_does_not_block_others(
             id="bad",
             model_url="http://bad/v1",
             backend_model_name="upstream",
-            api_key="env_var://FIRST_TEST_UNSET_KEY",
+            api_key="env_var://FIRST_UPSTREAM_KEY_TEST_UNSET",
         ),
     )
     manager = bcm.BackendClientManager(Settings())
@@ -226,7 +226,7 @@ async def test_bad_backend_does_not_block_others(
 async def test_failed_update_keeps_previous_client(
     pilot_mtls_settings: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("FIRST_TEST_UNSET_KEY", raising=False)
+    monkeypatch.delenv("FIRST_UPSTREAM_KEY_TEST_UNSET", raising=False)
     manager = bcm.BackendClientManager(Settings())
     try:
         await manager.on_config_swap(_config("http://old/v1"))
@@ -236,7 +236,7 @@ async def test_failed_update_keeps_previous_client(
         cfg = _config("http://old/v1")
         cfg.models[0].deployments[0].backends[
             0
-        ].api_key = "env_var://FIRST_TEST_UNSET_KEY"
+        ].api_key = "env_var://FIRST_UPSTREAM_KEY_TEST_UNSET"
         with pytest.raises(RuntimeError):
             await manager.on_config_swap(cfg)
         assert manager.get("b1") is old

@@ -4,7 +4,7 @@ spec:
   cluster_name: minerva
   model_name: beam-1.0-bf16
   api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/beam-1.0-bf16"
-  api_key: env_var://MINERVA_DIRECT_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
   mtls:
     ca_file: /run/secrets/upstream/minerva/ca.crt
     cert_file: /run/secrets/upstream/minerva/client.crt
@@ -18,7 +18,7 @@ spec:
     cooldown_bench_sec: 60
   health_check:
     url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/beam-1.0-bf16/v1/chat/completions"
-    api_key: env_var://MINERVA_DIRECT_API_KEY
+    api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
     http_method: POST
     json_body:
       model: beam-1.0-bf16
@@ -41,7 +41,7 @@ spec:
   cluster_name: minerva
   model_name: glm-5.3
   api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/glm-5.3"
-  api_key: env_var://MINERVA_DIRECT_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
   mtls:
     ca_file: /run/secrets/upstream/minerva/ca.crt
     cert_file: /run/secrets/upstream/minerva/client.crt
@@ -55,7 +55,7 @@ spec:
     cooldown_bench_sec: 60
   health_check:
     url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/glm-5.3/v1/chat/completions"
-    api_key: env_var://MINERVA_DIRECT_API_KEY
+    api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
     http_method: POST
     json_body:
       model: glm-5.3
@@ -78,7 +78,7 @@ spec:
   cluster_name: minerva
   model_name: inkling-bf16
   api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/inkling-bf16"
-  api_key: env_var://MINERVA_DIRECT_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
   mtls:
     ca_file: /run/secrets/upstream/minerva/ca.crt
     cert_file: /run/secrets/upstream/minerva/client.crt
@@ -92,7 +92,7 @@ spec:
     cooldown_bench_sec: 60
   health_check:
     url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/inkling-bf16/v1/chat/completions"
-    api_key: env_var://MINERVA_DIRECT_API_KEY
+    api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
     http_method: POST
     json_body:
       model: inkling-bf16
@@ -115,7 +115,7 @@ spec:
   cluster_name: minerva
   model_name: muse-spark-bf16
   api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/muse-spark-bf16"
-  api_key: env_var://MINERVA_DIRECT_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
   mtls:
     ca_file: /run/secrets/upstream/minerva/ca.crt
     cert_file: /run/secrets/upstream/minerva/client.crt
@@ -129,7 +129,7 @@ spec:
     cooldown_bench_sec: 60
   health_check:
     url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/muse-spark-bf16/v1/chat/completions"
-    api_key: env_var://MINERVA_DIRECT_API_KEY
+    api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
     http_method: POST
     json_body:
       model: muse-spark-bf16
@@ -152,7 +152,7 @@ spec:
   cluster_name: minerva
   model_name: mistral-large-4-nvfp4
   api_url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/mistral-large-4-nvfp4"
-  api_key: env_var://MINERVA_DIRECT_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
   mtls:
     ca_file: /run/secrets/upstream/minerva/ca.crt
     cert_file: /run/secrets/upstream/minerva/client.crt
@@ -166,7 +166,7 @@ spec:
     cooldown_bench_sec: 60
   health_check:
     url: "https://minerva-login-01.minerva.alcf.anl.gov:9443/models/mistral-large-4-nvfp4/v1/models"
-    api_key: env_var://MINERVA_DIRECT_API_KEY
+    api_key: env_var://FIRST_UPSTREAM_KEY_MINERVA_DIRECT
     http_method: GET
     status_range: [200, 200]
     match_pattern: "mistral-large-4-nvfp4"

@@ -145,7 +145,7 @@ spec:
   cluster_name: metis
   model_name: google/gemma-4-31B-it
   api_url: "https://metis.alcf.anl.gov/v1"
-  api_key: env_var://METIS_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_METIS
   upstream_model_name: gemma-4-31B-it
   router_params:
     weight: 1
@@ -155,7 +155,7 @@ spec:
     cooldown_bench_sec: 60
   health_check:
     url: "https://metis.alcf.anl.gov/v1/chat/completions"
-    api_key: env_var://METIS_API_KEY
+    api_key: env_var://FIRST_UPSTREAM_KEY_METIS
     http_method: POST
     json_body:
       model: gemma-4-31B-it

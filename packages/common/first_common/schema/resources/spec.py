@@ -2,6 +2,7 @@ import json
 import math
 import shlex
 from typing import Annotated, Any, ClassVar, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -174,6 +175,18 @@ class StaticDeploymentSpec(ResourceSpec):
 
     prometheus_metrics_path: str | None = "/metrics"
     prometheus_scrape_interval_sec: int = 15
+
+    @model_validator(mode="after")
+    def keys_only_over_https(self) -> Self:
+        """An API key must never be sent to an upstream in cleartext. (An empty
+        health_check url disables the check, so nothing is sent.)"""
+        for field, url, key in (
+            ("api_url", self.api_url, self.api_key),
+            ("health_check.url", self.health_check.url, self.health_check.api_key),
+        ):
+            if key is not None and url and urlsplit(url).scheme.lower() != "https":
+                raise ValueError(f"{field} must use https when an api_key is set")
+        return self
 
 
 class ScriptParameter(BaseModel):

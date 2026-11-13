@@ -70,7 +70,7 @@ spec:
   cluster_name: sophia
   upstream_model_name: s-llama-3-8b
   api_url: https://sophia.alcf.anl.gov/api/v1/
-  api_key: env_var://SOPHIA_API_KEY
+  api_key: env_var://FIRST_UPSTREAM_KEY_SOPHIA
   router_params:
     weight: 2
     max_parallel_requests: 100
