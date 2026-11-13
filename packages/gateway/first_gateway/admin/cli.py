@@ -3,6 +3,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from rich.pretty import Pretty, pretty_repr
 from rich.table import Table
 from rich.text import Text
 from typer import Typer
-from yaml import safe_load_all
+from yaml import safe_dump_all, safe_load_all
 
 from alcf_ai.cli import _print_error
 from first_common.errors import FirstError, InvalidSpecError
@@ -85,11 +86,16 @@ def format_validation_error(
 def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
     resources = []
 
+    spec_path = Path(spec_dir)
     files = (
-        f
-        for ext in ("yml", "yaml")
-        for f in Path(spec_dir).rglob(f"*.{ext}")
-        if f.is_file()
+        [spec_path]
+        if spec_path.is_file()
+        else (
+            f
+            for ext in ("yml", "yaml")
+            for f in spec_path.rglob(f"*.{ext}")
+            if f.is_file()
+        )
     )
 
     errors = []
@@ -326,26 +332,67 @@ def print_plan(plan: ResourceChangePlan, labels: _ChangeLabels = PLAN_LABELS) ->
     console.print()
 
 
+def manifests_yaml(resources: list[ResourceManifest]) -> str:
+    """Manifests as `load_resources_from_yaml` reads them, defaults omitted."""
+    docs = [r.model_dump(mode="json", exclude_defaults=True) for r in resources]
+    return safe_dump_all(docs, sort_keys=False)
+
+
+PruneFlag = typer.Option(
+    True,
+    "--prune/--no-prune",
+    help="--prune: SPEC is the complete catalog; live resources missing from it "
+    "are deleted. --no-prune: only add or update what SPEC contains.",
+)
+
+
 @cli.command()
-def plan(ctx: typer.Context, spec_dir: Path) -> None:
+def export(
+    ctx: typer.Context,
+    patterns: list[str] = typer.Argument(
+        None,
+        metavar="[PATTERN]...",
+        help="Only resources whose name or Kind.name matches a glob.",
+    ),
+) -> None:
     """
-    Compare manifest to current state to review planned changes.
+    Print the live catalog as YAML manifests (fields at their defaults omitted).
     """
     client: AdminClient = ctx.obj
-    resources = load_resources_from_yaml(spec_dir)
-    result = client.plan(resources)
+    live = client.manifests()
+    resources = [
+        r
+        for r in live.resources
+        if not patterns
+        or any(
+            fnmatchcase(r.name, p) or fnmatchcase(f"{r.kind}.{r.name}", p)
+            for p in patterns
+        )
+    ]
+    print(f"# ConfigVersion {live.config_version}")
+    print(manifests_yaml(resources), end="")
+
+
+@cli.command()
+def plan(ctx: typer.Context, spec: Path, prune: bool = PruneFlag) -> None:
+    """
+    Compare manifests to current state to review planned changes.
+    """
+    client: AdminClient = ctx.obj
+    resources = load_resources_from_yaml(spec)
+    result = client.plan(resources, prune)
     print_plan(result)
 
 
 @cli.command()
-def apply(ctx: typer.Context, spec_dir: Path) -> None:
+def apply(ctx: typer.Context, spec: Path, prune: bool = PruneFlag) -> None:
     """
     Apply manifests to current state.
     """
     client: AdminClient = ctx.obj
     console = Console()
-    resources = load_resources_from_yaml(spec_dir)
-    plan = client.plan(resources)
+    resources = load_resources_from_yaml(spec)
+    plan = client.plan(resources, prune)
     print_plan(plan)
 
     if not (plan.to_add or plan.to_update or plan.to_delete):
@@ -354,7 +401,7 @@ def apply(ctx: typer.Context, spec_dir: Path) -> None:
     if not typer.confirm("Apply these changes?"):
         return
 
-    result = client.apply(resources, plan)
+    result = client.apply(resources, plan, prune)
     if result:
         console.print(
             f"\n[bold green]Applied ConfigVersion {result.uid} successfully.\n"

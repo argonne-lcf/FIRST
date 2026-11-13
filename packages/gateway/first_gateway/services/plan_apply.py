@@ -6,6 +6,7 @@ from first_common.errors import InvalidSpecError, SpecApplyError
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.resources.plan_apply import (
     FieldChange,
+    LiveManifests,
     ResourceChangePlan,
     ResourceManifest,
     ResourcePatch,
@@ -17,9 +18,10 @@ from first_common.schema.resources.spec import (
     LaunchTemplateSpec,
     ModelSpec,
     PilotDeploymentSpec,
+    ResourceSpec,
     StaticDeploymentSpec,
 )
-from first_common.schema.types import MTLSLoadError
+from first_common.schema.types import MTLSLoadError, ResourceName
 from first_gateway.database import models
 
 
@@ -195,18 +197,54 @@ def validate_resources(
     return by_kind
 
 
-async def create_plan(
-    resources: list[ResourceManifest], sess: AsyncSession
-) -> ResourceChangePlan:
-    resource_order = (
-        (models.AccessGroup, AccessGroupSpec),
-        (models.Model, ModelSpec),
-        (models.Cluster, ClusterSpec),
-        (models.LaunchTemplate, LaunchTemplateSpec),
-        (models.StaticDeployment, StaticDeploymentSpec),
-        (models.PilotDeployment, PilotDeploymentSpec),
+# Parents before children: the order manifests are planned and exported in.
+_RESOURCE_ORDER: tuple[tuple[type[models.ResourceRow], type[ResourceSpec]], ...] = (
+    (models.AccessGroup, AccessGroupSpec),
+    (models.Model, ModelSpec),
+    (models.Cluster, ClusterSpec),
+    (models.LaunchTemplate, LaunchTemplateSpec),
+    (models.StaticDeployment, StaticDeploymentSpec),
+    (models.PilotDeployment, PilotDeploymentSpec),
+)
+
+
+async def _live_specs(
+    sess: AsyncSession, db_model: type[models.ResourceRow], spec: type[ResourceSpec]
+) -> dict[ResourceName, ResourceSpec]:
+    return {
+        row.name: spec.model_validate(row, extra="ignore")
+        for row in await db_model.list(sess)
+    }
+
+
+async def live_manifests(sess: AsyncSession) -> LiveManifests:
+    """The live catalog as manifests: what `create_plan` diffs against."""
+    resources = []
+    for db_model, spec in _RESOURCE_ORDER:
+        for name, live in (await _live_specs(sess, db_model, spec)).items():
+            resources.append(
+                ResourceManifest.model_validate(
+                    {"kind": db_model.__name__, "name": name, "spec": live}
+                )
+            )
+    return LiveManifests(
+        config_version=await models.ConfigVersion.get_latest_version(sess),
+        resources=resources,
     )
 
+
+async def create_plan(
+    resources: list[ResourceManifest], sess: AsyncSession, *, prune: bool = True
+) -> ResourceChangePlan:
+    """
+    Diff `resources` against live state. With `prune`, they are the complete
+    catalog and anything live but absent is deleted. Without it they are
+    upserted: absent resources keep their live specs.
+    """
+    if not prune:
+        given = {(r.kind, r.name) for r in resources}
+        live = (await live_manifests(sess)).resources
+        resources = [r for r in live if (r.kind, r.name) not in given] + resources
     no_change = []
     to_delete = []
     to_add = []
@@ -215,12 +253,9 @@ async def create_plan(
     by_kind = validate_resources(resources)
     current_version = await models.ConfigVersion.get_latest_version(sess)
 
-    for db_model, spec in resource_order:
+    for db_model, spec in _RESOURCE_ORDER:
         kind = db_model.__name__
-        existing = {
-            row.name: spec.model_validate(row, extra="ignore")
-            for row in await db_model.list(sess)
-        }
+        existing = await _live_specs(sess, db_model, spec)
         desired = {r.name: r for r in by_kind[kind]}
 
         desired_names = set(desired)
@@ -260,6 +295,8 @@ async def apply_plan(
     approved_plan: ResourceChangePlan,
     user: UserAuthEvent,
     sess: AsyncSession,
+    *,
+    prune: bool = True,
 ) -> models.ConfigVersion | None:
 
     if not (approved_plan.to_add or approved_plan.to_delete or approved_plan.to_update):
@@ -274,7 +311,7 @@ async def apply_plan(
         sess,
     )
 
-    actual_plan = await create_plan(resources, sess)
+    actual_plan = await create_plan(resources, sess, prune=prune)
     if actual_plan.model_dump(exclude={"previous_version"}) != approved_plan.model_dump(
         exclude={"previous_version"}
     ):

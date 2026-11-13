@@ -548,6 +548,30 @@ def test_embed_deployment_only(gateway: FakeGateway) -> None:
     assert gateway.last_json == {"model": "google/gemma-4-31B-it", "input": "a"}
 
 
+def test_admin_deployments_wait(
+    gateway: FakeGateway,
+    admin_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from first_gateway.admin.cli import cli as admin_cli
+
+    monkeypatch.setattr("first_gateway.admin.catalog_cli.time.sleep", lambda _: None)
+    detail = gateway_pilot_detail()  # one ready replica
+    gateway.routes["GET /catalog/v1/deployments/pilot/sophia/openai/gpt-oss-120b"] = (
+        httpx.Response(200, json=detail)
+    )
+    out = admin_run("deployments", "wait", "sophia/openai/gpt-oss-120b")
+    assert "rep-1" in out
+
+    result = runner.invoke(
+        admin_cli,
+        ["deployments", "wait", "sophia/openai/gpt-oss-120b", "--ready", "2"]
+        + ["--timeout", "0"],
+    )
+    assert result.exit_code == 1
+    assert "Timed out with 1 of 2" in result.output
+
+
 def test_admin_set_desired_replicas_many_and_stdin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

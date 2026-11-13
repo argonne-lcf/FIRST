@@ -5,6 +5,7 @@ operational detail from the loopback-only admin API.
 `alcf-ai` has the same commands over the gateway's public views.
 """
 
+import time
 from fnmatch import fnmatchcase
 from typing import Annotated, Iterable
 
@@ -31,6 +32,7 @@ from first_common.schema.resources.read import (
     PilotDeploymentDetail,
     StaticDeploymentDetail,
 )
+from first_common.schema.types import ReplicaState
 
 from .client import AdminClient
 
@@ -350,6 +352,40 @@ def deployments_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> 
         _print_pilot_deployment(detail)
     else:
         _print_static_deployment(detail)
+
+
+@deployments_cli.command("wait")
+def deployments_wait(
+    ctx: typer.Context,
+    name: str,
+    ready: int = typer.Option(
+        1, min=0, help="Replicas that must be ready (0 waits for none)."
+    ),
+    timeout: float = typer.Option(900, help="Give up after this many seconds."),
+    as_json: bool = JsonFlag,
+) -> None:
+    """
+    Wait for a pilot deployment's ready-replica count, then show it.
+
+    Exits 1 on timeout. "Ready" is the replica state; it is not a routed request.
+    """
+    catalog = _client(ctx)
+    deadline = time.monotonic() + timeout
+    while True:
+        detail = catalog.get_pilot_deployment(name)
+        count = sum(r.state == ReplicaState.ready for r in detail.replicas)
+        done = count == 0 if ready == 0 else count >= ready
+        if done or time.monotonic() >= deadline:
+            break
+        time.sleep(5)
+
+    if as_json:
+        print_json(detail)
+    else:
+        _print_pilot_deployment(detail)
+    if not done:
+        console.print(f"[red]Timed out with {count} of {ready} replica(s) ready.[/]")
+        raise typer.Exit(1)
 
 
 @deployments_cli.command("logs")
