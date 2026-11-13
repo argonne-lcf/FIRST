@@ -218,6 +218,16 @@ def check_globus_groups(user_groups: list[str]) -> tuple[bool, str]:
         return False, "Error: User is not a member of an allowed Globus Group."
 
 
+# Wildcard domain match
+def domain_matches_wildcard(domain: str, wildcard_suffix: str) -> bool:
+    """
+    Whether a domain is a subdomain of a wildcard entry. The suffix is the
+    wildcard without its leading "*." (e.g. "edu" for "*.edu"). The match is
+    anchored on a dot so that "*.edu" matches "uchicago.edu" but not "fakeedu".
+    """
+    return len(wildcard_suffix) > 0 and domain.endswith("." + wildcard_suffix)
+
+
 # Check Session Info
 def check_session_info(
     introspection: GlobusActiveIntrospectResponse, user_groups: list[str]
@@ -248,8 +258,17 @@ def check_session_info(
             session_domain = identity["username"].split("@")[1]
             session_info_identities.append(identity)
 
+            # Check if IdP could be authorized
+            session_domain_in_authorized = (
+                session_domain in settings.AUTHORIZED_IDP_DOMAINS
+                or any(
+                    domain_matches_wildcard(session_domain, idp_wildcard)
+                    for idp_wildcard in settings.AUTHORIZED_IDP_WILDCARD_DOMAINS
+                )
+            )
+
             # If the domain is authorized by the service ...
-            if session_domain in settings.AUTHORIZED_IDP_DOMAINS:
+            if session_domain_in_authorized:
                 # Create the User object from the Globus introspection
                 try:
                     user = UserPydantic(
@@ -318,12 +337,29 @@ def check_groups_per_idp(
             None,
         )
 
-    # If there is a Globus Group check tied to this identity provider ...
+    # Collect the authorized groups from every rule that applies to this IdP
+    # (None means there is no group per IdP restriction)
+    authorized_groups: set[str] | None = None
+
+    # Groups tied to a one-to-one IdP match
     if idp_domain in settings.AUTHORIZED_GROUPS_PER_IDP:
-        # Error if the user is a member of any authorized Globus Groups
-        group_overlap = set(user_groups) & set(
-            settings.AUTHORIZED_GROUPS_PER_IDP[idp_domain]
-        )
+        authorized_groups = set(settings.AUTHORIZED_GROUPS_PER_IDP[idp_domain])
+
+    # Groups tied to every matching wildcard (in addition to the exact match)
+    for idp_wildcard, groups in settings.AUTHORIZED_GROUPS_PER_IDP_WILDCARD.items():
+        if domain_matches_wildcard(idp_domain, idp_wildcard):
+            authorized_groups = (authorized_groups or set()) | set(groups)
+
+    # Grant access if no group restriction was found
+    if authorized_groups is None:
+        return True, "", None
+
+    # If there was a group restriction found ...
+    else:
+        # Membership in any one of the applicable groups is sufficient
+        group_overlap = set(user_groups) & authorized_groups
+
+        # Error if user not in authorized group
         if len(group_overlap) == 0:
             return (
                 False,
@@ -335,9 +371,6 @@ def check_groups_per_idp(
         else:
             group_overlap_str = ", ".join(list(group_overlap))
             return True, "", group_overlap_str
-
-    # Grant request if no group restriction was found
-    return True, "", None
 
 
 # Extract service account client

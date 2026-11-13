@@ -24,9 +24,15 @@ class AuthCheckConfig(AppConfig):
             )
 
         # Make sure the authorization safety net is in place
-        if len(settings.AUTHORIZED_IDP_DOMAINS) == 0:
+        # (wildcard entries are stored separately, without their "*." prefix)
+        authorized_idp_domains = list(settings.AUTHORIZED_IDP_DOMAINS) + [
+            f"*.{suffix}" for suffix in settings.AUTHORIZED_IDP_WILDCARD_DOMAINS
+        ]
+        if len(authorized_idp_domains) == 0:
             raise ImproperlyConfigured("AUTHORIZED_IDP_DOMAINS must be defined.")
-        for idp_name in settings.AUTHORIZED_IDP_DOMAINS:
+        for idp_name in (
+            settings.AUTHORIZED_IDP_DOMAINS + settings.AUTHORIZED_IDP_WILDCARD_DOMAINS
+        ):
             if len(idp_name) == 0:
                 raise ImproperlyConfigured("AUTHORIZED_IDP_DOMAINS cannot be empty.")
 
@@ -50,7 +56,7 @@ class AuthCheckConfig(AppConfig):
         # Make sure the policy and the authorization safety net are consistent
         if not sorted(
             policy_response["policy"]["domain_constraints_include"]
-        ) == sorted(settings.AUTHORIZED_IDP_DOMAINS):
+        ) == sorted(authorized_idp_domains):
             raise ImproperlyConfigured(
                 "The Globus Policy and AUTHORIZED_IDP_DOMAINS are inconsistent."
             )
