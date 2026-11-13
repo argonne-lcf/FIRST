@@ -103,11 +103,29 @@ GLOBUS_MANAGEMENT_TASK_GROUP_ID = os.getenv("GLOBUS_MANAGEMENT_TASK_GROUP_ID", N
 
 # Extract allowed identity providers
 AUTHORIZED_IDP_DOMAINS = textfield_to_strlist(os.getenv("AUTHORIZED_IDP_DOMAINS", ""))
+AUTHORIZED_IDP_WILDCARD_DOMAINS = [
+    key[2:] for key in AUTHORIZED_IDP_DOMAINS if key.startswith("*.")
+]
+AUTHORIZED_IDP_DOMAINS = [
+    key for key in AUTHORIZED_IDP_DOMAINS if not key.startswith("*.")
+]
 
 # Extract list of allowed groups per identity providers
 AUTHORIZED_GROUPS_PER_IDP = json.loads(os.getenv("AUTHORIZED_GROUPS_PER_IDP", "{}"))
 for key, value in AUTHORIZED_GROUPS_PER_IDP.items():
     AUTHORIZED_GROUPS_PER_IDP[key] = [v.strip() for v in value.split(",")]
+
+# Split wildcard IdPs and explicit IdPs
+AUTHORIZED_GROUPS_PER_IDP_WILDCARD = {
+    key[2:]: value
+    for key, value in AUTHORIZED_GROUPS_PER_IDP.items()
+    if key.startswith("*.")
+}
+AUTHORIZED_GROUPS_PER_IDP = {
+    key: value
+    for key, value in AUTHORIZED_GROUPS_PER_IDP.items()
+    if not key.startswith("*.")
+}
 
 # Define AUTHORIZED_IDP_DOMAINS_STRING for error-message string to hide restricted identity provided
 idp_overlap = set(AUTHORIZED_IDP_DOMAINS) & set(AUTHORIZED_GROUPS_PER_IDP.keys())
