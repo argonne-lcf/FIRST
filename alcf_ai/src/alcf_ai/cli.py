@@ -32,6 +32,14 @@ class CliState(TypedDict, total=False):
 cli = Typer(no_args_is_help=True)
 _cli_state: CliState = {}
 
+
+def _get_client() -> InferenceClient:
+    client = _cli_state.get("client")
+    if client is None:
+        raise RuntimeError("CLI client has not been initialized")
+    return client
+
+
 cli.add_typer(auth_cli, name="auth", help="Login and get access tokens")
 cli.add_typer(
     dinov3_cli, name="dinov3", help="Use the DINOv3 image segmentation service"
@@ -82,7 +90,7 @@ def _root(
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     _cli_state["client"] = InferenceClient(base_url)
-    logger.debug(f"Using client: {_cli_state['client']}")
+    logger.debug(f"Using client: {_get_client()}")
 
 
 @cli.command()
@@ -90,7 +98,7 @@ def ls_endpoints() -> None:
     """
     List all endpoints available across clusters (raw API response)
     """
-    client = _cli_state["client"]
+    client = _get_client()
     print(json.dumps(client.list_endpoints(), indent=2))
 
 
@@ -99,7 +107,7 @@ def ls_models(cluster: str) -> None:
     """
     List models available on a cluster (raw API response)
     """
-    client = _cli_state["client"]
+    client = _get_client()
     print(json.dumps(client.list_models(cluster), indent=2))
 
 
@@ -108,7 +116,7 @@ def ls_jobs(cluster: str) -> None:
     """
     List ongoing jobs for a cluster
     """
-    client = _cli_state["client"]
+    client = _get_client()
 
     jobs = client.clusters(cluster).get_jobs()
     print(jobs)
@@ -139,7 +147,7 @@ def chat(
     The user message is built by concatenating, in order: piped stdin (if any),
     the contents of --input-file (if any), and the positional PROMPT argument.
     """
-    client = _cli_state["client"]
+    client = _get_client()
     oai = client.clusters(cluster).openai
 
     parts: list[str] = []

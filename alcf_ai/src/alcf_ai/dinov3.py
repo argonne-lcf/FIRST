@@ -42,9 +42,9 @@ def submit(
     submission is the unit of parallelism -- shard large datasets into
     subfolders and submit them concurrently for higher throughput.
     """
-    from .cli import _cli_state
+    from .cli import _get_client
 
-    client = _cli_state["client"]
+    client = _get_client()
 
     input_dir = input_dir.expanduser().resolve()
 

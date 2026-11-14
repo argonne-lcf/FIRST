@@ -259,9 +259,9 @@ def submit_batch(
     """
     Submit a WebDataset-structured tar file for batch inference.
     """
-    from .cli import _cli_state
+    from .cli import _get_client
 
-    client = _cli_state["client"]
+    client = _get_client()
 
     dataset_path = dataset_path.expanduser().resolve()
 
@@ -298,9 +298,9 @@ def submit_image(
     prompt: str,
     save_preview: Path | None = None,
 ) -> None:
-    from .cli import _cli_state
+    from .cli import _get_client
 
-    client = _cli_state["client"]
+    client = _get_client()
     logger.info("Sending request...")
 
     if "://" not in image_uri and Path(image_uri).is_file():
@@ -333,7 +333,11 @@ def preview_batch_results(input_tar: Path, result_tar: Path) -> None:
         for fname in jsons:
             assert (result_fp := tf.extractfile(fname)) is not None
 
-            result = json.load(result_fp)
+            try:
+                result = json.load(result_fp)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+                logger.warning(f"Skipping {fname}: invalid JSON ({err})")
+                continue
 
             if result["num_objects"] < 1:
                 logger.info(f"Skipping {fname}: no objects detected.")
