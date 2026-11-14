@@ -10,7 +10,7 @@ dependencies = [
     "httpx",
     "numpy",
     "rich",
-    "typer",
+    "typer>=0.19",
     "globus-sdk>=3.65",
     "openai",
     "matplotlib",
