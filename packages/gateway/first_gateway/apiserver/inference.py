@@ -37,6 +37,7 @@ from ..services.orchestration import (
     maintenance_notices,
     maintenance_suffix,
     model_retired_error,
+    replacement_alternatives,
 )
 from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
 from .auth import enforce_permission
@@ -126,7 +127,15 @@ class InferenceService:
 
         # Only collect backend candidates that have a httpx client ready
         backend_candidates = get_shuffled_backends(
-            model, deployment_name=deployment_name
+            model,
+            deployment_name=deployment_name,
+            retirement_alternatives=(
+                replacement_alternatives(self.router_config, self.user, retired)
+                if deployment_name
+                and (retired := model.retired_deployment(deployment_name)) is not None
+                and retired.replacement is not None
+                else None
+            ),
         )
         backend_candidates = [
             b

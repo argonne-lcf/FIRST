@@ -14,6 +14,7 @@ from first_common.errors import (
 )
 from first_common.schema.resources.spec import RetiredDeployment
 from first_common.schema.types import OverloadPolicy, UsageLimits
+from first_gateway.apiserver.auth import user_can_access_group
 from first_gateway.apiserver.dependencies import AuthUser
 
 from ..database.redis.admission import (
@@ -24,12 +25,14 @@ from ..database.redis.admission import (
     CapacityReason,
     QuotaReason,
 )
-from ..database.redis.router_config import DeploymentConfig, ModelConfig
+from ..database.redis.router_config import DeploymentConfig, ModelConfig, RouterConfig
 
 
 def get_shuffled_backends(
     model: ModelConfig,
     deployment_name: str | None = None,
+    *,
+    retirement_alternatives: list[dict[str, str]] | None = None,
 ) -> list[CandidateBackend]:
     """
     Generate list of backend candidates for a given model and deployment (if provided).
@@ -47,14 +50,20 @@ def get_shuffled_backends(
                     retired,
                     subject=f"Deployment '{retired.name}'",
                     requested_base_path=deployment_base_path(retired.name),
-                    alternatives=[
-                        {
-                            "deployment": live.name,
-                            "cluster": live.cluster_name,
-                            "base_path": deployment_base_path(live.name),
-                        }
-                        for live in model.deployments
-                    ],
+                    alternatives=retirement_alternatives
+                    if retirement_alternatives is not None
+                    else (
+                        []
+                        if retired.replacement
+                        else [
+                            {
+                                "deployment": live.name,
+                                "cluster": live.cluster_name,
+                                "base_path": deployment_base_path(live.name),
+                            }
+                            for live in model.deployments
+                        ]
+                    ),
                 )
             raise NotFound(
                 f"{deployment_name=} was not found in the current configuration."
@@ -339,6 +348,37 @@ def model_retired_error(model: ModelConfig) -> ModelRetired:
     )
 
 
+def replacement_alternatives(
+    config: RouterConfig,
+    user: AuthUser,
+    retired: RetiredDeployment,
+    *,
+    v1: bool = False,
+) -> list[dict[str, str]]:
+    """Filter explicit guidance by target ACLs; never resolve or contact a backend."""
+    replacement = retired.replacement
+    if replacement is None:
+        return []
+    model = config.models_by_name.get(replacement.model_name)
+    if model is None or model.retired or not user_can_access_group(user, model):
+        return []
+    return [
+        {
+            "deployment": deployment.name,
+            "cluster": deployment.cluster_name,
+            "model": model.name,
+            "base_path": (
+                f"/resource_server/{deployment.cluster_name}/api/v1"
+                if v1
+                else deployment_base_path(deployment.name)
+            ),
+            "base_url": replacement.base_url,
+        }
+        for deployment in sorted(model.deployments, key=lambda d: d.name)
+        if deployment.cluster_name == replacement.cluster_name
+    ]
+
+
 def deployment_retired_error(
     model: ModelConfig,
     retired: RetiredDeployment,
@@ -358,7 +398,20 @@ def deployment_retired_error(
         f"Change your client's base URL from ...{requested_base_path} to "
         f"...{FEDERATED_BASE_PATH}"
     )
-    if alternatives:
+    if retired.replacement and alternatives:
+        replacement = retired.replacement
+        message = (
+            f"{subject} has been retired. Change both your client's model to "
+            f"'{replacement.model_name}' on cluster '{replacement.cluster_name}' "
+            f"and its base URL to {replacement.base_url}. "
+            "Requests are not redirected or replayed."
+        )
+    elif retired.replacement:
+        message = (
+            f"{subject} has been retired, and no alternative deployment is currently "
+            f"listed for you. GET ...{FEDERATED_BASE_PATH}/models lists the models available to you."
+        )
+    elif alternatives:
         pinned = ", ".join(f"...{a['base_path']}" for a in alternatives)
         message = (
             f"{subject} has been retired, but model '{model.name}' is still "
@@ -371,16 +424,20 @@ def deployment_retired_error(
             f"deployment online right now. {fix} to use the model wherever it "
             "is next available."
         )
-    return DeploymentRetired(
-        message,
-        info={
-            "model": model.name,
-            "retired_deployment": retired.name,
-            "retired_cluster": retired.cluster_name,
-            "federated_base_path": FEDERATED_BASE_PATH,
-            "alternatives": alternatives,
-        },
-    )
+    info = {
+        "model": model.name,
+        "retired_deployment": retired.name,
+        "retired_cluster": retired.cluster_name,
+        "federated_base_path": FEDERATED_BASE_PATH,
+        "alternatives": alternatives,
+    }
+    if retired.replacement and alternatives:
+        info.update(
+            replacement_cluster=retired.replacement.cluster_name,
+            replacement_model=retired.replacement.model_name,
+            replacement_base_url=retired.replacement.base_url,
+        )
+    return DeploymentRetired(message, info=info)
 
 
 def get_name_from_slug(slug: str) -> str:

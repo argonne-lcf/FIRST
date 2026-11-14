@@ -73,6 +73,16 @@ def validate_resources(
             )
             deployments_by_model[deployment.spec.model_name].append(deployment.name)
     live_deployments = {n for names in deployments_by_model.values() for n in names}
+    retirement_models = {
+        r.name: r.spec for r in by_kind["Model"] if isinstance(r.spec, ModelSpec)
+    }
+    deployment_locations = {
+        (r.spec.model_name, r.spec.cluster_name)
+        for kind in ("StaticDeployment", "PilotDeployment")
+        for r in by_kind[kind]
+        if isinstance(r.spec, (StaticDeploymentSpec, PilotDeploymentSpec))
+    }
+    cluster_names = {r.name for r in by_kind["Cluster"]}
     for model_resource in by_kind["Model"]:
         model_spec = model_resource.spec
         assert isinstance(model_spec, ModelSpec)
@@ -88,6 +98,28 @@ def validate_resources(
                 f"Model.{model_resource.name} lists retired_deployments that are "
                 f"still live: {', '.join(sorted(clash))}."
             )
+        for retired in model_spec.retired_deployments:
+            replacement = retired.replacement
+            if replacement is None:
+                continue
+            target = retirement_models.get(replacement.model_name)
+            if (
+                target is None
+                or target.retired
+                or replacement.cluster_name not in cluster_names
+            ):
+                raise InvalidSpecError(
+                    f"Model.{model_resource.name}: retirement replacement must reference "
+                    "an existing, non-retired Model and an existing Cluster."
+                )
+            if (
+                replacement.model_name,
+                replacement.cluster_name,
+            ) not in deployment_locations:
+                raise InvalidSpecError(
+                    f"Model.{model_resource.name}: retirement replacement has no deployment "
+                    "on the specified cluster."
+                )
 
     # A request can never be admitted if it costs more than the user's token
     # bucket holds, so a context window larger than burst_tokens is unusable.
