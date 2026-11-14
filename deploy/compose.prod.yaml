@@ -42,12 +42,12 @@ services:
   prometheus:
     group_add:
       - "900"
+    # The base keeps loopback access for local snapshots. This listener serves
+    # Analytics Grafana over the Analytics-only conduit and host firewall.
+    ports:
+      - "140.221.33.25:9090:9090"
     volumes:
       - prometheus_data_prod:/prometheus
-
-  grafana:
-    volumes:
-      - grafana_data_prod:/var/lib/grafana
 
   vector:
     volumes:
@@ -67,8 +67,6 @@ volumes:
   redis_data_prod:
     external: true
   prometheus_data_prod:
-    external: true
-  grafana_data_prod:
     external: true
   prompt_records_prod:
     external: true

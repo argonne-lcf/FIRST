@@ -46,10 +46,6 @@ services:
     volumes:
       - prometheus-dev:/prometheus
 
-  grafana:
-    volumes:
-      - grafana-dev:/var/lib/grafana
-
   vector:
     volumes:
       - vector-dev:/var/lib/vector
@@ -77,6 +73,5 @@ volumes:
   postgres-dev:
   redis-dev:
   prometheus-dev:
-  grafana-dev:
   prompt-records-dev:
   vector-dev:

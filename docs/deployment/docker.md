@@ -6,7 +6,7 @@ the differences for each environment. The base file never runs alone.
 
 | File | Role |
 |---|---|
-| `deploy/compose.yaml` | Base services common to dev and prod: apiserver, controller-manager, postgres, redis, prometheus, grafana. |
+| `deploy/compose.yaml` | Base services common to dev and prod: apiserver, controller-manager, postgres, redis, prometheus. |
 | `deploy/compose.dev.yaml` | **Dev** overlay — nginx container, auto-migration, dev data volumes, dev env (`.env.compose`). |
 | `deploy/compose.prod.yaml` | **Prod** overlay — publishes apiserver on `127.0.0.1:7001`, external data volumes, prod env (`.env.prod`); no nginx, no auto-migration. |
 | `deploy/compose.tunnel.yaml` | Opt-in **dev** overlay — SOCKS tunnel + `*PROXY` injection. |
@@ -18,7 +18,7 @@ the differences for each environment. The base file never runs alone.
 | `deploy/prometheus.yml` | Prometheus scrape config (controller-manager + discovered backends). |
 | `deploy/compose.v1-logs.yaml` | Opt-in overlay — ships the V1 gateway's logs until V1 retires. See [Log Shipping](log-shipping.md). |
 | `deploy/log-shipping/` | Vector config and the rclone script for the `vector` and `prompt-shipper` services (`log-shipping` profile). |
-| `deploy/grafana-*`, `deploy/dashboards.yaml` | Grafana datasource + dashboard provisioning. |
+| `deploy/compose.dev-analytics.yaml` | Opt-in dev-gateway overlay — exposes Prometheus privately to FIRST-analytics. |
 
 ## Architecture
 
@@ -40,7 +40,6 @@ flowchart TB
         PG[("postgres:18")]:::store
         RD[("redis:8")]:::store
         PROM["prometheus :9090"]:::obs
-        GRAF["grafana :3000"]:::obs
         TUN["tunnel :1080<br/>(dev, opt-in)"]:::opt
       end
     end
@@ -51,7 +50,8 @@ flowchart TB
     CM --> PG & RD
     PROM -->|scrape| CM
     PROM -->|http_sd + scrape| Pilot
-    GRAF -->|query| PROM
+    ANALYTICS["Analytics Grafana<br/>separate VM"]:::obs
+    ANALYTICS -->|private :9090| PROM
     API -.egress via.-> TUN
     CM -.egress via.-> TUN
     TUN -.SSH -D.-> Pilot
@@ -79,9 +79,12 @@ flowchart TB
   but expendable and **not** backed up.
 - **prometheus** — scrapes the controller-manager and the pilot backends it
   discovers. Bounded footprint (retain ~15 days / 5 GB) with the admin API enabled
-  for snapshots. Published on `127.0.0.1:9090`.
-- **grafana** — dashboards over Prometheus, provisioned from `deploy/`. Published
-  on `127.0.0.1:3000`. Runs in dev **and** prod.
+  for snapshots. Published on `127.0.0.1:9090`. Managed gateway deployment paths
+  can additionally publish a private-VM listener for Analytics Grafana. That
+  plaintext, admin-capable endpoint must be firewalled to the Analytics VM only.
+- **Analytics Grafana** — deployed separately in FIRST-analytics. It provisions
+  the control-plane and vLLM dashboards and queries gateway Prometheus over the
+  private listener. No standalone Grafana runs in this Compose stack.
 - **nginx** — reverse proxy + rate limiting + SSE-friendly buffering. A container
   in dev; the **host's** nginx in prod (see below).
 - **vector**, **prompt-shipper** *(`log-shipping` profile)* — move structured logs
@@ -202,8 +205,7 @@ Copy each example to its secret file and fill it in:
 `postgres` gets nothing but `POSTGRES_DB`/`POSTGRES_USER` (set in the overlay)
 and `POSTGRES_PASSWORD` (prod: `.env.secret.postgres`; dev: a throwaway value
 in `compose.dev.yaml`). The dev `migration` service reads only `.env.compose`,
-for `FIRST_DB_URL`. Prometheus, Grafana, Redis, nginx and the tunnel get no
-secrets file.
+for `FIRST_DB_URL`. Prometheus, Redis, nginx and the tunnel get no secrets file.
 
 The gateway fails closed to keep it that way: it refuses to start if it is
 configured with `FIRST_GLOBUS__COMPUTE_CLIENT_SECRET` or any
@@ -233,10 +235,31 @@ make compose-down    # stop
 make db-reset        # wipe DEV db/redis volumes and re-run migrations (prompts)
 ```
 
-Once up: apiserver via nginx at <http://localhost:8000>, Grafana at
-<http://localhost:3000>, Prometheus at <http://localhost:9090>. Postgres and Redis
-are on `127.0.0.1:5433` / `127.0.0.1:6380`.
+Once up: apiserver via nginx at <http://localhost:8000> and Prometheus at
+<http://localhost:9090>. Postgres and Redis are on `127.0.0.1:5433` /
+`127.0.0.1:6380`. Use the consolidated FIRST-analytics Grafana for dashboards.
 
+### Dev-gateway Analytics listener
+
+On `inference-api-dev`, append the Analytics overlay to the existing selection
+in `.env`:
+
+```ini
+COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml:deploy/compose.tunnel.yaml:deploy/compose.dev-analytics.yaml
+COMPOSE_PROJECT_NAME=first
+```
+
+Then deploy with the existing target:
+
+```bash
+make compose-up
+```
+
+The overlay preserves `127.0.0.1:9090` for local snapshot tooling and adds
+`140.221.33.155:9090` for the consolidated Analytics Grafana. The conduit and
+host firewall must allow that plaintext listener only from
+`inference-olap-01`. Ordinary local development does not select the VM-specific
+overlay and remains loopback-only.
 ### Dozzle (browser log viewer)
 
 Dozzle is intentionally **not** in the Compose stack. Run it on demand:
@@ -305,6 +328,11 @@ make prod-up        # start / apply changes
 make prod-migrate   # after deploying a new image
 make prod-down      # stop (never uses -v)
 ```
+
+The prod overlay preserves `127.0.0.1:9090` for local snapshots and additionally
+publishes `140.221.33.25:9090` for consolidated Analytics Grafana queries. Keep
+that private listener restricted to `inference-olap-01` in the conduit and host
+firewall: it is plaintext HTTP and includes the enabled Prometheus admin API.
 
 ### V1-to-V2 auth cutover gate
 
@@ -390,10 +418,17 @@ Host nginx serves only the user-facing API. The admin console and admin API
 stay on `127.0.0.1:9100` (see [Components](#components)); never add a
 `proxy_pass` to that port.
 
-!!! warning "Grafana is anonymous-admin"
-    Grafana runs with anonymous admin access and binds to `127.0.0.1:3000`. That's
-    fine for local access / SSH tunnels. **Do not** expose it through host nginx
-    without putting real authentication in front of it.
+### Grafana consolidation
+
+FIRST-analytics hosts authenticated dashboards at
+<https://inference-api.alcf.anl.gov/dashboard/> and provisions the FIRST
+control-plane and vLLM sources. FIRST Compose no longer creates a Grafana
+service or its data volumes.
+
+Removing the Compose service does **not** stop an already-running container.
+After validating the unified deployment, explicitly stop and remove each legacy
+Grafana container and retain `grafana_data_prod` and `first_grafana-dev` through
+a rollback window; neither is deleted by this change.
 
 ### Run on boot (systemd)
 

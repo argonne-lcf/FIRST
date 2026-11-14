@@ -164,7 +164,9 @@ FIRST v2 is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspa
 | `alcf_ai` | User machines | Python SDK and CLI for the inference API |
 | `first_common` | Everywhere | Shared schemas (resource specs, pilot wire types, scheduler interface) and errors |
 
-The gateway stack (API servers, controller manager, Postgres, Redis, Prometheus, Grafana) is deployed as containers with Docker Compose.
+The gateway stack (API servers, controller manager, Postgres, Redis, Prometheus)
+is deployed as containers with Docker Compose. Authenticated dashboards are
+hosted separately by FIRST-analytics.
 
 ## Using the API
 

@@ -94,7 +94,6 @@ prod-init:
 	docker volume create postgres_data_prod
 	docker volume create redis_data_prod
 	docker volume create prometheus_data_prod
-	docker volume create grafana_data_prod
 	docker volume create prompt_records_prod
 	docker volume create vector_data_prod
 
