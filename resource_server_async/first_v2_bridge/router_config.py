@@ -5,9 +5,10 @@ unmodeled fields are intentionally ignored by this temporary V1 bridge.
 """
 
 from typing import Any
+from urllib.parse import urlsplit
 
 import redis
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # The single JSON blob key written by the V2 control plane.
 ROUTER_CONFIG_KEY = "router-cfg"
@@ -66,9 +67,36 @@ class UsageLimits(BaseModel):
     default: TPMLimits
 
 
+class RetirementReplacement(BaseModel):
+    """Public migration guidance; never used as a backend URL."""
+
+    cluster_name: str
+    model_name: str
+    base_url: str
+
+    @field_validator("base_url")
+    @classmethod
+    def safe_base_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or any(c.isspace() for c in value)
+        ):
+            raise ValueError(
+                "replacement base_url must be an HTTPS URL without credentials, query or fragment"
+            )
+        return value.rstrip("/")
+
+
 class RetiredDeployment(BaseModel):
     name: str
     cluster_name: str
+    replacement: RetirementReplacement | None = None
 
 
 class ModelRetirementConfig(BaseModel):

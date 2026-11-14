@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.http import StreamingHttpResponse
 
 from resource_server_async.clusters import BaseCluster
@@ -76,6 +77,32 @@ def cluster_stub(name):
         check_permission=Mock(),
         check_maintenance=AsyncMock(return_value=SimpleNamespace(raise_if_down=Mock())),
     )
+
+
+def cross_model_config():
+    """Preserve the original Inkling tombstone while adding a different model."""
+    cfg = config()
+    source = config(
+        name="beam-1.0-bf16",
+        aliases=["beam-old"],
+        deployments=[],
+        retired_deployments=[
+            {
+                "name": "minerva/beam-1.0-bf16",
+                "cluster_name": "minerva",
+                "replacement": {
+                    "cluster_name": "tara",
+                    "model_name": "beam-1.0-fp8",
+                    "base_url": "https://inference-api.alcf.anl.gov/resource_server/tara/api/v1",
+                },
+            }
+        ],
+    ).models[0]
+    target = config(name="beam-1.0-fp8", aliases=[], retired_deployments=[]).models[0]
+    target.deployments[0].name = "tara/beam-1.0-fp8"
+    target.deployments[0].backends[0].backend_model_name = "beam-1.0-fp8"
+    cfg.models.extend([source, target])
+    return cfg
 
 
 class ModelRetirementTests(ResourceServerTestCase):
@@ -227,6 +254,102 @@ class ModelRetirementTests(ResourceServerTestCase):
         await Endpoint.objects.filter(cluster="tara", model="inkling-bf16").adelete()
         response = await self.post("messages")
         self.assertEqual(response.status_code, 410)
+
+    async def test_explicit_cross_model_guidance_all_apis_before_dispatch(self):
+        await sync_to_async(self.sync)(cross_model_config())
+        self.assertFalse(
+            await Endpoint.objects.filter(
+                cluster="minerva", model="beam-1.0-bf16"
+            ).aexists()
+        )
+        with (
+            patch.object(BaseCluster, "load_adapter", new=AsyncMock()) as load_cluster,
+            patch.object(
+                BaseEndpoint, "load_adapter", new=AsyncMock()
+            ) as load_endpoint,
+        ):
+            for api in APIS:
+                for stream in (False, True):
+                    for model in ("beam-1.0-bf16", "beam-old"):
+                        response = await self.post(api, model=model, stream=stream)
+                        self.assertEqual(response.status_code, 410)
+                        error = get_response_json(response)["error"]
+                        self.assertEqual(error["code"], "deployment_retired")
+                        self.assertEqual(error["info"]["replacement_cluster"], "tara")
+                        self.assertEqual(
+                            error["info"]["replacement_model"], "beam-1.0-fp8"
+                        )
+                        self.assertEqual(
+                            error["info"]["replacement_base_url"],
+                            "https://inference-api.alcf.anl.gov/resource_server/tara/api/v1",
+                        )
+                        self.assertIn("Change both", error["message"])
+                        self.assertIn("beam-1.0-fp8", error["message"])
+                        self.assertIn(
+                            "application/json", response.headers["Content-Type"]
+                        )
+                        self.assertNotIn("Location", response.headers)
+                        self.assertNotIn(
+                            "never-copy-this-secret", response.content.decode()
+                        )
+            load_cluster.assert_not_awaited()
+            load_endpoint.assert_not_awaited()
+        cluster = await Cluster.objects.aget(cluster_name="minerva")
+        self.assertEqual(
+            {v["name"] for v in cluster.model_retirements},
+            {"inkling-bf16", "beam-1.0-bf16"},
+        )
+        self.assertTrue(
+            await Endpoint.objects.filter(
+                cluster="tara", model="beam-1.0-fp8"
+            ).aexists()
+        )
+
+    async def test_cross_model_target_acl_filters_guidance_not_retirement(self):
+        await sync_to_async(self.sync)(cross_model_config())
+        for target in ("endpoint", "cluster"):
+            item = (
+                await Endpoint.objects.aget(cluster="tara", model="beam-1.0-fp8")
+                if target == "endpoint"
+                else await Cluster.objects.aget(cluster_name="tara")
+            )
+            item.allowed_globus_groups = ["denied"]
+            await item.asave()
+            for api in APIS:
+                response = await self.post(api, model="beam-1.0-bf16", stream=True)
+                self.assertEqual(response.status_code, 410)
+                error = get_response_json(response)["error"]
+                self.assertEqual(error["info"]["alternatives"], [])
+                self.assertNotIn("replacement_model", error["info"])
+                self.assertNotIn("beam-1.0-fp8", response.content.decode())
+                self.assertNotIn("tara", error["message"])
+            item.allowed_globus_groups = []
+            await item.asave()
+        await Endpoint.objects.filter(cluster="tara", model="beam-1.0-fp8").adelete()
+        response = await self.post("responses", model="beam-1.0-bf16")
+        self.assertEqual(response.status_code, 410)
+        self.assertNotIn(
+            "replacement_model", get_response_json(response)["error"]["info"]
+        )
+
+    async def test_cross_model_source_auth_still_precedes_guidance(self):
+        await sync_to_async(self.sync)(cross_model_config())
+        for api in APIS:
+            response = await self.post(
+                api, model="beam-1.0-bf16", stream=True, headers={}
+            )
+            self.assertEqual(response.status_code, 401)
+            self.assertNotIn("retired", response.content.decode())
+        cluster = await Cluster.objects.aget(cluster_name="minerva")
+        entry = next(
+            v for v in cluster.model_retirements if v["name"] == "beam-1.0-bf16"
+        )
+        entry["allowed_groups"] = ["denied"]
+        await cluster.asave(update_fields=["model_retirements"])
+        for api in APIS:
+            response = await self.post(api, model="beam-1.0-bf16", stream=True)
+            self.assertEqual(response.status_code, 401)
+            self.assertNotIn("replacement", response.content.decode())
 
     async def test_tara_and_unrelated_models_keep_normal_dispatch(self):
         endpoint = Mock(spec=DirectAPIEndpoint)

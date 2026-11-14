@@ -34,6 +34,42 @@ for the shared Model ACL. Review this carefully if a legacy endpoint had stricte
 permissions than the shared Model: retain the required restriction in the
 catalog before retirement, rather than broadening access for guidance.
 
+## Replacement with a different model identifier
+
+An optional explicit replacement on a deployment tombstone tells clients to
+change both model and API base URL. It is guidance, not an alias or routing rule:
+
+```yaml
+kind: Model
+name: beam-1.0-bf16
+spec:
+  access_group_name: public
+  supported_endpoints: [chat/completions, responses, messages]
+  retired_deployments:
+    - name: minerva/beam-1.0-bf16
+      cluster_name: minerva
+      replacement:
+        cluster_name: tara
+        model_name: beam-1.0-fp8
+        base_url: https://inference-api.alcf.anl.gov/resource_server/tara/api/v1
+```
+
+Retain the source Model even if its final deployment is removed; do not set
+`retired: true` for this deployment-only migration. The target is a separate,
+existing Model and deployment. V2 validates those references. V1 checks the
+current target Endpoint and cluster ACLs before including its name or URL in
+guidance. An inaccessible or unlisted target does not turn the source's 410
+into a dispatch or disclose the replacement. Requests still authorize against
+the source cluster and catalog ACLs first.
+
+The JSON error includes `info.replacement_cluster`, `replacement_model` and
+`replacement_base_url` only when an authorized alternative is listed. Without
+`replacement`, existing same-model discovery and response fields are unchanged.
+Both applications and bridges must be updated before publishing this optional
+field; it uses existing JSON retirement columns, not a new database migration.
+Preview a complete desired-state catalog, preserving unrelated resources and
+existing tombstones. Never apply this example alone as a complete catalog.
+
 ## API behavior
 
 All normal authentication still applies. Chat Completions, Responses and
