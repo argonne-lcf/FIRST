@@ -29,12 +29,15 @@ def _load(spec_dir: str) -> list[ResourceManifest]:
 
 
 async def _plan(
-    client: httpx.AsyncClient, resources: list[ResourceManifest]
+    client: httpx.AsyncClient, resources: list[ResourceManifest], prune: bool = True
 ) -> ResourceChangePlan:
     """POST /control/v1/plan and return the parsed JSON response."""
     resp = await client.post(
         "/control/v1/plan",
-        json={"resources": [r.model_dump(mode="json") for r in resources]},
+        json={
+            "resources": [r.model_dump(mode="json") for r in resources],
+            "prune": prune,
+        },
         headers=auth_header(ADMIN_TOKEN),
     )
     assert resp.status_code == 200, resp.text
@@ -672,3 +675,56 @@ async def test_reconcile_reset_bad_format(control_client: httpx.AsyncClient) -> 
         headers=auth_header(ADMIN_TOKEN),
     )
     assert resp.status_code == 400
+
+
+async def test_live_manifests_export_round_trip(
+    control_client: httpx.AsyncClient,
+    baseline_plan: ResourceChangePlan,
+    tmp_path: Path,
+) -> None:
+    """Exported manifests reload and plan as no-change."""
+    from first_common.schema.resources import LiveManifests
+    from first_gateway.admin.cli import manifests_yaml
+
+    resp = await control_client.get(
+        "/control/v1/manifests", headers=auth_header(ADMIN_TOKEN)
+    )
+    assert resp.status_code == 200, resp.text
+    live = LiveManifests.model_validate(resp.json())
+    assert live.config_version == baseline_plan.previous_version + 1
+
+    (tmp_path / "export.yaml").write_text(manifests_yaml(live.resources))
+    plan = await _plan(control_client, load_resources_from_yaml(tmp_path))
+    assert len(plan.no_change) == 6
+    assert not (plan.to_add or plan.to_update or plan.to_delete)
+
+
+async def test_upsert_changes_only_given_resources(
+    control_client: httpx.AsyncClient, baseline_plan: ResourceChangePlan
+) -> None:
+    """Without prune, a lone StaticDeployment validates against its live parents,
+    is the only change, and its apply must also be unpruned."""
+    (static,) = [r for r in _load("updates") if r.kind == "StaticDeployment"]
+    plan = await _plan(control_client, [static], prune=False)
+    assert [(p.kind, p.name) for p in plan.to_update] == [
+        ("StaticDeployment", static.name)
+    ]
+    assert not (plan.to_add or plan.to_delete)
+    assert len(plan.no_change) == 5
+
+    body = {
+        "resources": [static.model_dump(mode="json")],
+        "approved_plan": plan.model_dump(mode="json"),
+    }
+    pruned = await control_client.post(
+        "/control/v1/apply", json=body, headers=auth_header(ADMIN_TOKEN)
+    )
+    # Pruned, the lone resource is a complete catalog missing its parents.
+    assert pruned.status_code == 400
+    resp = await control_client.post(
+        "/control/v1/apply",
+        json={**body, "prune": False},
+        headers=auth_header(ADMIN_TOKEN),
+    )
+    assert resp.status_code == 200, resp.text
+    assert not (await _plan(control_client, [static], prune=False)).to_update

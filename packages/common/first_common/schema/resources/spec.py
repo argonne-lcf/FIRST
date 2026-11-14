@@ -1,3 +1,4 @@
+import json
 import shlex
 from typing import Annotated, Any, ClassVar, Literal, Self
 from urllib.parse import urlsplit
@@ -6,6 +7,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     StrictFloat,
     StrictInt,
     StrictStr,
@@ -31,7 +33,10 @@ from ..types import (
     render_script,
 )
 
-ParameterValue = StrictStr | StrictInt | StrictFloat | None
+# `json` parameters hold a structure; `coerce` turns it into one JSON string.
+ParameterValue = (
+    StrictStr | StrictInt | StrictFloat | dict[str, JsonValue] | list[JsonValue] | None
+)
 PreStopTimeout = Annotated[float, Field(gt=0, le=150.0)]
 PostStopTimeout = Annotated[float, Field(gt=0, le=50.0)]
 
@@ -216,14 +221,17 @@ class ScriptParameter(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["str", "int", "float"]
+    type: Literal["str", "int", "float", "json"]
     required: bool = False
     default: ParameterValue = None
     minimum: float | None = None
     maximum: float | None = None
 
-    def coerce(self, name: str, value: ParameterValue) -> ParameterValue:
-        """Validate a supplied value; null (or absent) inherits the default."""
+    def coerce(self, name: str, value: ParameterValue) -> str | int | float | None:
+        """Validate a supplied value; null (or absent) inherits the default.
+
+        A `json` value is a YAML object/array, encoded here as one JSON string.
+        """
         if value is None:
             value = self.default
         if value is None:
@@ -234,7 +242,16 @@ class ScriptParameter(BaseModel):
             if not isinstance(value, str):
                 raise ValueError(f"parameter {name!r} must be str")
             return value
-        if isinstance(value, str) or (
+        if self.type == "json":
+            if not isinstance(value, (dict, list)):
+                raise ValueError(f"parameter {name!r} must be a JSON object or array")
+            try:
+                return json.dumps(
+                    value, sort_keys=True, separators=(",", ":"), allow_nan=False
+                )
+            except ValueError:  # NaN and Infinity are not JSON
+                raise ValueError(f"parameter {name!r} must be valid JSON") from None
+        if not isinstance(value, (int, float)) or (
             self.type == "int" and not isinstance(value, int)
         ):
             raise ValueError(f"parameter {name!r} must be {self.type}")
@@ -272,7 +289,12 @@ class LaunchSpec(BaseModel):
     health_check: HealthCheckParams | None = None
 
 
-_SAMPLE_VALUES: dict[str, ParameterValue] = {"str": "x", "int": 1, "float": 1.0}
+_SAMPLE_VALUES: dict[str, ParameterValue] = {
+    "str": "x",
+    "int": 1,
+    "float": 1.0,
+    "json": {},
+}
 _SAMPLE_RUNTIME = RuntimeScriptContext(
     replica_name="replica",
     served_model_name="model",
@@ -318,7 +340,9 @@ class LaunchTemplateSpec(ResourceSpec):
         context = ScriptTemplateContext(
             runtime=_SAMPLE_RUNTIME,
             parameters={
-                name: p.default if p.default is not None else _SAMPLE_VALUES[p.type]
+                name: p.coerce(
+                    name, p.default if p.default is not None else _SAMPLE_VALUES[p.type]
+                )
                 for name, p in self.parameters.items()
             },
             quote=shlex.quote,

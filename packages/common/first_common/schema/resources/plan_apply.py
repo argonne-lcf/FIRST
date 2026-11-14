@@ -112,3 +112,10 @@ class ResourceChangePlan(BaseModel):
     to_delete: list[ResourceRef]
     to_add: SerializeAsAny[list[ResourceManifest]]
     to_update: list[ResourcePatch]
+
+
+class LiveManifests(BaseModel):
+    """The live declarative catalog, exactly as `plan` compares against it."""
+
+    config_version: int
+    resources: SerializeAsAny[list[ResourceManifest]]

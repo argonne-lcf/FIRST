@@ -107,6 +107,10 @@ export type BodyApplyResourcesControlV1ApplyPost = {
    */
   resources: Array<ResourceManifest>;
   approved_plan: ResourceChangePlan;
+  /**
+   * Prune
+   */
+  prune?: boolean;
 };
 
 /**
@@ -117,6 +121,10 @@ export type BodyPlanResourcesControlV1PlanPost = {
    * Resources
    */
   resources: Array<ResourceManifest>;
+  /**
+   * Prune
+   */
+  prune?: boolean;
 };
 
 /**
@@ -678,6 +686,8 @@ export type HostGpus = {
   gpus: Array<GpuInfo>;
 };
 
+export type JsonValue = unknown;
+
 /**
  * LaunchSpec
  *
@@ -701,7 +711,15 @@ export type LaunchSpec = {
    * Parameters
    */
   parameters?: {
-    [key: string]: string | number | number | null;
+    [key: string]:
+      | string
+      | number
+      | number
+      | {
+          [key: string]: JsonValue;
+        }
+      | Array<JsonValue>
+      | null;
   };
   /**
    * Env
@@ -816,6 +834,22 @@ export type LaunchTemplate = {
    * obtain a bijective mapping (~ is disallowed in name but slug-safe).
    */
   readonly slug: string;
+};
+
+/**
+ * LiveManifests
+ *
+ * The live declarative catalog, exactly as `plan` compares against it.
+ */
+export type LiveManifests = {
+  /**
+   * Config Version
+   */
+  config_version: number;
+  /**
+   * Resources
+   */
+  resources: Array<ResourceManifest>;
 };
 
 /**
@@ -1953,7 +1987,7 @@ export type ScriptParameter = {
   /**
    * Type
    */
-  type: "str" | "int" | "float";
+  type: "str" | "int" | "float" | "json";
   /**
    * Required
    */
@@ -1961,7 +1995,15 @@ export type ScriptParameter = {
   /**
    * Default
    */
-  default?: string | number | number | null;
+  default?:
+    | string
+    | number
+    | number
+    | {
+        [key: string]: JsonValue;
+      }
+    | Array<JsonValue>
+    | null;
   /**
    * Minimum
    */
@@ -3228,6 +3270,23 @@ export type PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses = {
 
 export type PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponse =
   PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses[keyof PrometheusServiceDiscoveryDiscoveryV1PrometheusGetResponses];
+
+export type GetLiveManifestsControlV1ManifestsGetData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/control/v1/manifests";
+};
+
+export type GetLiveManifestsControlV1ManifestsGetResponses = {
+  /**
+   * Successful Response
+   */
+  200: LiveManifests;
+};
+
+export type GetLiveManifestsControlV1ManifestsGetResponse =
+  GetLiveManifestsControlV1ManifestsGetResponses[keyof GetLiveManifestsControlV1ManifestsGetResponses];
 
 export type PlanResourcesControlV1PlanPostData = {
   body: BodyPlanResourcesControlV1PlanPost;

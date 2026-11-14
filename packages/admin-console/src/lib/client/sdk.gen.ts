@@ -20,6 +20,8 @@ import type {
   GetConfigVersionControlV1ConfigVersionsUidGetData,
   GetConfigVersionControlV1ConfigVersionsUidGetErrors,
   GetConfigVersionControlV1ConfigVersionsUidGetResponses,
+  GetLiveManifestsControlV1ManifestsGetData,
+  GetLiveManifestsControlV1ManifestsGetResponses,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetErrors,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponses,
@@ -121,6 +123,30 @@ export const prometheusServiceDiscoveryDiscoveryV1PrometheusGet = <
   >({ url: "/discovery/v1/prometheus", ...options });
 
 /**
+ * Get Live Manifests
+ *
+ * The live declarative catalog as manifests, with its ConfigVersion.
+ */
+export const getLiveManifestsControlV1ManifestsGet = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<GetLiveManifestsControlV1ManifestsGetData, ThrowOnError>,
+): RequestResult<
+  GetLiveManifestsControlV1ManifestsGetResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options?.client ?? client).get<
+    GetLiveManifestsControlV1ManifestsGetResponses,
+    unknown,
+    ThrowOnError
+  >({
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/control/v1/manifests",
+    ...options,
+  });
+
+/**
  * Plan Resources
  *
  * Create a plan for applying a set of resources without actually applying them.
@@ -129,6 +155,10 @@ export const prometheusServiceDiscoveryDiscoveryV1PrometheusGet = <
  * deleted, or left unchanged.  This is the "Plan" phase of a Plan/Apply
  * workflow.  The caller reviews the plan and then submits it back to the Apply
  * endpoint to commit changes.
+ *
+ * With `prune` (the default) `resources` is the complete catalog and live
+ * resources missing from it are deleted. Without it they are upserted and
+ * nothing is deleted.
  */
 export const planResourcesControlV1PlanPost = <
   ThrowOnError extends boolean = false,
@@ -162,7 +192,7 @@ export const planResourcesControlV1PlanPost = <
  * was returned by the /plan endpoint and reviewed by the caller).
  * Performs a two-phase commit: replans the current state and only
  * proceeds if it matches the approved plan, ensuring no concurrent
- * modifications have occurred.
+ * modifications have occurred. `prune` must match the one planned with.
  */
 export const applyResourcesControlV1ApplyPost = <
   ThrowOnError extends boolean = false,
