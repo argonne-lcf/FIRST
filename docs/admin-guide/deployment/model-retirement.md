@@ -34,6 +34,45 @@ for the shared Model ACL. Review this carefully if a legacy endpoint had stricte
 permissions than the shared Model: retain the required restriction in the
 catalog before retirement, rather than broadening access for guidance.
 
+## Replacement with a different model identifier
+
+An optional explicit replacement on a deployment tombstone tells clients to
+change both model and API base URL. It is guidance, not an alias or routing rule:
+
+```yaml
+kind: Model
+name: beam-1.0-bf16
+spec:
+  access_group_name: public
+  supported_endpoints: [chat/completions, responses, messages]
+  retired_deployments:
+    - name: minerva/beam-1.0-bf16
+      cluster_name: minerva
+      replacement:
+        cluster_name: tara
+        model_name: beam-1.0-fp8
+        base_url: https://inference-api.alcf.anl.gov/resource_server/tara/api/v1
+```
+
+Retain the source Model even if its final deployment is removed; do not set
+`retired: true` for this deployment-only migration. The target is a separate,
+existing Model and declared deployment. V2 validates those references. The bridge
+mirrors target Model ACLs independently of healthy serving rows. V1 checks that
+snapshot and the current target cluster ACL; when target Endpoint rows exist,
+their restrictions also apply. A cold replacement needs no fabricated Endpoint.
+Guidance identifies a configured alternative, not a guarantee of current health.
+An inaccessible or unlisted target does not turn the source's 410
+into a dispatch or disclose the replacement. Requests still authorize against
+the source cluster and catalog ACLs first.
+
+The JSON error includes `info.replacement_cluster`, `replacement_model` and
+`replacement_base_url` only when an authorized alternative is listed. Without
+`replacement`, existing same-model discovery and response fields are unchanged.
+Both applications and bridges must be updated before publishing this optional
+field; it uses existing JSON retirement columns, not a new database migration.
+Preview a complete desired-state catalog, preserving unrelated resources and
+existing tombstones. Never apply this example alone as a complete catalog.
+
 ## API behavior
 
 All normal authentication still applies. Chat Completions, Responses and
@@ -48,9 +87,10 @@ Retiring one deployment does not withdraw another deployment on the same cluster
 Cluster-only retirement uses `error.code: deployment_retired` (and the matching
 OpenAI/Anthropic-compatible `type`). `error.info` includes `model`,
 `retired_deployment`, `retired_cluster` and `alternatives`. The message tells
-the caller to change the base URL. Alternative paths are relative to the same
-public FIRST origin and come only from existing, authorized V1 endpoints and
-their cluster ACLs. They are not promises that a backend cannot fail later.
+the caller to change the base URL. Same-model alternatives come from authorized
+V1 endpoints. Explicit cross-model alternatives may also come from declared
+catalog deployments, with the access checks above. Paths remain compatible with
+the target cluster's V1 frameworks. They are not health or availability promises.
 V1 does not recommend a federated route that it does not itself provide.
 
 For Minerva Inkling, the verified Tara identifier is `inkling-bf16` and the

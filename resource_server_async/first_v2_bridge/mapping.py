@@ -10,6 +10,7 @@ from .router_config import (
     ModelConfig,
     ModelRetirementConfig,
     RetiredDeployment,
+    RetirementTargetConfig,
     RouterConfig,
 )
 from .settings import BridgeSettings
@@ -116,6 +117,7 @@ def retirement_catalog(cfg: RouterConfig) -> list[dict[str, Any]]:
     though the bridge only creates serving rows for healthy pilot deployments.
     """
     catalog = []
+    models = {model.name: model for model in cfg.models}
     for model in cfg.models:
         if not model.retired and not model.retired_deployments:
             continue
@@ -125,6 +127,25 @@ def retirement_catalog(cfg: RouterConfig) -> list[dict[str, Any]]:
             for d in model.deployments
             if d.cluster_name is not None
         ]
+        entry.replacement_deployments = []
+        for retired in model.retired_deployments:
+            replacement = retired.replacement
+            if replacement is None:
+                continue
+            target = models.get(replacement.model_name)
+            if target is None or target.retired:
+                continue
+            entry.replacement_deployments.extend(
+                RetirementTargetConfig(
+                    name=d.name,
+                    cluster_name=d.cluster_name,
+                    model_name=target.name,
+                    allowed_groups=target.allowed_groups,
+                    allowed_domains=target.allowed_domains,
+                )
+                for d in target.deployments
+                if d.cluster_name == replacement.cluster_name
+            )
         catalog.append(entry.model_dump())
     return catalog
 
