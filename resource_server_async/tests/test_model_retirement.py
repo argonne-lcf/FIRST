@@ -328,6 +328,14 @@ class ModelRetirementTests(ResourceServerTestCase):
         await Endpoint.objects.filter(cluster="tara", model="beam-1.0-fp8").adelete()
         response = await self.post("responses", model="beam-1.0-bf16")
         self.assertEqual(response.status_code, 410)
+        self.assertEqual(
+            get_response_json(response)["error"]["info"]["replacement_model"],
+            "beam-1.0-fp8",
+        )
+        cfg = cross_model_config()
+        cfg.models = [m for m in cfg.models if m.name != "beam-1.0-fp8"]
+        await sync_to_async(self.sync)(cfg)
+        response = await self.post("responses", model="beam-1.0-bf16")
         self.assertNotIn(
             "replacement_model", get_response_json(response)["error"]["info"]
         )
@@ -350,6 +358,30 @@ class ModelRetirementTests(ResourceServerTestCase):
             response = await self.post(api, model="beam-1.0-bf16", stream=True)
             self.assertEqual(response.status_code, 401)
             self.assertNotIn("replacement", response.content.decode())
+
+    async def test_cold_replacement_still_honors_catalog_model_acl(self):
+        cfg = cross_model_config()
+        target = next(m for m in cfg.models if m.name == "beam-1.0-fp8")
+        target.allowed_groups = ["denied"]
+        await sync_to_async(self.sync)(cfg)
+        await Endpoint.objects.filter(cluster="tara", model="beam-1.0-fp8").adelete()
+        for api in APIS:
+            response = await self.post(api, model="beam-1.0-bf16", stream=True)
+            self.assertEqual(response.status_code, 410)
+            self.assertEqual(
+                get_response_json(response)["error"]["info"]["alternatives"], []
+            )
+            self.assertNotIn("beam-1.0-fp8", response.content.decode())
+
+    def test_cross_model_snapshot_contains_no_backend_or_credentials(self):
+        snapshot = retirement_catalog(cross_model_config())
+        entry = next(row for row in snapshot if row["name"] == "beam-1.0-bf16")
+        self.assertEqual(
+            entry["replacement_deployments"][0]["model_name"], "beam-1.0-fp8"
+        )
+        serialized = json.dumps(snapshot)
+        for forbidden in ("model_url", "backends", "never-copy-this-secret"):
+            self.assertNotIn(forbidden, serialized)
 
     async def test_tara_and_unrelated_models_keep_normal_dispatch(self):
         endpoint = Mock(spec=DirectAPIEndpoint)

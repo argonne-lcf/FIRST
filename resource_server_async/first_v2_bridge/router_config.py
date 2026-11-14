@@ -99,6 +99,16 @@ class RetiredDeployment(BaseModel):
     replacement: RetirementReplacement | None = None
 
 
+class RetirementTargetConfig(BaseModel):
+    """Declared target identity/ACL only; independent of backend health."""
+
+    name: str
+    cluster_name: str
+    model_name: str
+    allowed_groups: list[str]
+    allowed_domains: list[str]
+
+
 class ModelRetirementConfig(BaseModel):
     """The non-secret catalog fields V1 needs even after an endpoint is gone."""
 
@@ -112,6 +122,8 @@ class ModelRetirementConfig(BaseModel):
     retired_deployments: list[RetiredDeployment] = []
     # Sanitized identities only, derived locally from V2's deployments.
     active_deployments: list[RetiredDeployment] = []
+    # None means an older bridge snapshot; [] means no declared target remains.
+    replacement_deployments: list[RetirementTargetConfig] | None = None
 
 
 class ModelConfig(ModelRetirementConfig):

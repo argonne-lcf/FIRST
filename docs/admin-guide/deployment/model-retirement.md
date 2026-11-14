@@ -56,9 +56,12 @@ spec:
 
 Retain the source Model even if its final deployment is removed; do not set
 `retired: true` for this deployment-only migration. The target is a separate,
-existing Model and deployment. V2 validates those references. V1 checks the
-current target Endpoint and cluster ACLs before including its name or URL in
-guidance. An inaccessible or unlisted target does not turn the source's 410
+existing Model and declared deployment. V2 validates those references. The bridge
+mirrors target Model ACLs independently of healthy serving rows. V1 checks that
+snapshot and the current target cluster ACL; when target Endpoint rows exist,
+their restrictions also apply. A cold replacement needs no fabricated Endpoint.
+Guidance identifies a configured alternative, not a guarantee of current health.
+An inaccessible or unlisted target does not turn the source's 410
 into a dispatch or disclose the replacement. Requests still authorize against
 the source cluster and catalog ACLs first.
 
@@ -84,9 +87,10 @@ Retiring one deployment does not withdraw another deployment on the same cluster
 Cluster-only retirement uses `error.code: deployment_retired` (and the matching
 OpenAI/Anthropic-compatible `type`). `error.info` includes `model`,
 `retired_deployment`, `retired_cluster` and `alternatives`. The message tells
-the caller to change the base URL. Alternative paths are relative to the same
-public FIRST origin and come only from existing, authorized V1 endpoints and
-their cluster ACLs. They are not promises that a backend cannot fail later.
+the caller to change the base URL. Same-model alternatives come from authorized
+V1 endpoints. Explicit cross-model alternatives may also come from declared
+catalog deployments, with the access checks above. Paths remain compatible with
+the target cluster's V1 frameworks. They are not health or availability promises.
 V1 does not recommend a federated route that it does not itself provide.
 
 For Minerva Inkling, the verified Tara identifier is `inkling-bf16` and the

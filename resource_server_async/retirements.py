@@ -1,6 +1,7 @@
 """V2 catalog tombstones for V1 callers, not fake serving endpoints."""
 
 from http import HTTPStatus
+from urllib.parse import urlsplit
 
 from .auth import check_permission
 from .errors import BaseError, Unauthorized
@@ -54,6 +55,45 @@ async def _alternatives(
     a 404 or require contacting any backend to construct the error.
     """
     clusters = {c.cluster_name: c async for c in Cluster.objects.all()}
+    replacement = retired.replacement
+    if replacement and retirement.replacement_deployments is not None:
+        # Do not require a fabricated serving row for a cold PilotDeployment.
+        # The bridge mirrors the target Model ACL independently of backend health.
+        alternatives = {}
+        path = urlsplit(replacement.base_url).path
+        for target in retirement.replacement_deployments:
+            if (
+                target.cluster_name != replacement.cluster_name
+                or target.model_name != replacement.model_name
+            ):
+                continue
+            cluster = clusters.get(target.cluster_name)
+            if cluster is None or not any(
+                path == f"/resource_server/{target.cluster_name}/{framework}/v1"
+                for framework in cluster.frameworks
+            ):
+                continue
+            try:
+                check_permission(
+                    user, cluster.allowed_globus_groups, cluster.allowed_domains
+                )
+                check_permission(user, target.allowed_groups, target.allowed_domains)
+                async for endpoint in Endpoint.objects.filter(
+                    cluster=target.cluster_name, model=target.model_name
+                ):
+                    check_permission(
+                        user, endpoint.allowed_globus_groups, endpoint.allowed_domains
+                    )
+            except Unauthorized:
+                continue
+            alternatives[target.name] = {
+                "deployment": target.name,
+                "cluster": target.cluster_name,
+                "model": target.model_name,
+                "base_path": path,
+                "base_url": replacement.base_url,
+            }
+        return [alternatives[name] for name in sorted(alternatives)]
     active = {
         d.cluster_name: d.name
         for d in sorted(
@@ -63,7 +103,6 @@ async def _alternatives(
     retired_clusters = {
         d.cluster_name for d in retirement.retired_deployments
     } - active.keys()
-    replacement = retired.replacement
     target_model = replacement.model_name if replacement else retirement.name
     endpoints = Endpoint.objects.filter(model=target_model)
     if replacement:
