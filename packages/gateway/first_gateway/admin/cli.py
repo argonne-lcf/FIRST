@@ -83,24 +83,24 @@ def format_validation_error(
     return f"In {file} ({kind}.{name}):\n{'\n'.join(errors)}\n"
 
 
-def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
-    resources = []
+PARTIAL_EXPORT_MARKER = "# first-admin: partial export"
 
-    spec_path = Path(spec_dir)
-    files = (
-        [spec_path]
-        if spec_path.is_file()
-        else (
-            f
-            for ext in ("yml", "yaml")
-            for f in spec_path.rglob(f"*.{ext}")
-            if f.is_file()
-        )
+
+def _spec_files(spec_path: Path) -> list[Path]:
+    if not spec_path.exists():
+        raise InvalidSpecError(f"Spec path {spec_path} does not exist.")
+    if spec_path.is_file():
+        return [spec_path]
+    return sorted(
+        f for ext in ("yml", "yaml") for f in spec_path.rglob(f"*.{ext}") if f.is_file()
     )
 
+
+def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
+    resources = []
     errors = []
 
-    for file in files:
+    for file in _spec_files(Path(spec_dir)):
         with file.open("r") as fp:
             try:
                 raw_docs = list(safe_load_all(fp))
@@ -127,6 +127,39 @@ def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
     if not resources:
         logger.warning(f"No resources found in {spec_dir}")
 
+    return resources
+
+
+def _partial_exports(spec_dir: Path | str) -> list[Path]:
+    """Files in SPEC that `export` wrote from a filtered (partial) catalog."""
+    partial = []
+    for file in _spec_files(Path(spec_dir)):
+        with file.open("r") as fp:
+            if any(line.startswith(PARTIAL_EXPORT_MARKER) for line in fp):
+                partial.append(file)
+    return partial
+
+
+def load_spec_for_plan(spec: Path, prune: bool) -> list[ResourceManifest]:
+    """
+    Load SPEC for `plan`/`apply`, refusing a --prune that would delete live
+    resources only because SPEC is empty or is a partial export.
+    """
+    resources = load_resources_from_yaml(spec)
+    if not prune:
+        return resources
+    if not resources:
+        raise InvalidSpecError(
+            f"No resources found in {spec}; with --prune that would delete the "
+            "entire live catalog. Check the path, or pass --no-prune."
+        )
+    if partial := _partial_exports(spec):
+        files = ", ".join(str(f) for f in partial)
+        raise InvalidSpecError(
+            f"{files} is a partial export (filtered by pattern); with --prune "
+            "everything not in it would be deleted. Pass --no-prune to add or "
+            "update only these resources."
+        )
     return resources
 
 
@@ -370,6 +403,11 @@ def export(
         )
     ]
     print(f"# ConfigVersion {live.config_version}")
+    if patterns:
+        print(
+            f"{PARTIAL_EXPORT_MARKER} of {' '.join(patterns)}; "
+            "plan/apply it with --no-prune"
+        )
     print(manifests_yaml(resources), end="")
 
 
@@ -379,7 +417,7 @@ def plan(ctx: typer.Context, spec: Path, prune: bool = PruneFlag) -> None:
     Compare manifests to current state to review planned changes.
     """
     client: AdminClient = ctx.obj
-    resources = load_resources_from_yaml(spec)
+    resources = load_spec_for_plan(spec, prune)
     result = client.plan(resources, prune)
     print_plan(result)
 
@@ -391,7 +429,7 @@ def apply(ctx: typer.Context, spec: Path, prune: bool = PruneFlag) -> None:
     """
     client: AdminClient = ctx.obj
     console = Console()
-    resources = load_resources_from_yaml(spec)
+    resources = load_spec_for_plan(spec, prune)
     plan = client.plan(resources, prune)
     print_plan(plan)
 

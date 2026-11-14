@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import click
 import httpx
@@ -570,6 +570,44 @@ def test_admin_deployments_wait(
     )
     assert result.exit_code == 1
     assert "Timed out with 1 of 2" in result.output
+
+    result = runner.invoke(
+        admin_cli,
+        ["deployments", "wait", "sophia/openai/gpt-oss-120b", "--drained"]
+        + ["--timeout", "0"],
+    )
+    assert result.exit_code == 1
+    assert "Timed out with 1 replica(s) still ready" in result.output
+
+
+def test_admin_deployments_wait_retries_transient_errors(
+    gateway: FakeGateway,
+    admin_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("first_gateway.admin.catalog_cli.time.sleep", lambda _: None)
+    detail = gateway_pilot_detail()
+    for r in detail["replicas"]:
+        r["state"] = "error"
+    route = "GET /catalog/v1/deployments/pilot/sophia/openai/gpt-oss-120b"
+    responses: Iterator[httpx.Response | Exception] = iter(
+        [
+            httpx.ConnectError("gateway restarting"),
+            httpx.Response(503, json={"detail": "unavailable"}),
+            httpx.Response(404, json={"detail": "not yet"}),
+            httpx.Response(200, json=detail),
+        ]
+    )
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nxt = next(responses)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    gateway.routes[route] = respond
+    out = admin_run("deployments", "wait", "sophia/openai/gpt-oss-120b", "--drained")
+    assert "rep-1" in out
 
 
 def test_admin_set_desired_replicas_many_and_stdin(

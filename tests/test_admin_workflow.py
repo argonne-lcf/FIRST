@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
+from first_common.errors import InvalidSpecError
 from first_common.schema.resources import (
     LiveManifests,
     ResourceChangePlan,
@@ -69,3 +70,47 @@ def test_plan_and_apply_pass_prune_through(
         result = runner.invoke(cli, [command, spec, *flag], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         client.plan.assert_called_with(live, prune)
+
+
+def test_missing_spec_path_raises(tmp_path: Path) -> None:
+    with pytest.raises(InvalidSpecError, match="does not exist"):
+        load_resources_from_yaml(tmp_path / "typo")
+
+
+@pytest.mark.parametrize("command", ["plan", "apply"])
+def test_prune_refuses_empty_spec(
+    client: MagicMock, tmp_path: Path, command: str
+) -> None:
+    result = runner.invoke(cli, [command, str(tmp_path)])
+    assert isinstance(result.exception, InvalidSpecError)
+    assert "entire live catalog" in str(result.exception)
+    client.plan.assert_not_called()
+
+    result = runner.invoke(cli, [command, str(tmp_path), "--no-prune"])
+    assert result.exit_code == 0, result.output
+    client.plan.assert_called_with([], False)
+
+
+@pytest.mark.parametrize("command", ["plan", "apply"])
+def test_prune_refuses_partial_export(
+    client: MagicMock, tmp_path: Path, command: str
+) -> None:
+    exported = _export(tmp_path, "sophia/*")
+    spec = str(tmp_path / "export.yaml")
+    assert "partial export" in (tmp_path / "export.yaml").read_text()
+
+    result = runner.invoke(cli, [command, spec])
+    assert isinstance(result.exception, InvalidSpecError)
+    assert "--no-prune" in str(result.exception)
+    client.plan.assert_not_called()
+
+    result = runner.invoke(cli, [command, spec, "--no-prune"])
+    assert result.exit_code == 0, result.output
+    client.plan.assert_called_with(exported, False)
+
+
+def test_full_export_is_not_partial(client: MagicMock, tmp_path: Path) -> None:
+    _export(tmp_path)
+    assert "partial export" not in (tmp_path / "export.yaml").read_text()
+    result = runner.invoke(cli, ["plan", str(tmp_path / "export.yaml")])
+    assert result.exit_code == 0, result.output

@@ -7,8 +7,10 @@ operational detail from the loopback-only admin API.
 
 import time
 from fnmatch import fnmatchcase
+from http import HTTPStatus
 from typing import Annotated, Iterable
 
+import httpx
 import typer
 from rich.panel import Panel
 from rich.pretty import Pretty
@@ -26,7 +28,7 @@ from alcf_ai.commands._shared import (
     ready_deployments,
     styled_state,
 )
-from first_common.errors import NotFound
+from first_common.errors import FirstError, NotFound
 from first_common.schema.resources.read import (
     ModelSummary,
     PilotDeploymentDetail,
@@ -354,12 +356,25 @@ def deployments_get(ctx: typer.Context, name: str, as_json: bool = JsonFlag) -> 
         _print_static_deployment(detail)
 
 
+def _transient(exc: Exception) -> bool:
+    """Errors worth polling through: the gateway restarting, or the deployment
+    not visible yet just after an apply."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return isinstance(exc, FirstError) and (
+        exc.status_code == HTTPStatus.NOT_FOUND or exc.status_code >= 500
+    )
+
+
 @deployments_cli.command("wait")
 def deployments_wait(
     ctx: typer.Context,
     name: str,
-    ready: int = typer.Option(
-        1, min=0, help="Replicas that must be ready (0 waits for none)."
+    ready: int = typer.Option(1, min=1, help="Replicas that must be ready."),
+    drained: bool = typer.Option(
+        False,
+        "--drained",
+        help="Instead wait until no replicas are ready (after scaling to zero).",
     ),
     timeout: float = typer.Option(900, help="Give up after this many seconds."),
     as_json: bool = JsonFlag,
@@ -367,25 +382,46 @@ def deployments_wait(
     """
     Wait for a pilot deployment's ready-replica count, then show it.
 
-    Exits 1 on timeout. "Ready" is the replica state; it is not a routed request.
+    Transient errors (connection failures, 5xx, not found yet) are retried until
+    the timeout. Exits 1 on timeout. "Ready" is the replica state; it is not a
+    routed request.
     """
     catalog = _client(ctx)
     deadline = time.monotonic() + timeout
+    detail: PilotDeploymentDetail | None = None
+    last_error: Exception | None = None
+    count = 0
+    done = False
     while True:
-        detail = catalog.get_pilot_deployment(name)
-        count = sum(r.state == ReplicaState.ready for r in detail.replicas)
-        done = count == 0 if ready == 0 else count >= ready
+        try:
+            detail = catalog.get_pilot_deployment(name)
+        except Exception as exc:
+            if not _transient(exc):
+                raise
+            last_error = exc
+            console.print(f"[dim]Retrying after error: {exc}[/]")
+        else:
+            last_error = None
+            count = sum(r.state == ReplicaState.ready for r in detail.replicas)
+            done = count == 0 if drained else count >= ready
         if done or time.monotonic() >= deadline:
             break
         time.sleep(5)
 
-    if as_json:
-        print_json(detail)
+    if detail is not None:
+        if as_json:
+            print_json(detail)
+        else:
+            _print_pilot_deployment(detail)
+    if done:
+        return
+    if last_error is not None:
+        console.print(f"[red]Timed out; last poll failed: {last_error}[/]")
+    elif drained:
+        console.print(f"[red]Timed out with {count} replica(s) still ready.[/]")
     else:
-        _print_pilot_deployment(detail)
-    if not done:
         console.print(f"[red]Timed out with {count} of {ready} replica(s) ready.[/]")
-        raise typer.Exit(1)
+    raise typer.Exit(1)
 
 
 @deployments_cli.command("logs")

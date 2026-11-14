@@ -60,14 +60,19 @@ first-admin apply --no-prune new-model.yaml
 
 `first-admin export > catalog.yaml` with no patterns captures the whole catalog,
 which `plan` then reports as unchanged.
+A filtered export is marked as partial in its header, and `plan`/`apply` refuse
+it under `--prune`, as they do a missing or empty `SPEC`: either would delete
+everything else in the live catalog.
 
 Applying changes configuration, not running replicas: they keep their launch
 configuration until replaced, while pending ones pick up the new one.
 
-To wait for a deployment to come up (exits 1 on timeout):
+To wait for a deployment to come up, or to drain after scaling it to zero
+(transient errors are retried; exits 1 on timeout):
 
 ```bash
 first-admin deployments wait tara/example-model --ready 1 --timeout 900
+first-admin deployments wait tara/example-model --drained
 ```
 
 A replica in the `ready` state is registered with the router, but that is not
