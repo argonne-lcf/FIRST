@@ -67,6 +67,34 @@ class AccessGroupSpec(ResourceSpec):
     allowed_domains: list[str]
 
 
+class RetirementReplacement(BaseModel):
+    """Explicit client-side migration guidance, never a routing instruction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cluster_name: ResourceName
+    model_name: ResourceName
+    base_url: str
+
+    @field_validator("base_url")
+    @classmethod
+    def safe_base_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or any(c.isspace() for c in value)
+        ):
+            raise ValueError(
+                "replacement base_url must be an HTTPS URL without credentials, query or fragment"
+            )
+        return value.rstrip("/")
+
+
 class RetiredDeployment(BaseModel):
     """
     Tombstone for a deployment that was removed from a still-listed Model.
@@ -78,6 +106,7 @@ class RetiredDeployment(BaseModel):
 
     name: ResourceName
     cluster_name: ResourceName
+    replacement: RetirementReplacement | None = None
 
 
 class ModelSpec(ResourceSpec):

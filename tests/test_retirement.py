@@ -14,7 +14,12 @@ from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_common.schema.resources import ResourceManifest
-from first_common.schema.resources.spec import ModelSpec, RetiredDeployment
+from first_common.schema.resources.spec import (
+    ModelSpec,
+    PilotDeploymentSpec,
+    RetiredDeployment,
+)
+from first_common.schema.types import ResourceName
 from first_gateway.apiserver.api import app
 from first_gateway.controllers.workers.router_config_observer import (
     RouterConfigObserver,
@@ -167,6 +172,163 @@ def _model(name: str, **kwargs: object) -> ModelConfig:
         overload={},  # type: ignore[arg-type]
         **kwargs,  # type: ignore[arg-type]
     )
+
+
+def _cross_model_config(*, private_target: bool = False) -> RouterConfig:
+    source = _model(
+        "beam-1.0-bf16",
+        deployments=[],
+        retired_deployments=[
+            RetiredDeployment.model_validate(
+                {
+                    "name": "minerva/beam-1.0-bf16",
+                    "cluster_name": "minerva",
+                    "replacement": {
+                        "cluster_name": "tara",
+                        "model_name": "beam-1.0-fp8",
+                        "base_url": "https://inference-api.alcf.anl.gov/resource_server/tara/api/v1",
+                    },
+                }
+            )
+        ],
+    )
+    source.supported_endpoints = ["chat/completions", "responses", "messages"]
+    target = _model(
+        "beam-1.0-fp8", deployments=[_deployment("tara/beam-1.0-fp8", "tara")]
+    )
+    if private_target:
+        target.allowed_groups = ["private-target-group"]
+    return RouterConfig(models=[source, target])
+
+
+@pytest.mark.parametrize("api", ["chat/completions", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "/resource_server/minerva/api/v1",
+        "/deployments/minerva~beam-1.0-bf16/v1",
+    ],
+)
+async def test_cross_model_retirement_before_dispatch(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    api: str,
+    stream: bool,
+    prefix: str,
+) -> None:
+    monkeypatch.setattr(
+        app.state.router_config_manager, "_current", _cross_model_config()
+    )
+    body = {"model": "beam-1.0-bf16", "stream": stream}
+    if api == "responses":
+        body.update(input="hi", max_output_tokens=5)
+    else:
+        body.update(_CHAT)
+    response = await client.post(
+        f"{prefix}/{api}", json=body, headers=auth_header(USER_TOKEN)
+    )
+    error = _error(response, 410, "deployment_retired")
+    info = error["info"]
+    assert isinstance(info, dict)
+    assert info["replacement_model"] == "beam-1.0-fp8"
+    assert info["replacement_cluster"] == "tara"
+    assert info["replacement_base_url"] == (
+        "https://inference-api.alcf.anl.gov/resource_server/tara/api/v1"
+    )
+    assert "Change both" in str(error["message"])
+    assert "beam-1.0-fp8" in str(error["message"])
+    assert response.headers["content-type"].startswith("application/json")
+    assert "location" not in response.headers
+    assert "localhost:9" not in response.text
+
+
+@pytest.mark.parametrize("api", ["chat/completions", "responses", "messages"])
+async def test_cross_model_guidance_filtered_by_target_acl(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    api: str,
+) -> None:
+    monkeypatch.setattr(
+        app.state.router_config_manager,
+        "_current",
+        _cross_model_config(private_target=True),
+    )
+    body = {"model": "beam-1.0-bf16", "stream": True}
+    body.update(
+        {"input": "hi", "max_output_tokens": 5} if api == "responses" else _CHAT
+    )
+    response = await client.post(
+        f"/resource_server/minerva/api/v1/{api}",
+        json=body,
+        headers=auth_header(USER_TOKEN),
+    )
+    error = _error(response, 410, "deployment_retired")
+    info = error["info"]
+    assert isinstance(info, dict)
+    assert info["alternatives"] == []
+    assert "replacement_model" not in info
+    assert "beam-1.0-fp8" not in response.text
+    assert "tara" not in str(error["message"])
+    response = await client.post(f"/resource_server/minerva/api/v1/{api}", json=body)
+    assert response.status_code in (401, 403)
+    assert "deployment_retired" not in response.text
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.org/v1",
+        "https://user:secret@example.org/v1",
+        "https://example.org/v1?token=secret",
+        "https://example.org/v1#fragment",
+        "/relative/v1",
+    ],
+)
+def test_replacement_url_rejects_credentials_or_ambiguous_guidance(url: str) -> None:
+    with pytest.raises(ValueError, match="HTTPS URL"):
+        RetiredDeployment.model_validate(
+            {
+                "name": "old/model",
+                "cluster_name": "old",
+                "replacement": {
+                    "cluster_name": "new",
+                    "model_name": "new-model",
+                    "base_url": url,
+                },
+            }
+        )
+
+
+async def test_cross_model_catalog_round_trip_and_missing_target_rejected(
+    control_client: httpx.AsyncClient,
+) -> None:
+    resources = _load("baseline")
+    target = next(r for r in resources if r.kind == "Model").model_copy(deep=True)
+    target.name = ResourceName("replacement-model")
+    deployment = next(r for r in resources if r.name == PILOT).model_copy(deep=True)
+    deployment.name = ResourceName("sophia/pilot/replacement-model")
+    assert isinstance(deployment.spec, PilotDeploymentSpec)
+    deployment.spec.model_name = target.name
+    resources = _without(resources, STATIC, PILOT)
+    _model_spec(resources).retired_deployments = [
+        RetiredDeployment.model_validate(
+            {
+                "name": STATIC,
+                "cluster_name": "sophia",
+                "replacement": {
+                    "cluster_name": "sophia",
+                    "model_name": target.name,
+                    "base_url": "https://example.org/resource_server/sophia/api/v1",
+                },
+            }
+        )
+    ]
+    assert "retirement replacement" in await _plan_error(control_client, resources)
+    resources.extend([target, deployment])
+    await _apply(control_client, resources, await _plan(control_client, resources))
+    replan = await _plan(control_client, resources)
+    assert (replan.to_add, replan.to_update, replan.to_delete) == ([], [], [])
 
 
 @pytest.fixture

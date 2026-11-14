@@ -24,7 +24,11 @@ from first_common.schema.types import HealthCheckResult, PilotDeploymentState
 from ...database import models as db
 from ...database.redis.router_config import ModelConfig, RouterConfig
 from ...services import staging
-from ...services.orchestration import deployment_retired_error, model_retired_error
+from ...services.orchestration import (
+    deployment_retired_error,
+    model_retired_error,
+    replacement_alternatives,
+)
 from ..auth import enforce_permission, user_can_access_group
 from ..dependencies import (
     AppState,
@@ -333,6 +337,10 @@ async def _submit(
         for c in sorted({d.cluster_name for d in model.deployments})
         if (name := _cluster_deployment(model, c)) is not None
     ]
+    if retired.replacement:
+        alternatives = replacement_alternatives(
+            config, inference.user, retired, v1=True
+        )
     raise deployment_retired_error(
         model,
         retired,
