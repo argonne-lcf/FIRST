@@ -1,18 +1,20 @@
-"""Manage self-signed certificates for mTLS on disk.
+"""Manage internal CA certificates on disk.
 
 Workflow:
-    pilot-certmanager standard --cluster tara --dir pki  # CA (if absent) + per-cluster pilot server + all client roles
+    pilot-certmanager standard --cluster tara --dir pki  # CA (if absent) + all identities
     pilot-certmanager ca --name "FIRST CA"               # self-signed Root CA (default 10 years)
-    pilot-certmanager pilot-server tara                  # pilot server cert for one cluster (default 1 year)
-    pilot-certmanager client first-control               # client cert signed by the CA (default 1 year)
+    pilot-certmanager pilot-server tara                  # pilot server cert for one cluster
+    pilot-certmanager prometheus-server --dns gateway.example
+    pilot-certmanager client first-control               # client cert signed by the CA
 
 Client certs are written as ``<dir>/<cn>.{crt,key}``; pilot server certs as
-``<dir>/pilot-server-<cluster>.{crt,key}``. Re-running ``pilot-server`` /
-``client`` / ``standard`` re-issues the leaf certs against the existing CA.
-Requires OpenSSL 3.x.
+``<dir>/pilot-server-<cluster>.{crt,key}`` and the Prometheus identity as
+``<dir>/first-prometheus.{crt,key}``. Re-running a leaf command re-issues that
+certificate against the existing CA. Requires OpenSSL 3.x.
 """
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -26,6 +28,9 @@ from first_common.schema.pilot import (
 )
 
 from . import (
+    PROMETHEUS_SERVER_CN,
+    PROMETHEUS_SERVER_DNS_NAMES,
+    PROMETHEUS_SERVER_IP_ADDRESSES,
     OpenSSLError,
     gen_ca_pem,
     generate_client_cert,
@@ -87,6 +92,7 @@ def _issue_to_disk(
     directory: Path,
     days: int,
     san_dns: list[str] | None = None,
+    san_ip: Sequence[str] = (),
     base: str | None = None,
 ) -> None:
     ca_cert_pem, ca_key_pem = _load_ca(directory)
@@ -95,6 +101,7 @@ def _issue_to_disk(
             cert_pem, key_pem = generate_server_cert(
                 cn=cn,
                 san_dns=san_dns,
+                san_ip=san_ip,
                 ca_cert_pem=ca_cert_pem,
                 ca_key_pem=ca_key_pem,
                 days=days,
@@ -147,6 +154,45 @@ def pilot_server(
     _issue_pilot_server(cluster, directory=directory, days=days)
 
 
+def _issue_prometheus_server(
+    *,
+    directory: Path,
+    days: int,
+    dns_names: Sequence[str] = (),
+    ip_addresses: Sequence[str] = (),
+) -> None:
+    _issue_to_disk(
+        kind="Prometheus server",
+        cn=PROMETHEUS_SERVER_CN,
+        directory=directory,
+        days=days,
+        san_dns=[*PROMETHEUS_SERVER_DNS_NAMES, *dns_names],
+        san_ip=[*PROMETHEUS_SERVER_IP_ADDRESSES, *ip_addresses],
+    )
+
+
+@app.command("prometheus-server")
+def prometheus_server(
+    directory: DirOpt = Path("pki"),
+    days: Annotated[int, typer.Option(help="Validity in days.")] = 365,
+    dns_names: Annotated[
+        list[str],
+        typer.Option("--dns", help="Additional DNS SAN for analytics; repeatable."),
+    ] = [],
+    ip_addresses: Annotated[
+        list[str],
+        typer.Option("--ip", help="Additional IP SAN for analytics; repeatable."),
+    ] = [],
+) -> None:
+    """Issue the Prometheus HTTPS server certificate (default 1 year)."""
+    _issue_prometheus_server(
+        directory=directory,
+        days=days,
+        dns_names=dns_names,
+        ip_addresses=ip_addresses,
+    )
+
+
 @app.command()
 def client(
     cn: Annotated[
@@ -172,12 +218,31 @@ def standard(
         str, typer.Option(help="CA common name, if a CA must be created.")
     ] = "FIRST Pilot CA",
     days: Annotated[int, typer.Option(help="Leaf validity in days.")] = 365,
+    prometheus_dns: Annotated[
+        list[str],
+        typer.Option(
+            "--prometheus-dns", help="Additional Prometheus DNS SAN; repeatable."
+        ),
+    ] = [],
+    prometheus_ip: Annotated[
+        list[str],
+        typer.Option(
+            "--prometheus-ip", help="Additional Prometheus IP SAN; repeatable."
+        ),
+    ] = [],
 ) -> None:
-    """Issue one pilot server cert per cluster and one client cert per role (CA if absent)."""
+    """Issue the standard pilot and Prometheus identities (CA if absent)."""
     if not (directory / "ca.crt").exists():
         ca(name=ca_name, directory=directory)
     for name in cluster:
         _issue_pilot_server(name, directory=directory, days=days)
+    _issue_prometheus_server(
+        directory=directory,
+        days=days,
+        dns_names=prometheus_dns,
+        ip_addresses=prometheus_ip,
+    )
+
     for role in PilotClientRole:
         _issue_to_disk(kind="Client", cn=role.value, directory=directory, days=days)
 

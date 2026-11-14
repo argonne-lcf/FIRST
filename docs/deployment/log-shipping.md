@@ -123,7 +123,7 @@ limit is by size, so a busier gateway has a shorter window.
 | Prompt shipper: deleted files | The 14-day limit removed files that never uploaded | restart the service to clear the alert |
 
 The Vector rules are PromQL in `log_shipping.py`; paste one into Prometheus
-(<http://127.0.0.1:9090>) to see what it sees. If Prometheus itself is down the
+(<https://127.0.0.1:9090>, trusting `pki/ca.crt`) to see what it sees. If Prometheus
 check fails, and a failed check is also posted to Slack.
 
 ## Setup

@@ -140,8 +140,15 @@ def _vector_observation(
     )
 
 
-async def _check_vector(prometheus_url: str) -> list[Observation]:
-    async with AsyncClient(timeout=10.0) as http:
+async def _check_vector(
+    prometheus_url: str, ca_crt_file: Path | None = None
+) -> list[Observation]:
+    client = (
+        AsyncClient(timeout=10.0, verify=str(ca_crt_file))
+        if ca_crt_file is not None
+        else AsyncClient(timeout=10.0)
+    )
+    async with client as http:
         up = await _query(http, prometheus_url, _VECTOR_UP)
         if not up or up[0][1] != 1:
             # Its metrics are gone or stale: the other rules have nothing to judge.
@@ -274,7 +281,9 @@ async def check_log_shipping(client_state: ClientState) -> list[Observation]:
     if config is None:
         return []
 
-    observations = await _check_vector(config.prometheus_url)
+    observations = await _check_vector(
+        config.prometheus_url, config.prometheus_ca_crt_file
+    )
     now = time.time()
     for name in config.prompt_shippers:
         observations += _check_prompt_shipper(name, config.status_dir, now)

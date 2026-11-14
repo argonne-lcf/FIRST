@@ -120,7 +120,8 @@ class LogShippingSettings(BaseModel):
     Where the health alerter finds the state of log shipping
     """
 
-    prometheus_url: str = "http://prometheus:9090"
+    prometheus_url: str = "https://prometheus:9090"
+    prometheus_ca_crt_file: Path | None = Path("/run/secrets/pilot_ca.crt")
     # One status file per prompt shipper named here: a missing one is an alert.
     status_dir: Path = Path("/run/log-shipping")
     prompt_shippers: list[str] = ["v2"]

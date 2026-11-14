@@ -24,13 +24,17 @@ test: sync
 install-dev: sync
 	pre-commit install
 
-# Local dev pilot mTLS identities: CA (if absent), one pilot server cert per
-# cluster, and one client cert per role. Compose mounts the client certs as
-# secrets (see deploy/compose.yaml).
+# Local dev internal PKI: CA (if absent), one pilot server cert per cluster,
+# the Prometheus HTTPS identity, and one client cert per role. Compose mounts
+# these as secrets (see deploy/compose.yaml).
 PILOT_CLUSTERS ?= tara sophia
+PROMETHEUS_DNS ?=  # optional analytics FQDN SANs, space-separated
+PROMETHEUS_IP ?=   # optional analytics IP SANs, space-separated
 .PHONY: pki  # a pki/ directory exists, so the target must be phony
 pki: sync
-	uv run pilot-certmanager standard --dir pki $(foreach c,$(PILOT_CLUSTERS),--cluster $(c))
+	uv run pilot-certmanager standard --dir pki $(foreach c,$(PILOT_CLUSTERS),--cluster $(c)) \
+		$(foreach d,$(PROMETHEUS_DNS),--prometheus-dns $(d)) \
+		$(foreach i,$(PROMETHEUS_IP),--prometheus-ip $(i))
 	mkdir -p pki/upstream  # StaticDeployment mTLS sets, mounted by compose
 	mkdir -p pki/log-shipping  # private CAs for S3 / ClickHouse, mounted by compose
 

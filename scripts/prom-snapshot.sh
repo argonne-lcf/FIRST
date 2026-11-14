@@ -5,18 +5,20 @@
 #
 #   BACKUP_DIR   host dir for snapshots       (default: ./backups)
 #   KEEP         number of snapshots to keep  (default: 7)
-#   PROM_URL     Prometheus base URL          (default: http://127.0.0.1:9090)
+#   PROM_URL     Prometheus base URL          (default: https://127.0.0.1:9090)
+#   PROM_CA      CA certificate for TLS        (default: pki/ca.crt)
 set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 KEEP="${KEEP:-7}"
-PROM_URL="${PROM_URL:-http://127.0.0.1:9090}"
+PROM_URL="${PROM_URL:-https://127.0.0.1:9090}"
+PROM_CA="${PROM_CA:-pki/ca.crt}"
 DEST="$BACKUP_DIR/prometheus"
 mkdir -p "$DEST"
 
 # Ask Prometheus to snapshot its TSDB into /prometheus/snapshots/<name>.
 echo "Requesting snapshot from $PROM_URL"
-resp="$(curl -sS -XPOST "$PROM_URL/api/v1/admin/tsdb/snapshot")"
+resp="$(curl -sS --cacert "$PROM_CA" -XPOST "$PROM_URL/api/v1/admin/tsdb/snapshot")"
 name="$(printf '%s' "$resp" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
 if [ -z "$name" ]; then
 	echo "Failed to create snapshot. Response: $resp" >&2

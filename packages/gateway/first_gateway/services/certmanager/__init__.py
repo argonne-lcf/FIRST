@@ -1,8 +1,13 @@
 import secrets
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from shutil import which
+
+PROMETHEUS_SERVER_CN = "first-prometheus"
+PROMETHEUS_SERVER_DNS_NAMES = ("prometheus", "localhost")
+PROMETHEUS_SERVER_IP_ADDRESSES = ("127.0.0.1",)
 
 
 class OpenSSLError(RuntimeError):
@@ -74,18 +79,21 @@ def _issue_leaf_pem(
     ca_key_pem: str,
     days: int,
     eku: str,
-    san_dns: list[str] | None = None,
+    san_dns: Sequence[str] | None = None,
+    san_ip: Sequence[str] = (),
 ) -> tuple[str, str]:
     """Issue a leaf cert signed by the given CA. Returns ``(cert_pem, key_pem)``."""
     key_pem = gen_key_pem()
     # Random 159-bit positive serial — keeps each issued cert unique without
     # needing a persistent serial counter on disk.
     serial_hex = f"0x{secrets.randbits(159):x}"
-    # Only pilot server certs carry SANs (the name clients verify); client
-    # identities are distinguished by CN alone.
+    # Server certificates carry explicit DNS and IP SANs; client identities
+    # are distinguished by CN alone.
     san = []
-    if san_dns:
-        san = ["-addext", "subjectAltName=" + ",".join(f"DNS:{n}" for n in san_dns)]
+    if san_dns or san_ip:
+        san_entries = [f"DNS:{name}" for name in san_dns or ()]
+        san_entries += [f"IP:{address}" for address in san_ip]
+        san = ["-addext", f"subjectAltName={','.join(san_entries)}"]
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         key_path = d / "leaf.key"
@@ -149,14 +157,15 @@ def generate_client_cert(
 def generate_server_cert(
     *,
     cn: str,
-    san_dns: list[str],
+    san_dns: Sequence[str],
     ca_cert_pem: str,
     ca_key_pem: str,
     days: int = 365,
+    san_ip: Sequence[str] = (),
 ) -> tuple[str, str]:
     """
-    Issue a serverAuth leaf cert with DNS SANs `san_dns`. Returns
-    ``(cert_pem, key_pem)``.
+    Issue a serverAuth leaf cert with DNS SANs `san_dns` and IP SANs `san_ip`.
+    Returns ``(cert_pem, key_pem)``.
     """
     if not san_dns:
         raise ValueError("a server certificate needs at least one DNS SAN")
@@ -167,4 +176,5 @@ def generate_server_cert(
         days=days,
         eku="serverAuth",
         san_dns=san_dns,
+        san_ip=san_ip,
     )

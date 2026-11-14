@@ -36,7 +36,9 @@ BACKUP_DIR=/var/backups/first KEEP=14 ./scripts/pg-backup.sh
   ```
 - **Prometheus** — TSDB snapshot tarball for offline restore/analysis. Extract the
   tarball into a Prometheus `--storage.tsdb.path` to inspect it. Requires the admin
-  API, which is enabled in `deploy/compose.yaml`.
+  API, which is enabled in `deploy/compose.yaml`. Snapshots use verified HTTPS via
+  `PROM_CA` (default `pki/ca.crt`) and `PROM_URL` (default
+  `https://127.0.0.1:9090`).
 
 ## Nightly cron (prod)
 
