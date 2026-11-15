@@ -126,7 +126,7 @@ def ls_jobs(cluster: str) -> None:
 def chat(
     prompt: str = typer.Argument("", help="The prompt to send"),
     model: str = typer.Option(
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct", "--model", "-m"
+        "mistral-large-4", "--model", "-m"
     ),
     system: str | None = typer.Option(
         None,
@@ -137,7 +137,7 @@ def chat(
     stream: bool = typer.Option(False, "--stream/--no-stream"),
     temperature: float | None = typer.Option(None, "--temp", "-t"),
     max_tokens: int | None = typer.Option(None, "--max-tokens", "-n"),
-    cluster: str = typer.Option("sophia", "--cluster", "-c"),
+    cluster: str = typer.Option("tara", "--cluster", "-c"),
     input_file: Path | None = typer.Option(
         None, "--input-file", "-i", help="Read additional user input from this file"
     ),
