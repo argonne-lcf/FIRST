@@ -23,6 +23,7 @@ name = "alcf-ai"
 source = { editable = "alcf_ai" }
 dependencies = [
     { name = "alcf-tokens" },
+    { name = "click" },
     { name = "globus-sdk" },
     { name = "httpx" },
     { name = "matplotlib" },
@@ -39,6 +40,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "alcf-tokens", specifier = ">=0.2" },
+    { name = "click", specifier = ">=8.0" },
     { name = "globus-sdk", specifier = ">=3.65" },
     { name = "httpx" },
     { name = "matplotlib" },

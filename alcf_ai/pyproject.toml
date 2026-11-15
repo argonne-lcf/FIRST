@@ -10,6 +10,7 @@ dependencies = [
     "httpx",
     "numpy",
     "rich",
+    "click>=8.0",
     "typer>=0.19",
     "globus-sdk>=3.65",
     "openai",
