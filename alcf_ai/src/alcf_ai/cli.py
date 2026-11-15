@@ -125,9 +125,7 @@ def ls_jobs(cluster: str) -> None:
 @cli.command()
 def chat(
     prompt: str = typer.Argument("", help="The prompt to send"),
-    model: str = typer.Option(
-        "mistral-large-4", "--model", "-m"
-    ),
+    model: str = typer.Option("mistral-large-4", "--model", "-m"),
     system: str | None = typer.Option(
         None,
         "--system",
