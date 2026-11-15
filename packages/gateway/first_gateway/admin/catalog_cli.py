@@ -20,6 +20,7 @@ from alcf_ai.commands._shared import (
     JsonFlag,
     console,
     endpoint_list,
+    err_console,
     fmt_age,
     fmt_int,
     fmt_seconds,
@@ -399,7 +400,7 @@ def deployments_wait(
             if not _transient(exc):
                 raise
             last_error = exc
-            console.print(f"[dim]Retrying after error: {exc}[/]")
+            err_console.print(f"[dim]Retrying after error: {exc}[/]")
         else:
             last_error = None
             count = sum(r.state == ReplicaState.ready for r in detail.replicas)
@@ -416,11 +417,13 @@ def deployments_wait(
     if done:
         return
     if last_error is not None:
-        console.print(f"[red]Timed out; last poll failed: {last_error}[/]")
+        err_console.print(f"[red]Timed out; last poll failed: {last_error}[/]")
     elif drained:
-        console.print(f"[red]Timed out with {count} replica(s) still ready.[/]")
+        err_console.print(f"[red]Timed out with {count} replica(s) still ready.[/]")
     else:
-        console.print(f"[red]Timed out with {count} of {ready} replica(s) ready.[/]")
+        err_console.print(
+            f"[red]Timed out with {count} of {ready} replica(s) ready.[/]"
+        )
     raise typer.Exit(1)
 
 

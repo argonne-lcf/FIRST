@@ -337,11 +337,16 @@ class LaunchTemplateSpec(ResourceSpec):
             raise ValueError(f"reserved parameter names: {reserved}")
         # Render once against a fully populated context so typos, bad filters
         # and syntax errors fail at apply time rather than on the pilot.
+        # Bounds apply to real defaults/values, not synthetic rendering samples.
         context = ScriptTemplateContext(
             runtime=_SAMPLE_RUNTIME,
             parameters={
-                name: p.coerce(
-                    name, p.default if p.default is not None else _SAMPLE_VALUES[p.type]
+                name: (
+                    p.coerce(name, p.default)
+                    if p.default is not None
+                    else ScriptParameter(type=p.type).coerce(
+                        name, _SAMPLE_VALUES[p.type]
+                    )
                 )
                 for name, p in self.parameters.items()
             },
