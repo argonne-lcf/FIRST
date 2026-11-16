@@ -1,15 +1,30 @@
-from typing import Annotated
+import os
+import subprocess
+from typing import Annotated, Literal
 
 import typer
 from alcf_tokens.auth import get_access_token
+from click.core import ParameterSource
 from rich.table import Table
 
 from ..agent import (
+    _AUTO_APPROVE_OVERWRITES,
     AGENT_ENDPOINTS,
     CONFIGURATORS,
+    SESSION_ENV,
     Agent,
     AgentModel,
     ConfigLoadError,
+    _codex_profile_path,
+    aider_environment,
+    claude_environment,
+    claude_profile_path,
+    codex_launch,
+    codex_version,
+    configure_claude,
+    configure_codex,
+    opencode_environment,
+    require_codex_profile_version,
     select_models,
     token_helper_command,
 )
@@ -23,6 +38,153 @@ def _api(agent: Agent, m: AgentModel) -> str:
     if agent == "claude":
         return "messages"
     return "responses" if m.supports_responses else "chat"
+
+
+LaunchAgent = Literal["claude", "opencode", "codex", "aider"]
+
+
+def _is_default_parameter(ctx: typer.Context, name: str) -> bool:
+    """Compare across Typer's vendored and Click's external ParameterSource enums."""
+    source = ctx.get_parameter_source(name)
+    return source is None or source.name == ParameterSource.DEFAULT.name
+
+
+def _launch_model(ctx: typer.Context, agent: LaunchAgent, model: str) -> AgentModel:
+    client = get_client(ctx)
+    endpoints = AGENT_ENDPOINTS[agent]
+    try:
+        selected = select_models(client.catalog.models(), [model], endpoints)
+    except ValueError as err:
+        raise typer.BadParameter(str(err), param_hint="--default-model") from err
+    if not selected:
+        raise typer.BadParameter(
+            f"{model!r} does not serve {' or '.join(sorted(endpoints))}",
+            param_hint="--default-model",
+        )
+    return selected[0]
+
+
+@cli.command(
+    context_settings={
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+    }
+)
+def run(
+    ctx: typer.Context,
+    agent: Annotated[LaunchAgent, typer.Argument(help="Which coding agent to run.")],
+    model: Annotated[
+        str,
+        typer.Option(
+            "--default-model",
+            "-m",
+            help="Model for the agent",
+        ),
+    ] = "muse-spark-bf16",
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            help="Load a Claude or Codex settings profile instead of one-off overrides",
+        ),
+    ] = None,
+) -> None:
+    """Run an agent with ALCF configuration, without editing config files.
+
+    Additional arguments after ``--`` are forwarded to the agent.
+    """
+    client = get_client(ctx)
+    if profile is not None:
+        if agent not in ("claude", "codex"):
+            raise typer.BadParameter(
+                "Profiles are only supported for Claude and Codex",
+                param_hint="--profile",
+            )
+        if not _is_default_parameter(ctx, "model"):
+            raise typer.BadParameter(
+                "--profile cannot be combined with --default-model; "
+                "configure the profile to change its model",
+                param_hint="--profile",
+            )
+
+    env = os.environ.copy()
+    env.setdefault(SESSION_ENV, "default")
+    launch_args: list[str] = []
+    match agent:
+        case "claude":
+            if profile is not None:
+                profile_path = claude_profile_path(profile)
+                if not profile_path.is_file():
+                    raise typer.BadParameter(
+                        f"Claude profile {profile!r} does not exist at {profile_path}; "
+                        f"run `alcf-ai agent configure claude --profile {profile}` first",
+                        param_hint="--profile",
+                    )
+                launch_args = ["--settings", str(profile_path)]
+            else:
+                selected = _launch_model(ctx, agent, model)
+                env.update(
+                    claude_environment(
+                        str(client.base_url),
+                        get_access_token(INFERENCE_SERVICE),
+                        selected,
+                    )
+                )
+        case "opencode":
+            selected = _launch_model(ctx, agent, model)
+            env.update(
+                opencode_environment(
+                    str(client.base_url),
+                    get_access_token(INFERENCE_SERVICE),
+                    selected,
+                    token_helper=token_helper_command(),
+                )
+            )
+        case "codex":
+            try:
+                if profile is not None:
+                    profile_path = _codex_profile_path(profile)
+                    if not profile_path.is_file():
+                        raise typer.BadParameter(
+                            f"Codex profile {profile!r} does not exist at "
+                            f"{profile_path}; run `alcf-ai agent configure codex "
+                            f"--profile {profile}` first",
+                            param_hint="--profile",
+                        )
+                    require_codex_profile_version(codex_version())
+                    launch_args = ["--profile", profile]
+                else:
+                    selected = _launch_model(ctx, agent, model)
+                    codex_env, launch_args = codex_launch(
+                        str(client.base_url),
+                        get_access_token(INFERENCE_SERVICE),
+                        selected,
+                        version=codex_version(),
+                    )
+                    env.update(codex_env)
+            except (
+                OSError,
+                RuntimeError,
+                subprocess.SubprocessError,
+                ValueError,
+            ) as err:
+                typer.echo(f"Could not configure codex: {err}", err=True)
+                raise typer.Exit(1) from err
+        case "aider":
+            selected = _launch_model(ctx, agent, model)
+            env.update(
+                aider_environment(
+                    str(client.base_url),
+                    get_access_token(INFERENCE_SERVICE),
+                    selected,
+                )
+            )
+
+    try:
+        os.execvpe(agent, [agent, *launch_args, *ctx.args], env)
+    except OSError as err:
+        typer.echo(f"Could not execute {agent}: {err}", err=True)
+        raise typer.Exit(1) from err
 
 
 @cli.command()
@@ -40,6 +202,28 @@ def configure(
             ),
         ),
     ] = None,
+    profile: Annotated[
+        str,
+        typer.Option(
+            "--profile",
+            help="Settings profile name (Claude and Codex)",
+        ),
+    ] = "alcf",
+    no_profile: Annotated[
+        bool,
+        typer.Option(
+            "--no-profile",
+            help="Update the base config instead of creating a Claude/Codex profile",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Approve all configuration file overwrites without prompting",
+        ),
+    ] = False,
 ) -> None:
     """
     Add the gateway as a model provider in a coding agent's configuration.
@@ -54,6 +238,19 @@ def configure(
     backends can reuse prompt caches.  For claude, export
     ANTHROPIC_CUSTOM_HEADERS="X-ALCF-Session-ID: <id>" instead.
     """
+    if no_profile:
+        if agent not in ("claude", "codex"):
+            raise typer.BadParameter(
+                "--no-profile is only supported for Claude and Codex",
+                param_hint="--no-profile",
+            )
+        if not _is_default_parameter(ctx, "profile"):
+            raise typer.BadParameter(
+                "--no-profile cannot be combined with --profile",
+                param_hint="--no-profile",
+            )
+    profile_name = None if no_profile else profile
+
     client = get_client(ctx)
     endpoints = AGENT_ENDPOINTS[agent]
     selected = select_models(client.catalog.models(), models or [], endpoints)
@@ -63,17 +260,37 @@ def configure(
         )
 
     token_helper = token_helper_command()
+    api_key = get_access_token(INFERENCE_SERVICE)
+    approval = _AUTO_APPROVE_OVERWRITES.set(yes)
     try:
-        path = CONFIGURATORS[agent](
-            str(client.base_url),
-            get_access_token(INFERENCE_SERVICE),
-            selected,
-            token_helper=token_helper,
-        )
+        if agent == "codex":
+            path = configure_codex(
+                str(client.base_url),
+                api_key,
+                selected,
+                token_helper=token_helper,
+                profile=profile_name,
+            )
+        elif agent == "claude":
+            path = configure_claude(
+                str(client.base_url),
+                api_key,
+                selected,
+                token_helper=token_helper,
+                profile=profile_name,
+            )
+        else:
+            path = CONFIGURATORS[agent](
+                str(client.base_url),
+                api_key,
+                selected,
+                token_helper=token_helper,
+            )
     except ConfigLoadError as err:
         err_console.print(f"[red]{err}[/]")
         raise typer.Exit(1) from err
-
+    finally:
+        _AUTO_APPROVE_OVERWRITES.reset(approval)
     table = Table(title=f"Configured {agent}", title_justify="left")
     table.add_column("Model", style="bold")
     table.add_column("Context", justify="right")
@@ -90,6 +307,10 @@ def configure(
         )
     console.print(table)
     console.print(f"Updated [bold]{path}[/]")
+    if profile_name is not None and agent in ("claude", "codex"):
+        console.print(
+            f"Load it with [bold]alcf-ai agent run {agent} --profile {profile_name}[/]"
+        )
     if token_helper is None:
         console.print(
             "[yellow]Could not find a token helper (alcf-tokens or alcf-ai); "
