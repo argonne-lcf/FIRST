@@ -3,6 +3,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from rich.pretty import Pretty, pretty_repr
 from rich.table import Table
 from rich.text import Text
 from typer import Typer
-from yaml import safe_load_all
+from yaml import safe_dump_all, safe_load_all
 
 from alcf_ai.cli import _print_error
 from first_common.errors import FirstError, InvalidSpecError
@@ -82,19 +83,24 @@ def format_validation_error(
     return f"In {file} ({kind}.{name}):\n{'\n'.join(errors)}\n"
 
 
-def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
-    resources = []
+PARTIAL_EXPORT_MARKER = "# first-admin: partial export"
 
-    files = (
-        f
-        for ext in ("yml", "yaml")
-        for f in Path(spec_dir).rglob(f"*.{ext}")
-        if f.is_file()
+
+def _spec_files(spec_path: Path) -> list[Path]:
+    if not spec_path.exists():
+        raise InvalidSpecError(f"Spec path {spec_path} does not exist.")
+    if spec_path.is_file():
+        return [spec_path]
+    return sorted(
+        f for ext in ("yml", "yaml") for f in spec_path.rglob(f"*.{ext}") if f.is_file()
     )
 
+
+def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
+    resources = []
     errors = []
 
-    for file in files:
+    for file in _spec_files(Path(spec_dir)):
         with file.open("r") as fp:
             try:
                 raw_docs = list(safe_load_all(fp))
@@ -121,6 +127,39 @@ def load_resources_from_yaml(spec_dir: Path | str) -> list[ResourceManifest]:
     if not resources:
         logger.warning(f"No resources found in {spec_dir}")
 
+    return resources
+
+
+def _partial_exports(spec_dir: Path | str) -> list[Path]:
+    """Files in SPEC that `export` wrote from a filtered (partial) catalog."""
+    partial = []
+    for file in _spec_files(Path(spec_dir)):
+        with file.open("r") as fp:
+            if any(line.startswith(PARTIAL_EXPORT_MARKER) for line in fp):
+                partial.append(file)
+    return partial
+
+
+def load_spec_for_plan(spec: Path, prune: bool) -> list[ResourceManifest]:
+    """
+    Load SPEC for `plan`/`apply`, refusing a --prune that would delete live
+    resources only because SPEC is empty or is a partial export.
+    """
+    resources = load_resources_from_yaml(spec)
+    if not prune:
+        return resources
+    if not resources:
+        raise InvalidSpecError(
+            f"No resources found in {spec}; with --prune that would delete the "
+            "entire live catalog. Check the path, or pass --no-prune."
+        )
+    if partial := _partial_exports(spec):
+        files = ", ".join(str(f) for f in partial)
+        raise InvalidSpecError(
+            f"{files} is a partial export (filtered by pattern); with --prune "
+            "everything not in it would be deleted. Pass --no-prune to add or "
+            "update only these resources."
+        )
     return resources
 
 
@@ -326,26 +365,72 @@ def print_plan(plan: ResourceChangePlan, labels: _ChangeLabels = PLAN_LABELS) ->
     console.print()
 
 
+def manifests_yaml(resources: list[ResourceManifest]) -> str:
+    """Manifests as `load_resources_from_yaml` reads them, defaults omitted."""
+    docs = [r.model_dump(mode="json", exclude_defaults=True) for r in resources]
+    return safe_dump_all(docs, sort_keys=False)
+
+
+PruneFlag = typer.Option(
+    True,
+    "--prune/--no-prune",
+    help="--prune: SPEC is the complete catalog; live resources missing from it "
+    "are deleted. --no-prune: only add or update what SPEC contains.",
+)
+
+
 @cli.command()
-def plan(ctx: typer.Context, spec_dir: Path) -> None:
+def export(
+    ctx: typer.Context,
+    patterns: list[str] = typer.Argument(
+        None,
+        metavar="[PATTERN]...",
+        help="Only resources whose name or Kind.name matches a glob.",
+    ),
+) -> None:
     """
-    Compare manifest to current state to review planned changes.
+    Print the live catalog as YAML manifests (fields at their defaults omitted).
     """
     client: AdminClient = ctx.obj
-    resources = load_resources_from_yaml(spec_dir)
-    result = client.plan(resources)
+    live = client.manifests()
+    resources = [
+        r
+        for r in live.resources
+        if not patterns
+        or any(
+            fnmatchcase(r.name, p) or fnmatchcase(f"{r.kind}.{r.name}", p)
+            for p in patterns
+        )
+    ]
+    print(f"# ConfigVersion {live.config_version}")
+    if patterns:
+        print(
+            f"{PARTIAL_EXPORT_MARKER} of {' '.join(patterns)}; "
+            "plan/apply it with --no-prune"
+        )
+    print(manifests_yaml(resources), end="")
+
+
+@cli.command()
+def plan(ctx: typer.Context, spec: Path, prune: bool = PruneFlag) -> None:
+    """
+    Compare manifests to current state to review planned changes.
+    """
+    client: AdminClient = ctx.obj
+    resources = load_spec_for_plan(spec, prune)
+    result = client.plan(resources, prune)
     print_plan(result)
 
 
 @cli.command()
-def apply(ctx: typer.Context, spec_dir: Path) -> None:
+def apply(ctx: typer.Context, spec: Path, prune: bool = PruneFlag) -> None:
     """
     Apply manifests to current state.
     """
     client: AdminClient = ctx.obj
     console = Console()
-    resources = load_resources_from_yaml(spec_dir)
-    plan = client.plan(resources)
+    resources = load_spec_for_plan(spec, prune)
+    plan = client.plan(resources, prune)
     print_plan(plan)
 
     if not (plan.to_add or plan.to_update or plan.to_delete):
@@ -354,7 +439,7 @@ def apply(ctx: typer.Context, spec_dir: Path) -> None:
     if not typer.confirm("Apply these changes?"):
         return
 
-    result = client.apply(resources, plan)
+    result = client.apply(resources, plan, prune)
     if result:
         console.print(
             f"\n[bold green]Applied ConfigVersion {result.uid} successfully.\n"

@@ -4,6 +4,7 @@ from first_common.errors import InvalidSpecError
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
+    LiveManifests,
     ResourceChangePlan,
     ResourceManifest,
 )
@@ -18,15 +19,22 @@ from ...apiserver.dependencies import (
 )
 from ...database import models as db
 from ...database.redis.pubsub import Channel
-from ...services.plan_apply import apply_plan, create_plan
+from ...services.plan_apply import apply_plan, create_plan, live_manifests
 
 admin_router = APIRouter(prefix="/control/v1")
+
+
+@admin_router.get("/manifests", response_model=LiveManifests)
+async def get_live_manifests(sess: DbSession) -> LiveManifests:
+    """The live declarative catalog as manifests, with its ConfigVersion."""
+    return await live_manifests(sess)
 
 
 @admin_router.post("/plan", response_model=ResourceChangePlan)
 async def plan_resources(
     sess: DbSession,
     resources: list[ResourceManifest] = Body(embed=True),
+    prune: bool = Body(True, embed=True),
 ) -> ResourceChangePlan:
     """
     Create a plan for applying a set of resources without actually applying them.
@@ -35,8 +43,12 @@ async def plan_resources(
     deleted, or left unchanged.  This is the "Plan" phase of a Plan/Apply
     workflow.  The caller reviews the plan and then submits it back to the Apply
     endpoint to commit changes.
+
+    With `prune` (the default) `resources` is the complete catalog and live
+    resources missing from it are deleted. Without it they are upserted and
+    nothing is deleted.
     """
-    return await create_plan(resources, sess)
+    return await create_plan(resources, sess, prune=prune)
 
 
 @admin_router.post("/apply", response_model=ConfigVersion | None)
@@ -45,6 +57,7 @@ async def apply_resources(
     approved_plan: ResourceChangePlan,
     sess: DbSession,
     admin: AdminUser,
+    prune: bool = Body(True),
 ) -> db.ConfigVersion | None:
     """
     Apply a previously-approved plan.
@@ -53,10 +66,10 @@ async def apply_resources(
     was returned by the /plan endpoint and reviewed by the caller).
     Performs a two-phase commit: replans the current state and only
     proceeds if it matches the approved plan, ensuring no concurrent
-    modifications have occurred.
+    modifications have occurred. `prune` must match the one planned with.
     """
     async with sess.begin():
-        return await apply_plan(resources, approved_plan, admin, sess)
+        return await apply_plan(resources, approved_plan, admin, sess, prune=prune)
 
 
 @admin_router.get("/config-versions", response_model=list[ConfigVersionSummary])

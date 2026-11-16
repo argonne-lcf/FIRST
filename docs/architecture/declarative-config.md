@@ -40,6 +40,44 @@ first-admin audit
 first-admin clusters get sophia
 ```
 
+## Adding or changing a few resources
+
+`plan SPEC` and `apply SPEC` treat `SPEC` (a file or directory) as the
+**complete catalog**: anything live but missing from it is deleted. To add or
+change resources without owning the whole catalog, use `--no-prune`. The
+resources in `SPEC` are added or updated, and everything else is kept as is.
+New parents must be in `SPEC` too; nothing is pulled in implicitly.
+
+`export` prints live manifests, optionally filtered by name or `Kind.name` globs.
+That makes it a good starting point for onboarding a model like an existing one:
+
+```bash
+first-admin export 'Model.openai/gpt-oss-*' 'sophia/openai/gpt-oss-*' > new-model.yaml
+# rename and edit, then review and apply just those resources:
+first-admin plan --no-prune new-model.yaml
+first-admin apply --no-prune new-model.yaml
+```
+
+`first-admin export > catalog.yaml` with no patterns captures the whole catalog,
+which `plan` then reports as unchanged.
+A filtered export is marked as partial in its header, and `plan`/`apply` refuse
+it under `--prune`, as they do a missing or empty `SPEC`: either would delete
+everything else in the live catalog.
+
+Applying changes configuration, not running replicas: they keep their launch
+configuration until replaced, while pending ones pick up the new one.
+
+To wait for a deployment to come up, or to drain after scaling it to zero
+(transient errors are retried; exits 1 on timeout):
+
+```bash
+first-admin deployments wait tara/example-model --ready 1 --timeout 900
+first-admin deployments wait tara/example-model --drained
+```
+
+A replica in the `ready` state is registered with the router, but that is not
+the same as a request having been served through it.
+
 ## Access groups
 
 Every `AccessGroup` must explicitly provide both `allowed_groups` and
@@ -104,10 +142,28 @@ spec:
       weights_path: /immutable/weights/inkling-bf16
 ```
 
-Parameter types are `str`, `int` and `float` with optional `minimum`/`maximum`
-bounds. Types are strict (no string-to-number coercion) and unknown parameters
-are errors. A null or omitted value inherits the template default; a `required`
-parameter with no default must be supplied.
+Parameter types are `str`, `int`, `float` and `json`. Numeric types support
+optional `minimum`/`maximum` bounds. Types are strict (no string-to-number
+coercion) and unknown parameters are errors. A null or omitted value inherits
+the template default; a `required` parameter with no default must be supplied.
+
+`json` accepts a native YAML object or array, including nested booleans and
+nulls—not a string containing JSON. FIRST preserves that structure in the
+catalog, then encodes it once as canonical JSON when resolving the launch
+parameter. The pilot still receives a scalar string. Quote the resolved value
+directly; applying `tojson` again would double-encode it:
+
+```yaml
+parameters:
+  configuration:
+    type: json
+    required: true
+serve_script_template: |
+  exec shared-launcher --configuration {{ parameters.configuration | quote }}
+```
+
+FIRST checks only that the value is JSON and that the template renders; what
+the configuration means is for the launcher to validate.
 
 Templates are Jinja2 with a strict context of three names:
 

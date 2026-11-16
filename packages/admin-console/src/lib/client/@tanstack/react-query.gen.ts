@@ -12,6 +12,7 @@ import {
   controllersListControllersGet,
   getClusterCatalogV1ClustersNameGet,
   getConfigVersionControlV1ConfigVersionsUidGet,
+  getLiveManifestsControlV1ManifestsGet,
   getPilotDeploymentCatalogV1DeploymentsPilotNameGet,
   getRouterConfigCatalogV1RouterConfigGet,
   getSystemHealthCatalogV1SystemHealthGet,
@@ -43,6 +44,8 @@ import type {
   GetConfigVersionControlV1ConfigVersionsUidGetData,
   GetConfigVersionControlV1ConfigVersionsUidGetError,
   GetConfigVersionControlV1ConfigVersionsUidGetResponse,
+  GetLiveManifestsControlV1ManifestsGetData,
+  GetLiveManifestsControlV1ManifestsGetResponse,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetData,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetError,
   GetPilotDeploymentCatalogV1DeploymentsPilotNameGetResponse,
@@ -177,6 +180,36 @@ export const prometheusServiceDiscoveryDiscoveryV1PrometheusGetOptions = (
       prometheusServiceDiscoveryDiscoveryV1PrometheusGetQueryKey(options),
   });
 
+export const getLiveManifestsControlV1ManifestsGetQueryKey = (
+  options?: Options<GetLiveManifestsControlV1ManifestsGetData>,
+) => createQueryKey("getLiveManifestsControlV1ManifestsGet", options);
+
+/**
+ * Get Live Manifests
+ *
+ * The live declarative catalog as manifests, with its ConfigVersion.
+ */
+export const getLiveManifestsControlV1ManifestsGetOptions = (
+  options?: Options<GetLiveManifestsControlV1ManifestsGetData>,
+) =>
+  queryOptions<
+    GetLiveManifestsControlV1ManifestsGetResponse,
+    DefaultError,
+    GetLiveManifestsControlV1ManifestsGetResponse,
+    ReturnType<typeof getLiveManifestsControlV1ManifestsGetQueryKey>
+  >({
+    queryFn: async ({ queryKey, signal }) => {
+      const { data } = await getLiveManifestsControlV1ManifestsGet({
+        ...options,
+        ...queryKey[0],
+        signal,
+        throwOnError: true,
+      });
+      return data;
+    },
+    queryKey: getLiveManifestsControlV1ManifestsGetQueryKey(options),
+  });
+
 /**
  * Plan Resources
  *
@@ -186,6 +219,10 @@ export const prometheusServiceDiscoveryDiscoveryV1PrometheusGetOptions = (
  * deleted, or left unchanged.  This is the "Plan" phase of a Plan/Apply
  * workflow.  The caller reviews the plan and then submits it back to the Apply
  * endpoint to commit changes.
+ *
+ * With `prune` (the default) `resources` is the complete catalog and live
+ * resources missing from it are deleted. Without it they are upserted and
+ * nothing is deleted.
  */
 export const planResourcesControlV1PlanPostMutation = (
   options?: Partial<Options<PlanResourcesControlV1PlanPostData>>,
@@ -220,7 +257,7 @@ export const planResourcesControlV1PlanPostMutation = (
  * was returned by the /plan endpoint and reviewed by the caller).
  * Performs a two-phase commit: replans the current state and only
  * proceeds if it matches the approved plan, ensuring no concurrent
- * modifications have occurred.
+ * modifications have occurred. `prune` must match the one planned with.
  */
 export const applyResourcesControlV1ApplyPostMutation = (
   options?: Partial<Options<ApplyResourcesControlV1ApplyPostData>>,

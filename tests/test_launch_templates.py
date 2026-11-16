@@ -174,6 +174,44 @@ def test_invalid_parameter_definitions(definition: dict[str, Any]) -> None:
         ScriptParameter.model_validate(definition)
 
 
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize(
+    "definition,valid,invalid",
+    [
+        ({"type": "int", "minimum": 4096}, 8192, 1),
+        ({"type": "float", "maximum": 0.9}, 0.85, 1.0),
+    ],
+)
+def test_numeric_render_samples_do_not_enforce_value_bounds(
+    required: bool, definition: dict[str, Any], valid: int | float, invalid: int | float
+) -> None:
+    def bounded_template(**overrides: Any) -> LaunchTemplateSpec:
+        return _template(
+            parameters={"value": {**definition, "required": required, **overrides}},
+            serve_script_template="serve {{ parameters.value }}",
+        )
+
+    template = bounded_template()
+    assert template.resolve(_launch(parameters={"value": valid}), None).parameters == {
+        "value": valid
+    }
+    with pytest.raises(ValueError, match="parameter 'value' must be"):
+        template.resolve(_launch(parameters={"value": invalid}), None)
+    if required:
+        with pytest.raises(ValueError, match="required"):
+            template.resolve(_launch(parameters={}), None)
+    else:
+        assert template.resolve(_launch(parameters={}), None).parameters == {
+            "value": None
+        }
+    assert template.parameters["value"].default is None
+    assert bounded_template(default=valid).resolve(
+        _launch(parameters={}), None
+    ).parameters == {"value": valid}
+    with pytest.raises(ValidationError, match="must be"):
+        bounded_template(default=invalid)
+
+
 def test_reserved_parameter_names_rejected() -> None:
     with pytest.raises(ValidationError, match="reserved"):
         _template(parameters={"values": {"type": "str"}}, serve_script_template="x")

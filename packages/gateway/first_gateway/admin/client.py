@@ -11,6 +11,7 @@ from first_common.errors import NotFound
 from first_common.schema.resources import (
     ConfigVersion,
     ConfigVersionSummary,
+    LiveManifests,
     ResourceChangePlan,
     ResourceManifest,
 )
@@ -42,22 +43,37 @@ class AdminClient(Client):
             timeout=Timeout(10.0),
         )
 
-    def plan(self, resources: list[ResourceManifest]) -> ResourceChangePlan:
+    def manifests(self) -> LiveManifests:
+        """The live catalog as manifests, with its ConfigVersion."""
+        resp = self.get("/control/v1/manifests")
+        raise_for_status(resp)
+        return LiveManifests.model_validate(resp.json())
+
+    def plan(
+        self, resources: list[ResourceManifest], prune: bool = True
+    ) -> ResourceChangePlan:
         resp = self.post(
             "/control/v1/plan",
-            json={"resources": [r.model_dump(mode="json") for r in resources]},
+            json={
+                "resources": [r.model_dump(mode="json") for r in resources],
+                "prune": prune,
+            },
         )
         raise_for_status(resp)
         return ResourceChangePlan.model_validate(resp.json())
 
     def apply(
-        self, resources: list[ResourceManifest], approved_plan: ResourceChangePlan
+        self,
+        resources: list[ResourceManifest],
+        approved_plan: ResourceChangePlan,
+        prune: bool = True,
     ) -> ConfigVersion | None:
         resp = self.post(
             "/control/v1/apply",
             json={
                 "resources": [r.model_dump(mode="json") for r in resources],
                 "approved_plan": approved_plan.model_dump(mode="json"),
+                "prune": prune,
             },
         )
         raise_for_status(resp)

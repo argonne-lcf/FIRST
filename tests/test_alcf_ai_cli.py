@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import click
 import httpx
@@ -546,6 +546,91 @@ def test_embed_deployment_only(gateway: FakeGateway) -> None:
     )
     run("embed", "-d", "metis/google/gemma-4-31B-it", "a")
     assert gateway.last_json == {"model": "google/gemma-4-31B-it", "input": "a"}
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_admin_deployments_wait(
+    gateway: FakeGateway,
+    admin_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+    as_json: bool,
+) -> None:
+    from first_gateway.admin.cli import cli as admin_cli
+
+    monkeypatch.setattr("first_gateway.admin.catalog_cli.time.sleep", lambda _: None)
+    detail = gateway_pilot_detail()  # one ready replica
+    gateway.routes["GET /catalog/v1/deployments/pilot/sophia/openai/gpt-oss-120b"] = (
+        httpx.Response(200, json=detail)
+    )
+    out = admin_run("deployments", "wait", "sophia/openai/gpt-oss-120b")
+    assert "rep-1" in out
+
+    result = runner.invoke(
+        admin_cli,
+        ["deployments", "wait", "sophia/openai/gpt-oss-120b", "--ready", "2"]
+        + ["--timeout", "0"]
+        + (["--json"] if as_json else []),
+    )
+    assert result.exit_code == 1
+    assert "Timed out with 1 of 2" in result.stderr
+    if as_json:
+        assert json.loads(result.stdout)["name"] == detail["name"]
+
+    result = runner.invoke(
+        admin_cli,
+        ["deployments", "wait", "sophia/openai/gpt-oss-120b", "--drained"]
+        + ["--timeout", "0"]
+        + (["--json"] if as_json else []),
+    )
+    assert result.exit_code == 1
+    assert "Timed out with 1 replica(s) still ready" in result.stderr
+    if as_json:
+        assert json.loads(result.stdout)["name"] == detail["name"]
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_admin_deployments_wait_retries_transient_errors(
+    gateway: FakeGateway,
+    admin_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+    as_json: bool,
+) -> None:
+    from first_gateway.admin.cli import cli as admin_cli
+
+    monkeypatch.setattr("first_gateway.admin.catalog_cli.time.sleep", lambda _: None)
+    detail = gateway_pilot_detail()
+    for r in detail["replicas"]:
+        r["state"] = "error"
+    route = "GET /catalog/v1/deployments/pilot/sophia/openai/gpt-oss-120b"
+    responses: Iterator[httpx.Response | Exception] = iter(
+        [
+            httpx.ConnectError("gateway restarting"),
+            httpx.Response(503, json={"detail": "unavailable"}),
+            httpx.Response(404, json={"detail": "not yet"}),
+            httpx.Response(200, json=detail),
+        ]
+    )
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nxt = next(responses)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    gateway.routes[route] = respond
+    result = runner.invoke(
+        admin_cli,
+        ["deployments", "wait", "sophia/openai/gpt-oss-120b", "--drained"]
+        + (["--json"] if as_json else []),
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stderr.count("Retrying after error:") == 3
+    assert "Retrying after error:" not in result.stdout
+    if as_json:
+        assert json.loads(result.stdout)["name"] == detail["name"]
+    else:
+        assert "rep-1" in result.stdout
 
 
 def test_admin_set_desired_replicas_many_and_stdin(
