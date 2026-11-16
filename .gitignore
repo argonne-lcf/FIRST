@@ -70,3 +70,4 @@ prompt-records/
 # Rust
 scripts/logs/first-slogs/target/
 tests/live/.runs/
+loadtest-runs/

@@ -10,6 +10,23 @@ which are small, and are inlined but never spilled to disk); success bodies —
 unary and streaming alike — are never buffered here, so a 2xx ResponseLog
 always has ``body=None`` (inference content is persisted by
 ``InferenceService``).
+
+Every response also carries a ``Server-Timing`` header, so a client can split
+its own end-to-end latency without access to the logs::
+
+    Server-Timing: queue;dur=0.8, gateway;dur=41.3, upstream;dur=38.9;desc="attempts=1"
+
+- ``gateway``: this middleware's start until the response headers are sent.
+- ``upstream``: time spent waiting on inference backends, summed over attempts
+  (omitted when no backend was called).  ``gateway - upstream`` is the
+  gateway's own overhead.
+- ``queue``: time between the reverse proxy forwarding the request (its
+  ``X-Request-Start: t=<epoch seconds>`` stamp) and this middleware starting,
+  i.e. connection setup and waiting for a worker.  Omitted without the stamp.
+
+For a streaming response the headers precede the body, so ``gateway`` and
+``upstream`` both stop at the first byte: they cover the time to open the
+stream, not to relay it.
 """
 
 import time
@@ -19,10 +36,36 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from first_common.schema.structured_logs import ResponseLog
 
-from .context import _request_id_ctx
+from .context import RequestTiming, _request_id_ctx, _request_timing_ctx
 
 # Constant probe traffic; the only anonymous route worth suppressing.
 _SKIP_PATHS = {"/health"}
+
+# A stamp further off than this is a clock or client artefact, not queueing.
+_MAX_QUEUE_SEC = 3600.0
+
+
+def _queue_ms(scope: Scope, now: float) -> float | None:
+    """Milliseconds since the proxy's ``X-Request-Start: t=<epoch>`` stamp."""
+    for name, value in scope.get("headers", ()):
+        if name == b"x-request-start":
+            try:
+                queued = now - float(value.decode("latin-1").removeprefix("t="))
+            except ValueError:
+                return None
+            return queued * 1000 if 0 <= queued < _MAX_QUEUE_SEC else None
+    return None
+
+
+def _server_timing(queue_ms: float | None, t0: float, timing: RequestTiming) -> bytes:
+    parts = [] if queue_ms is None else [f"queue;dur={queue_ms:.2f}"]
+    parts.append(f"gateway;dur={(time.perf_counter() - t0) * 1000:.2f}")
+    if timing.attempts:
+        parts.append(
+            f"upstream;dur={timing.upstream_sec * 1000:.2f}"
+            f';desc="attempts={timing.attempts}"'
+        )
+    return ", ".join(parts).encode()
 
 
 class ResponseLogMiddleware:
@@ -34,8 +77,11 @@ class ResponseLogMiddleware:
             await self.app(scope, receive, send)
             return
 
+        queue_ms = _queue_ms(scope, time.time())
         cid = str(uuid.uuid4())
         token = _request_id_ctx.set(cid)
+        timing = RequestTiming()
+        timing_token = _request_timing_ctx.set(timing)
         t0 = time.perf_counter()
 
         status_code = 500
@@ -53,6 +99,13 @@ class ResponseLogMiddleware:
                     if name.lower() == b"content-type":
                         streaming = value.lower().startswith(b"text/event-stream")
                         break
+                message = {
+                    **message,
+                    "headers": [
+                        *headers,
+                        (b"server-timing", _server_timing(queue_ms, t0, timing)),
+                    ],
+                }
             elif message["type"] == "http.response.body":
                 # Only small error bodies are captured here; success/streaming
                 # content is persisted by InferenceService.
@@ -78,6 +131,7 @@ class ResponseLogMiddleware:
                 raw = bytes(error_body) if status_code >= 400 else None
                 self._emit(cid, status_code, t0, streaming, raw)
         finally:
+            _request_timing_ctx.reset(timing_token)
             _request_id_ctx.reset(token)
 
     @staticmethod

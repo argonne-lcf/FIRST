@@ -42,7 +42,7 @@ from ..services.orchestration import (
 from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
 from .auth import enforce_permission
 from .backend_client_manager import UNARY_TIMEOUT, BackendClientManager
-from .context import get_request_id
+from .context import get_request_id, upstream_timer
 from .dependencies import AuthUser
 from .router_config_manager import RouterConfigManager
 
@@ -387,26 +387,28 @@ class InferenceService:
         is_task = isinstance(payload, GenericTaskPayload)
 
         t0 = time.perf_counter()
-        try:
-            response = await client.post(
-                upstream_endpoint_path(payload.endpoint),
-                json=upstream_payload,
-                timeout=UNARY_TIMEOUT,
-                headers={TASK_USER_ID_HEADER: self.user.id} if is_task else None,
-            )
-        except httpx.RequestError as exc:
-            logger.warning(
-                f"Request error contacting backend for model {model.name}.",
-                exc_info=True,
-            )
-            # A timed-out task may still be running: don't start it over elsewhere.
-            retryable = not (is_task and isinstance(exc, httpx.ReadTimeout))
-            raise _UpstreamFailure(type(exc).__name__, retryable=retryable)
+        with upstream_timer():
+            try:
+                response = await client.post(
+                    upstream_endpoint_path(payload.endpoint),
+                    json=upstream_payload,
+                    timeout=UNARY_TIMEOUT,
+                    headers={TASK_USER_ID_HEADER: self.user.id} if is_task else None,
+                )
+            except httpx.RequestError as exc:
+                logger.warning(
+                    f"Request error contacting backend for model {model.name}.",
+                    exc_info=True,
+                )
+                # A timed-out task may still be running: don't start it over
+                # elsewhere.
+                retryable = not (is_task and isinstance(exc, httpx.ReadTimeout))
+                raise _UpstreamFailure(type(exc).__name__, retryable=retryable)
 
-        if response.status_code != 200:
-            body = (await response.aread()).decode(errors="replace")
-            await response.aclose()
-            self._raise_for_upstream_status(response.status_code, body, model.name)
+            if response.status_code != 200:
+                body = (await response.aread()).decode(errors="replace")
+                await response.aclose()
+                self._raise_for_upstream_status(response.status_code, body, model.name)
 
         latency_sec = time.perf_counter() - t0
         json_body: dict[str, Any] = response.json()
@@ -459,19 +461,20 @@ class InferenceService:
         )
 
         t0 = time.perf_counter()
-        try:
-            response = await client.send(request, stream=True)
-        except httpx.RequestError as exc:
-            logger.warning(
-                f"Request error contacting backend for model {model.name}.",
-                exc_info=True,
-            )
-            raise _UpstreamFailure(type(exc).__name__, retryable=True)
+        with upstream_timer():  # until the backend's response headers
+            try:
+                response = await client.send(request, stream=True)
+            except httpx.RequestError as exc:
+                logger.warning(
+                    f"Request error contacting backend for model {model.name}.",
+                    exc_info=True,
+                )
+                raise _UpstreamFailure(type(exc).__name__, retryable=True)
 
-        if response.status_code != 200:
-            body = (await response.aread()).decode(errors="replace")
-            await response.aclose()
-            self._raise_for_upstream_status(response.status_code, body, model.name)
+            if response.status_code != 200:
+                body = (await response.aread()).decode(errors="replace")
+                await response.aclose()
+                self._raise_for_upstream_status(response.status_code, body, model.name)
 
         async def _relay() -> AsyncIterator[bytes]:
             tap = UsageTap()

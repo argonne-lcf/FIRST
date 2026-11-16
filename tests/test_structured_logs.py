@@ -3,8 +3,9 @@ import json
 import logging
 import os
 import stat
+import time
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import httpx
 import pytest
@@ -583,6 +584,98 @@ async def test_upstream_4xx_names_deployment(client: httpx.AsyncClient) -> None:
     )
     assert resp.status_code == 400
     assert resp.headers[DEPLOYMENT_HEADER] == "dep-open"
+
+
+# --------------------------------------------------------------------------
+# Server-Timing header on every response
+# --------------------------------------------------------------------------
+
+
+def _server_timing(resp: httpx.Response) -> dict[str, float]:
+    """Parse ``name;dur=<ms>[;desc=...]`` entries into {name: ms}."""
+    out: dict[str, float] = {}
+    for entry in resp.headers["server-timing"].split(","):
+        name, *params = (part.strip() for part in entry.split(";"))
+        out[name] = next(float(p[4:]) for p in params if p.startswith("dur="))
+    return out
+
+
+async def test_unary_response_reports_gateway_and_upstream_time(
+    client: httpx.AsyncClient,
+) -> None:
+    _seed_streaming_config()
+    body = {
+        "id": "x",
+        "object": "chat.completion",
+        "choices": [],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    async def slow_backend(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=body)
+
+    app.state.backend_client_manager._clients["static_deployment/dep-open"] = (
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(slow_backend),
+            base_url="http://backend.invalid/v1",
+        )
+    )
+    resp = await client.post(
+        "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
+    )
+    assert resp.status_code == 200
+    timing = _server_timing(resp)
+    assert 50 <= timing["upstream"] <= timing["gateway"]
+    assert 'desc="attempts=1"' in resp.headers["server-timing"]
+    assert "queue" not in timing  # no proxy stamp on this request
+
+
+async def test_streaming_response_reports_time_to_upstream_headers(
+    client: httpx.AsyncClient,
+) -> None:
+    _seed_streaming_config()
+    _inject_streaming_backend()
+    async with client.stream(
+        "POST",
+        "/federated/v1/chat/completions",
+        headers=auth_header(USER_TOKEN),
+        json={**_CHAT, "stream": True},
+    ) as resp:
+        timing = _server_timing(resp)
+        assert 0 <= timing["upstream"] <= timing["gateway"]
+        await resp.aread()
+
+
+async def test_upstream_error_still_reports_upstream_time(
+    client: httpx.AsyncClient,
+) -> None:
+    _seed_streaming_config()
+    _inject_backend(httpx.Response(400, text="bad request"))
+    resp = await client.post(
+        "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
+    )
+    assert resp.status_code == 400
+    assert {"gateway", "upstream"} <= _server_timing(resp).keys()
+
+
+@pytest.mark.parametrize(
+    "stamp, expect_queue",
+    [
+        (lambda: f"t={time.time() - 0.25:.3f}", True),
+        (lambda: "t=garbage", False),
+        (lambda: f"t={time.time() + 60:.3f}", False),  # proxy clock ahead of ours
+    ],
+)
+async def test_queue_time_from_proxy_stamp(
+    client: httpx.AsyncClient, stamp: Callable[[], str], expect_queue: bool
+) -> None:
+    resp = await client.get("/health", headers={"X-Request-Start": stamp()})
+    timing = _server_timing(resp)
+    assert "upstream" not in timing  # no backend was called
+    assert ("queue" in timing) is expect_queue
+    if expect_queue:
+        assert 240 <= timing["queue"] < 5000
 
 
 # --------------------------------------------------------------------------

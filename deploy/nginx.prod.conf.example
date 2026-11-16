@@ -43,6 +43,8 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Lets the gateway report time queued before it (Server-Timing "queue")
+        proxy_set_header X-Request-Start "t=$msec";
         proxy_redirect off;
 
         # Stream SSE without buffering (preserves TTFT/ITL).
