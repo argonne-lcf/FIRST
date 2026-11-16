@@ -92,6 +92,7 @@ class AgentConfigurationTests(unittest.TestCase):
                 },
             )
         )
+        os.environ.pop("ALCF_AI_MODEL", None)
         self.helper = self.enterContext(
             patch.object(agent, "_token_helper_command", return_value=HELPER)
         )
@@ -507,7 +508,11 @@ class AgentConfigurationTests(unittest.TestCase):
         with (
             patch.dict(
                 os.environ,
-                {"KEEP_ME": "yes", "ANTHROPIC_MODEL": "parent-model"},
+                {
+                    "KEEP_ME": "yes",
+                    "ANTHROPIC_MODEL": "parent-model",
+                    "ALCF_AI_MODEL": "muse-spark-bf16",
+                },
             ),
             patch.object(agent.os, "execvpe") as execvpe,
         ):
@@ -549,6 +554,52 @@ class AgentConfigurationTests(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}tara/api")
         self.assertEqual(env["ANTHROPIC_MODEL"], TARA_MODEL)
         self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1048576")
+
+    def test_run_uses_model_env_and_explicit_option_precedence(self) -> None:
+        with (
+            patch.dict(os.environ, {"ALCF_AI_MODEL": MODEL}),
+            patch.object(agent.os, "execvpe") as execvpe,
+        ):
+            result = self.run_claude("--default-cluster", "minerva")
+
+        self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
+        env = execvpe.call_args.args[2]
+        self.assertEqual(env["ANTHROPIC_MODEL"], MODEL)
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
+
+    def test_configure_uses_model_env(self) -> None:
+        with patch.dict(os.environ, {"ALCF_AI_MODEL": MODEL}):
+            self.configure("claude", "--default-cluster", "minerva")
+
+        profile = self.read_json(".claude/profiles/alcf.json")
+        self.assertEqual(profile["env"]["ANTHROPIC_MODEL"], MODEL)
+        self.assertEqual(profile["env"]["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
+
+    def test_chat_uses_model_env_and_explicit_option_precedence(self) -> None:
+        cli_module = importlib.import_module("alcf_ai.cli")
+
+        def invoke(*options: str) -> tuple[Mock, Mock]:
+            client = Mock()
+            response = Mock()
+            response.choices = [Mock(message=Mock(content="ok"))]
+            create = client.clusters.return_value.openai.chat.completions.create
+            create.return_value = response
+            with patch.object(cli_module, "InferenceClient", return_value=client):
+                result = CliRunner().invoke(
+                    cli_module.cli, ["chat", "--no-stream", *options]
+                )
+            self.assertEqual(
+                result.exit_code, 0, result.output or str(result.exception)
+            )
+            return client, create
+
+        with patch.dict(os.environ, {"ALCF_AI_MODEL": MODEL}):
+            client, create = invoke("--cluster", "minerva", "hello")
+            self.assertEqual(create.call_args.kwargs["model"], MODEL)
+            client.clusters.assert_called_once_with("minerva")
+
+            _, create = invoke("--model", TARA_MODEL, "hello")
+            self.assertEqual(create.call_args.kwargs["model"], TARA_MODEL)
 
     def test_run_claude_reports_missing_executable(self) -> None:
         settings = self.write(".claude/settings.json", "invalid existing config")

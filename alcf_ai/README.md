@@ -15,6 +15,11 @@ uvx alcf-tokens login
 uvx alcf-ai chat "How do I know Pi is irrational? Be concise."
 ```
 
+
+Chat and coding-agent model selection uses `--model` (or `--default-model` for
+agents), then `$ALCF_AI_MODEL`, then `mistral-large-4` on Tara. Override the
+cluster separately with `--cluster` or `--default-cluster`, in particular when
+`ALCF_AI_MODEL` names a model served outside Tara.
 ### Auth
 
 Logging in is handled by [`alcf-tokens`](https://pypi.org/project/alcf-tokens/),

@@ -34,6 +34,12 @@ _AUTO_APPROVE_OVERWRITES: ContextVar[bool] = ContextVar(
 DEFAULT_MODEL = "mistral-large-4"
 DEFAULT_CLUSTER = "tara"
 
+
+def default_model_name() -> str:
+    """The user's model override, or the shared Tara-backed default."""
+    return os.environ.get("ALCF_AI_MODEL") or DEFAULT_MODEL
+
+
 ALLOWLIST: dict[str, list[str]] = {
     "sophia": ["openai/gpt-oss-120b"],
     # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
@@ -1014,13 +1020,13 @@ def run(
     ctx: typer.Context,
     agent: Annotated[Literal["claude", "opencode", "codex", "aider"], typer.Argument()],
     model: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--default-model",
             "-m",
-            help="Model for the agent",
+            help="Model for the agent (default: $ALCF_AI_MODEL or mistral-large-4)",
         ),
-    ] = DEFAULT_MODEL,
+    ] = None,
     cluster: Annotated[
         str,
         typer.Option(
@@ -1059,6 +1065,7 @@ def run(
                 "--default-cluster; configure the profile to change its model",
                 param_hint="--profile",
             )
+    model = model or default_model_name()
 
     env = os.environ.copy()
     launch_args: list[str] = []
@@ -1151,13 +1158,16 @@ def configure(
         ),
     ] = False,
     model: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--default-model",
             "-m",
-            help="Default model for the agent configuration (codex and claude)",
+            help=(
+                "Default model for the agent configuration (codex and claude; "
+                "default: $ALCF_AI_MODEL or mistral-large-4)"
+            ),
         ),
-    ] = DEFAULT_MODEL,
+    ] = None,
     cluster: Annotated[
         str,
         typer.Option(
@@ -1205,6 +1215,7 @@ def configure(
             )
 
     profile_name = None if no_profile else profile
+    model = model or default_model_name()
 
     from .cli import _get_client
 
