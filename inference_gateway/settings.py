@@ -178,6 +178,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "resource_server_async.server_timing.ServerTimingMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
     "resource_server_async.logging.AccessLogMiddleware",

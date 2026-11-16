@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -50,6 +51,7 @@ from .schemas.endpoints import (
     SubmitTaskResult,
 )
 from .schemas.structured_logs import UserPydantic
+from .server_timing import record_upstream_time
 
 logger = logging.getLogger(__name__)
 
@@ -368,9 +370,15 @@ async def submit_openai_inference_request(
     # Submit task
     task_response: SubmitStreamingTaskResponse | SubmitTaskResult
     if stream:
+        # Lazy for most adapters: the backend is contacted while the body is
+        # streamed, after the response headers (and Server-Timing) are sent.
         task_response = await endpoint.submit_streaming_task(data)
     else:
-        task_response = await endpoint.submit_task(data)
+        t0 = time.perf_counter()
+        try:
+            task_response = await endpoint.submit_task(data)
+        finally:
+            record_upstream_time(time.perf_counter() - t0)
 
     # Update request log data
     context.request_log.task_uuid = task_response.task_id
