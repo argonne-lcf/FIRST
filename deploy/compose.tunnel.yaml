@@ -36,7 +36,9 @@ services:
   inference-gateway:
     environment:
       - ALL_PROXY=socks5h://tunnel:1080
-      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway,livetest-chaos,minerva-login-01.minerva.alcf.anl.gov
+      # 10.124.0.0/16: Tara compute nodes, reached directly over the conduit.
+      # CIDR entries are honoured only by the backend client (_egress_proxy).
+      - NO_PROXY=localhost,127.0.0.1,controller-manager,inference-gateway,livetest-chaos,minerva-login-01.minerva.alcf.anl.gov,10.124.128.0/21,10.124.160.0/21
 
   controller-manager:
     environment:

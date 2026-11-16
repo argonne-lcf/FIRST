@@ -251,6 +251,10 @@ async def test_failed_update_keeps_previous_client(
         ("https://login.cluster-a.example:9443/models/m", None),
         ("https://other.example/v1", "socks5h://tunnel:1080"),
         ("http://localhost:8000/v1", None),
+        # CIDR entries exempt IP-addressed hosts inside the network only.
+        ("https://10.124.165.41:9443/replicas/r/", None),
+        ("https://10.125.0.1:9443/replicas/r/", "socks5h://tunnel:1080"),
+        ("https://[fd00::5]:9443/replicas/r/", None),
     ],
 )
 def test_egress_proxy_honours_no_proxy(
@@ -259,7 +263,10 @@ def test_egress_proxy_honours_no_proxy(
     for var in ("HTTPS_PROXY", "https_proxy", "no_proxy"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ALL_PROXY", "socks5h://tunnel:1080")
-    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,login.cluster-a.example")
+    monkeypatch.setenv(
+        "NO_PROXY",
+        "localhost,127.0.0.1,login.cluster-a.example,10.124.0.0/16,fd00::/64",
+    )
     assert bcm._egress_proxy(url) == expected
 
 

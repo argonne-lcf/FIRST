@@ -200,3 +200,20 @@ def test_run_step_across_processes(tmp_path: Path) -> None:
     assert summary["gateway"] is None  # the mock sends no Server-Timing
     assert (tmp_path / "requests.jsonl").read_text().count("\n") >= 10
     assert not list(tmp_path.glob("worker-*.jsonl"))
+
+
+@pytest.mark.parametrize(
+    "delta, counts",
+    [
+        (b'{"role":"assistant","content":""}', False),
+        (b'{"content":"Hi"}', True),
+        (b'{"reasoning_content":"The"}', True),
+        (b'{"reasoning":"The"}', True),  # vLLM 0.29 + gpt-oss
+    ],
+)
+def test_stream_first_token_matches_reasoning_deltas(
+    delta: bytes, counts: bool
+) -> None:
+    from .load.harness import _CONTENT
+
+    assert bool(_CONTENT.search(b'{"choices":[{"delta":' + delta + b"}]}")) is counts

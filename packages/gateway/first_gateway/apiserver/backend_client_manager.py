@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import socket
@@ -33,15 +34,41 @@ def _run_background(coro: Coroutine[None, None, None]) -> None:
     task.add_done_callback(_on_done)
 
 
+def _in_no_proxy_network(host: str) -> bool:
+    """True if `host` is an IP address inside a CIDR entry of NO_PROXY.
+
+    urllib's NO_PROXY matching is suffix-only, so it cannot exempt a subnet of
+    compute nodes addressed by IP (e.g. ``10.124.0.0/16``).
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    for entry in no_proxy.split(","):
+        if "/" not in entry:
+            continue
+        try:
+            if addr in ipaddress.ip_network(entry.strip(), strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _egress_proxy(url: str) -> str | None:
     """The env-configured egress proxy for `url`, or None if NO_PROXY exempts it.
 
     An explicit transport `proxy` bypasses httpx's own NO_PROXY handling.
+    NO_PROXY may also list CIDR networks, matched against IP-address hosts.
     """
     proxy = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY")
-    if proxy and not urllib.request.proxy_bypass(httpx.URL(url).host):
-        return proxy
-    return None
+    if not proxy:
+        return None
+    host = httpx.URL(url).host
+    if urllib.request.proxy_bypass(host) or _in_no_proxy_network(host):
+        return None
+    return proxy
 
 
 # To accomodate different OS platform (MacOS/Linux)

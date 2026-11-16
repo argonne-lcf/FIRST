@@ -34,7 +34,8 @@ Mode = Literal["health", "unary", "stream"]
 DEPLOYMENT_HEADER = "x-first-deployment"
 
 # A chunk carrying generated text (vLLM's first chunk has only the role).
-_CONTENT = re.compile(rb'"(?:reasoning_)?content"\s*:\s*"[^"]')
+# Reasoning text arrives as `reasoning` (vLLM >= 0.2x) or `reasoning_content`.
+_CONTENT = re.compile(rb'"(?:reasoning_content|reasoning|content)"\s*:\s*"[^"]')
 _ERROR = re.compile(rb'"error"\s*:\s*[{"]')
 
 # Roughly one token each for common tokenizers.
