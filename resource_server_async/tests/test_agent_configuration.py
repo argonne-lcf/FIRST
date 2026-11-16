@@ -18,6 +18,8 @@ from alcf_ai import agent
 
 MODEL = "mistral-large-4-nvfp4"
 PROVIDER = "alcf-inference-service-minerva-api"
+TARA_MODEL = "mistral-large-4"
+TARA_PROVIDER = "alcf-inference-service-tara-api"
 BASE_URL = URL("https://inference-api.alcf.anl.gov/resource_server/")
 HELPER = ["/test/bin/alcf-tokens", "get-token", "inference"]
 TOKEN = "test-token-not-a-real-credential"
@@ -40,12 +42,25 @@ MISTRAL = {
         },
     },
 }
+TARA_MISTRAL = {
+    **MISTRAL,
+    "id": TARA_MODEL,
+    "display_name": "Mistral Large 4 FP8",
+}
 MUSE = {
     "id": "muse-spark-bf16",
     "display_name": "Muse Spark Open BF16",
     "framework": "api",
     "capabilities": {"context_window_tokens": 1048576},
 }
+
+
+def _pin_explicit_minerva(options: tuple[str, ...]) -> tuple[str, ...]:
+    if "--default-model" not in options or "--default-cluster" in options:
+        return options
+    split = options.index("--") if "--" in options else len(options)
+    return (*options[:split], "--default-cluster", "minerva", *options[split:])
+
 
 # Catalog fetches are mocked. Unknown upstream fields must survive adaptation.
 UPSTREAM = {
@@ -77,6 +92,7 @@ class AgentConfigurationTests(unittest.TestCase):
                 },
             )
         )
+        os.environ.pop("ALCF_AI_MODEL", None)
         self.helper = self.enterContext(
             patch.object(agent, "_token_helper_command", return_value=HELPER)
         )
@@ -113,6 +129,8 @@ class AgentConfigurationTests(unittest.TestCase):
     def invoke_configure(
         self, name: str, *options: str, input: str | None = None
     ) -> Result:
+        # Minerva fixture models pin their cluster now that Tara is the default.
+        options = _pin_explicit_minerva(options)
         cli_module = importlib.import_module("alcf_ai.cli")
         client = Mock(base_url=BASE_URL)
         listings = {
@@ -123,10 +141,13 @@ class AgentConfigurationTests(unittest.TestCase):
                 {"id": "unlisted-model", "framework": "api"},
             ],
             "tara": [
+                copy.deepcopy(TARA_MISTRAL),
                 {"id": "nemotron-3-ultra", "framework": "api"},
                 {"id": "nemotron-35-super-vl", "framework": "api"},
             ],
+            "metis": [{"id": "metis/test-model", "framework": "vllm"}],
         }
+        client.list_endpoints.return_value = {"clusters": dict.fromkeys(listings)}
         client.list_models.side_effect = listings.__getitem__
         with patch.dict(cli_module._cli_state, {"client": client}):
             return CliRunner().invoke(
@@ -139,10 +160,13 @@ class AgentConfigurationTests(unittest.TestCase):
         return result
 
     def run_agent(self, name: str, *options: str) -> Result:
+        # Preserve explicit Minerva scenarios independently of the new default.
+        options = _pin_explicit_minerva(options)
         cli_module = importlib.import_module("alcf_ai.cli")
         client = Mock(base_url=BASE_URL)
         client.list_models.return_value = [
             copy.deepcopy(MISTRAL),
+            copy.deepcopy(TARA_MISTRAL),
             copy.deepcopy(MUSE),
         ]
         with patch.dict(cli_module._cli_state, {"client": client}):
@@ -151,38 +175,34 @@ class AgentConfigurationTests(unittest.TestCase):
     def run_claude(self, *options: str) -> Result:
         return self.run_agent("claude", *options)
 
-    def test_allowlist_changes_only_minerva_nemotron(self) -> None:
-        self.assertEqual(
-            agent.ALLOWLIST,
-            {
-                "sophia": ["openai/gpt-oss-120b"],
-                "minerva": [MODEL, "inkling-bf16", "muse-spark-bf16", "beam-1.0-bf16"],
-                "tara": [
-                    "openai/gpt-oss-20b",
-                    "nemotron-35-super-vl",
-                    "inkling-bf16",
-                    "nemotron-3-ultra",
-                ],
-            },
-        )
-
-    def test_cli_filters_retired_minerva_but_preserves_tara_nemotron(self) -> None:
+    def test_discovers_clusters_from_list_endpoints(self) -> None:
         with patch.object(agent, "edit_pi") as edit:
             self.configure("pi")
+
         infos = edit.call_args.args[2]
-        self.assertEqual([m["id"] for m in infos["minerva"]], [MODEL])
+        self.assertEqual([m["id"] for m in infos["metis"]], ["metis/test-model"])
+
+    def test_configures_all_discovered_models_by_default(self) -> None:
+        with patch.object(agent, "edit_pi") as edit:
+            self.configure("pi")
+
+        infos = edit.call_args.args[2]
+        self.assertEqual(
+            [m["id"] for m in infos["minerva"]],
+            [MODEL, "nemotron-3-ultra", "unlisted-model"],
+        )
         self.assertEqual(
             [m["id"] for m in infos["tara"]],
-            ["nemotron-3-ultra", "nemotron-35-super-vl"],
+            [TARA_MODEL, "nemotron-3-ultra", "nemotron-35-super-vl"],
         )
-        self.assertEqual(infos["sophia"][0]["id"], "openai/gpt-oss-120b")
+        self.assertEqual([m["id"] for m in infos["sophia"]], ["openai/gpt-oss-120b"])
+        self.assertEqual([m["id"] for m in infos["metis"]], ["metis/test-model"])
 
-    def test_include_experimental_still_opts_in_to_unlisted_models(self) -> None:
-        with patch.object(agent, "edit_pi") as edit:
-            self.configure("pi", "--include-experimental")
-        self.assertIn(
-            "unlisted-model", [m["id"] for m in edit.call_args.args[2]["minerva"]]
-        )
+    def test_include_experimental_option_was_removed(self) -> None:
+        result = self.invoke_configure("pi", "--include-experimental")
+
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("No such option", result.output)
 
     def test_opencode_v1_uses_published_capabilities_and_refresh_plugin(self) -> None:
         relative = ".config/opencode/opencode.jsonc"
@@ -373,11 +393,12 @@ class AgentConfigurationTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 2)
         self.assertIn("only supported for Claude", result.output)
 
-    def test_codex_default_remains_muse(self) -> None:
+    def test_codex_defaults_to_tara_mistral(self) -> None:
         self.configure("codex")
         config = self.read_toml(".codex/alcf.config.toml")
-        self.assertEqual(config["model"], "muse-spark-bf16")
-        self.assertEqual(config["model_provider"], PROVIDER)
+        self.assertEqual(config["model"], TARA_MODEL)
+        self.assertEqual(config["model_provider"], TARA_PROVIDER)
+        self.assertIn(TARA_PROVIDER, config["model_providers"])
 
     def test_codex_preserves_existing_selection_settings_and_other_providers(
         self,
@@ -453,11 +474,12 @@ class AgentConfigurationTests(unittest.TestCase):
         self.assertIn("cannot be combined", result.output)
         get_token.assert_not_called()
 
-    def test_claude_default_remains_muse(self) -> None:
+    def test_claude_defaults_to_tara_mistral(self) -> None:
         settings = self.write(".claude/settings.json", "invalid existing config")
         self.configure("claude")
         profile = self.read_json(".claude/profiles/alcf.json")
-        self.assertEqual(profile["env"]["ANTHROPIC_MODEL"], "muse-spark-bf16")
+        self.assertEqual(profile["env"]["ANTHROPIC_MODEL"], TARA_MODEL)
+        self.assertEqual(profile["env"]["ANTHROPIC_BASE_URL"], f"{BASE_URL}tara/api")
         self.assertEqual(settings.read_text(), "invalid existing config")
 
     def test_static_token_fallback_is_unchanged(self) -> None:
@@ -483,7 +505,11 @@ class AgentConfigurationTests(unittest.TestCase):
         with (
             patch.dict(
                 os.environ,
-                {"KEEP_ME": "yes", "ANTHROPIC_MODEL": "parent-model"},
+                {
+                    "KEEP_ME": "yes",
+                    "ANTHROPIC_MODEL": "parent-model",
+                    "ALCF_AI_MODEL": "muse-spark-bf16",
+                },
             ),
             patch.object(agent.os, "execvpe") as execvpe,
         ):
@@ -516,15 +542,61 @@ class AgentConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.read_text(), "invalid existing config")
         self.helper.assert_not_called()
 
-    def test_run_claude_uses_muse_by_default(self) -> None:
+    def test_run_claude_uses_tara_mistral_by_default(self) -> None:
         with patch.object(agent.os, "execvpe") as execvpe:
             result = self.run_claude()
 
         self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
         env = execvpe.call_args.args[2]
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
-        self.assertEqual(env["ANTHROPIC_MODEL"], "muse-spark-bf16")
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}tara/api")
+        self.assertEqual(env["ANTHROPIC_MODEL"], TARA_MODEL)
         self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1048576")
+
+    def test_run_uses_model_env_and_explicit_option_precedence(self) -> None:
+        with (
+            patch.dict(os.environ, {"ALCF_AI_MODEL": MODEL}),
+            patch.object(agent.os, "execvpe") as execvpe,
+        ):
+            result = self.run_claude("--default-cluster", "minerva")
+
+        self.assertEqual(result.exit_code, 0, result.output or str(result.exception))
+        env = execvpe.call_args.args[2]
+        self.assertEqual(env["ANTHROPIC_MODEL"], MODEL)
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
+
+    def test_configure_uses_model_env(self) -> None:
+        with patch.dict(os.environ, {"ALCF_AI_MODEL": MODEL}):
+            self.configure("claude", "--default-cluster", "minerva")
+
+        profile = self.read_json(".claude/profiles/alcf.json")
+        self.assertEqual(profile["env"]["ANTHROPIC_MODEL"], MODEL)
+        self.assertEqual(profile["env"]["ANTHROPIC_BASE_URL"], f"{BASE_URL}minerva/api")
+
+    def test_chat_uses_model_env_and_explicit_option_precedence(self) -> None:
+        cli_module = importlib.import_module("alcf_ai.cli")
+
+        def invoke(*options: str) -> tuple[Mock, Mock]:
+            client = Mock()
+            response = Mock()
+            response.choices = [Mock(message=Mock(content="ok"))]
+            create = client.clusters.return_value.openai.chat.completions.create
+            create.return_value = response
+            with patch.object(cli_module, "InferenceClient", return_value=client):
+                result = CliRunner().invoke(
+                    cli_module.cli, ["chat", "--no-stream", *options]
+                )
+            self.assertEqual(
+                result.exit_code, 0, result.output or str(result.exception)
+            )
+            return client, create
+
+        with patch.dict(os.environ, {"ALCF_AI_MODEL": MODEL}):
+            client, create = invoke("--cluster", "minerva", "hello")
+            self.assertEqual(create.call_args.kwargs["model"], MODEL)
+            client.clusters.assert_called_once_with("minerva")
+
+            _, create = invoke("--model", TARA_MODEL, "hello")
+            self.assertEqual(create.call_args.kwargs["model"], TARA_MODEL)
 
     def test_run_claude_reports_missing_executable(self) -> None:
         settings = self.write(".claude/settings.json", "invalid existing config")

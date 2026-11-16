@@ -17,6 +17,7 @@ from rich.markdown import Markdown
 from typer import Typer
 
 from .agent import cli as agent_cli
+from .agent import default_model_name
 from .client import InferenceClient
 from .dinov3 import cli as dinov3_cli
 from .sam3 import cli as sam3_cli
@@ -125,7 +126,12 @@ def ls_jobs(cluster: str) -> None:
 @cli.command()
 def chat(
     prompt: str = typer.Argument("", help="The prompt to send"),
-    model: str = typer.Option("mistral-large-4", "--model", "-m"),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Model name or alias (default: $ALCF_AI_MODEL or mistral-large-4)",
+    ),
     system: str | None = typer.Option(
         None,
         "--system",
@@ -146,6 +152,7 @@ def chat(
     the contents of --input-file (if any), and the positional PROMPT argument.
     """
     client = _get_client()
+    model = model or default_model_name()
     oai = client.clusters(cluster).openai
 
     parts: list[str] = []

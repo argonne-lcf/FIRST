@@ -11,10 +11,18 @@ This package provides Python client and CLI tools to facilitate usage of the ALC
 uvx alcf-tokens login
 
 # Chat with a model
-# The default --model is meta-llama/Llama-4-Scout-17B-16E-Instruct
+# The default model for chat and coding agents is mistral-large-4 on Tara
 uvx alcf-ai chat "How do I know Pi is irrational? Be concise."
 ```
 
+
+Chat and coding-agent model selection uses `--model` (or `--default-model` for
+agents), then `$ALCF_AI_MODEL`, then `mistral-large-4` on Tara. Override the
+cluster separately with `--cluster` or `--default-cluster`, in particular when
+`ALCF_AI_MODEL` names a model served outside Tara.
+
+`agent configure` discovers every authorized cluster and model exposed by the
+gateway, just like V2, rather than filtering them through a static allowlist.
 ### Auth
 
 Logging in is handled by [`alcf-tokens`](https://pypi.org/project/alcf-tokens/),

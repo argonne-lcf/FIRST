@@ -31,23 +31,14 @@ cli = typer.Typer(no_args_is_help=True)
 _AUTO_APPROVE_OVERWRITES: ContextVar[bool] = ContextVar(
     "auto_approve_overwrites", default=False
 )
-ALLOWLIST: dict[str, list[str]] = {
-    "sophia": ["openai/gpt-oss-120b"],
-    # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
-    # "metis": ["gpt-oss-120b"],
-    "minerva": [
-        "mistral-large-4-nvfp4",
-        "inkling-bf16",
-        "muse-spark-bf16",
-        "beam-1.0-bf16",
-    ],
-    "tara": [
-        "openai/gpt-oss-20b",
-        "nemotron-35-super-vl",
-        "inkling-bf16",
-        "nemotron-3-ultra",
-    ],
-}
+DEFAULT_MODEL = "mistral-large-4"
+DEFAULT_CLUSTER = "tara"
+
+
+def default_model_name() -> str:
+    """The user's model override, or the shared Tara-backed default."""
+    return os.environ.get("ALCF_AI_MODEL") or DEFAULT_MODEL
+
 
 DEFAULT_CAPABILITIES: dict[str, Any] = {
     "api_protocols": ["chat_completions"],
@@ -143,7 +134,7 @@ def _write_json_config(path: Path, config: dict[str, Any]) -> None:
 
 
 def _write_toml_config(path: Path, config: tomlkit.TOMLDocument) -> None:
-    _write_config_file(path, tomlkit.dumps(config))
+    _write_config_file(path, tomlkit.dumps(config).rstrip() + "\n")
 
 
 def _group_by_framework(
@@ -1010,13 +1001,13 @@ def run(
     ctx: typer.Context,
     agent: Annotated[Literal["claude", "opencode", "codex", "aider"], typer.Argument()],
     model: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--default-model",
             "-m",
-            help="Model for the agent",
+            help="Model for the agent (default: $ALCF_AI_MODEL or mistral-large-4)",
         ),
-    ] = "muse-spark-bf16",
+    ] = None,
     cluster: Annotated[
         str,
         typer.Option(
@@ -1024,7 +1015,7 @@ def run(
             "-c",
             help="Cluster serving the model",
         ),
-    ] = "minerva",
+    ] = DEFAULT_CLUSTER,
     profile: Annotated[
         str | None,
         typer.Option(
@@ -1055,6 +1046,7 @@ def run(
                 "--default-cluster; configure the profile to change its model",
                 param_hint="--profile",
             )
+    model = model or default_model_name()
 
     env = os.environ.copy()
     launch_args: list[str] = []
@@ -1139,21 +1131,17 @@ def run(
 def configure(
     ctx: typer.Context,
     agent: Annotated[Literal["opencode", "codex", "pi", "claude"], typer.Argument()],
-    include_experimental: Annotated[
-        bool,
-        typer.Option(
-            "--include-experimental",
-            help="Include non-whitelisted (experimental) models in the agent configuration",
-        ),
-    ] = False,
     model: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--default-model",
             "-m",
-            help="Default model for the agent configuration (codex and claude)",
+            help=(
+                "Default model for the agent configuration (codex and claude; "
+                "default: $ALCF_AI_MODEL or mistral-large-4)"
+            ),
         ),
-    ] = "muse-spark-bf16",
+    ] = None,
     cluster: Annotated[
         str,
         typer.Option(
@@ -1161,7 +1149,7 @@ def configure(
             "-c",
             help="Cluster serving the default model (codex and claude)",
         ),
-    ] = "minerva",
+    ] = DEFAULT_CLUSTER,
     profile: Annotated[
         str,
         typer.Option(
@@ -1201,6 +1189,7 @@ def configure(
             )
 
     profile_name = None if no_profile else profile
+    model = model or default_model_name()
 
     from .cli import _get_client
 
@@ -1209,14 +1198,8 @@ def configure(
 
     model_infos: dict[str, list[dict[str, Any]]] = {
         cluster_name: models
-        for cluster_name, whitelist in ALLOWLIST.items()
-        if (
-            models := [
-                m
-                for m in client.list_models(cluster_name)
-                if include_experimental or m["id"] in whitelist
-            ]
-        )
+        for cluster_name in client.list_endpoints()["clusters"]
+        if (models := client.list_models(cluster_name))
     }
 
     approval = _AUTO_APPROVE_OVERWRITES.set(yes)
