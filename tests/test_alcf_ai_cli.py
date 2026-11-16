@@ -13,7 +13,16 @@ import alcf_ai.cli as cli_module
 from alcf_ai import InferenceClient
 from alcf_ai.cli import cli
 
-from .fixtures.alcf_ai import FakeGateway, cold_start_response, pilot_deployment, sse
+from .fixtures.alcf_ai import (
+    CATALOG_MODELS,
+    FakeGateway,
+    cold_start_response,
+    pilot_deployment,
+    sse,
+)
+from .fixtures.alcf_ai import (
+    model as catalog_model,
+)
 
 runner = CliRunner()
 
@@ -33,6 +42,20 @@ def run(*args: str, input: str | None = None) -> str:
     result = runner.invoke(cli, list(args), input=input, catch_exceptions=False)
     assert result.exit_code == 0, result.output
     return result.output
+
+
+def _add_default_model(gateway: FakeGateway) -> None:
+    gateway.routes["GET /catalog/v1/models"] = httpx.Response(
+        200,
+        json=[
+            *CATALOG_MODELS,
+            catalog_model(
+                "mistral-large-4",
+                ["chat/completions", "responses", "messages"],
+                uid=4,
+            ),
+        ],
+    )
 
 
 def test_models_ls_table_and_json() -> None:
@@ -244,7 +267,7 @@ def test_chat_streams_chat_completions_by_default(gateway: FakeGateway) -> None:
     assert "thinking..." in out
 
 
-def test_chat_auto_selects_model_and_dialect(gateway: FakeGateway) -> None:
+def test_chat_falls_back_when_default_unavailable(gateway: FakeGateway) -> None:
     # gemma only supports chat/completions and sorts after facebook/sam3 (no chat).
     gateway.routes["POST /federated/v1/chat/completions"] = httpx.Response(
         200, json={"choices": [{"message": {"content": "**bold** answer"}}]}
@@ -252,6 +275,22 @@ def test_chat_auto_selects_model_and_dialect(gateway: FakeGateway) -> None:
     out = run("chat", "--no-stream", "hello", input="")
     assert "bold" in out and "answer" in out
     assert gateway.last_json["model"] == "google/gemma-4-31B-it"
+
+
+def test_chat_uses_shared_default_and_environment_precedence(
+    gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_default_model(gateway)
+    gateway.routes["POST /federated/v1/chat/completions"] = httpx.Response(
+        200, json={"choices": [{"message": {"content": "answer"}}]}
+    )
+
+    run("chat", "--no-stream", "hello", input="")
+    assert gateway.last_json["model"] == "mistral-large-4"
+
+    monkeypatch.setenv("ALCF_AI_MODEL", "gpt-oss-120b")
+    run("chat", "--no-stream", "hello", input="")
+    assert gateway.last_json["model"] == "openai/gpt-oss-120b"
 
 
 def test_chat_messages_dialect_and_json(gateway: FakeGateway) -> None:

@@ -29,7 +29,7 @@ from ..agent import (
     token_helper_command,
 )
 from ..client import INFERENCE_SERVICE
-from ._shared import console, err_console, fmt_int, get_client
+from ._shared import console, default_model_name, err_console, fmt_int, get_client
 
 cli = typer.Typer(no_args_is_help=True)
 
@@ -74,13 +74,13 @@ def run(
     ctx: typer.Context,
     agent: Annotated[LaunchAgent, typer.Argument(help="Which coding agent to run.")],
     model: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--default-model",
             "-m",
-            help="Model for the agent",
+            help="Model for the agent (default: $ALCF_AI_MODEL or mistral-large-4)",
         ),
-    ] = "muse-spark-bf16",
+    ] = None,
     profile: Annotated[
         str | None,
         typer.Option(
@@ -107,6 +107,7 @@ def run(
                 param_hint="--profile",
             )
 
+    model_name = model or default_model_name()
     env = os.environ.copy()
     env.setdefault(SESSION_ENV, "default")
     launch_args: list[str] = []
@@ -122,7 +123,7 @@ def run(
                     )
                 launch_args = ["--settings", str(profile_path)]
             else:
-                selected = _launch_model(ctx, agent, model)
+                selected = _launch_model(ctx, agent, model_name)
                 env.update(
                     claude_environment(
                         str(client.base_url),
@@ -131,7 +132,7 @@ def run(
                     )
                 )
         case "opencode":
-            selected = _launch_model(ctx, agent, model)
+            selected = _launch_model(ctx, agent, model_name)
             env.update(
                 opencode_environment(
                     str(client.base_url),
@@ -154,7 +155,7 @@ def run(
                     require_codex_profile_version(codex_version())
                     launch_args = ["--profile", profile]
                 else:
-                    selected = _launch_model(ctx, agent, model)
+                    selected = _launch_model(ctx, agent, model_name)
                     codex_env, launch_args = codex_launch(
                         str(client.base_url),
                         get_access_token(INFERENCE_SERVICE),
@@ -171,7 +172,7 @@ def run(
                 typer.echo(f"Could not configure codex: {err}", err=True)
                 raise typer.Exit(1) from err
         case "aider":
-            selected = _launch_model(ctx, agent, model)
+            selected = _launch_model(ctx, agent, model_name)
             env.update(
                 aider_environment(
                     str(client.base_url),
@@ -253,7 +254,14 @@ def configure(
 
     client = get_client(ctx)
     endpoints = AGENT_ENDPOINTS[agent]
-    selected = select_models(client.catalog.models(), models or [], endpoints)
+    catalog = client.catalog.models()
+    selected = select_models(catalog, models or [], endpoints)
+    if models is None:
+        preferred = default_model_name()
+        preferred_ids = {
+            m.name for m in catalog if m.name == preferred or preferred in m.aliases
+        }
+        selected.sort(key=lambda m: m.id not in preferred_ids)
     if not selected:
         raise typer.BadParameter(
             f"No models serving {' or '.join(sorted(endpoints))} to configure."

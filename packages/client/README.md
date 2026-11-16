@@ -97,9 +97,12 @@ cat notes.md | uvx alcf-ai chat -s "Fix the grammar" -d sophia/openai/gpt-oss-12
 uvx alcf-ai embed -m my/embedding-model "first text" "second text"
 ```
 
-Without `--model`, the `ALCF_AI_MODEL` environment variable or the first
-chat-capable model in the catalog is used.  Without `--api`, the first dialect
-the model supports is used (Chat Completions, then Responses, then Messages).
+Without `--model`, `ALCF_AI_MODEL` is used when set; otherwise the shared
+`mistral-large-4` default on Tara is selected through federation. If that
+built-in model is unavailable, the first chat-capable catalog model is used.
+Explicit `--model` takes precedence over both. Without `--api`, the first
+dialect the model supports is used (Chat Completions, then Responses, then
+Messages).
 
 ### Non-LLM task models
 
@@ -260,6 +263,11 @@ uvx alcf-ai agent configure codex -m openai/gpt-oss-120b
 uvx alcf-ai agent configure pi
 uvx alcf-ai agent configure claude -m openai/gpt-oss-120b
 ```
+
+The coding-agent default is `mistral-large-4` on Tara, selected through the
+federated catalog. `$ALCF_AI_MODEL` overrides that shared default and an
+explicit `--model` takes precedence. Configuration without `--model` still
+includes every compatible model, with the shared default first.
 
 Codex and Claude Code create a reusable profile named `alcf` by default.
 Codex profiles live at `$CODEX_HOME/alcf.config.toml` (usually

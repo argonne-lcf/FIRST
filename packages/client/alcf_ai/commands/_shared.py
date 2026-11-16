@@ -4,6 +4,7 @@ rich rendering of resource state and cold-start countdowns.
 """
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,15 @@ console = Console()
 err_console = Console(stderr=True)
 
 JsonFlag = typer.Option(False, "--json", help="Print raw JSON instead of a table.")
+
+
+# Canonical catalog Model backed by Tara; federated inference selects its deployment.
+DEFAULT_MODEL = "mistral-large-4"
+
+
+def default_model_name() -> str:
+    """The user's shared model default, or the Tara-backed catalog default."""
+    return os.environ.get("ALCF_AI_MODEL") or DEFAULT_MODEL
 
 
 @dataclass

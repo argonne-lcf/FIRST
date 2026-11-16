@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import tomlkit
 import typer
@@ -31,7 +32,8 @@ from alcf_ai.agent import (
 from alcf_ai.cli import cli
 from first_common.schema.resources.read import ModelPublic
 
-from .fixtures.alcf_ai import CATALOG_MODELS
+from .fixtures.alcf_ai import CATALOG_MODELS, FakeGateway
+from .fixtures.alcf_ai import model as catalog_model
 
 BASE_URL = "http://gateway.test/"
 
@@ -39,6 +41,7 @@ BASE_URL = "http://gateway.test/"
 @pytest.fixture(autouse=True)
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ALCF_AI_MODEL", raising=False)
     return tmp_path
 
 
@@ -782,3 +785,68 @@ def test_agent_run_aider_uses_federated_environment(
     assert calls[0]["env"]["OPENAI_API_BASE"] == "http://gateway.test/federated/v1"
     assert calls[0]["env"]["OPENAI_API_KEY"] == "tok"
     assert calls[0]["env"]["AIDER_MODEL"] == "openai/openai/gpt-oss-120b"
+
+
+def _add_default_model(
+    gateway: FakeGateway, extra_models: list[dict[str, Any]] | None = None
+) -> None:
+    gateway.routes["GET /catalog/v1/models"] = httpx.Response(
+        200,
+        json=[
+            *CATALOG_MODELS,
+            catalog_model(
+                "mistral-large-4",
+                ["chat/completions", "responses", "messages"],
+                uid=4,
+            ),
+            *(extra_models or []),
+        ],
+    )
+
+
+def test_agent_default_model_precedence(
+    home: Path,
+    sdk_client: InferenceClient,
+    gateway: FakeGateway,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_default_model(gateway)
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    calls = _capture_exec(monkeypatch)
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["agent", "run", "aider"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert calls[-1]["env"]["AIDER_MODEL"] == "openai/mistral-large-4"
+
+    monkeypatch.setenv("ALCF_AI_MODEL", "gpt-oss-120b")
+    result = runner.invoke(cli, ["agent", "run", "aider"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert calls[-1]["env"]["AIDER_MODEL"] == "openai/openai/gpt-oss-120b"
+
+    result = runner.invoke(
+        cli,
+        ["agent", "run", "aider", "-m", "google/gemma-4-31B-it"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[-1]["env"]["AIDER_MODEL"] == "openai/google/gemma-4-31B-it"
+
+
+def test_agent_configure_prioritizes_default_without_dropping_models(
+    home: Path,
+    sdk_client: InferenceClient,
+    gateway: FakeGateway,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_default_model(gateway, [catalog_model("alpha/messages", ["messages"], uid=5)])
+    _prepare_agent_cli(sdk_client, monkeypatch)
+
+    result = CliRunner().invoke(
+        cli, ["agent", "configure", "claude"], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    config = json.loads((home / ".claude" / "profiles" / "alcf.json").read_text())
+    assert config["env"]["ANTHROPIC_MODEL"] == "mistral-large-4"
+    assert "openai/gpt-oss-120b" in result.output
+    assert "mistral-large-4" in result.output
