@@ -40,25 +40,6 @@ def default_model_name() -> str:
     return os.environ.get("ALCF_AI_MODEL") or DEFAULT_MODEL
 
 
-ALLOWLIST: dict[str, list[str]] = {
-    "sophia": ["openai/gpt-oss-120b"],
-    # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
-    # "metis": ["gpt-oss-120b"],
-    "minerva": [
-        "mistral-large-4-nvfp4",
-        "inkling-bf16",
-        "muse-spark-bf16",
-        "beam-1.0-bf16",
-    ],
-    "tara": [
-        DEFAULT_MODEL,
-        "openai/gpt-oss-20b",
-        "nemotron-35-super-vl",
-        "inkling-bf16",
-        "nemotron-3-ultra",
-    ],
-}
-
 DEFAULT_CAPABILITIES: dict[str, Any] = {
     "api_protocols": ["chat_completions"],
     "context_window_tokens": 65536,
@@ -1150,13 +1131,6 @@ def run(
 def configure(
     ctx: typer.Context,
     agent: Annotated[Literal["opencode", "codex", "pi", "claude"], typer.Argument()],
-    include_experimental: Annotated[
-        bool,
-        typer.Option(
-            "--include-experimental",
-            help="Include non-whitelisted (experimental) models in the agent configuration",
-        ),
-    ] = False,
     model: Annotated[
         str | None,
         typer.Option(
@@ -1224,14 +1198,8 @@ def configure(
 
     model_infos: dict[str, list[dict[str, Any]]] = {
         cluster_name: models
-        for cluster_name, whitelist in ALLOWLIST.items()
-        if (
-            models := [
-                m
-                for m in client.list_models(cluster_name)
-                if include_experimental or m["id"] in whitelist
-            ]
-        )
+        for cluster_name in client.list_endpoints()["clusters"]
+        if (models := client.list_models(cluster_name))
     }
 
     approval = _AUTO_APPROVE_OVERWRITES.set(yes)

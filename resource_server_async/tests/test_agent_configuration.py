@@ -145,7 +145,9 @@ class AgentConfigurationTests(unittest.TestCase):
                 {"id": "nemotron-3-ultra", "framework": "api"},
                 {"id": "nemotron-35-super-vl", "framework": "api"},
             ],
+            "metis": [{"id": "metis/test-model", "framework": "vllm"}],
         }
+        client.list_endpoints.return_value = {"clusters": dict.fromkeys(listings)}
         client.list_models.side_effect = listings.__getitem__
         with patch.dict(cli_module._cli_state, {"client": client}):
             return CliRunner().invoke(
@@ -173,39 +175,34 @@ class AgentConfigurationTests(unittest.TestCase):
     def run_claude(self, *options: str) -> Result:
         return self.run_agent("claude", *options)
 
-    def test_default_model_is_allowlisted_on_tara(self) -> None:
-        self.assertEqual(
-            agent.ALLOWLIST,
-            {
-                "sophia": ["openai/gpt-oss-120b"],
-                "minerva": [MODEL, "inkling-bf16", "muse-spark-bf16", "beam-1.0-bf16"],
-                "tara": [
-                    TARA_MODEL,
-                    "openai/gpt-oss-20b",
-                    "nemotron-35-super-vl",
-                    "inkling-bf16",
-                    "nemotron-3-ultra",
-                ],
-            },
-        )
-
-    def test_cli_filters_retired_minerva_but_preserves_tara_nemotron(self) -> None:
+    def test_discovers_clusters_from_list_endpoints(self) -> None:
         with patch.object(agent, "edit_pi") as edit:
             self.configure("pi")
+
         infos = edit.call_args.args[2]
-        self.assertEqual([m["id"] for m in infos["minerva"]], [MODEL])
+        self.assertEqual([m["id"] for m in infos["metis"]], ["metis/test-model"])
+
+    def test_configures_all_discovered_models_by_default(self) -> None:
+        with patch.object(agent, "edit_pi") as edit:
+            self.configure("pi")
+
+        infos = edit.call_args.args[2]
+        self.assertEqual(
+            [m["id"] for m in infos["minerva"]],
+            [MODEL, "nemotron-3-ultra", "unlisted-model"],
+        )
         self.assertEqual(
             [m["id"] for m in infos["tara"]],
             [TARA_MODEL, "nemotron-3-ultra", "nemotron-35-super-vl"],
         )
-        self.assertEqual(infos["sophia"][0]["id"], "openai/gpt-oss-120b")
+        self.assertEqual([m["id"] for m in infos["sophia"]], ["openai/gpt-oss-120b"])
+        self.assertEqual([m["id"] for m in infos["metis"]], ["metis/test-model"])
 
-    def test_include_experimental_still_opts_in_to_unlisted_models(self) -> None:
-        with patch.object(agent, "edit_pi") as edit:
-            self.configure("pi", "--include-experimental")
-        self.assertIn(
-            "unlisted-model", [m["id"] for m in edit.call_args.args[2]["minerva"]]
-        )
+    def test_include_experimental_option_was_removed(self) -> None:
+        result = self.invoke_configure("pi", "--include-experimental")
+
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("No such option", result.output)
 
     def test_opencode_v1_uses_published_capabilities_and_refresh_plugin(self) -> None:
         relative = ".config/opencode/opencode.jsonc"
