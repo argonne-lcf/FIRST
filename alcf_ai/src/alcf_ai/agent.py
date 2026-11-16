@@ -31,6 +31,9 @@ cli = typer.Typer(no_args_is_help=True)
 _AUTO_APPROVE_OVERWRITES: ContextVar[bool] = ContextVar(
     "auto_approve_overwrites", default=False
 )
+DEFAULT_MODEL = "mistral-large-4"
+DEFAULT_CLUSTER = "tara"
+
 ALLOWLIST: dict[str, list[str]] = {
     "sophia": ["openai/gpt-oss-120b"],
     # Metis has a SN-specific sanitization issue w.r.t. tool call outputs, disable for now.
@@ -42,6 +45,7 @@ ALLOWLIST: dict[str, list[str]] = {
         "beam-1.0-bf16",
     ],
     "tara": [
+        DEFAULT_MODEL,
         "openai/gpt-oss-20b",
         "nemotron-35-super-vl",
         "inkling-bf16",
@@ -143,7 +147,7 @@ def _write_json_config(path: Path, config: dict[str, Any]) -> None:
 
 
 def _write_toml_config(path: Path, config: tomlkit.TOMLDocument) -> None:
-    _write_config_file(path, tomlkit.dumps(config))
+    _write_config_file(path, tomlkit.dumps(config).rstrip() + "\n")
 
 
 def _group_by_framework(
@@ -1016,7 +1020,7 @@ def run(
             "-m",
             help="Model for the agent",
         ),
-    ] = "muse-spark-bf16",
+    ] = DEFAULT_MODEL,
     cluster: Annotated[
         str,
         typer.Option(
@@ -1024,7 +1028,7 @@ def run(
             "-c",
             help="Cluster serving the model",
         ),
-    ] = "minerva",
+    ] = DEFAULT_CLUSTER,
     profile: Annotated[
         str | None,
         typer.Option(
@@ -1153,7 +1157,7 @@ def configure(
             "-m",
             help="Default model for the agent configuration (codex and claude)",
         ),
-    ] = "muse-spark-bf16",
+    ] = DEFAULT_MODEL,
     cluster: Annotated[
         str,
         typer.Option(
@@ -1161,7 +1165,7 @@ def configure(
             "-c",
             help="Cluster serving the default model (codex and claude)",
         ),
-    ] = "minerva",
+    ] = DEFAULT_CLUSTER,
     profile: Annotated[
         str,
         typer.Option(

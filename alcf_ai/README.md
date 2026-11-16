@@ -11,7 +11,7 @@ This package provides Python client and CLI tools to facilitate usage of the ALC
 uvx alcf-tokens login
 
 # Chat with a model
-# The default --model is meta-llama/Llama-4-Scout-17B-16E-Instruct
+# The default model for chat and coding agents is mistral-large-4 on Tara
 uvx alcf-ai chat "How do I know Pi is irrational? Be concise."
 ```
 
