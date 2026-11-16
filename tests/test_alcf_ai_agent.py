@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import click
 import httpx
 import pytest
 import tomlkit
@@ -527,8 +528,8 @@ def test_configure_codex_refuses_unparseable_config(
 
 
 def _plain_output(output: str) -> str:
-    """Remove Rich panel wrapping before matching long CLI diagnostics."""
-    return " ".join(output.replace("│", " ").split())
+    """Normalize ANSI styling and Rich panel wrapping for CLI diagnostics."""
+    return " ".join(click.unstyle(output).replace("│", " ").split())
 
 
 def _prepare_agent_cli(
