@@ -6,7 +6,7 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from first_common.errors import NotFound
@@ -309,7 +309,7 @@ async def _submit(
     | OpenAIResponsesPayload
     | AnthropicMessagesPayload
     | OpenAIEmbeddingsPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     model = config.models_by_name.get(payload.model) or config.models_by_alias.get(
         payload.model
     )
@@ -357,7 +357,7 @@ async def chat_completions(
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: OpenAIChatCompletionsPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await _submit(inference, cluster, framework, config, payload)
 
 
@@ -368,7 +368,7 @@ async def responses(
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: OpenAIResponsesPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await _submit(inference, cluster, framework, config, payload)
 
 
@@ -379,7 +379,7 @@ async def messages(
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: AnthropicMessagesPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await _submit(inference, cluster, framework, config, payload)
 
 
@@ -390,5 +390,5 @@ async def embeddings(
     inference: InferenceServiceDep,
     config: RouterConfigDep,
     payload: OpenAIEmbeddingsPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await _submit(inference, cluster, framework, config, payload)

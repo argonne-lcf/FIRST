@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
 import pytest
 import yaml
 from cryptography import x509
@@ -185,13 +184,13 @@ async def test_router_clients_use_their_clusters_context(
     pilot_mtls_settings: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     contexts: list[Any] = []
-    transport = httpx.AsyncHTTPTransport
+    connector = bcm._connector
 
-    def recording_transport(*, verify: Any, **kwargs: Any) -> Any:
-        contexts.append(verify)
-        return transport(verify=verify, **kwargs)
+    def recording_connector(limit: int, ssl: Any, proxy: str | None) -> Any:
+        contexts.append(ssl)
+        return connector(limit, ssl, proxy)
 
-    monkeypatch.setattr(httpx, "AsyncHTTPTransport", recording_transport)
+    monkeypatch.setattr(bcm, "_connector", recording_connector)
     settings = Settings()
     manager = bcm.BackendClientManager(settings)
     try:

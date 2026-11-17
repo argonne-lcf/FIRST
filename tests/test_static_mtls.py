@@ -10,7 +10,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -134,6 +133,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    do_POST = do_GET
 
     def log_message(self, *args: object) -> None:
         pass
@@ -286,20 +287,22 @@ async def test_backend_client_presents_client_cert(
     upstream: str,
 ) -> None:
     monkeypatch.setattr(bcm, "CLOSE_GRACE_SEC", 0)
+    monkeypatch.setattr(bcm, "CONNECT_RETRY_DELAY_SEC", 0)
     manager = bcm.BackendClientManager(Settings())
     try:
         await manager.on_config_swap(_router_config(None, upstream))
         plain = manager.get("static_deployment/1")
         assert plain is not None
-        with pytest.raises(httpx.ConnectError):
-            await plain.get("models")
+        # The upstream refuses a client without a certificate
+        with pytest.raises(bcm.BACKEND_ERRORS):
+            await plain.post("/models", b"{}")
 
         # Adding mtls to the deployment swaps in a client that presents it
         await manager.on_config_swap(_router_config(certs.mtls, upstream))
         client = manager.get("static_deployment/1")
         assert client is not None and client is not plain
-        resp = await client.get("models")
-        assert resp.status_code == 200
+        async with await client.post("/models", b"{}") as resp:
+            assert resp.status == 200
     finally:
         await manager.close_all()
 

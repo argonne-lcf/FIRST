@@ -30,6 +30,8 @@ dependencies = [
     "uvicorn[standard]",
     "pyzstd",
     "SQLAlchemy[asyncio]",
+    "aiohttp",
+    "aiohttp-socks",
 ]
 
 [project.scripts]

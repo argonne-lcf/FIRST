@@ -6,8 +6,11 @@ import socket
 import urllib.request
 from collections.abc import Coroutine
 from ssl import SSLContext
+from typing import Any
 
-import httpx
+import aiohttp
+import aiohttp_socks
+from yarl import URL
 
 from first_common.schema.types import SecretRef
 
@@ -59,13 +62,13 @@ def _in_no_proxy_network(host: str) -> bool:
 def _egress_proxy(url: str) -> str | None:
     """The env-configured egress proxy for `url`, or None if NO_PROXY exempts it.
 
-    An explicit transport `proxy` bypasses httpx's own NO_PROXY handling.
-    NO_PROXY may also list CIDR networks, matched against IP-address hosts.
+    The backend connector is given its proxy explicitly, so NO_PROXY is applied
+    here.  It may also list CIDR networks, matched against IP-address hosts.
     """
     proxy = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY")
     if not proxy:
         return None
-    host = httpx.URL(url).host
+    host = URL(url).host or ""
     if urllib.request.proxy_bypass(host) or _in_no_proxy_network(host):
         return None
     return proxy
@@ -83,19 +86,138 @@ SOCKET_OPTS = [
     (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
 ]
 
-# Long prefills can be silent before the first SSE chunk. This is a per-read
-# inactivity limit, not an end-to-end request deadline.
-STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
-UNARY_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
+
+def _keepalive_socket(addr_info: Any) -> socket.socket:
+    """Socket factory for direct backend connections: TCP keepalive on."""
+    family, type_, proto, _, _ = addr_info
+    sock = socket.socket(family=family, type=type_, proto=proto)
+    for level, option, value in SOCKET_OPTS:
+        sock.setsockopt(level, option, value)
+    return sock
+
+
+# `sock_read` is a per-read inactivity limit, not an end-to-end deadline: long
+# prefills can be silent before the first SSE chunk, and a unary completion
+# sends nothing until it is done.  `connect` also covers the wait for a free
+# connection and the TLS handshake.
+BACKEND_TIMEOUT = aiohttp.ClientTimeout(
+    total=None, connect=10.0, sock_connect=5.0, sock_read=900.0
+)
 
 KEEPALIVE_EXPIRY = 30.0
+
+# Extra attempts when no connection to the backend could be established (the
+# request was never sent, so repeating it is safe), and the pause before each.
+CONNECT_RETRIES = 2
+CONNECT_RETRY_DELAY_SEC = 0.5
 
 # How long a retired client stays open for requests that already hold it
 CLOSE_GRACE_SEC = 60
 
+# What a backend call can raise: connection, protocol and timeout failures,
+# including those of the egress proxy.  HTTP error statuses are not raised.
+BACKEND_ERRORS: tuple[type[Exception], ...] = (
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    OSError,
+    aiohttp_socks.ProxyError,
+    aiohttp_socks.ProxyConnectionError,
+    aiohttp_socks.ProxyTimeoutError,
+)
+
+_CONNECT_ERRORS: tuple[type[Exception], ...] = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ConnectionTimeoutError,
+    aiohttp_socks.ProxyError,
+    aiohttp_socks.ProxyConnectionError,
+    aiohttp_socks.ProxyTimeoutError,
+)
+
+
+def is_read_timeout(exc: BaseException) -> bool:
+    """True if the backend accepted the request and then went silent."""
+    return isinstance(exc, aiohttp.SocketTimeoutError)
+
+
+def _connector(
+    limit: int, ssl: SSLContext | bool, proxy: str | None
+) -> aiohttp.TCPConnector:
+    if proxy is None:
+        return aiohttp.TCPConnector(
+            limit=limit,
+            limit_per_host=0,
+            keepalive_timeout=KEEPALIVE_EXPIRY,
+            ssl=ssl,
+            socket_factory=_keepalive_socket,
+        )
+    # python-socks has no "socks5h" scheme: it is socks5 with the name resolved
+    # by the proxy.
+    remote_dns = proxy.startswith("socks5h://")
+    return aiohttp_socks.ProxyConnector.from_url(
+        proxy.replace("socks5h://", "socks5://", 1),
+        rdns=True if remote_dns else None,
+        limit=limit,
+        limit_per_host=0,
+        keepalive_timeout=KEEPALIVE_EXPIRY,
+        ssl=ssl,
+    )
+
+
+class BackendClient:
+    """HTTP client for one backend: a connection pool and its fixed headers.
+
+    Uses aiohttp, whose pool takes and returns a connection in constant time
+    and reads the response with little per-chunk overhead.  (httpx/httpcore
+    rescanned every connection on each acquire and release, which dominated
+    gateway CPU at a few hundred requests in flight.)
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        max_connections: int = 100,
+        ssl: SSLContext | bool = True,
+        proxy: str | None = None,
+        timeout: aiohttp.ClientTimeout = BACKEND_TIMEOUT,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._session = aiohttp.ClientSession(
+            connector=_connector(max_connections, ssl, proxy),
+            headers={"Accept-Encoding": "identity", **(headers or {})},
+            timeout=timeout,
+        )
+
+    @property
+    def is_closed(self) -> bool:
+        return self._session.closed
+
+    async def post(
+        self, path: str, body: bytes, *, headers: dict[str, str] | None = None
+    ) -> aiohttp.ClientResponse:
+        """POST a JSON body to ``base_url + path``; returns at the response
+        headers.  The caller reads the body and then releases or closes the
+        response.  Raises one of BACKEND_ERRORS.
+        """
+        url = self.base_url + path
+        request_headers = {"Content-Type": "application/json", **(headers or {})}
+        for attempt in range(CONNECT_RETRIES + 1):
+            try:
+                return await self._session.post(url, data=body, headers=request_headers)
+            except _CONNECT_ERRORS:
+                if attempt == CONNECT_RETRIES:
+                    raise
+                await asyncio.sleep(CONNECT_RETRY_DELAY_SEC * attempt)
+        raise AssertionError("unreachable")
+
+    async def aclose(self) -> None:
+        await self._session.close()
+
 
 class BackendClientManager:
-    """Maintains one httpx.AsyncClient per healthy deployment backend.
+    """Maintains one BackendClient per healthy deployment backend.
 
     Clients are created on the first RouterConfig swap that introduces a
     backend, and closed when the backend disappears from the config. Reusing
@@ -103,11 +225,11 @@ class BackendClientManager:
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._clients: dict[str, httpx.AsyncClient] = {}
+        self._clients: dict[str, BackendClient] = {}
         self._configs: dict[str, tuple[BackendConfig, DeploymentConfig]] = {}
         self._settings = settings
 
-    def get(self, backend_id: str) -> httpx.AsyncClient | None:
+    def get(self, backend_id: str) -> BackendClient | None:
         return self._clients.get(backend_id)
 
     async def on_config_swap(self, cfg: RouterConfig) -> None:
@@ -122,7 +244,7 @@ class BackendClientManager:
         # unresolvable api_key) must not block the others; a failed update
         # keeps serving with the previous client.
         failed: list[str] = []
-        client: httpx.AsyncClient | None
+        client: BackendClient | None
 
         for backend_id, (backend, deployment) in incoming.items():
             recreate = self._should_recreate(backend_id, backend, deployment)
@@ -169,7 +291,7 @@ class BackendClientManager:
                 return True
         return False
 
-    async def _drain_client(self, client: httpx.AsyncClient) -> None:
+    async def _drain_client(self, client: BackendClient) -> None:
         await asyncio.sleep(CLOSE_GRACE_SEC)
         await client.aclose()
 
@@ -181,40 +303,26 @@ class BackendClientManager:
 
     def _create_client(
         self, backend: BackendConfig, deployment: DeploymentConfig
-    ) -> httpx.AsyncClient:
-        headers = {"Accept-Encoding": "identity"}
+    ) -> BackendClient:
+        headers: dict[str, str] = {}
         if backend.api_key:
             resolved = SecretRef(backend.api_key).resolve().get_secret_value()
             headers["Authorization"] = f"Bearer {resolved}"
-
-        max_concurrency = deployment.router_params.max_backend_concurrency
-        limits = httpx.Limits(
-            max_connections=max_concurrency,
-            max_keepalive_connections=max_concurrency,
-            keepalive_expiry=KEEPALIVE_EXPIRY,
-        )
 
         verify: SSLContext | bool = True
         if deployment.kind == "pilot":
             verify = pilot_ssl_context(self._settings, deployment.cluster_name)
         elif backend.mtls:
             verify = backend.mtls.ssl_context()
-        transport = httpx.AsyncHTTPTransport(
-            verify=verify,
-            retries=2,
-            limits=limits,
-            http2=False,
-            proxy=_egress_proxy(backend.model_url),
-            socket_options=SOCKET_OPTS,
-        )
 
-        return httpx.AsyncClient(
-            base_url=backend.model_url,
-            transport=transport,
-            timeout=STREAM_TIMEOUT,
+        return BackendClient(
+            backend.model_url,
             headers=headers,
+            max_connections=deployment.router_params.max_backend_concurrency,
+            ssl=verify,
+            proxy=_egress_proxy(backend.model_url),
         )
 
     @property
-    def clients(self) -> dict[str, httpx.AsyncClient]:
+    def clients(self) -> dict[str, BackendClient]:
         return self._clients

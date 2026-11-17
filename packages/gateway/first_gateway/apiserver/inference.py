@@ -1,13 +1,12 @@
+import json
 import logging
 import time
 import uuid
 from typing import Annotated, Any, AsyncIterator, Awaitable, Callable, NoReturn, cast
 
 import anyio
-import httpx
 from fastapi import Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
-from httpx import AsyncClient
+from fastapi.responses import Response, StreamingResponse
 
 from first_common.errors import (
     FirstError,
@@ -41,7 +40,12 @@ from ..services.orchestration import (
 )
 from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
 from .auth import enforce_permission
-from .backend_client_manager import UNARY_TIMEOUT, BackendClientManager
+from .backend_client_manager import (
+    BACKEND_ERRORS,
+    BackendClient,
+    BackendClientManager,
+    is_read_timeout,
+)
 from .context import get_request_id, upstream_timer
 from .dependencies import AuthUser
 from .router_config_manager import RouterConfigManager
@@ -53,9 +57,15 @@ DEPLOYMENT_HEADER = "X-First-Deployment"
 _RETRYABLE_STATUS = (502, 503, 504)
 
 UpstreamHandler = Callable[
-    [AsyncClient, BasePayload, ModelConfig, DeploymentConfig, BackendConfig],
-    Awaitable[StreamingResponse | JSONResponse],
+    [BackendClient, BasePayload, ModelConfig, DeploymentConfig, BackendConfig],
+    Awaitable[Response],
 ]
+
+
+def _encode_json(payload: dict[str, Any]) -> bytes:
+    return json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    ).encode()
 
 
 class _UpstreamFailure(Exception):
@@ -117,7 +127,7 @@ class InferenceService:
 
     async def submit_inference(
         self, payload: BasePayload, deployment_name: str | None = None
-    ) -> StreamingResponse | JSONResponse:
+    ) -> Response:
         """
         Send the request to a backend, falling over to other backends on
         retryable failures.
@@ -125,7 +135,7 @@ class InferenceService:
 
         model = self._resolve_model(payload)
 
-        # Only collect backend candidates that have a httpx client ready
+        # Only collect backend candidates that have a client ready
         backend_candidates = get_shuffled_backends(
             model,
             deployment_name=deployment_name,
@@ -368,12 +378,12 @@ class InferenceService:
 
     async def _handle_unary(
         self,
-        client: AsyncClient,
+        client: BackendClient,
         payload: BasePayload,
         model: ModelConfig,
         deployment: DeploymentConfig,
         backend: BackendConfig,
-    ) -> JSONResponse:
+    ) -> Response:
         """POST to an inference backend."""
 
         parser = USAGE_PARSERS.get(payload.endpoint)
@@ -385,33 +395,36 @@ class InferenceService:
             upstream_payload = parser.prepare_request(upstream_payload)
 
         is_task = isinstance(payload, GenericTaskPayload)
+        body = _encode_json(upstream_payload)
 
         t0 = time.perf_counter()
         with upstream_timer():
             try:
                 response = await client.post(
                     upstream_endpoint_path(payload.endpoint),
-                    json=upstream_payload,
-                    timeout=UNARY_TIMEOUT,
+                    body,
                     headers={TASK_USER_ID_HEADER: self.user.id} if is_task else None,
                 )
-            except httpx.RequestError as exc:
+                async with response:
+                    status_code = response.status
+                    content = await response.read()
+            except BACKEND_ERRORS as exc:
                 logger.warning(
                     f"Request error contacting backend for model {model.name}.",
                     exc_info=True,
                 )
                 # A timed-out task may still be running: don't start it over
                 # elsewhere.
-                retryable = not (is_task and isinstance(exc, httpx.ReadTimeout))
+                retryable = not (is_task and is_read_timeout(exc))
                 raise _UpstreamFailure(type(exc).__name__, retryable=retryable)
 
-            if response.status_code != 200:
-                body = (await response.aread()).decode(errors="replace")
-                await response.aclose()
-                self._raise_for_upstream_status(response.status_code, body, model.name)
+            if status_code != 200:
+                self._raise_for_upstream_status(
+                    status_code, content.decode(errors="replace"), model.name
+                )
 
         latency_sec = time.perf_counter() - t0
-        json_body: dict[str, Any] = response.json()
+        json_body: dict[str, Any] = json.loads(content)
         assert isinstance(json_body, dict)
         usage = parser.parse_unary(json_body) if parser else TokenUsage()
 
@@ -427,17 +440,19 @@ class InferenceService:
             outcome="success",
             usage=usage,
             latency_sec=latency_sec,
-            raw_body=response.content,
+            raw_body=content,
         )
-        return JSONResponse(
-            json_body,
-            status_code=response.status_code,
+        # The backend's JSON is relayed as received, not re-encoded.
+        return Response(
+            content,
+            status_code=status_code,
+            media_type="application/json",
             headers={DEPLOYMENT_HEADER: deployment.name},
         )
 
     async def _handle_streaming(
         self,
-        client: AsyncClient,
+        client: BackendClient,
         payload: BasePayload,
         model: ModelConfig,
         deployment: DeploymentConfig,
@@ -454,27 +469,29 @@ class InferenceService:
         if parser:
             upstream_payload = parser.prepare_request(upstream_payload)
 
-        request = client.build_request(
-            "POST",
-            upstream_endpoint_path(payload.endpoint),
-            json=upstream_payload,
-        )
+        body = _encode_json(upstream_payload)
+        error_body = b""
 
         t0 = time.perf_counter()
         with upstream_timer():  # until the backend's response headers
             try:
-                response = await client.send(request, stream=True)
-            except httpx.RequestError as exc:
+                response = await client.post(
+                    upstream_endpoint_path(payload.endpoint), body
+                )
+                if response.status != 200:
+                    async with response:
+                        error_body = await response.read()
+            except BACKEND_ERRORS as exc:
                 logger.warning(
                     f"Request error contacting backend for model {model.name}.",
                     exc_info=True,
                 )
                 raise _UpstreamFailure(type(exc).__name__, retryable=True)
 
-            if response.status_code != 200:
-                body = (await response.aread()).decode(errors="replace")
-                await response.aclose()
-                self._raise_for_upstream_status(response.status_code, body, model.name)
+            if response.status != 200:
+                self._raise_for_upstream_status(
+                    response.status, error_body.decode(errors="replace"), model.name
+                )
 
         async def _relay() -> AsyncIterator[bytes]:
             tap = UsageTap()
@@ -483,11 +500,12 @@ class InferenceService:
             # fail over).  A client disconnect closes this generator instead.
             broken: str | None = None
             try:
-                async for chunk in response.aiter_raw():
+                # Whatever each socket read returned: one or more SSE events.
+                async for chunk in response.content.iter_any():
                     tap.feed(chunk)
                     content += chunk
                     yield chunk
-            except httpx.TransportError as exc:
+            except BACKEND_ERRORS as exc:
                 broken = type(exc).__name__
                 logger.warning(
                     f"Backend {backend.id} broke the stream for model "
@@ -495,8 +513,10 @@ class InferenceService:
                 )
                 raise  # abort the client's stream rather than end it cleanly
             finally:
+                # A stream read to its end has already returned its connection
+                # to the pool; one abandoned midway is closed here.
+                response.close()
                 with anyio.CancelScope(shield=True):
-                    await response.aclose()
                     tap.close()
                     usage = (
                         parser.parse_stream(tap.first, tap.last)

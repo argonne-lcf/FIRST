@@ -4,4 +4,5 @@ pytest_plugins = [
     "tests.fixtures.pki",
     "tests.fixtures.logs",
     "tests.fixtures.alcf_ai",
+    "tests.fixtures.backend",
 ]

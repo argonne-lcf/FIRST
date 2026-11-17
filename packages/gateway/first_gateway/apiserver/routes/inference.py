@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import Response
 
 from first_common.schema.auth import UserAuthEvent
 from first_common.schema.endpoints.generic import GenericTaskPayload
@@ -54,7 +54,7 @@ def _visible_models(config: RouterConfig, user: UserAuthEvent) -> list[ModelConf
 async def chat_completions(
     inference: InferenceServiceDep,
     payload: OpenAIChatCompletionsPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(payload)
 
 
@@ -62,7 +62,7 @@ async def chat_completions(
 async def responses(
     inference: InferenceServiceDep,
     payload: OpenAIResponsesPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(payload)
 
 
@@ -70,7 +70,7 @@ async def responses(
 async def messages(
     inference: InferenceServiceDep,
     payload: AnthropicMessagesPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(payload)
 
 
@@ -78,7 +78,7 @@ async def messages(
 async def embeddings(
     inference: InferenceServiceDep,
     payload: OpenAIEmbeddingsPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(payload)
 
 
@@ -86,7 +86,7 @@ async def embeddings(
 async def tasks(
     inference: InferenceServiceDep,
     payload: GenericTaskPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(payload)
 
 
@@ -105,7 +105,7 @@ async def deployment_chat_completions(
     deployment_slug: str,
     inference: InferenceServiceDep,
     payload: OpenAIChatCompletionsPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(
         payload, deployment_name=get_name_from_slug(deployment_slug)
     )
@@ -116,7 +116,7 @@ async def deployment_responses(
     deployment_slug: str,
     inference: InferenceServiceDep,
     payload: OpenAIResponsesPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(
         payload, deployment_name=get_name_from_slug(deployment_slug)
     )
@@ -127,7 +127,7 @@ async def deployment_messages(
     deployment_slug: str,
     inference: InferenceServiceDep,
     payload: AnthropicMessagesPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(
         payload, deployment_name=get_name_from_slug(deployment_slug)
     )
@@ -138,7 +138,7 @@ async def deployment_embeddings(
     deployment_slug: str,
     inference: InferenceServiceDep,
     payload: OpenAIEmbeddingsPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(
         payload, deployment_name=get_name_from_slug(deployment_slug)
     )
@@ -149,7 +149,7 @@ async def deployment_tasks(
     deployment_slug: str,
     inference: InferenceServiceDep,
     payload: GenericTaskPayload,
-) -> StreamingResponse | JSONResponse:
+) -> Response:
     return await inference.submit_inference(
         payload, deployment_name=get_name_from_slug(deployment_slug)
     )

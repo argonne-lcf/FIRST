@@ -16,6 +16,7 @@ import pytest
 import uvicorn
 
 from first_gateway.apiserver.api import app
+from first_gateway.apiserver.backend_client_manager import BackendClient
 
 from .fixtures.auth import USER_TOKEN
 from .load import mock_upstream
@@ -128,7 +129,7 @@ async def test_harness_through_gateway_to_mock_upstream(
     _seed_streaming_config(usage_limits={"default": unlimited})
     async with _serve(mock_upstream.app) as upstream, _serve(app) as gateway:
         app.state.backend_client_manager._clients["static_deployment/dep-open"] = (
-            httpx.AsyncClient(base_url=f"{upstream}/v1")
+            BackendClient(f"{upstream}/v1")
         )
         path = "/health" if mode == "health" else "/federated/v1/chat/completions"
         cfg = StepConfig(

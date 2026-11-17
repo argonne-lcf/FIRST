@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterator
 
 import httpx
 import pytest
+from aiohttp import web
 from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.routing import APIRoute
 
@@ -32,7 +33,10 @@ from first_gateway.database.redis.router_config import (
 )
 from first_gateway.log_config import RequestIdFilter
 
+from .fixtures import backend
 from .fixtures.auth import INVALID_TOKEN, USER_TOKEN, auth_header
+
+pytestmark = pytest.mark.usefixtures("stop_backends")
 
 # --------------------------------------------------------------------------
 # Body inline-vs-file decision
@@ -307,30 +311,22 @@ _SSE_CHUNKS = [
 ]
 
 
-def _inject_streaming_backend() -> None:
-    """Swap in a MockTransport httpx client that streams SSE chunks."""
+async def _inject_backend(handler: backend.Handler) -> None:
+    """Point the seeded deployment at a local server running ``handler``."""
+    app.state.backend_client_manager._clients[
+        "static_deployment/dep-open"
+    ] = await backend.serve_backend(handler)
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        async def stream() -> Any:
-            for chunk in _SSE_CHUNKS:
-                yield chunk
 
-        return httpx.Response(200, content=stream())
-
-    transport = httpx.MockTransport(handler)
-    mock_client = httpx.AsyncClient(
-        transport=transport, base_url="http://backend.invalid/v1"
-    )
-    app.state.backend_client_manager._clients["static_deployment/dep-open"] = (
-        mock_client
-    )
+async def _inject_streaming_backend() -> None:
+    await _inject_backend(backend.stream(_SSE_CHUNKS))
 
 
 async def test_three_events_share_request_id_streaming(
     client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
 ) -> None:
     _seed_streaming_config()
-    _inject_streaming_backend()
+    await _inject_streaming_backend()
 
     async with client.stream(
         "POST",
@@ -384,7 +380,7 @@ async def test_inference_log_carries_token_estimation_calibration(
     """The first request is estimated from static defaults (no EWMA yet); the
     second carries the EWMA learned from the first's actual usage."""
     _seed_streaming_config()
-    _inject_streaming_backend()
+    await _inject_streaming_backend()
     content = "x" * 30  # 30 chars against 3 actual prompt tokens -> 10 cpt
 
     async def send() -> dict[str, Any]:
@@ -529,24 +525,12 @@ def test_inference_routes_match_body_logging_prefixes() -> None:
 # --------------------------------------------------------------------------
 
 
-def _inject_backend(response: httpx.Response) -> None:
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return response
-
-    app.state.backend_client_manager._clients["static_deployment/dep-open"] = (
-        httpx.AsyncClient(
-            transport=httpx.MockTransport(handler),
-            base_url="http://backend.invalid/v1",
-        )
-    )
-
-
 _CHAT = {"model": "open/model", "messages": [{"role": "user", "content": "hi"}]}
 
 
 async def test_streaming_response_names_deployment(client: httpx.AsyncClient) -> None:
     _seed_streaming_config()
-    _inject_streaming_backend()
+    await _inject_streaming_backend()
     async with client.stream(
         "POST",
         "/federated/v1/chat/completions",
@@ -566,7 +550,7 @@ async def test_unary_response_names_deployment(client: httpx.AsyncClient) -> Non
         "choices": [],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
     }
-    _inject_backend(httpx.Response(200, json=body))
+    await _inject_backend(backend.respond(json=body))
     resp = await client.post(
         "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
     )
@@ -578,7 +562,7 @@ async def test_unary_response_names_deployment(client: httpx.AsyncClient) -> Non
 
 async def test_upstream_4xx_names_deployment(client: httpx.AsyncClient) -> None:
     _seed_streaming_config()
-    _inject_backend(httpx.Response(400, text="bad request"))
+    await _inject_backend(backend.respond(400, text="bad request"))
     resp = await client.post(
         "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
     )
@@ -611,16 +595,11 @@ async def test_unary_response_reports_gateway_and_upstream_time(
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
     }
 
-    async def slow_backend(request: httpx.Request) -> httpx.Response:
+    async def slow_backend(request: web.Request) -> web.StreamResponse:
         await asyncio.sleep(0.05)
-        return httpx.Response(200, json=body)
+        return web.json_response(body)
 
-    app.state.backend_client_manager._clients["static_deployment/dep-open"] = (
-        httpx.AsyncClient(
-            transport=httpx.MockTransport(slow_backend),
-            base_url="http://backend.invalid/v1",
-        )
-    )
+    await _inject_backend(slow_backend)
     resp = await client.post(
         "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
     )
@@ -635,7 +614,7 @@ async def test_streaming_response_reports_time_to_upstream_headers(
     client: httpx.AsyncClient,
 ) -> None:
     _seed_streaming_config()
-    _inject_streaming_backend()
+    await _inject_streaming_backend()
     async with client.stream(
         "POST",
         "/federated/v1/chat/completions",
@@ -651,7 +630,7 @@ async def test_upstream_error_still_reports_upstream_time(
     client: httpx.AsyncClient,
 ) -> None:
     _seed_streaming_config()
-    _inject_backend(httpx.Response(400, text="bad request"))
+    await _inject_backend(backend.respond(400, text="bad request"))
     resp = await client.post(
         "/federated/v1/chat/completions", headers=auth_header(USER_TOKEN), json=_CHAT
     )
@@ -704,7 +683,7 @@ async def test_request_over_burst_tokens_rejected_and_logged(
     client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
 ) -> None:
     _seed_streaming_config(usage_limits={"default": {"burst_tokens": 50}})
-    _inject_streaming_backend()
+    await _inject_streaming_backend()
 
     resp, log = await _post_and_get_log(
         client, capture_events, {**_CHAT, "max_tokens": 100}
@@ -727,7 +706,7 @@ async def test_tpm_rejection_logged_with_rounded_up_retry_after(
     # 60 tpm = 1 token/sec into a 150-token bucket.
     _seed_streaming_config(usage_limits={"default": {"tpm": 60, "burst_tokens": 150}})
     usage = {"prompt_tokens": 1, "completion_tokens": 139, "total_tokens": 140}
-    _inject_backend(httpx.Response(200, json={"choices": [], "usage": usage}))
+    await _inject_backend(backend.respond(json={"choices": [], "usage": usage}))
     request = {**_CHAT, "max_tokens": 100}
 
     first, log = await _post_and_get_log(client, capture_events, request)
@@ -774,16 +753,7 @@ async def test_stream_broken_by_backend_logged_as_upstream_error(
     redis = app.state.admission_controller.client
     await redis.delete(Keys.backend_errors(backend_id))
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        async def stream() -> Any:
-            yield _SSE_CHUNKS[0]
-            raise httpx.RemoteProtocolError("peer closed connection")
-
-        return httpx.Response(200, content=stream())
-
-    app.state.backend_client_manager._clients[backend_id] = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="http://backend.invalid/v1"
-    )
+    await _inject_backend(backend.stream(_SSE_CHUNKS, break_after=1))
 
     relayed = b""
     with pytest.raises(Exception):
@@ -801,7 +771,7 @@ async def test_stream_broken_by_backend_logged_as_upstream_error(
 
     (inf,) = [r for r in capture_events if r["stream"] == "inference"]
     assert inf["outcome"] == "upstream_error"
-    assert inf["error"] == "RemoteProtocolError"
+    assert inf["error"] == "ClientPayloadError"
     assert inf["total_tokens"] is None
     assert int(await redis.get(Keys.backend_errors(backend_id))) == 1
     await redis.delete(Keys.backend_errors(backend_id))

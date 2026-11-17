@@ -1,8 +1,12 @@
 import asyncio
+import json
+import socket
 from unittest.mock import AsyncMock, Mock
 
-import httpx
+import aiohttp
 import pytest
+from aiohttp import web
+from fastapi.responses import StreamingResponse
 
 from first_common.schema.endpoints.generic import (
     TASK_USER_ID_HEADER,
@@ -18,6 +22,10 @@ from first_gateway.database.redis.router_config import (
     RouterConfig,
 )
 from first_gateway.settings import Settings
+
+from .fixtures import backend as fake
+
+pytestmark = pytest.mark.usefixtures("stop_backends")
 
 
 def _config(model_url: str) -> RouterConfig:
@@ -68,7 +76,7 @@ async def test_recreated_client_stays_open_for_grace_period(
         await manager.on_config_swap(_config("http://new/v1"))
         new = manager.get("b1")
         assert new is not None and new is not old
-        assert str(new.base_url) == "http://new/v1/"
+        assert new.base_url == "http://new/v1"
         # In-flight requests holding the old client can still finish
         closed_on_swap = old.is_closed
         assert not closed_on_swap
@@ -81,7 +89,7 @@ async def test_recreated_client_stays_open_for_grace_period(
 
 
 @pytest.mark.parametrize("kind", ["static", "pilot"])
-async def test_backend_stream_request_allows_long_prefill(
+async def test_backend_client_allows_long_prefill(
     pilot_mtls_settings: None, kind: str
 ) -> None:
     config = _config("https://backend.example/v1")
@@ -93,62 +101,17 @@ async def test_backend_stream_request_allows_long_prefill(
         await manager.on_config_swap(config)
         client = manager.get("b1")
         assert client is not None
-        expected = {"connect": 5.0, "read": 900.0, "write": 60.0, "pool": 5.0}
-        assert client.timeout.as_dict() == expected
-        request = client.build_request(
-            "POST", "chat/completions", json={"stream": True}
-        )
-        assert request.extensions["timeout"] == expected
+        # No end-to-end deadline: only connecting and silence are bounded.
+        assert client.timeout.total is None
+        assert client.timeout.sock_connect == 5.0
+        assert client.timeout.sock_read == 900.0
     finally:
         await manager.close_all()
 
 
-@pytest.mark.parametrize("stream", [False, True])
-async def test_inference_request_uses_long_read_budget(
-    stream: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Inspect real httpx request extensions; no timed sleep or upstream socket."""
-    observed: list[dict[str, float | None]] = []
-
-    def upstream(request: httpx.Request) -> httpx.Response:
-        observed.append(request.extensions["timeout"])
-        if stream:
-            return httpx.Response(200, stream=httpx.ByteStream(b"data: [DONE]\n\n"))
-        return httpx.Response(200, json={"choices": [], "usage": {}})
-
-    config = _config("https://backend.example/v1")
-    model = config.models[0]
-    deployment = model.deployments[0]
-    backend = deployment.backends[0]
+def _service(monkeypatch: pytest.MonkeyPatch) -> InferenceService:
     service = InferenceService.__new__(InferenceService)
-    service.request_id = "long-prefill-test"
-    service.admission_controller = AsyncMock()
-    monkeypatch.setattr(service, "_record_token_stats", AsyncMock())
-    monkeypatch.setattr(service, "_emit_inference_log", Mock())
-    payload = OpenAIChatCompletionsPayload(model="m", messages=[], stream=stream)
-    # Unary must override a deliberately short client default; streaming uses
-    # the same default as the manager's actual client tested above.
-    default = bcm.STREAM_TIMEOUT if stream else httpx.Timeout(0.01)
-    async with httpx.AsyncClient(
-        base_url=backend.model_url,
-        transport=httpx.MockTransport(upstream),
-        timeout=default,
-    ) as client:
-        if stream:
-            response = await service._handle_streaming(
-                client, payload, model, deployment, backend
-            )
-            assert [chunk async for chunk in response.body_iterator] == [
-                b"data: [DONE]\n\n"
-            ]
-        else:
-            await service._handle_unary(client, payload, model, deployment, backend)
-    assert observed == [{"connect": 5.0, "read": 900.0, "write": 60.0, "pool": 5.0}]
-
-
-def _task_service(monkeypatch: pytest.MonkeyPatch) -> InferenceService:
-    service = InferenceService.__new__(InferenceService)
-    service.request_id = "task-test"
+    service.request_id = "handler-test"
     service.user = Mock(id="user-uuid")
     service.admission_controller = AsyncMock()
     monkeypatch.setattr(service, "_record_token_stats", AsyncMock())
@@ -156,46 +119,112 @@ def _task_service(monkeypatch: pytest.MonkeyPatch) -> InferenceService:
     return service
 
 
-async def test_task_sends_caller_identity_with_long_timeout(
+async def test_unary_relays_backend_body_as_received(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: list[httpx.Request] = []
+    seen: list[tuple[str, dict[str, object]]] = []
+    # Not what json.dumps would produce: the bytes must pass through untouched.
+    raw = b'{"choices": [],   "usage": {"total_tokens": 7}}'
 
-    def upstream(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(200, json={})
+    async def upstream(request: web.Request) -> web.StreamResponse:
+        seen.append((request.path, await request.json()))
+        return web.Response(body=raw, content_type="application/json")
+
+    model = _config("https://backend.example/v1").models[0]
+    deployment = model.deployments[0]
+    payload = OpenAIChatCompletionsPayload(model="m", messages=[])
+    client = await fake.serve_backend(upstream)
+    response = await _service(monkeypatch)._handle_unary(
+        client, payload, model, deployment, deployment.backends[0]
+    )
+    assert response.body == raw
+    assert response.media_type == "application/json"
+    assert seen == [("/v1/chat/completions", {"model": "m", "messages": []})]
+
+
+async def test_stream_relays_backend_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = _config("https://backend.example/v1").models[0]
+    deployment = model.deployments[0]
+    payload = OpenAIChatCompletionsPayload(model="m", messages=[], stream=True)
+    client = await fake.serve_backend(fake.stream([b"data: [DONE]\n\n"]))
+    service = _service(monkeypatch)
+    response = await service._handle_streaming(
+        client, payload, model, deployment, deployment.backends[0]
+    )
+    assert isinstance(response, StreamingResponse)
+    relayed = b"".join([chunk async for chunk in response.body_iterator])  # type: ignore[misc]
+    assert relayed == b"data: [DONE]\n\n"
+    settle = service.admission_controller.settle
+    assert isinstance(settle, AsyncMock)
+    settle.assert_awaited_once()
+
+
+async def test_task_sends_caller_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str | None, bytes]] = []
+
+    async def upstream(request: web.Request) -> web.StreamResponse:
+        seen.append((request.headers.get(TASK_USER_ID_HEADER), await request.read()))
+        return web.json_response({})
 
     model = _config("https://backend.example/v1").models[0]
     deployment = model.deployments[0]
     payload = GenericTaskPayload(model="m", endpoint="segmentation", input_dir="/x")  # type: ignore[call-arg]
-    async with httpx.AsyncClient(
-        base_url=deployment.backends[0].model_url,
-        transport=httpx.MockTransport(upstream),
-    ) as client:
-        await _task_service(monkeypatch)._handle_unary(
-            client, payload, model, deployment, deployment.backends[0]
-        )
-    assert seen[0].headers[TASK_USER_ID_HEADER] == "user-uuid"
-    assert seen[0].extensions["timeout"]["read"] == 900.0
-    assert b'"endpoint"' not in seen[0].content
+    client = await fake.serve_backend(upstream)
+    await _service(monkeypatch)._handle_unary(
+        client, payload, model, deployment, deployment.backends[0]
+    )
+    ((user_id, body),) = seen
+    assert user_id == "user-uuid"
+    assert "endpoint" not in json.loads(body)
 
 
 async def test_timed_out_task_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
-    def upstream(request: httpx.Request) -> httpx.Response:
-        raise httpx.ReadTimeout("slow", request=request)
+    async def upstream(request: web.Request) -> web.StreamResponse:
+        await asyncio.sleep(1.0)
+        return web.json_response({})
 
     model = _config("https://backend.example/v1").models[0]
     deployment = model.deployments[0]
     payload = GenericTaskPayload(model="m", endpoint="segmentation")
-    async with httpx.AsyncClient(
-        base_url=deployment.backends[0].model_url,
-        transport=httpx.MockTransport(upstream),
-    ) as client:
+    client = await fake.serve_backend(
+        upstream, timeout=aiohttp.ClientTimeout(sock_read=0.05)
+    )
+    with pytest.raises(_UpstreamFailure) as exc:
+        await _service(monkeypatch)._handle_unary(
+            client, payload, model, deployment, deployment.backends[0]
+        )
+    assert exc.value.retryable is False
+
+
+async def test_refused_connection_is_retried_then_fails_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bcm, "CONNECT_RETRY_DELAY_SEC", 0)
+    with socket.socket() as sock:  # a port with nothing listening
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    client = bcm.BackendClient(f"http://127.0.0.1:{port}/v1")
+    attempts = 0
+    post = client._session.post
+
+    def counting_post(*args: object, **kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        return post(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(client._session, "post", counting_post)
+    model = _config("https://backend.example/v1").models[0]
+    deployment = model.deployments[0]
+    payload = OpenAIChatCompletionsPayload(model="m", messages=[])
+    try:
         with pytest.raises(_UpstreamFailure) as exc:
-            await _task_service(monkeypatch)._handle_unary(
+            await _service(monkeypatch)._handle_unary(
                 client, payload, model, deployment, deployment.backends[0]
             )
-    assert exc.value.retryable is False
+    finally:
+        await client.aclose()
+    assert attempts == 1 + bcm.CONNECT_RETRIES
+    assert exc.value.retryable is True
 
 
 async def test_bad_backend_does_not_block_others(
@@ -274,3 +303,56 @@ def test_egress_proxy_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"):
         monkeypatch.delenv(var, raising=False)
     assert bcm._egress_proxy("https://other.example/v1") is None
+
+
+async def _socks5_proxy(seen: list[str]) -> asyncio.Server:
+    """A minimal SOCKS5 proxy (no auth, CONNECT only) that records the
+    destinations it was asked for."""
+
+    async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while data := await reader.read(65536):
+                writer.write(data)
+                await writer.drain()
+        finally:
+            writer.close()
+
+    async def handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        _, n_methods = await reader.readexactly(2)
+        await reader.readexactly(n_methods)
+        writer.write(b"\x05\x00")
+        _, _, _, addr_type = await reader.readexactly(4)
+        if addr_type == 3:  # a name, for the proxy to resolve
+            host = (await reader.readexactly((await reader.readexactly(1))[0])).decode()
+        else:
+            host = socket.inet_ntoa(await reader.readexactly(4))
+        port = int.from_bytes(await reader.readexactly(2))
+        seen.append(f"{host}:{port}")
+        up_reader, up_writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"\x05\x00\x00\x01" + bytes(6))
+        await asyncio.gather(pipe(reader, up_writer), pipe(up_reader, writer))
+
+    return await asyncio.start_server(handle, "127.0.0.1", 0)
+
+
+async def test_backend_reached_through_socks_proxy() -> None:
+    direct = await fake.serve_backend(fake.respond(json={"ok": True}))
+    port = direct.base_url.rsplit(":", 1)[1]
+    seen: list[str] = []
+    proxy = await _socks5_proxy(seen)
+    proxy_port = proxy.sockets[0].getsockname()[1]
+    # A name only the proxy can resolve, as with a cluster behind the tunnel
+    client = bcm.BackendClient(
+        f"http://backend.cluster.invalid:{port}",
+        proxy=f"socks5h://127.0.0.1:{proxy_port}",
+    )
+    try:
+        async with await client.post("/v1/chat/completions", b"{}") as response:
+            assert response.status == 200
+            assert await response.json() == {"ok": True}
+    finally:
+        await client.aclose()
+        proxy.close()
+    assert seen == [f"backend.cluster.invalid:{port}"]
