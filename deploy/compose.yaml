@@ -48,6 +48,10 @@ services:
         max-size: "500m"
         max-file: "80"
         labels: "com.docker.compose.project,com.docker.compose.service"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   controller-manager:
     build:
