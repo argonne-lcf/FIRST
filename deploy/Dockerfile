@@ -44,10 +44,14 @@ RUN useradd -m -u ${APP_UID} app
 RUN mkdir -p /app/prompt-records && chown app:app /app/prompt-records
 USER app
 EXPOSE 7000
+# Each worker listens on :7000 with its own SO_REUSEPORT socket, so the kernel
+# spreads the proxy's connections evenly over the workers (see UvicornWorker).
+# The master's own socket (-b) is therefore a placeholder nobody connects to.
+ENV FIRST_GATEWAY_WORKER_BIND=0.0.0.0:7000
 CMD [".venv/bin/gunicorn", \
     "first_gateway.apiserver.api:app", \
     "-k", "first_gateway.apiserver.uvicorn_worker.UvicornWorker", \
-    "-b", "0.0.0.0:7000", \
+    "-b", "unix:/tmp/gunicorn-master.sock", \
     "--workers", "4", \
     "--keep-alive", "75", \
     "--timeout", "30"]
