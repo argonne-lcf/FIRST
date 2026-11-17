@@ -146,6 +146,7 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         self, data: dict[str, Any]
     ) -> SubmitStreamingTaskResponse:
         url, body = self._build_request(data, stream=True)
+        openai_endpoint = url.rsplit("/v1/", 1)[-1]
         log.info(f"Making First V2 API call for model {self.model} (stream=True)")
 
         streaming_state = new_streaming_state()
@@ -156,25 +157,65 @@ class FirstV2Endpoint(DirectAPIEndpoint):
         except LookupError:
             context = None
 
-        async def sse_generator() -> AsyncGenerator[str, None]:
+        async def upstream_chunks() -> AsyncGenerator[str, None]:
             try:
                 async with self._client.stream("POST", url, json=body) as response:
                     if response.status_code != 200:
                         error_text = await response.aread()
-                        raise ValueError(
-                            f"Upstream endpoint returned an error "
-                            f"(status code: {response.status_code}): "
-                            f"{error_text.decode(errors='replace').strip()[:256]}"
+                        log.warning(
+                            "FIRST V2 upstream stream returned status %s: %s",
+                            response.status_code,
+                            error_text.decode(errors="replace")[:512],
+                        )
+                        raise EndpointError(
+                            "Upstream inference request failed.",
+                            status_code=response.status_code,
                         )
                     async for chunk in response.aiter_text():
                         if chunk:
-                            streaming_state["total_chunks"] += 1
-                            self._collect_streaming_chunk(streaming_state, chunk)
                             yield chunk
+            except EndpointError:
+                raise
+            except httpx.TimeoutException as e:
+                raise EndpointError(
+                    "Timeout calling the upstream inference endpoint.",
+                    status_code=504,
+                ) from e
+            except httpx.HTTPError as e:
+                raise EndpointError(
+                    "HTTP error calling the upstream inference endpoint.",
+                    status_code=502,
+                ) from e
+            except Exception as e:
+                raise EndpointError(
+                    "Unexpected error calling the upstream inference endpoint.",
+                    status_code=502,
+                ) from e
+
+        upstream = upstream_chunks()
+        try:
+            first_chunk = await anext(upstream)
+        except StopAsyncIteration:
+            first_chunk = ""
+
+        async def sse_generator() -> AsyncGenerator[str, None]:
+            try:
+                if first_chunk:
+                    streaming_state["total_chunks"] += 1
+                    self._collect_streaming_chunk(streaming_state, first_chunk)
+                    yield first_chunk
+                async for chunk in upstream:
+                    streaming_state["total_chunks"] += 1
+                    self._collect_streaming_chunk(streaming_state, chunk)
+                    yield chunk
             except Exception as e:
                 streaming_state["error"] = str(e)
-                yield self._sse_error_chunk(self.model, str(e))
-                yield "data: [DONE]\n\n"
+                log.exception("FIRST V2 stream failed")
+                yield self._sse_error_chunk(
+                    self.model,
+                    openai_endpoint,
+                    "The upstream inference request failed while streaming.",
+                )
             finally:
                 self._finalize_stream(streaming_state)
                 if context is not None:
