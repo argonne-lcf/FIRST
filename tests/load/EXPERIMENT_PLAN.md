@@ -16,7 +16,7 @@ Last updated 2026-11-17 ~13:30 (end of session 4).
 | Phase | What | State |
 | --- | --- | --- |
 | P0 | Pre-optimization suite: A, B0, B50, B1s, B1s-stream (mock); C/D/E/G at 1 replica | **done** (RUNLOG, sessions 2–4) |
-| P1 | Profile V2 hot spots on the mock (section 2.1) | **next**; needs the profiling build on Dev |
+| P1 | Profile V2 hot spots on the mock (section 2.1) | **next**; profiling build `969ad21` being deployed on Dev (13:35) |
 | P2 | Pre-optimization report: P0 results + P1 hot spots (section 2.2) | after P1 |
 | P3 | V1-only runs while the user fixes V2 (section 2.3) | after P2 |
 | P4 | Post-optimization V2 suite, full (section 2.4) | after the user deploys the fixes |
@@ -47,7 +47,7 @@ Last updated 2026-11-17 ~13:30 (end of session 4).
 | Catalog manifests | `loadtest-runs/campaign-20261116/manifests/` (`campaign.yaml`, `mock.yaml`, `restore-original.yaml`) |
 | Diagnostics (CPU samples, benches) | `loadtest-runs/diag-20261117/` |
 | Harness | `tests/load/` on `firstv2` (`--ports` committed in `c428cd5`) |
-| Profiling bundle | branch `loadtest-profiling`, pushed, rebased on `c428cd5` (`f36f1d2` bundle, `c4a29ef` pool hypotheses); worktree `/home/msalim/FIRST-loadtest-profiling`: `tests/load/PROFILING.md` (H1–H12), `pool_bench.py`, `profile.sh`, `deploy/compose.profile.yaml` |
+| Profiling bundle | branch `loadtest-profiling`, pushed, rebased on `firstv2` `0785cf3` (`e566d8a` bundle, `969ad21` pool hypotheses); **deployed on Dev for P1**; worktree `/home/msalim/FIRST-loadtest-profiling`: `tests/load/PROFILING.md` (H1–H12), `pool_bench.py`, `profile.sh`, `deploy/compose.profile.yaml` |
 | V2 deploy on Dev | `/home/webportal/FIRSTv2/deploy`; compose files `compose.yaml`, `compose.dev.yaml`, `compose.tunnel.yaml`, `compose.dev-analytics.yaml`; containers `first-inference-gateway-1`, `first-nginx-1` |
 | V1 on Dev | systemd `gateway_async`; log `/var/log/inference-service/out.log` (JSON, UTC, agent-readable); host nginx `error.log` needs sudo (user) |
 
@@ -174,7 +174,7 @@ From accepted runs in RUNLOG. "Ideal" for B1s = 1 req/s per user (1 s mock).
   16 users. V2 overhead p50 3.9 / 4.0 / 5.4 / 10.4 ms at 1 / 4 / 16 / 64 users; V1
   8.2 / 8.9 / 20 / 39 ms. Pilot-path overhead ≈ the mock's. **V2 gateway ~1 core at
   187 req/s ≈ 5–6 ms CPU per request.**
-- **D / E / G** (gpt-oss-20b, 1024 in / 256 out): results in RUNLOG "Pre-optimization suite" (being filled at the end of session 4).
+- **D / E / G** (gpt-oss-20b, 1024 in / 256 out): vLLM-bound on both; identical req/s (13.8 at 32 users unary). V2 overhead p50 ~8 ms vs V1 10–15 ms; G (streams 4/16/32): 0 errors on both, V2 ttft 15–25 ms lower (p50), max gap alike (~40 ms = vLLM cadence). **Open:** at 8–32 users V2's e2e p95 is 18–27% wider than V1's (unary) and V1 is ~5% ahead on req/s in streams, all in `upstream`/vLLM time, with V2 always run first; reverse the order once in P4 (`D-v2-1r-repeat`).
 
 ### V2 hot spots to profile (P1)
 1. **Per-request CPU ~5–6 ms** (B0: 756 req/s on 4 cores; C: 187 req/s on 1 core). Sets
@@ -209,10 +209,10 @@ in `PROFILING.md` (H1–H12) a verdict. V2 only, mock only.
 
 **User, on the Dev VM, once:**
 ```bash
-cd /home/webportal/FIRSTv2 && git fetch && git checkout loadtest-profiling   # c4a29ef
+cd /home/webportal/FIRSTv2 && git fetch && git checkout loadtest-profiling   # 969ad21
 # wherever COMPOSE_FILE is set (deploy/.env): append the overlay, e.g.
 #   COMPOSE_FILE=compose.yaml:compose.dev.yaml:compose.tunnel.yaml:compose.dev-analytics.yaml:compose.profile.yaml
-make profile-up       # rebuilds the gateway image with py-spy, adds SYS_PTRACE and FIRST_PROFILE_DIR
+docker compose build && docker compose up -d inference-gateway   # = make profile-up; gateway only (controller unchanged)
 ```
 **Agent checks** after the deploy: `curl -s -D - -o /dev/null $V2/health | grep -i
 server-timing` shows `p_respond`; `docker exec first-inference-gateway-1 ls
