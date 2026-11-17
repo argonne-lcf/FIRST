@@ -49,7 +49,8 @@ Last updated 2026-11-17 ~16:15 (end of session 4). Dev V2 still runs the profili
 | Helper scripts (run/pair/sampler/setmock, py-spy driver, stack and gauge analysis) | `loadtest-runs/campaign-20261116/scripts/` (README inside) |
 | Pre-optimization report | `loadtest-runs/campaign-20261116/report/pre-optimization.html` |
 | Harness | `tests/load/` on `firstv2` (`--ports` committed in `c428cd5`) |
-| Profiling bundle | branch `loadtest-profiling`, pushed, rebased on `firstv2` `0785cf3` (`e566d8a` bundle, `969ad21` pool hypotheses); **deployed on Dev for P1**; worktree `/home/msalim/FIRST-loadtest-profiling`: `tests/load/PROFILING.md` (H1–H12), `pool_bench.py`, `profile.sh`, `deploy/compose.profile.yaml` |
+| Profiling bundle | branch `origin/loadtest-profiling` (remote only; local worktree and branch removed after P1): `tests/load/PROFILING.md` (H1–H13 verdicts), `pool_bench.py`, `profile.sh`, `compose.profile.yaml`. To re-profile: `git worktree add ../FIRST-loadtest-profiling origin/loadtest-profiling` (rebase onto the optimized `firstv2` first) |
+| Profiling results (P1) | `loadtest-runs/profile-20261117/` (gitignored): 10 runs, `gw/` py-spy stacks + worker gauges, `pool-1024-s16.txt` |
 | V2 deploy on Dev | `/home/webportal/FIRSTv2/deploy`; compose files `compose.yaml`, `compose.dev.yaml`, `compose.tunnel.yaml`, `compose.dev-analytics.yaml`; containers `first-inference-gateway-1`, `first-nginx-1` |
 | V1 on Dev | systemd `gateway_async`; log `/var/log/inference-service/out.log` (JSON, UTC, agent-readable); host nginx `error.log` needs sudo (user) |
 
@@ -230,7 +231,7 @@ itself over the ControlMaster with `docker exec [-u root] first-inference-gatewa
 (what `profile.sh reset|pyspy|collect` does), so py-spy starts on cue mid-step.
 
 Run the harness from the profiling worktree (it parses the phase timings):
-`cd /home/msalim/FIRST-loadtest-profiling && uv run --frozen python -m tests.load run …
+`cd <profiling worktree> && uv run --frozen python -m tests.load run …
 --out loadtest-runs/profile-20261117 $V2P --catalog-url $V2`.
 
 Per test: a **clean run** (phases + gauges; reset gauges first), then the **same run
@@ -254,9 +255,8 @@ Afterwards restore the mock to **200/5** at 1 replica. Collect
 (`docker cp first-inference-gateway-1:/tmp/first-profile/. <dir>` on Dev, copy to the
 client) and run `uv run python -m tests.load profile-report <run-dir> --profile <dir>`
 per run (the two hosts' clocks agree within ms; no `--clock-offset`). Record every run
-and the verdict table in RUNLOG; fill the Verdict column of `PROFILING.md` on
-`loadtest-profiling` (ask before committing there; its "Runs to add" item 3 still names
-the abandoned `/v2-test/` path: use the 4 tunnels instead).
+and the verdict table in RUNLOG; the Verdict column of `PROFILING.md` on
+`origin/loadtest-profiling` is filled (done in P1).
 
 The user can then revert Dev to `firstv2` (drop the overlay). P3 doesn't depend on
 the V2 build, but V2 must stay idle during V1 runs.
