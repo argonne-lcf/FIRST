@@ -11,15 +11,15 @@ state"; sections 1–6 are findings, playbook and reference.
 
 ## 0. Status (keep current)
 
-Last updated 2026-11-17 ~14:40 (session 4). Dev V2 still runs the profiling build `969ad21` (harmless for V1-only runs; redeploy `firstv2` + fixes for P4). Mock: 200/5, 1 replica.
+Last updated 2026-11-17 ~16:15 (end of session 4). Dev V2 still runs the profiling build `969ad21` (harmless for V1-only runs; redeploy `firstv2` + fixes for P4). Mock: 200/5, 1 replica.
 
 | Phase | What | State |
 | --- | --- | --- |
 | P0 | Pre-optimization suite: A, B0, B50, B1s, B1s-stream (mock); C/D/E/G at 1 replica | **done** (RUNLOG, sessions 2–4) |
 | P1 | Profile V2 hot spots on the mock (section 2.1) | **done** 13:35–14:15 (RUNLOG "P1 profiling", verdicts in `PROFILING.md`); Dev still runs the profiling build `969ad21` |
 | P2 | Pre-optimization report: P0 results + P1 hot spots (section 2.2) | **done** (draft): `loadtest-runs/campaign-20261116/report/pre-optimization.html`; publish as an artifact from a claude.ai-logged-in session |
-| P3 | V1-only runs while the user fixes V2 (section 2.3) | **in progress**: done A-v1-health-noka, B0-v1-4t, B50-v1-4t; left E-v1-2r/4r, G-v1-bridge-stream-4r (need GPUs: user's OK), optional C-v1-4r, F |
-| P4 | Post-optimization V2 suite, full (section 2.4) | after the user deploys the fixes |
+| P3 | V1-only runs while the user fixes V2 (section 2.3) | **done** 16:12: A-v1-health-noka, B0/B50-v1-4t, E-v1-2r/4r, G-v1-bridge-stream-4r, F-v1-globus-tiny/real; C-v1-4r skipped (B0 already shows V1's ceiling) |
+| P4 | Post-optimization V2 suite, full (section 2.4) | **next**, after the user deploys the optimized V2 (replace the profiling build `969ad21` on Dev) |
 | P5 | Final report, V1 vs V2-pre vs V2-post (section 2.5) | last |
 
 **Decisions (user) that hold for the whole campaign**
@@ -46,6 +46,8 @@ Last updated 2026-11-17 ~14:40 (session 4). Dev V2 still runs the profiling buil
 | Campaign runs | `loadtest-runs/campaign-20261116/<RUN>-<timestamp>/` (`summary.md`, `summary.json`, `steps.csv`, `users-*/requests.jsonl`) |
 | Catalog manifests | `loadtest-runs/campaign-20261116/manifests/` (`campaign.yaml`, `mock.yaml`, `restore-original.yaml`) |
 | Diagnostics (CPU samples, benches) | `loadtest-runs/diag-20261117/` |
+| Helper scripts (run/pair/sampler/setmock, py-spy driver, stack and gauge analysis) | `loadtest-runs/campaign-20261116/scripts/` (README inside) |
+| Pre-optimization report | `loadtest-runs/campaign-20261116/report/pre-optimization.html` |
 | Harness | `tests/load/` on `firstv2` (`--ports` committed in `c428cd5`) |
 | Profiling bundle | branch `loadtest-profiling`, pushed, rebased on `firstv2` `0785cf3` (`e566d8a` bundle, `969ad21` pool hypotheses); **deployed on Dev for P1**; worktree `/home/msalim/FIRST-loadtest-profiling`: `tests/load/PROFILING.md` (H1–H12), `pool_bench.py`, `profile.sh`, `deploy/compose.profile.yaml` |
 | V2 deploy on Dev | `/home/webportal/FIRSTv2/deploy`; compose files `compose.yaml`, `compose.dev.yaml`, `compose.tunnel.yaml`, `compose.dev-analytics.yaml`; containers `first-inference-gateway-1`, `first-nginx-1` |
@@ -95,7 +97,7 @@ For CPU evidence, sample the gateway every ~20 s over the ControlMaster during a
 | Gateway → Tara | both direct over the conduit (V2 `NO_PROXY` has the Tara CIDRs; V1 `FIRST_V2_PROXY_URL` unset), TCP connect ~1.3 ms |
 | Gateway → Sophia | V2 through SOCKS container `first-tunnel`; V1 through Globus Compute (only F) |
 | Catalog | `manifests/campaign.yaml` + `manifests/mock.yaml` applied; test models `tpm 0, rpm 0, max_user_concurrency 4096`; autoscaling off |
-| Replicas (end of session 4) | Tara: `loadtest/mock` 1 (**ttft 200, token 5**), `gemma-4-E4B-it` 1, `gpt-oss-20b` 1; Sophia 0 |
+| Replicas (end of session 4) | Tara: `loadtest/mock` 1 (**ttft 200, token 5**), `gemma-4-E4B-it` 1, `gpt-oss-20b` 1 (back from 4 after P3); Sophia V2 deployments 0; V1 Globus gpt-oss-20b was hot on Sophia for F |
 | vLLM | Tara 0.29.0 |
 
 ### 0.4 Rules for reading numbers
@@ -294,6 +296,8 @@ Dev VM). Each needs the stated Tara state; confirm replica changes with the user
 
 ### 2.4 P4: post-optimization V2 suite (full)
 
+Deploy the **plain** optimized V2 (no profiling overlay), same as P0's plain `5ced577`, so pre/post
+are like for like (the overlay adds laps, a 100 Hz per-worker probe and ~350 bytes of headers).
 After the user deploys the optimized V2 (record its commit in RUNLOG), redo the
 session-start checks, then run V2 only, with the same path and arguments as P0/P3 so
 every row has a V1 counterpart:
@@ -306,7 +310,7 @@ every row has a V1 counterpart:
 | 4 | `C-v2-1r-post` (+ `C-v2-4r` if confirmed) | |
 | 5 | `D-v2-1r-post`, `D-v2-2r`, `D-v2-4r`, `D-v2-1r-repeat` | replica scaling (C4) |
 | 6 | `G-v2-stream-1r-post`, `G-v2-stream-4r` | |
-| 7 (optional) | `F-v2-sophia-*` | with the F V1 runs |
+| 7 | `F-v2-sophia-tiny`, `F-v2-sophia-real` | 1 V2 Sophia replica of `sophia/openai/gpt-oss-20b` (user brings it up; Tara gpt-oss to 0 or use the deployment route); V1 side done in P3 |
 
 Re-profile (P1 tests 2 and 4) on the optimized build only if a hot spot remains.
 
