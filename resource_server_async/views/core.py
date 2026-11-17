@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 # Health Check (GET) - No authentication required
 # Lightweight endpoint for Kubernetes/load balancer health checks
-@router.get("/health", auth=None)
+@router.get("/health", auth=None, throttle=[])
 async def health_check(request: HttpRequest) -> dict[str, str]:
     """Lightweight health check endpoint - returns OK if API is responding."""
     return {"status": "ok"}
