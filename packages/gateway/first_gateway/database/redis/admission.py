@@ -25,10 +25,11 @@ _RECORD_ERROR_LUA = (LUA_DIR / "record_error.lua").read_text()
 USAGE_EWMA_ALPHA = 0.3
 USAGE_EWMA_TTL_SEC = 30 * 24 * 60 * 60
 
-
-def _ewma(prev: float | None, sample: float, alpha: float = USAGE_EWMA_ALPHA) -> float:
-    """Fold ``sample`` into the running EWMA; seed with it when unset."""
-    return sample if prev is None else alpha * sample + (1 - alpha) * prev
+# How long a worker reuses the token stats it last saw for a user+model before
+# reading them from Redis again, and how many it keeps.  The stats only seed a
+# preflight estimate that settle() corrects, so a stale value is harmless.
+TOKEN_STATS_CACHE_SEC = 60.0
+TOKEN_STATS_CACHE_MAX = 10_000
 
 
 class TokenStats(BaseModel):
@@ -143,6 +144,8 @@ class AdmissionController:
         # request_ids admitted by this worker and not yet settled; the renew
         # loop keeps their leases alive so healthy workers hold their slots.
         self._inflight: set[str] = set()
+        # (model, user) -> (stats, monotonic expiry); see get_token_stats.
+        self._token_stats: dict[tuple[str, str], tuple[TokenStats, float]] = {}
         self._renew_task: asyncio.Task[None] | None = None
 
     async def admit(
@@ -226,6 +229,8 @@ class AdmissionController:
         model_name: str | None = None,
         user_id: str | None = None,
         backend_id: str | None = None,
+        chars_per_token_sample: float | None = None,
+        output_tokens_sample: float | None = None,
     ) -> bool:
         """
         Reverse one reservation's effects idempotently.
@@ -236,6 +241,11 @@ class AdmissionController:
         Pass model_name, user_id, and backend_id from the request context to
         skip the pre-read round trip on the hot path.  The sweeper omits them
         and pays one extra GET to discover the reservation's identity.
+
+        The optional samples are one successful request's observations, folded
+        into the user+model's token-estimation EWMAs in the same round trip.
+        Pass None for a metric this request cannot teach (e.g. chars-per-token
+        when it carried images or cache hits, which distort the ratio).
         """
         self._inflight.discard(request_id)
         reservation_key = Keys.reservation(request_id)
@@ -270,21 +280,51 @@ class AdmissionController:
                 Keys.user_inflight(model_name, user_id),
                 Keys.user_rate_limit(model_name, user_id, "tokens"),
                 Keys.model_inflight(model_name),
+                Keys.usage_ewma(model_name, user_id, "input_token_chars"),
+                Keys.usage_ewma(model_name, user_id, "output_token"),
             ],
             args=[
                 "" if actual_tokens is None else int(actual_tokens),
                 request_id,
+                "" if chars_per_token_sample is None else chars_per_token_sample,
+                "" if output_tokens_sample is None else output_tokens_sample,
+                USAGE_EWMA_ALPHA,
+                USAGE_EWMA_TTL_SEC,
             ],
         )
+        if chars_per_token_sample is not None or output_tokens_sample is not None:
+            self._cache_token_stats(model_name, user_id, raw[1], raw[2])
         code = int(raw[0])
         return bool(code)
+
+    def _cache_token_stats(
+        self, model_name: str, user_id: str, chars_raw: Any, output_raw: Any
+    ) -> TokenStats:
+        stats = TokenStats(
+            chars_per_token=float(chars_raw) if chars_raw else None,
+            output_tokens=float(output_raw) if output_raw else None,
+        )
+        if len(self._token_stats) >= TOKEN_STATS_CACHE_MAX:
+            self._token_stats.clear()
+        self._token_stats[(model_name, user_id)] = (
+            stats,
+            time.monotonic() + TOKEN_STATS_CACHE_SEC,
+        )
+        return stats
 
     async def get_token_stats(self, model_name: str, user_id: str) -> TokenStats:
         """Read this user+model's learned estimation calibration.
 
+        Served from this worker's cache when it has a recent value: settle()
+        refreshes it with the EWMAs it just updated, so a user's steady traffic
+        costs no extra round trip.
+
         Best-effort: a Redis hiccup returns empty stats so admission falls back
         to the static defaults rather than failing the request.
         """
+        cached = self._token_stats.get((model_name, user_id))
+        if cached is not None and cached[1] > time.monotonic():
+            return cached[0]
         try:
             chars_raw, output_raw = await self.client.mget(
                 Keys.usage_ewma(model_name, user_id, "input_token_chars"),
@@ -293,52 +333,7 @@ class AdmissionController:
         except Exception:
             logger.warning("get_token_stats failed", exc_info=True)
             return TokenStats()
-        return TokenStats(
-            chars_per_token=float(chars_raw) if chars_raw else None,
-            output_tokens=float(output_raw) if output_raw else None,
-        )
-
-    async def record_token_stats(
-        self,
-        model_name: str,
-        user_id: str,
-        *,
-        chars_per_token_sample: float | None,
-        output_tokens_sample: float | None,
-    ) -> None:
-        """Fold one settled request's observations into the EWMA calibration.
-
-        Each sample is optional so the caller can skip a metric that cannot be
-        learned from this request (e.g. chars-per-token when the request carried
-        images or cache hits, which distort the ratio).  Non-atomic and fully
-        best-effort: this only sharpens future estimates.
-        """
-        if chars_per_token_sample is None and output_tokens_sample is None:
-            return
-        try:
-            chars_key = Keys.usage_ewma(model_name, user_id, "input_token_chars")
-            output_key = Keys.usage_ewma(model_name, user_id, "output_token")
-            prev_chars_raw, prev_output_raw = await self.client.mget(
-                chars_key, output_key
-            )
-            async with self.client.pipeline(transaction=False) as pipe:
-                if chars_per_token_sample is not None:
-                    prev = float(prev_chars_raw) if prev_chars_raw else None
-                    pipe.set(
-                        chars_key,
-                        _ewma(prev, chars_per_token_sample),
-                        ex=USAGE_EWMA_TTL_SEC,
-                    )
-                if output_tokens_sample is not None:
-                    prev = float(prev_output_raw) if prev_output_raw else None
-                    pipe.set(
-                        output_key,
-                        _ewma(prev, output_tokens_sample),
-                        ex=USAGE_EWMA_TTL_SEC,
-                    )
-                await pipe.execute()
-        except Exception:
-            logger.warning("record_token_stats failed", exc_info=True)
+        return self._cache_token_stats(model_name, user_id, chars_raw, output_raw)
 
     async def renew(self, request_ids: Sequence[str]) -> int:
         """

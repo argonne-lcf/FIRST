@@ -13,6 +13,7 @@ from first_common.schema.endpoints.generic import (
     GenericTaskPayload,
 )
 from first_common.schema.endpoints.llm import OpenAIChatCompletionsPayload
+from first_common.schema.endpoints.token_estimation import TokenEstimate
 from first_gateway.apiserver import backend_client_manager as bcm
 from first_gateway.apiserver.inference import InferenceService, _UpstreamFailure
 from first_gateway.database.redis.router_config import (
@@ -114,7 +115,7 @@ def _service(monkeypatch: pytest.MonkeyPatch) -> InferenceService:
     service.request_id = "handler-test"
     service.user = Mock(id="user-uuid")
     service.admission_controller = AsyncMock()
-    monkeypatch.setattr(service, "_record_token_stats", AsyncMock())
+    service.estimate = TokenEstimate()
     monkeypatch.setattr(service, "_emit_inference_log", Mock())
     return service
 

@@ -194,7 +194,7 @@ class InferenceService:
 
             client = self.backend_client_manager.get(backend_id)
             if client is None:
-                await self.admission_controller.settle(self.request_id, actual_tokens=0)
+                await self._settle(model, backend_id, 0)
                 backend_candidates = [
                     b for b in backend_candidates if b.uid != backend_id
                 ]
@@ -214,7 +214,7 @@ class InferenceService:
             try:
                 return await handler(client, payload, model, deployment, backend)
             except _UpstreamFailure as exc:
-                await self._release_failed_backend(backend_id, deployment)
+                await self._release_failed_backend(model, backend_id, deployment)
                 self._emit_inference_log(
                     payload,
                     model,
@@ -237,7 +237,7 @@ class InferenceService:
                 )
             except FirstError as exc:
                 # Upstream 4xx: settle & propagate response without penalising the backend
-                await self.admission_controller.settle(self.request_id, actual_tokens=0)
+                await self._settle(model, backend_id, 0)
                 exc.headers[DEPLOYMENT_HEADER] = deployment.name
                 self._emit_inference_log(
                     payload,
@@ -250,7 +250,7 @@ class InferenceService:
                 )
                 raise
             except Exception as exc:
-                await self._release_failed_backend(backend_id, deployment)
+                await self._release_failed_backend(model, backend_id, deployment)
                 self._emit_inference_log(
                     payload,
                     model,
@@ -276,16 +276,43 @@ class InferenceService:
         )
 
     async def _release_failed_backend(
-        self, backend_id: str, deployment: DeploymentConfig
+        self, model: ModelConfig, backend_id: str, deployment: DeploymentConfig
     ) -> None:
         """Record a backend fault and release the request's reservation."""
         await self.admission_controller.record_error(
             backend_id, deployment.router_params
         )
-        await self.admission_controller.settle(self.request_id, actual_tokens=0)
+        await self._settle(model, backend_id, 0)
 
-    async def _record_token_stats(self, model: ModelConfig, usage: TokenUsage) -> None:
-        """Feed one successful request's real usage into the estimation EWMAs.
+    async def _settle(
+        self,
+        model: ModelConfig,
+        backend_id: str,
+        actual_tokens: int | None,
+        *,
+        learn_from: TokenUsage | None = None,
+    ) -> None:
+        """Release this request's reservation, charging ``actual_tokens`` (None
+        keeps the estimate).  One Redis round trip: the reservation's identity
+        is passed along, and with ``learn_from`` (a successful request's real
+        usage) the same call updates the token-estimation EWMAs.
+        """
+        chars_per_token, output_tokens = (
+            self._token_samples(learn_from) if learn_from else (None, None)
+        )
+        await self.admission_controller.settle(
+            self.request_id,
+            actual_tokens=actual_tokens,
+            model_name=model.name,
+            user_id=self.user.id,
+            backend_id=backend_id,
+            chars_per_token_sample=chars_per_token,
+            output_tokens_sample=output_tokens,
+        )
+
+    def _token_samples(self, usage: TokenUsage) -> tuple[float | None, float | None]:
+        """One request's (chars-per-token, output-tokens) samples for the
+        estimation EWMAs; None for a metric it cannot teach.
 
         chars-per-token is only learnable from requests with no images and no
         cache activity: images cost tokens with no characters, and caching
@@ -304,12 +331,7 @@ class InferenceService:
         output_tokens_sample = (
             float(usage.output_tokens) if usage.output_tokens else None
         )
-        await self.admission_controller.record_token_stats(
-            model.name,
-            self.user.id,
-            chars_per_token_sample=chars_per_token_sample,
-            output_tokens_sample=output_tokens_sample,
-        )
+        return chars_per_token_sample, output_tokens_sample
 
     def _get_upstream_handler(self, payload: BasePayload) -> UpstreamHandler:
         streaming = getattr(payload, "stream", False) or False
@@ -428,10 +450,7 @@ class InferenceService:
         assert isinstance(json_body, dict)
         usage = parser.parse_unary(json_body) if parser else TokenUsage()
 
-        await self.admission_controller.settle(
-            self.request_id, actual_tokens=usage.total_tokens or 0
-        )
-        await self._record_token_stats(model, usage)
+        await self._settle(model, backend.id, usage.total_tokens or 0, learn_from=usage)
         self._emit_inference_log(
             payload,
             model,
@@ -532,8 +551,12 @@ class InferenceService:
                         actual = usage.total_tokens or None
                     else:
                         actual = usage.total_tokens or 0
-                    await self.admission_controller.settle(
-                        self.request_id, actual_tokens=actual
+                    # A truncated completion would skew the EWMAs.
+                    await self._settle(
+                        model,
+                        backend.id,
+                        actual,
+                        learn_from=None if broken else usage,
                     )
                     self._emit_inference_log(
                         payload,
@@ -546,8 +569,6 @@ class InferenceService:
                         raw_body=bytes(content),
                         error=broken,
                     )
-                    if not broken:  # a truncated completion skews the EWMAs
-                        await self._record_token_stats(model, usage)
 
         return StreamingResponse(
             _relay(),

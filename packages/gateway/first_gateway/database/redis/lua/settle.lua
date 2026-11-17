@@ -12,11 +12,19 @@
 -- KEYS[4]  rt:user-inflight:{model}:{user}                ZSET request_id -> admit_ts
 -- KEYS[5]  quota:{model}:{user}:tokens                    GCRA TAT
 -- KEYS[6]  rt:model:{model}:inflight                      ZSET request_id -> admit_ts
+-- KEYS[7]  usage:{model}:{user}:input_token_chars_ewma    chars per input token
+-- KEYS[8]  usage:{model}:{user}:output_token_ewma         mean output tokens
 --
 -- ARGV[1]  actual_tokens ('' if unknown/estimated)
 -- ARGV[2]  request_id (for ZREM in the race-loss path)
+-- ARGV[3]  chars-per-token sample ('' for none)
+-- ARGV[4]  output-tokens sample ('' for none)
+-- ARGV[5]  EWMA smoothing factor
+-- ARGV[6]  EWMA key TTL, seconds
 --
--- Returns {1} if applied, {0} if already settled
+-- Returns {applied, chars_per_token_ewma, output_tokens_ewma}: applied is 1,
+-- or 0 if already settled; the EWMAs are their values after this call, as
+-- strings ('' when unset), and only reported when a sample was given.
 
 local reservation_key      = KEYS[1]
 local deadlines_key        = KEYS[2]
@@ -28,6 +36,29 @@ local model_inflight_key   = KEYS[6]
 local actual_tokens = ARGV[1]
 local request_id    = ARGV[2]
 
+-- Token-estimation calibration: fold this request's samples into the EWMAs.
+-- Best-effort and independent of the reservation: it only sharpens estimates.
+local function fold(key, sample)
+  local prev = tonumber(redis.call('GET', key) or '')
+  if sample == '' then
+    return prev and tostring(prev) or ''
+  end
+  local alpha = tonumber(ARGV[5])
+  local value = tonumber(sample)
+  if prev then
+    value = alpha * value + (1 - alpha) * prev
+  end
+  local text = string.format('%.17g', value)
+  redis.call('SET', key, text, 'EX', tonumber(ARGV[6]))
+  return text
+end
+
+local chars_ewma, output_ewma = '', ''
+if ARGV[3] ~= '' or ARGV[4] ~= '' then
+  chars_ewma  = fold(KEYS[7], ARGV[3])
+  output_ewma = fold(KEYS[8], ARGV[4])
+end
+
 -- clean up inflight membership and deadline
 redis.call('ZREM', backend_inflight_key, request_id)
 redis.call('ZREM', user_inflight_key,    request_id)
@@ -38,7 +69,7 @@ redis.call('ZREM', deadlines_key, request_id)
 local raw = redis.call('GET', reservation_key)
 if not raw then
   -- reservation has already been settled:
-  return {0}
+  return {0, chars_ewma, output_ewma}
 end
 
 -- delete reservation
@@ -48,7 +79,7 @@ redis.call('DEL', reservation_key)
 local ok, row = pcall(cjson.decode, raw)
 if not ok or type(row) ~= "table" then
   redis.log(redis.LOG_WARNING, "failed to decode JSON: " .. tostring(row))
-  return {1}
+  return {1, chars_ewma, output_ewma}
 end
 
 local t = redis.call('TIME')
@@ -75,4 +106,4 @@ if tps > 0 and actual_tokens ~= '' and row.est_tokens and row.burst_tokens then
   end
 end
 
-return {1}
+return {1, chars_ewma, output_ewma}

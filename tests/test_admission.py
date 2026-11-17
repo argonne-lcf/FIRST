@@ -685,54 +685,77 @@ class TestScriptGuards:
 # ---------------------------------------------------------------------------
 
 
+async def _record(
+    ac: AdmissionController,
+    *,
+    chars_per_token_sample: float | None,
+    output_tokens_sample: float | None,
+    user: str = USER,
+) -> None:
+    """Settle a request (none is reserved: only the samples matter here)."""
+    await ac.settle(
+        "stats-req",
+        actual_tokens=0,
+        model_name=MODEL,
+        user_id=user,
+        backend_id="b1",
+        chars_per_token_sample=chars_per_token_sample,
+        output_tokens_sample=output_tokens_sample,
+    )
+
+
+async def _stored_stats(redis: Redis, user: str = USER) -> TokenStats:
+    """What another worker (with nothing cached) would read."""
+    return await AdmissionController(redis).get_token_stats(MODEL, user)
+
+
 class TestTokenStats:
     async def test_cold_read_returns_empty_stats(self, ac: AdmissionController) -> None:
         stats = await ac.get_token_stats(MODEL, USER)
         assert stats == TokenStats(chars_per_token=None, output_tokens=None)
 
-    async def test_first_sample_seeds_ewma(self, ac: AdmissionController) -> None:
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=3.5, output_tokens_sample=500.0
-        )
-        stats = await ac.get_token_stats(MODEL, USER)
-        assert stats.chars_per_token == 3.5
-        assert stats.output_tokens == 500.0
+    async def test_first_sample_seeds_ewma(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await _record(ac, chars_per_token_sample=3.5, output_tokens_sample=500.0)
+        for stats in (
+            await ac.get_token_stats(MODEL, USER),
+            await _stored_stats(redis),
+        ):
+            assert stats.chars_per_token == 3.5
+            assert stats.output_tokens == 500.0
 
     async def test_second_sample_blends_with_alpha(
-        self, ac: AdmissionController
+        self, ac: AdmissionController, redis: Redis
     ) -> None:
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=4.0, output_tokens_sample=100.0
-        )
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=2.0, output_tokens_sample=300.0
-        )
-        stats = await ac.get_token_stats(MODEL, USER)
+        await _record(ac, chars_per_token_sample=4.0, output_tokens_sample=100.0)
+        await _record(ac, chars_per_token_sample=2.0, output_tokens_sample=300.0)
         a = USAGE_EWMA_ALPHA
-        assert stats.chars_per_token == pytest.approx(a * 2.0 + (1 - a) * 4.0)
-        assert stats.output_tokens == pytest.approx(a * 300.0 + (1 - a) * 100.0)
+        for stats in (
+            await ac.get_token_stats(MODEL, USER),
+            await _stored_stats(redis),
+        ):
+            assert stats.chars_per_token == pytest.approx(a * 2.0 + (1 - a) * 4.0)
+            assert stats.output_tokens == pytest.approx(a * 300.0 + (1 - a) * 100.0)
 
     async def test_none_sample_leaves_that_metric_untouched(
-        self, ac: AdmissionController
+        self, ac: AdmissionController, redis: Redis
     ) -> None:
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=4.0, output_tokens_sample=100.0
-        )
+        await _record(ac, chars_per_token_sample=4.0, output_tokens_sample=100.0)
         # Update only output; chars-per-token must keep its prior value.
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=None, output_tokens_sample=200.0
-        )
-        stats = await ac.get_token_stats(MODEL, USER)
-        assert stats.chars_per_token == 4.0
+        await _record(ac, chars_per_token_sample=None, output_tokens_sample=200.0)
         a = USAGE_EWMA_ALPHA
-        assert stats.output_tokens == pytest.approx(a * 200.0 + (1 - a) * 100.0)
+        for stats in (
+            await ac.get_token_stats(MODEL, USER),
+            await _stored_stats(redis),
+        ):
+            assert stats.chars_per_token == 4.0
+            assert stats.output_tokens == pytest.approx(a * 200.0 + (1 - a) * 100.0)
 
     async def test_all_none_samples_write_nothing(
         self, ac: AdmissionController, redis: Redis
     ) -> None:
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=None, output_tokens_sample=None
-        )
+        await _record(ac, chars_per_token_sample=None, output_tokens_sample=None)
         assert (
             await redis.exists(
                 Keys.usage_ewma(MODEL, USER, "input_token_chars"),
@@ -744,15 +767,40 @@ class TestTokenStats:
     async def test_stats_scoped_per_user_and_model(
         self, ac: AdmissionController
     ) -> None:
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=2.0, output_tokens_sample=10.0
-        )
+        await _record(ac, chars_per_token_sample=2.0, output_tokens_sample=10.0)
         assert await ac.get_token_stats(MODEL, "bob") == TokenStats()
         assert await ac.get_token_stats("other-model", USER) == TokenStats()
 
     async def test_record_sets_ttl(self, ac: AdmissionController, redis: Redis) -> None:
-        await ac.record_token_stats(
-            MODEL, USER, chars_per_token_sample=4.0, output_tokens_sample=100.0
-        )
+        await _record(ac, chars_per_token_sample=4.0, output_tokens_sample=100.0)
         ttl = await redis.ttl(Keys.usage_ewma(MODEL, USER, "input_token_chars"))
         assert ttl > 0
+
+    async def test_samples_ride_on_the_settle_of_a_reservation(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        result = await _admit(ac, "req-1")
+        applied = await ac.settle(
+            "req-1",
+            actual_tokens=50,
+            model_name=MODEL,
+            user_id=USER,
+            backend_id=result.backend_id,
+            output_tokens_sample=40.0,
+        )
+        assert applied
+        assert (await _stored_stats(redis)).output_tokens == 40.0
+
+    async def test_read_is_served_from_the_worker_cache(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await _record(ac, chars_per_token_sample=4.0, output_tokens_sample=100.0)
+        # Another worker moves the EWMA; this one keeps its recent value...
+        other = AdmissionController(redis)
+        await _record(other, chars_per_token_sample=None, output_tokens_sample=300.0)
+        assert (await ac.get_token_stats(MODEL, USER)).output_tokens == 100.0
+        # ...until it expires, or its own next settle reports the shared value.
+        ac._token_stats.clear()
+        a = USAGE_EWMA_ALPHA
+        shared = pytest.approx(a * 300.0 + (1 - a) * 100.0)
+        assert (await ac.get_token_stats(MODEL, USER)).output_tokens == shared
