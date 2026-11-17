@@ -69,6 +69,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     meta = {
         "name": name,
         "url": args.url,
+        "ports": args.ports,
         "mode": mode,
         "model": args.model,
         "input_tokens": args.input_tokens,
@@ -93,6 +94,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             poller = ReplicaPoller(args.catalog_url, catalog_model, token, verify)
         cfg = StepConfig(
             url=args.url,
+            ports=tuple(args.ports),
             mode=mode,
             model=args.model,
             users=users,
@@ -192,6 +194,13 @@ def main() -> None:
 
     run = sub.add_parser("run", help="sweep user counts against one URL")
     run.add_argument("--url", required=True, help="full URL to request")
+    run.add_argument(
+        "--ports",
+        type=_user_counts,
+        default=[],
+        help="spread users round-robin over these ports of --url's host "
+        "(one ssh tunnel each), e.g. 8001,8011,8012,8013",
+    )
     run.add_argument("--model", help="model name; omit to GET the URL (health)")
     run.add_argument("--stream", action="store_true", help="request an SSE stream")
     run.add_argument("--users", type=_user_counts, default=[1, 2, 4, 8, 16, 32])

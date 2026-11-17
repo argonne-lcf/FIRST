@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -73,10 +74,23 @@ class StepConfig:
     verify: bool | str = True
     think_sec: float = 0.0
     seed: int = 0
+    # Spread users over these ports (same URL otherwise), round-robin by user:
+    # one tunnel per port, so no single ssh process carries every connection.
+    ports: tuple[int, ...] = ()
 
     @property
     def end_at(self) -> float:
         return self.start_at + self.warmup + self.duration
+
+    def url_for(self, index: int) -> str:
+        """The URL user `index` of this worker sends to."""
+        if not self.ports:
+            return self.url
+        parts = urlsplit(self.url)
+        port = self.ports[index % len(self.ports)]
+        host = parts.hostname or ""
+        netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        return urlunsplit(parts._replace(netloc=netloc))
 
 
 def build_body(cfg: StepConfig, rng: random.Random) -> bytes:
@@ -162,7 +176,9 @@ async def _consume_stream(resp: httpx.Response, rec: Record, sent: float) -> Non
         rec["ok"] = True
 
 
-async def _request(client: httpx.AsyncClient, cfg: StepConfig, body: bytes) -> Record:
+async def _request(
+    client: httpx.AsyncClient, cfg: StepConfig, url: str, body: bytes
+) -> Record:
     rec: Record = dict.fromkeys(
         ("t1", "err", "e2e", "ttfb", "ttft", "gap", "n", "out", "gw", "up", "q")
     )
@@ -170,11 +186,11 @@ async def _request(client: httpx.AsyncClient, cfg: StepConfig, body: bytes) -> R
     sent = time.perf_counter()
     try:
         if cfg.mode == "health":
-            request = client.build_request("GET", cfg.url)
+            request = client.build_request("GET", url)
         else:
             request = client.build_request(
                 "POST",
-                cfg.url,
+                url,
                 content=body,
                 headers={"Content-Type": "application/json"},
             )
@@ -220,6 +236,7 @@ async def _user(
     headers = {"Authorization": f"Bearer {cfg.token}"} if cfg.token else {}
     if not cfg.keepalive:
         headers["Connection"] = "close"
+    url = cfg.url_for(index)
     async with httpx.AsyncClient(
         headers=headers,
         verify=verify,
@@ -228,7 +245,7 @@ async def _user(
     ) as client:
         while time.time() < cfg.end_at:
             body = b"" if cfg.mode == "health" else build_body(cfg, rng)
-            record = await _request(client, cfg, body)
+            record = await _request(client, cfg, url, body)
             records.append(record)
             if record["st"] == 0:  # could not connect or lost the connection:
                 await asyncio.sleep(0.2)  # do not spin against a dead server

@@ -217,3 +217,31 @@ def test_stream_first_token_matches_reasoning_deltas(
     from .load.harness import _CONTENT
 
     assert bool(_CONTENT.search(b'{"choices":[{"delta":' + delta + b"}]}")) is counts
+
+
+def test_ports_spread_users_round_robin() -> None:
+    def cfg(url: str, ports: tuple[int, ...] = ()) -> StepConfig:
+        return StepConfig(
+            url=url,
+            mode="health",
+            model=None,
+            users=4,
+            start_at=0.0,
+            warmup=0.0,
+            duration=1.0,
+            ramp=0.0,
+            ports=ports,
+        )
+
+    spread = cfg(
+        "https://localhost:8002/resource_server/health?x=1", (8002, 8021, 8022)
+    )
+    assert [spread.url_for(i) for i in range(4)] == [
+        "https://localhost:8002/resource_server/health?x=1",
+        "https://localhost:8021/resource_server/health?x=1",
+        "https://localhost:8022/resource_server/health?x=1",
+        "https://localhost:8002/resource_server/health?x=1",
+    ]
+    assert (
+        cfg("http://localhost:8001/health").url_for(7) == "http://localhost:8001/health"
+    )
