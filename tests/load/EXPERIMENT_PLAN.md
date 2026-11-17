@@ -11,14 +11,14 @@ state"; sections 1–6 are findings, playbook and reference.
 
 ## 0. Status (keep current)
 
-Last updated 2026-11-17 ~13:30 (end of session 4).
+Last updated 2026-11-17 ~14:40 (session 4). Dev V2 still runs the profiling build `969ad21` (harmless for V1-only runs; redeploy `firstv2` + fixes for P4). Mock: 200/5, 1 replica.
 
 | Phase | What | State |
 | --- | --- | --- |
 | P0 | Pre-optimization suite: A, B0, B50, B1s, B1s-stream (mock); C/D/E/G at 1 replica | **done** (RUNLOG, sessions 2–4) |
-| P1 | Profile V2 hot spots on the mock (section 2.1) | **next**; profiling build `969ad21` being deployed on Dev (13:35) |
-| P2 | Pre-optimization report: P0 results + P1 hot spots (section 2.2) | after P1 |
-| P3 | V1-only runs while the user fixes V2 (section 2.3) | after P2 |
+| P1 | Profile V2 hot spots on the mock (section 2.1) | **done** 13:35–14:15 (RUNLOG "P1 profiling", verdicts in `PROFILING.md`); Dev still runs the profiling build `969ad21` |
+| P2 | Pre-optimization report: P0 results + P1 hot spots (section 2.2) | **done** (draft): `loadtest-runs/campaign-20261116/report/pre-optimization.html`; publish as an artifact from a claude.ai-logged-in session |
+| P3 | V1-only runs while the user fixes V2 (section 2.3) | **in progress**: done A-v1-health-noka, B0-v1-4t, B50-v1-4t; left E-v1-2r/4r, G-v1-bridge-stream-4r (need GPUs: user's OK), optional C-v1-4r, F |
 | P4 | Post-optimization V2 suite, full (section 2.4) | after the user deploys the fixes |
 | P5 | Final report, V1 vs V2-pre vs V2-post (section 2.5) | last |
 
@@ -176,21 +176,28 @@ From accepted runs in RUNLOG. "Ideal" for B1s = 1 req/s per user (1 s mock).
   187 req/s ≈ 5–6 ms CPU per request.**
 - **D / E / G** (gpt-oss-20b, 1024 in / 256 out): vLLM-bound on both; identical req/s (13.8 at 32 users unary). V2 overhead p50 ~8 ms vs V1 10–15 ms; G (streams 4/16/32): 0 errors on both, V2 ttft 15–25 ms lower (p50), max gap alike (~40 ms = vLLM cadence). **Open:** at 8–32 users V2's e2e p95 is 18–27% wider than V1's (unary) and V1 is ~5% ahead on req/s in streams, all in `upstream`/vLLM time, with V2 always run first; reverse the order once in P4 (`D-v2-1r-repeat`).
 
-### V2 hot spots to profile (P1)
-1. **Per-request CPU ~5–6 ms** (B0: 756 req/s on 4 cores; C: 187 req/s on 1 core). Sets
-   V2's ceiling at low concurrency. Candidates H1–H8 in `PROFILING.md`: 7 Redis round
-   trips, `settle`'s extra GET, auth re-validation, JSON handled 5×, 3 log events per
-   request, framework overhead.
-2. **CPU per request grows with requests in flight** (onset ~256): httpcore
-   `_assign_requests_to_connections` walks connections × waiters (71% of CPU in
-   `pool_bench` at 256). 16 sharded clients help at 256 (238 req/s) but 1024 still
-   collapses: a second cost remains (H9–H12).
-3. **Streaming relay ~0.2 ms CPU per chunk**: saturates 4 workers at ~17–20k chunks/s.
-   Real models emit tens of tokens/s per stream, so this bounds concurrent streams
-   per worker in production.
-4. Fixed and deployed along the way (for the report): nginx→gunicorn keepalive (502s
-   from port exhaustion), fd limits, Redis pool that raised `MaxConnectionsError` at
-   100 per worker.
+### V2 hot spots, measured (P1; details and verdicts in RUNLOG "P1 profiling")
+Profiling build on Dev, mock upstream, py-spy + phase laps + per-worker gauges.
+1. **Backend client pool (httpcore)** — H9/H10: at 512 in flight 83% of gateway CPU is
+   `_assign_requests_to_connections` (scan of connections × waiting requests) plus per-idle-connection
+   socket probes (`has_expired` → `is_socket_readable` / `getpeername`); CPU/req 6 → 54 ms from 128 to
+   512 users. Sharding only divides the cost (H11 rejected). Fix direction: a backend client with O(1)
+   acquire/release and no per-acquire socket probes (e.g. aiohttp), or a patched pool.
+2. **Stream relay per chunk** — 0.17–0.27 ms CPU per relayed chunk, linear in chunk rate; ~64% of busy
+   CPU in httpx `aiter_raw` → httpcore → h11 → anyio TLS read (per-read `fail_after` scope). The gateway's
+   own SSE handling is ~2%. Same fix direction as 1 (lower per-read overhead client).
+3. **Unbalanced workers** — H12: one worker at 94% while others sit at 15–64% (64 streams); nginx keepalive
+   connections stay on the worker that accepted them, so one worker sets the tail long before total
+   capacity. Fix direction: spread connections (`SO_REUSEPORT`, nginx `keepalive_requests`/`keepalive_time`).
+4. **Per-request CPU ~4.7 ms** (B0 saturation, 740 req/s on 4 workers): redis-py 15.5% (7 round trips;
+   settle's pre-read GET, 3 token-stats round trips: H1–H3), FastAPI dependencies 12.7% incl. **H13: sync
+   `Depends(InferenceService)` run in the thread pool on every request** (`validate` lap 0.8 → 5.8 ms under
+   load), log events ~9% + `uuid4` 4.5% (H6), JSON ~3% (H5), auth 3.7% (H4). Other-thread CPU ~33% competes
+   for the GIL.
+5. Large inputs (4096 tokens): req/s −43% with loop threads ~54% busy; only +1.3 ms CPU/req. Partly
+   explained (thread-pool waits / GIL, H8).
+6. Fixed and deployed during the campaign (for the report): nginx→gunicorn keepalive (502s from port
+   exhaustion), fd limits, Redis pool that raised `MaxConnectionsError` at 100 per worker.
 
 ### V1 baseline behaviour (as deployed; facts for the report, not proposals)
 - ~1k req/s health ceiling; 290 req/s on the 0 ms mock; overhead ~2× V2's at 1 user.
@@ -281,8 +288,8 @@ Dev VM). Each needs the stated Tara state; confirm replica changes with the user
 | `E-v1-2r`, `E-v1-4r` | gpt-oss-20b 2 / 4 replicas | section 4 E, `--users 8,16,32,48,64` / `16,32,64,96,128` |
 | `G-v1-bridge-stream-4r` | gpt-oss-20b 4 replicas | section 4 G, `--users 16,64,128` |
 | `C-v1-4r` (optional, 16 GPUs) | gemma-4-E4B 4 replicas | `--users 1,4,16,64,128,256,512` |
-| `B0-v1-4t`, `B50-v1-4t` (optional) | mock 0/0, 50/0 | section 4 B on the 4-tunnel path, for uniformity with P4 |
-| `A-v1-health-noka` | none | `--no-keepalive --users 1,4,16,64` (symmetry with V2) |
+| ~~`B0-v1-4t`, `B50-v1-4t`~~ done | mock 0/0, 50/0 | section 4 B on the 4-tunnel path |
+| ~~`A-v1-health-noka`~~ done | none | `--no-keepalive --users 1,4,16,64` |
 | `F-v1-globus-tiny`, `F-v1-globus-real` (optional) | user brings up the V1 Globus endpoint on Sophia, model hot | section 4 F |
 
 ### 2.4 P4: post-optimization V2 suite (full)
