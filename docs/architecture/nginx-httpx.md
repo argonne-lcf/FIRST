@@ -136,6 +136,7 @@ SOCKET_OPTS = [
     (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
     (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15),
     (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
+    (socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 60_000),  # Linux; see below
 ]
 
 # total=None: no end-to-end deadline.
@@ -170,9 +171,12 @@ proxy.  TCP keepalive is then not set on the proxied socket.
 made (the request was never sent, so repeating it is safe).  It returns at the
 response headers; the caller reads the body and releases or closes the response.
 
-There is no write timeout: aiohttp starts the read timer once the request body is
-written.  Small bodies fit in the socket buffer; a large prompt sent to a peer
-that stops reading waits until the kernel gives up on the connection.
+aiohttp has no write timeout: it starts the read timer once the request body is
+written.  On Linux the direct-connection sockets also set `TCP_USER_TIMEOUT` to
+60 s, so a peer that stops acknowledging a large prompt fails the request after
+60 s rather than after the kernel's retransmission limit (~15 min).  A live peer
+acknowledges promptly, keepalive probes included, so a silent prefill never
+trips it.  Sockets through the egress proxy do not get it.
 
 The 900-second read budget applies both before the first upstream response data
 and between later reads. A stream making progress can run longer than 900

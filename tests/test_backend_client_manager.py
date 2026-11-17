@@ -357,3 +357,13 @@ async def test_backend_reached_through_socks_proxy() -> None:
         await client.aclose()
         proxy.close()
     assert seen == [f"backend.cluster.invalid:{port}"]
+
+
+def test_backend_sockets_bound_unacknowledged_writes() -> None:
+    addr_info = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ())
+    with bcm._keepalive_socket(addr_info) as sock:
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE)
+        if not hasattr(socket, "TCP_USER_TIMEOUT"):
+            pytest.skip("TCP_USER_TIMEOUT is Linux-only")
+        value = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT)
+        assert value == bcm.WRITE_STALL_TIMEOUT_MS

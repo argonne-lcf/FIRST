@@ -79,16 +79,29 @@ TCP_KEEPIDLE_OR_KEEPALIVE: int = getattr(socket, "TCP_KEEPALIVE", None) or getat
     socket, "TCP_KEEPIDLE"
 )
 
+# aiohttp has no write timeout: its read timer starts once the request body is
+# written.  On Linux, TCP_USER_TIMEOUT bounds how long sent data may stay
+# unacknowledged, so a peer that stops reading a large prompt fails the request
+# after this long instead of after the kernel's retransmission limit (~15 min).
+# A live peer acknowledges promptly, including keepalive probes during a silent
+# prefill, so it never trips.  (macOS has no equivalent; tests run there.)
+WRITE_STALL_TIMEOUT_MS = 60_000
+
 SOCKET_OPTS = [
     (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
     (socket.IPPROTO_TCP, TCP_KEEPIDLE_OR_KEEPALIVE, 60),
     (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15),
     (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
 ]
+if hasattr(socket, "TCP_USER_TIMEOUT"):
+    SOCKET_OPTS.append(
+        (socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, WRITE_STALL_TIMEOUT_MS)
+    )
 
 
 def _keepalive_socket(addr_info: Any) -> socket.socket:
-    """Socket factory for direct backend connections: TCP keepalive on."""
+    """Socket factory for direct backend connections: TCP keepalive on, and a
+    bound on unacknowledged writes where the OS supports it."""
     family, type_, proto, _, _ = addr_info
     sock = socket.socket(family=family, type=type_, proto=proto)
     for level, option, value in SOCKET_OPTS:
