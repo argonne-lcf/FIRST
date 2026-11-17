@@ -581,4 +581,13 @@ class InferenceService:
         )
 
 
-InferenceServiceDep = Annotated[InferenceService, Depends(InferenceService)]
+async def get_inference_service(request: Request, user: AuthUser) -> InferenceService:
+    """Build the per-request service on the event loop.
+
+    FastAPI runs a non-async dependency, such as the class itself, in its
+    thread pool: a thread hop per request, queued behind a 40-thread limiter.
+    """
+    return InferenceService(request, user)
+
+
+InferenceServiceDep = Annotated[InferenceService, Depends(get_inference_service)]

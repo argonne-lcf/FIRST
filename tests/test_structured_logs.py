@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -23,7 +24,10 @@ from first_common.schema.structured_logs import (
 from first_gateway.apiserver.api import app
 from first_gateway.apiserver.context import _request_id_ctx, get_request_id
 from first_gateway.apiserver.dependencies import _INFERENCE_PATH_PREFIXES
-from first_gateway.apiserver.inference import DEPLOYMENT_HEADER, InferenceService
+from first_gateway.apiserver.inference import (
+    DEPLOYMENT_HEADER,
+    get_inference_service,
+)
 from first_gateway.database.redis.keys import Keys
 from first_gateway.database.redis.router_config import (
     BackendConfig,
@@ -509,11 +513,13 @@ def test_inference_routes_match_body_logging_prefixes() -> None:
         for route in app.routes
         if isinstance(route, APIRoute)
         and any(
-            dep.call is InferenceService
+            dep.call is get_inference_service
             for dep in get_flat_dependant(route.dependant).dependencies
         )
     ]
     assert inference_paths
+    # Built on the event loop: a sync dependency would cost a thread hop.
+    assert inspect.iscoroutinefunction(get_inference_service)
     unmatched = [
         p for p in inference_paths if not p.startswith(_INFERENCE_PATH_PREFIXES)
     ]
