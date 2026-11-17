@@ -18,7 +18,7 @@ how this fits into the larger system.
 
 | Process | Command |
 |---|---|
-| apiserver | `gunicorn first_gateway.apiserver.api:app -k first_gateway.apiserver.uvicorn_worker.UvicornWorker` |
+| apiserver | `gunicorn first_gateway.apiserver.api:app -k first_gateway.apiserver.uvicorn_worker.UvicornWorker` (with `FIRST_GATEWAY_WORKER_BIND=0.0.0.0:7000`, each worker listens on its own `SO_REUSEPORT` socket; see `deploy/Dockerfile`) |
 | controller-manager | `python -m first_gateway.controllers.manager` |
 | certmanager CLI | `pilot-certmanager` (see [Certificate Manager](certmanager.md)) |
 

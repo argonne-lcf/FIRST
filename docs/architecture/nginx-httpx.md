@@ -1,4 +1,4 @@
-# FIRST: httpx / NGINX Configuration Spec
+# FIRST: Backend HTTP Client / NGINX Configuration Spec
 
 ## Why HTTPS + NGINX? (Transport Rationale)
 
@@ -12,7 +12,7 @@ rather than have the pilot dial out?
 The gateway's job is to be a faithful proxy for three evolving API surfaces — Anthropic
 Messages, OpenAI Chat Completions, and OpenAI Responses. The cheapest way to stay faithful
 is to **re-encode nothing**: `vllm serve` (and SGLang, TGI) already implement these APIs
-over HTTP/JSON/SSE, so the gateway passes the request body through raw (`aiter_raw`, no
+over HTTP/JSON/SSE, so the gateway relays the backend's response bytes as received (no
 decode/re-chunk) and lets the upstream own the spec.
 
 Any non-HTTP transport forces us to own a transcoding layer for a spec we don't control:
@@ -92,7 +92,7 @@ a genuine assumption to verify.
    blast radius than the gateway holding client certs and reaching in).
 
 2. **HTTP/1.1 specifically — not HTTP — may need to become HTTP/2 at extreme fan-out.** One
-   `AsyncClient` per backend per worker × 64 connections is a lot of pooled TLS connections
+   client per backend per worker × 64 connections is a lot of pooled TLS connections
    and a burst of handshakes on scale-from-zero. Fine at current scale (resumption + warm
    pools handle steady state); at thousands of backends, HTTP/2 multiplexing is the natural
    evolution — cheap to reconsider without touching the architecture.
@@ -112,16 +112,25 @@ compute nodes.
 ## Configuration Spec
 
 - Use HTTP/1.1 protocol with large keepalive pools on the gateway->NGINX hop
-- Maintain one `AsyncClient` per backend URL in each worker's memory.  Never create a client per-request: the mTLS handshake is expensive!
+- Maintain one `BackendClient` (an aiohttp session and its connection pool) per backend in each worker's memory.  Never create a client per-request: the mTLS handshake is expensive!
 
 ## Client Configuration
 
+The gateway's backend client is `BackendClient` in
+`apiserver/backend_client_manager.py`, built on aiohttp.  It replaced httpx
+after the 2026-11 load tests: httpcore's pool rescans every connection for every
+waiting request on each acquire and release, and probes each idle socket, which
+took 83% of gateway CPU at 512 requests in flight to one backend; and about 64%
+of busy CPU while relaying streams sat in httpx's per-read path.  aiohttp's pool
+takes and returns a connection in constant time and its response parser is in C.
+(The controller and pilot-control clients still use httpx: they make few calls.)
+
 ```python
-import ssl, socket, httpx
-from contextlib import asynccontextmanager
+import socket
+import aiohttp
 
 # Detect half-open connections from crashed nodes (HPC nodes do die).
-# httpx does NOT enable TCP keepalive by default.
+# Applied through the connector's socket_factory on direct connections.
 SOCKET_OPTS = [
     (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
     (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60),
@@ -129,48 +138,41 @@ SOCKET_OPTS = [
     (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4),
 ]
 
-LIMITS = httpx.Limits(
-    max_connections=64,            # per backend, per worker (should be similar to backend's max concurrency)
-    max_keepalive_connections=64,  # keep all connections warm; mTLS handshakes are expensive
-    keepalive_expiry=30.0,         # MUST be < NGINX keepalive_timeout
+# total=None: no end-to-end deadline.
+# sock_connect: 5s fail fast on a firewall issue or mTLS timeout
+# connect: 10s for a free pool slot plus the connection (TCP + TLS)
+# sock_read: 900s of upstream inactivity, including a silent long prefill
+#   (it applies to each read, not the total request duration)
+BACKEND_TIMEOUT = aiohttp.ClientTimeout(
+    total=None, connect=10.0, sock_connect=5.0, sock_read=900.0
 )
 
-# TIMEOUT logic
-# connect: 5s fail fast on firewall issue or mTLS timeout
-# write: 60s to upload large prompt body
-# pool: 5s to wait if all connections are currently in use for the backend
-# read: 900s of upstream inactivity, including a silent long prefill
-# (the timeout applies to each read, not the total request duration)
-STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
-
-# STREAM_TIMEOUT is the default; apply timeout=UNARY_TIMEOUT per-request for non-streaming invocations
-UNARY_TIMEOUT  = httpx.Timeout(connect=5.0, read=900.0, write=60.0, pool=5.0)
-
-def make_client(base_url: str) -> httpx.AsyncClient:
-    transport = httpx.AsyncHTTPTransport(
-        verify=SSL_CTX,
-        retries=2,                 # connect-phase retries ONLY
-        limits=LIMITS,
-        http2=False,
-        socket_options=SOCKET_OPTS,
-    )
-    return httpx.AsyncClient(
-        base_url=base_url,
-        transport=transport,
-        timeout=STREAM_TIMEOUT,    # default; unary calls override per request
-        headers={"Accept-Encoding": "identity"},  # never let upstream compress token streams
-    )
-
-CLIENTS: dict[str, httpx.AsyncClient] = {}
-
-@asynccontextmanager
-async def lifespan(app):
-    for node in discover_backends():
-        CLIENTS[node.origin] = make_client(node.origin)
-    yield
-    for c in CLIENTS.values():
-        await c.aclose()           # drains pools cleanly on worker shutdown
+connector = aiohttp.TCPConnector(
+    limit=max_backend_concurrency,   # per backend, per worker
+    limit_per_host=0,
+    keepalive_timeout=30.0,          # MUST be < NGINX keepalive_timeout
+    ssl=ssl_context,                 # pilot mTLS / static mTLS / system CAs
+    socket_factory=keepalive_socket, # sets SOCKET_OPTS
+)
+session = aiohttp.ClientSession(
+    connector=connector,
+    timeout=BACKEND_TIMEOUT,
+    headers={"Accept-Encoding": "identity"},  # never let upstream compress token streams
+)
 ```
+
+When `ALL_PROXY`/`HTTPS_PROXY` applies to a backend (not exempted by
+`NO_PROXY`, which may list CIDR networks), the connector is an
+`aiohttp_socks.ProxyConnector` instead; `socks5h://` resolves names at the
+proxy.  TCP keepalive is then not set on the proxied socket.
+
+`BackendClient.post()` retries twice, 0–0.5 s apart, when no connection could be
+made (the request was never sent, so repeating it is safe).  It returns at the
+response headers; the caller reads the body and releases or closes the response.
+
+There is no write timeout: aiohttp starts the read timer once the request body is
+written.  Small bodies fit in the socket buffer; a large prompt sent to a peer
+that stops reading waits until the kernel gives up on the connection.
 
 The 900-second read budget applies both before the first upstream response data
 and between later reads. A stream making progress can run longer than 900
@@ -192,41 +194,38 @@ timeout is unchanged. These templates are not evidence of deployed settings:
 inspect the selected Compose mounts and running host/edge configurations before
 applying them. An outside proxy or client can impose a shorter limit. The
 compute-side proxy retains its 32 MiB body allowance and 920-second read budget.
-Neither these settings nor the HTTP client change extends backend-client
+Neither these settings nor the backend client's timeouts extend backend-client
 retirement or replica-drain grace periods; deploy/restart only when idle or with
 separately coordinated draining.
 
 ## Streaming Requests
 
-Streaming httpx API: do not use `async with client.stream(...)` — the context
-manager can't span the lifetime of a `StreamingResponse`. Use the build/send
-pattern with cleanup in `finally`:
+`InferenceService._handle_streaming` sends the request, checks the status at the
+response headers, and hands a generator over the open response to
+`StreamingResponse`.  The response cannot live inside an `async with`: the
+context would close before Starlette iterates the body.  Cleanup goes in the
+generator's `finally`:
 
 ```python
-import anyio
-from fastapi.responses import StreamingResponse, JSONResponse
+async def proxy_stream(client: BackendClient, body: bytes):
+    upstream = await client.post("/v1/chat/completions", body)
 
-async def proxy_stream(origin: str, payload: dict):
-    client = CLIENTS[origin]
-    req = client.build_request("POST", "/v1/chat/completions", json=payload)
-    upstream = await client.send(req, stream=True)
-
-    if upstream.status_code != 200:
-        body = await upstream.aread()          # small error body; safe to buffer
-        await upstream.aclose()
-        return JSONResponse(status_code=upstream.status_code, content=json.loads(body))
+    if upstream.status != 200:
+        async with upstream:
+            error = await upstream.read()      # small error body; safe to buffer
+        return Response(error, status_code=upstream.status)
 
     async def relay():
         try:
-            async for chunk in upstream.aiter_raw():   # raw passthrough, no decode/re-chunk
+            async for chunk in upstream.content.iter_any():  # whatever each read returned
                 yield chunk
         finally:
             # Runs on: normal completion, upstream error, AND client disconnect
-            # (Starlette cancels this generator on disconnect → CancelledError).
-            # The close itself must be shielded or the pending cancellation
-            # interrupts it and leaks the connection.
-            with anyio.CancelScope(shield=True):
-                await upstream.aclose()
+            # (Starlette cancels this generator on disconnect).  A stream read to
+            # its end has already returned its connection to the pool; close()
+            # drops one abandoned midway.  It is synchronous, so cancellation
+            # cannot interrupt it.
+            upstream.close()
 
     return StreamingResponse(
         relay(),
@@ -237,21 +236,25 @@ async def proxy_stream(origin: str, payload: dict):
 
 ## Non-streaming
 
+The backend's JSON bytes are relayed as received; the gateway parses them only
+to read `usage`.
+
 ```python
-async def proxy_unary(origin: str, payload: dict):
-    client = CLIENTS[origin]
-    r = await client.post("/v1/chat/completions", json=payload, timeout=UNARY_TIMEOUT)
-    return Response(content=r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))
+async def proxy_unary(client: BackendClient, body: bytes):
+    async with await client.post("/v1/chat/completions", body) as r:
+        content = await r.read()
+    return Response(content, status_code=r.status, media_type="application/json")
 ```
 
 ## Retry Policy
 
 | Condition | Action |
 |---|---|
-| `ConnectError` / `ConnectTimeout` | Record error and retry on another backend, ≤3 attempts |
-| `PoolTimeout` | Should never happen, because if backend saturated, Admission Controller will not select the backend. Admission Controller selects the first available backend, or 503 + `Retry-After` if none |
-| 502/503 from NGINX, no bytes relayed to client | Retry on another node |
-| `ReadTimeout` (non-streaming) | **Do not retry.** The GPU likely did (or is doing) the work; retrying doubles cost and feeds overload. Return 504 |
+| No connection (`ClientConnectorError`, `ConnectionTimeoutError`, proxy errors) | Two more connect attempts on the same backend, then record the error and retry on another backend, ≤3 backends |
+| Waiting for a free pool slot | Should never happen, because if backend saturated, Admission Controller will not select the backend. Admission Controller selects the first available backend, or 503 + `Retry-After` if none. Bounded by the 10 s `connect` timeout |
+| 502/503/504 from NGINX, no bytes relayed to client | Retry on another node |
+| Read inactivity (`SocketTimeoutError`) on a task (`/tasks`) | **Do not retry.** The GPU likely did (or is doing) the work; retrying doubles cost and feeds overload |
+| Read inactivity on other unary requests | Currently retried on another backend, like other transport errors |
 | Any error after first byte streamed to the client | **Never retry** — partial tokens already delivered; surface the error in-stream |
 
 The AdmissionController `record_error()` creates a per-backend circuit breaker and ensures that consistently failling backends are removed from the admission rotation for a bench duration.    Backends that recover are naturally returned to the rotation.  Backends that remain truly unhealthy will fail the health check and be stopped/replaced by the control plane.
@@ -281,7 +284,7 @@ http {
     gzip off;                       # NEVER compress SSE — it buffers tokens
     reset_timedout_connection on;
 
-    # ---- Gateway-facing keepalive (must outlive httpx keepalive_expiry!) ----
+    # ---- Gateway-facing keepalive (must outlive the gateway client idle expiry!) ----
     keepalive_timeout  300s;
     keepalive_requests 10000;       # default 1000 forces churn at high QPS
 
@@ -335,7 +338,7 @@ http {
             #    always times out first and owns error semantics --
             proxy_connect_timeout 5s;
             proxy_send_timeout    60s;
-            proxy_read_timeout    920s;     # > httpx unary read (900s)
+            proxy_read_timeout    920s;     # > gateway client read inactivity (900s)
 
             # -- Liveness & resource reclaim --
             proxy_socket_keepalive on;          # reap half-open peers
@@ -359,7 +362,7 @@ Idle-connection races (client reuses a connection the server is concurrently clo
 
 | Hop | Client-side idle expiry | Server-side idle timeout | Rule |
 |---|---|---|---|
-| httpx → NGINX | `keepalive_expiry = 30s` | `keepalive_timeout 300s` | 30 ≪ 300 ✓ |
+| Gateway client → NGINX | connector `keepalive_timeout = 30s` | `keepalive_timeout 300s` | 30 ≪ 300 ✓ |
 | NGINX → vLLM | upstream `keepalive_timeout 60s` | uvicorn keep-alive ≥ 120s | 60 < 120 ✓ |
 
 ⚠️ **vLLM's embedded uvicorn defaults to a 5-second keep-alive timeout**, which silently defeats NGINX upstream pooling (every pooled connection dies after 5 idle seconds). Raise it — recent vLLM exposes `VLLM_HTTP_TIMEOUT_KEEP_ALIVE=120` (env) or the equivalent uvicorn `--timeout-keep-alive`; verify against your vLLM version.
@@ -368,10 +371,23 @@ Idle-connection races (client reuses a connection the server is concurrently clo
 
 Gateway uvicorn: `--loop uvloop --http httptools --backlog 2048`, a graceful shutdown timeout longer than your longest tolerated stream, and 4 workers is reasonable for an I/O-bound proxy — scale workers on CPU saturation from JSON/TLS work, not on concurrency (asyncio handles that).
 
+Each gunicorn worker listens on `:7000` with its own `SO_REUSEPORT` socket
+(`FIRST_GATEWAY_WORKER_BIND`, set in the image; `apiserver/uvicorn_worker.py`),
+and the master binds a placeholder unix socket.  With one shared socket, the
+kernel handed most new connections to whichever worker polled last, and nginx
+keeps its upstream connections open, so one worker served most of the requests:
+94/15/23/64% busy at 64 streams in the load tests.  With a socket per worker the
+kernel spreads new connections evenly by a hash of their addresses.  Connections
+still queued on a worker's socket when that worker dies are reset.
+
 ## Streaming settlement
 
 Starlette/uvicorn give you a strong guarantee: the generator feeding a StreamingResponse is always finalized.
 
 - Any bare await in the finally gets re-cancelled immediately (the task is still in a cancelled state).
-Cleanup awaits **must be shielded**: `with anyio.CancelScope(shield=True): await upstream.aclose()`.
-- The settlement work itself should not be awaited there at all. Keep the finally body synchronous and non-raising: flip a flag, shielded-close the upstream, and schedule a detached task that does parsing, ac.settle(), and logging. (This is exactly what `finalize_stream()` does in the example `usage-adapters.py`).
+Cleanup awaits **must be shielded**: `with anyio.CancelScope(shield=True): ...`.  Closing the
+upstream response needs no shield: aiohttp's `close()` is synchronous.
+- The relay settles in that shielded block: one `settle` round trip (which also updates the
+  token-estimation statistics) and the `InferenceLog` emit, after the last chunk has been relayed.
+  Settling inline rather than in a detached task frees the user's concurrency slot before
+  the next request on the same connection can be admitted.

@@ -288,10 +288,18 @@ This makes concurrent settlement safe — the request `finally` block, the
 sweeper, and retries can all call `settle()` without coordination, and exactly
 one caller applies.
 
-For 99.9% of requests, settlement happens naturally in the request handler's
-`finally` block.  The hot path passes `model_name` and `user_id` from the
-request context to skip a pre-read round trip.  The sweeper, which only has
-`request_id`, reads the reservation first to discover the identity.
+For 99.9% of requests, settlement happens naturally in the request handler
+(for a stream, in its relay's `finally` block).  The hot path passes
+`model_name`, `user_id` and `backend_id` from the request context to skip a
+pre-read round trip.  The sweeper, which only has `request_id`, reads the
+reservation first to discover the identity.
+
+A successful request also hands `settle()` its token-estimation samples
+(chars per input token, output tokens), and the same script folds them into the
+user+model EWMAs (`usage:{model}:{user}:*_ewma`) and returns the new values.
+Each worker caches those for 60 s, so the read before the next admission
+usually needs no round trip.  A unary request thus makes three Redis round
+trips: the token-cache GET in auth, `admit`, and `settle`.
 
 Crashed workers and leaked reservations are caught by the sweeper, which
 periodically runs `ZRANGEBYSCORE rt:deadlines -inf {now}` to surface
@@ -366,7 +374,7 @@ time, and whether or not there is capacity to cold-start the backend.
 
 ### Proxy Engine (hot path)
 
-- **Connections:** per-backend pooled `httpx.AsyncClient` (tuned pool, generous keepalive); lazily created and reaped.
+- **Connections:** per-backend pooled `BackendClient` (aiohttp; tuned pool, generous keepalive); created and reaped as backends enter and leave the router config. See [Transport](nginx-httpx.md).
 - **Passthrough mode:** forward original bytes; strip scope prefix; map to the backend's matching dialect path; swap auth header for the backend's key; stream response bytes chunk-for-chunk via `StreamingResponse`. **No re-serialization anywhere.**
     - One exception: OpenAI chat streaming without `stream_options.include_usage` → inject it (request-side re-serialization only) and **drop the trailing usage chunk** before the client if the client didn't ask for it.
 - **SSE hygiene:** iterate raw bytes (not lines); no compression middleware on streaming routes; `X-Accel-Buffering: no`; flush per chunk; propagate Content-Type.
