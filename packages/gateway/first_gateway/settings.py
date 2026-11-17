@@ -13,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from redis.asyncio import BlockingConnectionPool
 from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -154,6 +155,12 @@ class Settings(BaseSettings):
 
     db_url: SecretStr
     redis_url: str
+    # Redis connections per process. redis-py's default pool holds 100 and
+    # raises MaxConnectionsError when they are all busy, which failed requests
+    # under load (each request makes several admission/lease calls). This pool
+    # waits up to `redis_pool_timeout` seconds for a free connection instead.
+    redis_max_connections: int = 512
+    redis_pool_timeout: float = 5.0
 
     globus: GlobusAuthSettings
     data_staging_globus_collection_id: str = ""
@@ -191,6 +198,16 @@ class Settings(BaseSettings):
             do_version_check=False,
         )
 
+    def build_redis(self) -> AsyncRedis:
+        """A Redis client whose pool waits for a free connection when full."""
+        pool = BlockingConnectionPool.from_url(
+            self.redis_url,
+            max_connections=self.redis_max_connections,
+            timeout=self.redis_pool_timeout,
+            decode_responses=True,
+        )
+        return AsyncRedis.from_pool(pool)  # aclose() also closes the pool
+
     @asynccontextmanager
     async def build_clients(self) -> AsyncGenerator[ClientState, None]:
         """
@@ -203,7 +220,7 @@ class Settings(BaseSettings):
         )
         sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
 
-        redis = AsyncRedis.from_url(self.redis_url, decode_responses=True)
+        redis = self.build_redis()
         await redis.ping()
         try:
             yield ClientState(
