@@ -1,5 +1,11 @@
 upstream app_server {
     server 127.0.0.1:7001;
+    # Reuse connections to the gateway; without this nginx opens one per
+    # request and can exhaust local ports under load. Requires the
+    # `Connection $connection_upgrade` header below (empty for plain requests).
+    keepalive 128;
+    # Below the gateway's own keep-alive (gunicorn --keep-alive 75).
+    keepalive_timeout 60s;
 }
 
 map $http_upgrade $connection_upgrade {

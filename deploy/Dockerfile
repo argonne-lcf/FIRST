@@ -49,4 +49,5 @@ CMD [".venv/bin/gunicorn", \
     "-k", "first_gateway.apiserver.uvicorn_worker.UvicornWorker", \
     "-b", "0.0.0.0:7000", \
     "--workers", "4", \
+    "--keep-alive", "75", \
     "--timeout", "30"]
