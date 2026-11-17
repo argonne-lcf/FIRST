@@ -1,0 +1,20 @@
+# Opt-in load-test profiling overlay (DEV ONLY; see tests/load/PROFILING.md).
+#
+# Append to COMPOSE_FILE, then rebuild and restart the gateway:
+#   COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml:deploy/compose.profile.yaml
+#   make profile-up
+#
+# It builds py-spy into the gateway image, lets root in the container attach to
+# the workers, and turns on the per-worker gauges
+# (first_gateway/apiserver/profiling.py).  Prod never references this file.
+
+services:
+  inference-gateway:
+    build:
+      args:
+        INSTALL_PYSPY: "0.4.1"
+    cap_add:
+      - SYS_PTRACE # py-spy reads the workers' memory
+    environment:
+      # Inside the container; `tests/load/profile.sh collect` copies it out.
+      - FIRST_PROFILE_DIR=/tmp/first-profile

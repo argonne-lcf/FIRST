@@ -13,6 +13,7 @@ from .backend_client_manager import BackendClientManager
 from .error_handlers import register_error_handlers
 from .log_middleware import ResponseLogMiddleware
 from .loop_watchdog import LoopWatchdog
+from .profiling import start_probe
 from .router_config_manager import RouterConfigManager
 from .routes import routers
 
@@ -75,11 +76,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if settings.loop_watchdog_timeout > 0:
             watchdog = LoopWatchdog(timeout=settings.loop_watchdog_timeout)
             await watchdog.start()
+        probe = start_probe()  # load-test profiling; off unless configured
         try:
             yield
         finally:
             if watchdog is not None:
                 await watchdog.stop()
+            if probe is not None:
+                probe.cancel()
             await admission_controller.stop()
             await router_config_manager.stop()
             await backend_client_manager.close_all()

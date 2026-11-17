@@ -201,6 +201,9 @@ async def _request(
             timing = parse_server_timing(resp.headers.get("server-timing"))
             rec["gw"], rec["up"] = timing.get("gateway"), timing.get("upstream")
             rec["q"] = timing.get("queue")
+            phases = {k[2:]: v for k, v in timing.items() if k.startswith("p_")}
+            if phases:
+                rec["ph"] = phases
             if "attempts" in timing:
                 rec["att"] = int(timing["attempts"])
             rec["dep"] = resp.headers.get(DEPLOYMENT_HEADER)
@@ -399,6 +402,8 @@ def run_step(
         stream=cfg.mode == "stream",
     )
     summary["client_cpu"] = cpu
+    # Epoch bounds of the measured window, to line up server-side samples.
+    summary["window"] = [start_at + cfg.warmup, start_at + cfg.warmup + cfg.duration]
     summary["processes"] = procs
     if samples:
         serving = [s["serving"] for s in samples]

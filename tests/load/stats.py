@@ -14,6 +14,7 @@ A record is one request, as written by `harness.py` (times in ms unless noted):
     out      completion tokens reported by the backend
     gw, up, q, att   Server-Timing: gateway, upstream, queue, attempts
     dep      X-First-Deployment
+    ph       Server-Timing `p_<phase>` entries: gateway time by phase (PHASES)
 
 Latency differences are taken per request and then aggregated, because
 percentiles do not subtract:
@@ -34,6 +35,32 @@ Record = dict[str, Any]
 Summary = dict[str, Any]
 
 QUANTILES = (("p50", 0.50), ("p95", 0.95), ("p99", 0.99))
+
+# The gateway's hot path in order, as cut by `lap()` on the profiling branch
+# (see PROFILING.md).  A `cpu` phase never awaits, so its time is CPU spent on
+# this request.  A `wait` phase awaits I/O: its time also contains event-loop
+# lag, which grows with load whether or not the I/O does.
+PHASES: dict[str, tuple[str, str]] = {
+    "pre_auth": ("cpu*", "ASGI + routing + body read + JSON decode + dependencies"),
+    "auth": ("wait", "token introspection (Redis token cache)"),
+    "request_log": ("cpu", "RequestLog emit"),
+    "validate": ("cpu", "pydantic validation of the request body"),
+    "route": ("cpu", "resolve model, permission check, shuffle backends"),
+    "token_stats": ("wait", "get_token_stats (per-worker cache; Redis MGET on a miss)"),
+    "estimate": ("cpu", "payload.estimate_tokens"),
+    "admit": ("wait", "admit_request (Redis Lua)"),
+    "dump": ("cpu", "payload.model_dump + JSON encode of the request body"),
+    "upstream": ("wait", "backend round trip (stream: until its headers)"),
+    "parse": ("cpu", "JSON decode of the response + usage parse"),
+    "settle": ("wait", "admission.settle (Redis Lua; also updates token stats)"),
+    "record_stats": (
+        "wait",
+        "record_token_stats (Redis MGET + pipeline); pre-opt only",
+    ),
+    "inference_log": ("cpu", "InferenceLog emit"),
+    "render": ("cpu", "response object (backend bytes relayed as received)"),
+    "respond": ("cpu", "return through FastAPI to the first response byte"),
+}
 
 
 def parse_server_timing(value: str | None) -> dict[str, float]:
@@ -112,10 +139,30 @@ def summarize(
         ),
         "out_tokens": distribution(r["out"] for r in ok),
     }
+    names = {name for r in ok for name in r.get("ph") or ()}
+    if names:
+        summary["phases"] = {
+            name: distribution((r.get("ph") or {}).get(name) for r in ok)
+            for name in sorted(names, key=_phase_order)
+        }
+        for kind in ("cpu", "wait"):
+            summary[f"phases_{kind}"] = distribution(
+                sum(v for n, v in r["ph"].items() if _phase_kind(n) == kind)
+                for r in ok
+                if r.get("ph")
+            )
     if stream:
         summary["ttft"] = distribution(r["ttft"] for r in ok)
         summary["max_gap"] = distribution(r["gap"] for r in ok)
     return summary
+
+
+def _phase_order(name: str) -> int:
+    return list(PHASES).index(name) if name in PHASES else len(PHASES)
+
+
+def _phase_kind(name: str) -> str:
+    return PHASES.get(name, ("?", ""))[0].rstrip("*")
 
 
 # --- tables --------------------------------------------------------------------
@@ -170,6 +217,42 @@ def steps_table(steps: list[Summary], *, stream: bool) -> str:
         )
         rows.append(row)
     return _table(header, rows)
+
+
+def phase_table(step: Summary) -> str | None:
+    """Gateway time by phase for one step, in hot-path order (times in ms).
+
+    `share` is the phase's part of the mean gateway time.  The two bottom rows
+    add up each request's `cpu` and `wait` phases.
+    """
+    phases = step.get("phases")
+    if not phases:
+        return None
+    total = sum(d["mean"] for d in phases.values() if d) or 1.0
+
+    def row(
+        name: str, kind: str, dist: dict[str, float] | None, what: str
+    ) -> list[str]:
+        cells = [_us(dist, k) for k in ("p50", "p95", "p99", "mean")]
+        share = f"{dist['mean'] / total * 100:.1f}%" if dist else "–"
+        return [name, kind, *cells, share, what]
+
+    rows = [
+        row(n, *PHASES.get(n, ("?", ""))[:1], d, PHASES.get(n, ("?", ""))[1])
+        for n, d in phases.items()
+    ]
+    rows.append(row("Σ cpu", "cpu", step.get("phases_cpu"), "all cpu phases"))
+    rows.append(row("Σ wait", "wait", step.get("phases_wait"), "all wait phases"))
+    header = ["phase", "kind", "p50", "p95", "p99", "mean", "share", "what"]
+    return _table(header, rows)
+
+
+def _us(dist: dict[str, float] | None, key: str) -> str:
+    """Milliseconds with enough digits for sub-millisecond phases."""
+    if dist is None:
+        return "–"
+    value = dist[key]
+    return f"{value:.0f}" if value >= 100 else f"{value:.3g}"
 
 
 def peak(steps: list[Summary], *, max_error_rate: float = 0.01) -> Summary | None:

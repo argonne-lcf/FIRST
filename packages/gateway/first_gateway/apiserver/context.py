@@ -1,7 +1,7 @@
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 _request_id_ctx: ContextVar[str] = ContextVar("_request_id")
@@ -26,6 +26,10 @@ class RequestTiming:
 
     upstream_sec: float = 0.0
     attempts: int = 0
+    # Profiling (tests/load/PROFILING.md): the request's wall time, cut into
+    # consecutive named phases.  `last` is where the current phase began.
+    last: float = field(default_factory=time.perf_counter)
+    phases: dict[str, float] = field(default_factory=dict)
 
 
 _request_timing_ctx: ContextVar[RequestTiming] = ContextVar("_request_timing")
@@ -48,3 +52,20 @@ def upstream_timer() -> Iterator[None]:
         if timing is not None:
             timing.upstream_sec += time.perf_counter() - t0
             timing.attempts += 1
+
+
+def lap(name: str) -> None:
+    """Close the current phase of the request: charge the time since the last
+    ``lap`` (or the request's start) to ``name``.
+
+    A request runs its hot path sequentially, so consecutive laps partition its
+    wall time with nothing left over.  A phase with no ``await`` in it is pure
+    CPU; one with an ``await`` also contains event-loop wait (see
+    tests/load/PROFILING.md).  Repeated names (retries) add up.  No-op outside
+    a request.
+    """
+    timing = _request_timing_ctx.get(None)
+    if timing is not None:
+        now = time.perf_counter()
+        timing.phases[name] = timing.phases.get(name, 0.0) + now - timing.last
+        timing.last = now

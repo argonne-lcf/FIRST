@@ -16,7 +16,7 @@ from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
-from .context import get_request_id
+from .context import get_request_id, lap
 from .router_config_manager import RouterConfigManager
 
 
@@ -79,6 +79,7 @@ async def get_auth_user(
     """
     Returns UserAuthEvent if and only if the user is authenticated. Raises Unauthorized otherwise.
     """
+    lap("pre_auth")  # middleware, routing, body read, JSON decode, dependencies
     if request.url.path.startswith(_INFERENCE_PATH_PREFIXES):
         raw_body = await request.body()  #  Cached on request._body
         storage_dir = state.settings.prompt_storage_dir
@@ -105,6 +106,7 @@ async def get_auth_user(
             content_length=int(content_length) if content_length else None,
         ).emit()
         raise
+    lap("auth")
 
     RequestLog(
         request_id=get_request_id() or str(uuid.uuid4()),
@@ -121,6 +123,7 @@ async def get_auth_user(
         origin_ip=origin_ip,
         content_length=int(content_length) if content_length else None,
     ).emit(raw_body=raw_body, storage_dir=storage_dir)
+    lap("request_log")
 
     return user
 

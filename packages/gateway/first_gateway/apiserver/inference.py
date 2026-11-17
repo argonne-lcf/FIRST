@@ -46,7 +46,7 @@ from .backend_client_manager import (
     BackendClientManager,
     is_read_timeout,
 )
-from .context import get_request_id, upstream_timer
+from .context import get_request_id, lap, upstream_timer
 from .dependencies import AuthUser
 from .router_config_manager import RouterConfigManager
 
@@ -133,6 +133,7 @@ class InferenceService:
         retryable failures.
         """
 
+        lap("validate")  # dependency glue + pydantic validation of the body
         model = self._resolve_model(payload)
 
         # Only collect backend candidates that have a client ready
@@ -152,15 +153,18 @@ class InferenceService:
             for b in backend_candidates
             if b.uid in self.backend_client_manager.clients
         ]
+        lap("route")
 
         stats = await self.admission_controller.get_token_stats(
             model.name, self.user.id
         )
+        lap("token_stats")
         self.estimate = payload.estimate_tokens(
             model.max_model_len,
             chars_per_token=stats.chars_per_token,
             output_estimate=stats.output_tokens,
         )
+        lap("estimate")
         handler = self._get_upstream_handler(payload)
 
         attempted = 0
@@ -191,6 +195,7 @@ class InferenceService:
                     error=exc.info.get("reject_reason") or exc.code,
                 )
                 raise
+            lap("admit")
 
             client = self.backend_client_manager.get(backend_id)
             if client is None:
@@ -418,6 +423,7 @@ class InferenceService:
 
         is_task = isinstance(payload, GenericTaskPayload)
         body = _encode_json(upstream_payload)
+        lap("dump")
 
         t0 = time.perf_counter()
         with upstream_timer():
@@ -446,11 +452,14 @@ class InferenceService:
                 )
 
         latency_sec = time.perf_counter() - t0
+        lap("upstream")
         json_body: dict[str, Any] = json.loads(content)
         assert isinstance(json_body, dict)
         usage = parser.parse_unary(json_body) if parser else TokenUsage()
+        lap("parse")
 
         await self._settle(model, backend.id, usage.total_tokens or 0, learn_from=usage)
+        lap("settle")  # includes the token-stats update (was `record_stats`)
         self._emit_inference_log(
             payload,
             model,
@@ -461,13 +470,16 @@ class InferenceService:
             latency_sec=latency_sec,
             raw_body=content,
         )
+        lap("inference_log")
         # The backend's JSON is relayed as received, not re-encoded.
-        return Response(
+        rendered = Response(
             content,
             status_code=status_code,
             media_type="application/json",
             headers={DEPLOYMENT_HEADER: deployment.name},
         )
+        lap("render")
+        return rendered
 
     async def _handle_streaming(
         self,
@@ -490,6 +502,7 @@ class InferenceService:
 
         body = _encode_json(upstream_payload)
         error_body = b""
+        lap("dump")
 
         t0 = time.perf_counter()
         with upstream_timer():  # until the backend's response headers
@@ -511,6 +524,7 @@ class InferenceService:
                 self._raise_for_upstream_status(
                     response.status, error_body.decode(errors="replace"), model.name
                 )
+        lap("upstream")  # a stream's phases stop where its headers go out
 
         async def _relay() -> AsyncIterator[bytes]:
             tap = UsageTap()

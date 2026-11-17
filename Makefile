@@ -86,6 +86,22 @@ attach-tunnel:
 	@echo -----------------------------------------------------
 	docker compose attach --detach-keys="ctrl-x" tunnel
 
+# --- Load-test profiling (tests/load/PROFILING.md) -----------------------------
+# Needs deploy/compose.profile.yaml appended to COMPOSE_FILE in .env.
+
+profile-up:
+	docker compose up -d --build inference-gateway
+
+profile-reset:
+	tests/load/profile.sh reset
+
+# Sample all gateway workers with py-spy while a load step is running.
+profile-pyspy:
+	tests/load/profile.sh pyspy $(or $(DURATION),60)
+
+profile-collect:
+	tests/load/profile.sh collect $(DIR)
+
 # --- Production ---------------------------------------------------------------
 
 # Log shipping is part of prod (docs/deployment/log-shipping.md).

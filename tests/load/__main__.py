@@ -1,4 +1,5 @@
-"""CLI: `uv run python -m tests.load {run,report,mock-upstream}` (see README.md)."""
+"""CLI: `uv run python -m tests.load {run,report,profile-report,mock-upstream}`
+(see README.md and PROFILING.md)."""
 
 import argparse
 import json
@@ -12,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .harness import Mode, ReplicaPoller, StepConfig, run_step
-from .stats import Summary, comparison_table, steps_csv, steps_table
+from .profile import profile_report
+from .stats import Summary, comparison_table, phase_table, steps_csv, steps_table
 
 DEFAULT_TOKEN_CMD = "alcf-tokens get-token inference"
 
@@ -51,6 +53,9 @@ def _write_results(run_dir: Path, meta: dict[str, Any], steps: list[Summary]) ->
         + steps_table(steps, stream=stream)
         + "\n"
     )
+    for step in steps:  # only a gateway on the profiling branch reports phases
+        if table := phase_table(step):
+            report += f"\n## Gateway time by phase: {step['users']} users\n\n{table}\n"
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     (run_dir / "summary.json").write_text(json.dumps(steps, indent=2) + "\n")
     (run_dir / "summary.md").write_text(report)
@@ -167,6 +172,19 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(report)
 
 
+def cmd_profile_report(args: argparse.Namespace) -> None:
+    run_dir = Path(args.run)
+    report = profile_report(
+        run_dir,
+        Path(args.profile) if args.profile else None,
+        clock_offset=args.clock_offset,
+    )
+    out = Path(args.out) if args.out else run_dir / "profile.md"
+    out.write_text(report)
+    print(report)
+    print(f"\nWritten to {out}")
+
+
 def cmd_mock_upstream(args: argparse.Namespace) -> None:
     import uvicorn
 
@@ -241,6 +259,20 @@ def main() -> None:
     report.add_argument("runs", nargs="+", help="run directories, baseline first")
     report.add_argument("--out", help="also write the markdown here")
     report.set_defaults(func=cmd_report)
+
+    prof = sub.add_parser(
+        "profile-report", help="phases + gateway worker gauges + py-spy stacks"
+    )
+    prof.add_argument("run", help="run directory")
+    prof.add_argument("--profile", help="profile directory copied off the gateway")
+    prof.add_argument(
+        "--clock-offset",
+        type=float,
+        default=0.0,
+        help="seconds to add to client times to get gateway times",
+    )
+    prof.add_argument("--out", help="markdown path (default: <run>/profile.md)")
+    prof.set_defaults(func=cmd_profile_report)
 
     mock = sub.add_parser("mock-upstream", help="serve the no-work model")
     mock.add_argument("--host", default="0.0.0.0")

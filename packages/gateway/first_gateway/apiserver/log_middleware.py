@@ -20,6 +20,8 @@ its own end-to-end latency without access to the logs::
 - ``upstream``: time spent waiting on inference backends, summed over attempts
   (omitted when no backend was called).  ``gateway - upstream`` is the
   gateway's own overhead.
+- ``p_<phase>``: the ``gateway`` time cut into consecutive phases (``lap`` in
+  ``context.py``; read with tests/load/PROFILING.md).
 - ``queue``: time between the reverse proxy forwarding the request (its
   ``X-Request-Start: t=<epoch seconds>`` stamp) and this middleware starting,
   i.e. connection setup and waiting for a worker.  Omitted without the stamp.
@@ -36,7 +38,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from first_common.schema.structured_logs import ResponseLog
 
-from .context import RequestTiming, _request_id_ctx, _request_timing_ctx
+from . import profiling
+from .context import RequestTiming, _request_id_ctx, _request_timing_ctx, lap
 
 # Constant probe traffic; the only anonymous route worth suppressing.
 _SKIP_PATHS = {"/health"}
@@ -65,6 +68,8 @@ def _server_timing(queue_ms: float | None, t0: float, timing: RequestTiming) -> 
             f"upstream;dur={timing.upstream_sec * 1000:.2f}"
             f';desc="attempts={timing.attempts}"'
         )
+    # Profiling phases (tests/load/PROFILING.md); they sum to `gateway`.
+    parts += [f"p_{name};dur={sec * 1000:.3f}" for name, sec in timing.phases.items()]
     return ", ".join(parts).encode()
 
 
@@ -82,7 +87,8 @@ class ResponseLogMiddleware:
         token = _request_id_ctx.set(cid)
         timing = RequestTiming()
         timing_token = _request_timing_ctx.set(timing)
-        t0 = time.perf_counter()
+        t0 = timing.last = time.perf_counter()
+        profiling.STATS.started += 1
 
         status_code = 500
         started = False
@@ -99,6 +105,7 @@ class ResponseLogMiddleware:
                     if name.lower() == b"content-type":
                         streaming = value.lower().startswith(b"text/event-stream")
                         break
+                lap("respond")  # back out through FastAPI to the first send
                 message = {
                     **message,
                     "headers": [
@@ -131,6 +138,7 @@ class ResponseLogMiddleware:
                 raw = bytes(error_body) if status_code >= 400 else None
                 self._emit(cid, status_code, t0, streaming, raw)
         finally:
+            profiling.STATS.finished += 1
             _request_timing_ctx.reset(timing_token)
             _request_id_ctx.reset(token)
 

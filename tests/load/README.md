@@ -6,6 +6,9 @@ gateways. It never runs as part of `make test`.
 The planned V1-vs-V2 campaign (which runs, in what order, and the report they
 feed) is in [EXPERIMENT_PLAN.md](EXPERIMENT_PLAN.md).
 
+To find where a saturated V2 gateway spends its time (phases, event-loop lag,
+py-spy), see [PROFILING.md](PROFILING.md) on the `loadtest-profiling` branch.
+
 ```bash
 uv run python -m tests.load run --url <URL> [--model <MODEL>] [--stream] --users 1,2,4,8
 uv run python -m tests.load report <run-dir> [<run-dir> ...]

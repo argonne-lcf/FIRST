@@ -35,6 +35,13 @@ RUN chmod -R a+rX packages
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --package first-gateway --frozen --no-dev
 
+# Load-test profiling only (deploy/compose.profile.yaml sets this): the py-spy
+# sampling profiler, a static binary that runs from inside the container.
+ARG INSTALL_PYSPY=""
+RUN if [ -n "$INSTALL_PYSPY" ]; then \
+        uv pip install --python .venv/bin/python "py-spy==$INSTALL_PYSPY"; \
+    fi
+
 # Match the host service account that owns the secrets under pki/:
 # Compose bind-mounts file secrets with their host uid and mode unchanged.
 ARG APP_UID=900
