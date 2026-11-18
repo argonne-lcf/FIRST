@@ -181,22 +181,29 @@ async def list_endpoints(sess: DbSession, user: AuthUser) -> ListEndpointsRespon
 
 # --- jobs: model "job" listing for a cluster, grouped by state ---------------
 
-# Keyed by the raw string column values (ORM stores enum `.value`).
-_PILOT_STATE_BUCKET = {
-    PilotDeploymentState.healthy.value: "running",
-    PilotDeploymentState.degraded.value: "running",
-    PilotDeploymentState.starting.value: "queued",
-    PilotDeploymentState.awaiting_capacity.value: "queued",
-    PilotDeploymentState.stopping.value: "stopped",
-    PilotDeploymentState.failed.value: "stopped",
-    PilotDeploymentState.halted.value: "stopped",
-    PilotDeploymentState.offline.value: "stopped",
+# (bucket, "Model Status") per state, keyed by the raw string column values
+# (ORM stores enum `.value`).  Like V1's Sophia qstat, a job whose model is
+# still loading sits in `running` with "Model Status": "starting"; `queued` is
+# reserved for capacity not yet granted.  Open WebUI reads exactly these: live
+# = running/"running", starting = running/"starting", queued = any `queued`.
+_Status = tuple[str, str]
+_PILOT_STATE_STATUS: dict[str, _Status] = {
+    PilotDeploymentState.healthy.value: ("running", "running"),
+    PilotDeploymentState.degraded.value: ("running", "running"),
+    PilotDeploymentState.starting.value: ("running", "starting"),
+    PilotDeploymentState.awaiting_capacity.value: ("queued", "queued"),
+    PilotDeploymentState.stopping.value: ("stopped", "stopped"),
+    PilotDeploymentState.failed.value: ("stopped", "stopped"),
+    PilotDeploymentState.halted.value: ("stopped", "stopped"),
+    PilotDeploymentState.offline.value: ("stopped", "stopped"),
 }
-_STATIC_HEALTH_BUCKET = {
-    HealthCheckResult.healthy.value: "running",
-    HealthCheckResult.unhealthy.value: "stopped",
-    HealthCheckResult.unknown.value: "others",
+_STATIC_HEALTH_STATUS: dict[str, _Status] = {
+    HealthCheckResult.healthy.value: ("running", "running"),
+    HealthCheckResult.unhealthy.value: ("stopped", "stopped"),
+    HealthCheckResult.unknown.value: ("others", "unknown"),
 }
+_LIVE: _Status = ("running", "running")
+_STOPPED: _Status = ("stopped", "stopped")
 
 
 @router.get("/{cluster}/jobs", response_model=JobsByStatus)
@@ -205,22 +212,33 @@ async def cluster_jobs(cluster: str, sess: DbSession, user: AuthUser) -> JobsByS
     Status of all (visible) models on a cluster, mapped into V1's grouped-by-state
     shape.  Deployment states are mapped to running/queued/stopped/others as best
     they fit; this is a shim, not a faithful translation.
+
+    During cluster maintenance, live backends keep serving but nothing new
+    starts (see RouterConfigObserver), so every deployment that is not live is
+    reported stopped.
     """
+    notice = (await db.Cluster.maintenance_notices(sess)).get(cluster)
     buckets: dict[str, list[JobInfo]] = {
         "running": [],
         "queued": [],
         "stopped": [],
         "others": [],
     }
+    live = 0
 
-    def add(model_name: str, status: str) -> None:
-        buckets[status].append(
+    def add(model_name: str, status: _Status) -> None:
+        nonlocal live
+        if notice and status != _LIVE:
+            status = _STOPPED
+        live += status == _LIVE
+        bucket, model_status = status
+        buckets[bucket].append(
             JobInfo(
                 **{
                     "Models": model_name,
                     "Framework": _framework(cluster),
                     "Cluster": cluster,
-                    "Model Status": status,
+                    "Model Status": model_status,
                 }
             )
         )
@@ -228,23 +246,26 @@ async def cluster_jobs(cluster: str, sess: DbSession, user: AuthUser) -> JobsByS
     for model in await _visible_models(sess, user):
         for pilot in model.pilot_deployments:
             if pilot.cluster_name == cluster:
-                add(model.name, _PILOT_STATE_BUCKET.get(pilot.state, "others"))
+                add(model.name, _PILOT_STATE_STATUS.get(pilot.state, _STOPPED))
         for static in model.static_deployments:
             if static.cluster_name == cluster:
-                add(model.name, _STATIC_HEALTH_BUCKET.get(static.health, "others"))
+                add(model.name, _STATIC_HEALTH_STATUS.get(static.health, _STOPPED))
 
     total = sum(len(v) for v in buckets.values())
+    cluster_status: dict[str, object] = {
+        "cluster": cluster,
+        "total_models": total,
+        "live_models": live,
+        "stopped_models": len(buckets["stopped"]),
+    }
+    if notice:
+        cluster_status["maintenance_notice"] = notice
     return JobsByStatus(
         running=buckets["running"],
         queued=buckets["queued"],
         stopped=buckets["stopped"],
         others=buckets["others"],
-        cluster_status={
-            "cluster": cluster,
-            "total_models": total,
-            "live_models": len(buckets["running"]),
-            "stopped_models": len(buckets["stopped"]),
-        },
+        cluster_status=cluster_status,
     )
 
 

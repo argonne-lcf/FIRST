@@ -9,6 +9,8 @@ demand signal are exercised through the routes.
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -37,6 +39,7 @@ async def _seed(
     allowed_domains: list[str] | None = None,
     pilot_state: str = PilotDeploymentState.healthy.value,
     static_health: str = HealthCheckResult.healthy.value,
+    maintenance_notice: str | None = None,
 ) -> None:
     """Seed sophia (one model, static + pilot deployment) and an empty metis."""
     async with sessionmaker() as sess:
@@ -51,7 +54,7 @@ async def _seed(
             db.Cluster(
                 name="sophia",
                 health_check={},
-                maintenance_notice=None,
+                maintenance_notice=maintenance_notice,
                 pilot_system=None,
             )
         )
@@ -188,6 +191,86 @@ async def test_jobs_buckets_by_state(
         "live_models": 1,
         "stopped_models": 1,
     }
+
+
+async def _sophia_jobs(client: httpx.AsyncClient) -> dict[str, Any]:
+    resp = await client.get(
+        "/resource_server/sophia/jobs", headers=auth_header(USER_TOKEN)
+    )
+    assert resp.status_code == 200
+    body: dict[str, Any] = resp.json()
+    return body
+
+
+def _statuses(body: dict[str, Any]) -> dict[str, list[str]]:
+    """Bucket -> the "Model Status" of each entry (V1 buckets only)."""
+    return {
+        b: [j["Model Status"] for j in body[b]]
+        for b in ("running", "queued", "stopped", "others")
+    }
+
+
+@pytest.mark.parametrize(
+    ("pilot_state", "bucket", "model_status"),
+    [
+        (PilotDeploymentState.healthy, "running", "running"),
+        (PilotDeploymentState.degraded, "running", "running"),
+        # Open WebUI reads running/"starting" as "starting".
+        (PilotDeploymentState.starting, "running", "starting"),
+        (PilotDeploymentState.awaiting_capacity, "queued", "queued"),
+        (PilotDeploymentState.stopping, "stopped", "stopped"),
+        (PilotDeploymentState.failed, "stopped", "stopped"),
+        (PilotDeploymentState.halted, "stopped", "stopped"),
+        (PilotDeploymentState.offline, "stopped", "stopped"),
+    ],
+)
+async def test_jobs_pilot_state_mapping(
+    client: httpx.AsyncClient,
+    db: async_sessionmaker[AsyncSession],
+    pilot_state: PilotDeploymentState,
+    bucket: str,
+    model_status: str,
+) -> None:
+    # Static unknown -> others, so the pilot is the only entry in its bucket.
+    await _seed(
+        db,
+        pilot_state=pilot_state.value,
+        static_health=HealthCheckResult.unknown.value,
+    )
+    body = await _sophia_jobs(client)
+    statuses = _statuses(body)
+    assert statuses["others"] == ["unknown"]
+    assert statuses[bucket] == [model_status]
+    assert body["cluster_status"]["live_models"] == int(model_status == "running")
+
+
+async def test_jobs_maintenance_stops_all_but_live(
+    client: httpx.AsyncClient, db: async_sessionmaker[AsyncSession]
+) -> None:
+    # Live backends keep serving through maintenance; nothing new starts.
+    await _seed(
+        db,
+        pilot_state=PilotDeploymentState.starting.value,
+        static_health=HealthCheckResult.healthy.value,
+        maintenance_notice="PM until 17:00",
+    )
+    body = await _sophia_jobs(client)
+    assert _statuses(body) == {
+        "running": ["running"],
+        "queued": [],
+        "stopped": ["stopped"],
+        "others": [],
+    }
+    assert body["cluster_status"]["live_models"] == 1
+    assert body["cluster_status"]["maintenance_notice"] == "PM until 17:00"
+
+
+async def test_jobs_no_maintenance_notice_key_when_clear(
+    client: httpx.AsyncClient, db: async_sessionmaker[AsyncSession]
+) -> None:
+    await _seed(db)
+    body = await _sophia_jobs(client)
+    assert "maintenance_notice" not in body["cluster_status"]
 
 
 async def test_jobs_only_matching_cluster(
