@@ -161,6 +161,9 @@ class Settings(BaseSettings):
     # waits up to `redis_pool_timeout` seconds for a free connection instead.
     redis_max_connections: int = 512
     redis_pool_timeout: float = 5.0
+    # The apiserver exits when its event loop has not run for this many
+    # seconds, so the container restarts (apiserver/loop_watchdog.py). 0: off.
+    loop_watchdog_timeout: float = 40.0
 
     globus: GlobusAuthSettings
     data_staging_globus_collection_id: str = ""

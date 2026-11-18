@@ -18,7 +18,7 @@ how this fits into the larger system.
 
 | Process | Command |
 |---|---|
-| apiserver | `gunicorn first_gateway.apiserver.api:app -k first_gateway.apiserver.uvicorn_worker.UvicornWorker` (with `FIRST_GATEWAY_WORKER_BIND=0.0.0.0:7000`, each worker listens on its own `SO_REUSEPORT` socket; see `deploy/Dockerfile`) |
+| apiserver | `uvicorn first_gateway.apiserver.api:app --loop uvloop --http httptools` (one process per container, replicated by Compose; see `deploy/Dockerfile`) |
 | controller-manager | `python -m first_gateway.controllers.manager` |
 | certmanager CLI | `pilot-certmanager` (see [Certificate Manager](certmanager.md)) |
 
@@ -42,7 +42,7 @@ one object that every downstream layer is given.
 
 ## Request lifecycle (apiserver)
 
-1. gunicorn `UvicornWorker` (uvloop + httptools) receives a request.
+1. One of the uvicorn replicas (uvloop + httptools), chosen by nginx, receives a request.
 2. `log_request` middleware installs a `RequestContext` in a `ContextVar`
    for structured logging, and times the handler.
 3. FastAPI dependency tree resolves: `get_state` exposes `ClientState`;

@@ -12,6 +12,7 @@ from ..log_config import config_logging, drain_logs
 from .backend_client_manager import BackendClientManager
 from .error_handlers import register_error_handlers
 from .log_middleware import ResponseLogMiddleware
+from .loop_watchdog import LoopWatchdog
 from .router_config_manager import RouterConfigManager
 from .routes import routers
 
@@ -70,9 +71,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.router_config_manager = router_config_manager
         app.state.backend_client_manager = backend_client_manager
         app.state.admission_controller = admission_controller
+        watchdog = None
+        if settings.loop_watchdog_timeout > 0:
+            watchdog = LoopWatchdog(timeout=settings.loop_watchdog_timeout)
+            await watchdog.start()
         try:
             yield
         finally:
+            if watchdog is not None:
+                await watchdog.stop()
             await admission_controller.stop()
             await router_config_manager.stop()
             await backend_client_manager.close_all()

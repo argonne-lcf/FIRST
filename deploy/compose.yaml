@@ -35,7 +35,16 @@ services:
       - ../pki/upstream:/run/secrets/upstream:ro
     networks:
       - gateway
+    # One uvicorn process per replica; nginx balances requests over them
+    # (deploy/nginx.conf, nginx.prod.conf.example). Prod publishes one host
+    # port per replica (compose.prod.yaml), so keep those in step.
+    deploy:
+      replicas: 4
     restart: unless-stopped
+    # Longer than uvicorn's --timeout-graceful-shutdown (20s, deploy/Dockerfile).
+    stop_grace_period: 30s
+    # tini as PID 1: forwards signals to uvicorn and reaps zombies.
+    init: true
     # The gateway's stdout is the structured usage log. Vector ships it from
     # these files (log-shipping/vector/v2.yaml), so they are json-file, and
     # their size is how long shipping may be down before lines are lost:

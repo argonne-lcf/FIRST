@@ -108,16 +108,6 @@ LOGGING: dict[str, Any] = {
             "propagate": False,
             "filters": ["uvicorn_access_fields"],
         },
-        "gunicorn.error": {
-            "handlers": ["queue"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "gunicorn.access": {
-            "handlers": ["queue"],
-            "level": "INFO",
-            "propagate": False,
-        },
         "first_common": {
             "handlers": ["queue"],
             "level": "INFO",

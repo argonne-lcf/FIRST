@@ -18,7 +18,6 @@ dependencies = [
     "globus-compute-sdk",
     "globus-sdk",
     "fastapi",
-    "gunicorn",
     "httpx[socks]",
     "PySocks",
     "psycopg[binary]",

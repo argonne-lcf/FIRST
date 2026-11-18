@@ -1,10 +1,20 @@
+# One server per gateway replica (compose.prod.yaml publishes 7001-7004).
+# least_conn picks, per request, the replica with the fewest in flight;
+# max_fails takes one that stops answering out of rotation for a while.
+# The zone shares those in-flight counts and failure marks across nginx's
+# worker processes; without it each worker balances and fails over alone.
 upstream app_server {
-    server 127.0.0.1:7001;
+    zone app_server 64k;
+    least_conn;
+    server 127.0.0.1:7001 max_fails=3 fail_timeout=5s;
+    server 127.0.0.1:7002 max_fails=3 fail_timeout=5s;
+    server 127.0.0.1:7003 max_fails=3 fail_timeout=5s;
+    server 127.0.0.1:7004 max_fails=3 fail_timeout=5s;
     # Reuse connections to the gateway; without this nginx opens one per
     # request and can exhaust local ports under load. Requires the
     # `Connection $connection_upgrade` header below (empty for plain requests).
     keepalive 128;
-    # Below the gateway's own keep-alive (gunicorn --keep-alive 75).
+    # Below the gateway's own keep-alive (uvicorn --timeout-keep-alive 75).
     keepalive_timeout 60s;
 }
 

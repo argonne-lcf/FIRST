@@ -48,7 +48,7 @@ design — there is nothing to beat.**
    everyone expects. gRPC needs grpcurl + reflection; ZeroMQ needs tooling we would write.
 
 5. **Stateless horizontal scale.** Request/response HTTP carries no shared session state —
-   scaling is just more uvicorn workers, each with its own pools, with capacity arbitrated
+   scaling is just more uvicorn replicas, each with its own pools, with capacity arbitrated
    in Redis (the Admission Controller). This is exactly what the architecture is built
    around.
 
@@ -373,16 +373,31 @@ Idle-connection races (client reuses a connection the server is concurrently clo
 
 ## Gateway uvicorn
 
-Gateway uvicorn: `--loop uvloop --http httptools --backlog 2048`, a graceful shutdown timeout longer than your longest tolerated stream, and 4 workers is reasonable for an I/O-bound proxy — scale workers on CPU saturation from JSON/TLS work, not on concurrency (asyncio handles that).
+Each gateway container runs one uvicorn process (`--loop uvloop --http
+httptools`), with no gunicorn; Compose runs 4 replicas and restarts any that
+exit.  Scale replicas on CPU saturation from JSON/TLS work, not on concurrency
+(asyncio handles that).  Uvicorn's graceful shutdown is 20s, under the
+container's 30s `stop_grace_period`.
 
-Each gunicorn worker listens on `:7000` with its own `SO_REUSEPORT` socket
-(`FIRST_GATEWAY_WORKER_BIND`, set in the image; `apiserver/uvicorn_worker.py`),
-and the master binds a placeholder unix socket.  With one shared socket, the
-kernel handed most new connections to whichever worker polled last, and nginx
-keeps its upstream connections open, so one worker served most of the requests:
-94/15/23/64% busy at 64 streams in the load tests.  With a socket per worker the
-kernel spreads new connections evenly by a hash of their addresses.  Connections
-still queued on a worker's socket when that worker dies are reset.
+nginx balances requests, not connections, across the replicas: it sees each as
+its own upstream peer and `least_conn` sends every request to the one with the
+fewest in flight, even though its keepalive connections to them last a long
+time.  In dev the service name resolves to every replica (`resolve` keeps up as
+they restart); in prod each replica has its own loopback port.  Earlier, one
+gunicorn with 4 workers shared one listening socket: the kernel handed most new
+connections to whichever worker woke first, nginx kept those connections open,
+and one worker served most of the requests (94/15/23/64% busy at 64 streams in
+the load tests).  Per-worker `SO_REUSEPORT` sockets spread connections but not
+requests, since a hot keepalive connection stays on one worker.  Don't run
+`uvicorn --workers N` in one container for the same reason: its workers share
+one socket.
+
+Replacing gunicorn loses its `--timeout` heartbeat, which killed a worker whose
+event loop was blocked; Compose's restart policy acts only when a process
+exits.  `apiserver/loop_watchdog.py` fills the gap: a thread exits the process
+when the loop has not run for `FIRST_LOOP_WATCHDOG_TIMEOUT` seconds (30), and
+`restart: unless-stopped` brings it back.  Meanwhile nginx's `max_fails` takes
+the stuck replica out of rotation.
 
 ## Streaming settlement
 

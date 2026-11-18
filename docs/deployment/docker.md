@@ -60,9 +60,13 @@ flowchart TB
 
 ## Components
 
-- **inference-gateway (apiserver)** — the user-facing API (gunicorn/uvicorn on
-  `:7000`). Fronted by nginx. Dev doesn't publish `:7000` (nginx proxies it
-  inside the network); prod publishes `127.0.0.1:7000` for the host nginx.
+- **inference-gateway (apiserver)** — the user-facing API: 4 replicas
+  (`deploy.replicas`), each one uvicorn process on `:7000`. Fronted by nginx,
+  which balances requests over the replicas (`least_conn`). Dev doesn't publish
+  `:7000` (nginx resolves the service name to every replica inside the
+  network); prod publishes one loopback port per replica, `127.0.0.1:7001-7004`,
+  and the host nginx lists each as an upstream server. Changing the replica
+  count means changing that port range and the host nginx upstream too.
 - **controller-manager** — runs the control loops; exposes metrics, pilot
   service-discovery and the **admin API** on `127.0.0.1:9100`: the control plane
   (`/control/v1`), the full catalog (`/catalog/v1`), the admin console
