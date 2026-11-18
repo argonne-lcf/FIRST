@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from redis.asyncio import Redis
@@ -41,13 +42,18 @@ PROFILE_DIR = LIVE_DIR / "manifests"
 
 
 def _compose_redis_url() -> str:
-    """FIRST_REDIS_URL from .env.compose, reached through the host port."""
+    """The Redis database FIRST_REDIS_URL in .env.compose names, reached
+    through the host's loopback port (the services use a Unix socket)."""
     url = "redis://redis:6380/1"
     env = REPO_DIR / ".env.compose"
     if env.exists():
         for line in env.read_text().splitlines():
             if line.startswith("FIRST_REDIS_URL="):
                 url = line.split("=", 1)[1].strip().strip("\"'")
+    parsed = urlsplit(url)
+    if parsed.scheme == "unix":
+        db = parse_qs(parsed.query).get("db", ["0"])[0]
+        return f"redis://127.0.0.1:6380/{db}"
     return url.replace("//redis:", "//127.0.0.1:")
 
 

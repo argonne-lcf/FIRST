@@ -79,7 +79,10 @@ flowchart TB
   (`127.0.0.1:9100`). Same image as the apiserver.
 - **postgres:18** — application database. Published on `127.0.0.1:5433` for host
   access. Healthcheck gates the apiserver/controller startup.
-- **redis:8** — control-plane state / coordination on `127.0.0.1:6380`. Tuned for
+- **redis:8** — control-plane state / coordination. The gateway and controller
+  connect over a Unix socket in the shared `redis-socket` tmpfs volume (mode 660,
+  gid 999 via `group_add`); TCP stays published on `127.0.0.1:6380` for host
+  tools and tests. Tuned for
   latency and throughput over durability (light RDB, no AOF); data is persistent
   but expendable and **not** backed up.
 - **prometheus** — scrapes the controller-manager and the pilot backends it

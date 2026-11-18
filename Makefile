@@ -76,8 +76,21 @@ compose-up:
 watch-logs:
 	docker compose logs inference-gateway -f --since=1m
 
-monitor-redis:
-	docker compose exec -it redis redis-cli monitor
+# Redis tools run inside the redis container, over the Unix socket the services
+# use (deploy/compose.yaml). REDIS_DB is the database in FIRST_REDIS_URL
+# (.env.compose, .env.prod).
+REDIS_CLI=docker compose exec -it redis redis-cli -s /run/redis/redis.sock
+REDIS_DB?=1
+
+# MONITOR is server-wide: it shows every client's commands, on any database.
+redis-monitor:
+	$(REDIS_CLI) monitor
+
+monitor-redis: redis-monitor
+
+# Interactive redis-cli on the gateway's database.
+redis-shell:
+	$(REDIS_CLI) -n $(REDIS_DB)
 
 attach-tunnel:
 	docker compose logs --no-log-prefix --tail=10 tunnel

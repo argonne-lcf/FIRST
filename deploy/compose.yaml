@@ -33,6 +33,9 @@ services:
     volumes:
       # StaticDeployment mTLS certificate sets (see the note under `secrets:`)
       - ../pki/upstream:/run/secrets/upstream:ro
+      - redis-socket:/run/redis # see the redis service
+    group_add:
+      - "999" # redis: may connect to its socket
     networks:
       - gateway
     # One uvicorn process per replica; nginx balances requests over them
@@ -100,6 +103,9 @@ services:
       #     on the filesystem holding the env/secret files and pki/.
       - disk-watch:/run/disk-watch/docker-data:ro
       - ./disk-watch:/run/disk-watch/checkout:ro
+      - redis-socket:/run/redis # see the redis service
+    group_add:
+      - "999" # redis: may connect to its socket
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,10 +145,24 @@ services:
     image: redis:8@sha256:344e3945a0b431c8ff1eecd58c5573538126bd756f02fc7e218ddf1fc2546366
     # Tuned for latency/throughput under concurrency. Data is persistent but
     # non-critical (no backups): light RDB only, no AOF.
+    #
+    # The gateway and controller connect over a Unix socket (FIRST_REDIS_URL in
+    # .env.compose / .env.prod), which skips the TCP stack and the bridge hop on
+    # every round trip. The TCP port stays for the healthcheck, redis-cli, and
+    # host-side tools and tests.
+    #
+    # Who can reach the socket: it is mode 660, owned by redis:redis (999:999),
+    # in the `redis-socket` tmpfs whose root is 0750 999:999. Inside the stack,
+    # only containers that mount the volume AND carry gid 999 (group_add) can
+    # connect.
     command:
       - redis-server
       - --port
       - "6380"
+      - --unixsocket
+      - /run/redis/redis.sock
+      - --unixsocketperm
+      - "660"
       - --appendonly
       - "no"
       - --save
@@ -167,6 +187,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
+    volumes:
+      - redis-socket:/run/redis
     ports:
       - "127.0.0.1:6380:6380"
     logging: *logging
@@ -281,6 +303,15 @@ volumes:
       o: mode=1777,size=1m
   # Stays empty: see controller-manager's /run/disk-watch mounts.
   disk-watch:
+  # Redis's Unix socket, shared with the gateway and controller (see the redis
+  # service for who can reach it). Owned by redis (999) so it can create the
+  # socket; 0750 lets gid 999 traverse and nobody else.
+  redis-socket:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: uid=999,gid=999,mode=0750,size=1m
 
 # Pilot mTLS and Prometheus HTTPS identities, issued offline by `make pki`.
 # Each service mounts the CA plus exactly one client identity, always at
