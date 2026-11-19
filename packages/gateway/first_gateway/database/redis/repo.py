@@ -106,8 +106,11 @@ class RedisRepo:
         )
         return val or None
 
-    async def set_cached_token(self, token_hash: str, value: str, ttl: int) -> None:
-        await self.client.set(Keys.token_introspect(token_hash), value, ex=ttl)
+    async def set_cached_token(
+        self, token_hash: str, value: str, ttl: int, nx: bool = False
+    ) -> None:
+        """Cache an introspection result.  With ``nx``, never replace an existing entry."""
+        await self.client.set(Keys.token_introspect(token_hash), value, ex=ttl, nx=nx)
 
     async def set_pilot_job_runtime(
         self,

@@ -53,12 +53,14 @@ class GlobusAuthService:
         try:
             result = await self._perform_token_introspection(bearer_token)
         except Unauthorized as e:
-            # Introspection error!  60 seconds cooldown period before retrying:
+            # Introspection error!  60 seconds cooldown period before retrying.
+            # NX: a concurrent request may have cached a valid result while this
+            # one was failing (Globus retries can take ~30 s); never replace it.
             error_result = TokenIntrospectionResult(
                 token_data=None, user_groups=[], error=str(e)
             )
             await self.repo.set_cached_token(
-                token_hash, error_result.model_dump_json(), ttl=60
+                token_hash, error_result.model_dump_json(), ttl=60, nx=True
             )
             raise
 
