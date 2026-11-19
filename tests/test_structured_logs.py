@@ -6,7 +6,7 @@ import os
 import stat
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, MutableMapping
 
 import httpx
 import pytest
@@ -21,6 +21,7 @@ from first_common.schema.structured_logs import (
     ResponseLog,
     _background_tasks,
 )
+from first_gateway.apiserver import inference
 from first_gateway.apiserver.api import app
 from first_gateway.apiserver.context import _request_id_ctx, get_request_id
 from first_gateway.apiserver.dependencies import _INFERENCE_PATH_PREFIXES
@@ -269,7 +270,9 @@ def capture_events() -> Iterator[list[dict[str, Any]]]:
 
 
 def _seed_streaming_config(
-    usage_limits: dict[str, Any] | None = None, with_backend: bool = True
+    usage_limits: dict[str, Any] | None = None,
+    with_backend: bool = True,
+    endpoints: tuple[str, ...] = ("chat/completions",),
 ) -> None:
     backends = [
         BackendConfig(
@@ -287,7 +290,7 @@ def _seed_streaming_config(
                 aliases=[],
                 allowed_groups=[],
                 allowed_domains=[],
-                supported_endpoints=["chat/completions"],
+                supported_endpoints=list(endpoints),
                 usage_limits=usage_limits or {},  # type: ignore[arg-type]
                 overload={},  # type: ignore[arg-type]
                 deployments=[
@@ -376,6 +379,45 @@ async def test_three_events_share_request_id_streaming(
     assert by_stream["request"]["username"] == "user@anl.gov"
     # The request body was small -> inlined.
     assert json.loads(by_stream["request"]["body"])["model"] == "open/model"
+
+
+async def test_messages_stream_logs_total_tokens(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    """Anthropic reports no total; the relay computes one (cache tokens
+    included) so the attempt is logged and settled at its real size."""
+    _seed_streaming_config(endpoints=("chat/completions", "messages"))
+    await _inject_backend(
+        backend.stream(
+            [
+                b"event: message_start\ndata: "
+                b'{"type":"message_start","message":{"usage":{"input_tokens":3,'
+                b'"cache_read_input_tokens":4,"output_tokens":1}}}\n\n',
+                b"event: content_block_delta\ndata: "
+                b'{"type":"content_block_delta","delta":{"text":"hi"}}\n\n',
+                b"event: message_delta\ndata: "
+                b'{"type":"message_delta","usage":{"output_tokens":5}}\n\n',
+                b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            ]
+        )
+    )
+
+    async with client.stream(
+        "POST",
+        "/federated/v1/messages",
+        headers=auth_header(USER_TOKEN),
+        json={**_CHAT, "max_tokens": 16, "stream": True},
+    ) as resp:
+        assert resp.status_code == 200
+        relayed = b"".join([chunk async for chunk in resp.aiter_raw()])
+    assert b"message_stop" in relayed
+    await asyncio.sleep(0.05)
+
+    (inf,) = [r for r in capture_events if r["stream"] == "inference"]
+    assert inf["outcome"] == "success"
+    assert inf["input_tokens"] == 3
+    assert inf["output_tokens"] == 5
+    assert inf["total_tokens"] == 12
 
 
 async def test_inference_log_carries_token_estimation_calibration(
@@ -836,3 +878,174 @@ async def test_response_log_status_when_app_raises(
     (row,) = [r for r in capture_events if "status_code" in r]
     assert row["status_code"] == status
     assert row["streaming"] is streaming
+
+
+# --------------------------------------------------------------------------
+# A long stream that yields no usage is logged
+# --------------------------------------------------------------------------
+
+_NO_USAGE_CHUNKS = [
+    b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+    b'data: {"choices":[{"delta":{"content":" there"}}]}\n\n',
+    b"data: [DONE]\n\n",
+]
+
+
+@pytest.fixture
+def no_usage_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> Callable[[], list[logging.LogRecord]]:
+    """Treat any stream as long; return the 'No token usage' records."""
+    # The apiserver lifespan stops first_gateway propagating to caplog's root.
+    monkeypatch.setattr(logging.getLogger("first_gateway"), "propagate", True)
+    monkeypatch.setattr(inference, "NO_USAGE_LOG_BYTES", 1)
+    caplog.set_level(logging.WARNING, logger="first_gateway.apiserver.inference")
+    return lambda: [r for r in caplog.records if "No token usage" in r.message]
+
+
+async def _stream_chat(client: httpx.AsyncClient) -> bytes:
+    async with client.stream(
+        "POST",
+        "/federated/v1/chat/completions",
+        headers=auth_header(USER_TOKEN),
+        json={**_CHAT, "stream": True},
+    ) as resp:
+        assert resp.status_code == 200
+        relayed = b"".join([chunk async for chunk in resp.aiter_raw()])
+    await asyncio.sleep(0.05)  # let the relay's finally block run
+    return relayed
+
+
+async def test_completed_stream_without_usage_logs_error(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    no_usage_log: Callable[[], list[logging.LogRecord]],
+) -> None:
+    """A backend that finishes a long stream with no usage leaves the request
+    charged nothing: an error, so it shows up if it starts happening."""
+    _seed_streaming_config()
+    await _inject_backend(backend.stream(_NO_USAGE_CHUNKS))
+    assert b"[DONE]" in await _stream_chat(client)
+
+    (record,) = no_usage_log()
+    assert record.levelno == logging.ERROR
+    assert "chat/completions stream" in record.message
+    assert "static_deployment/dep-open" in record.message
+    assert "(completed)" in record.message
+    assert "usage scan took" in record.message
+
+
+async def test_stream_with_usage_not_logged(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    no_usage_log: Callable[[], list[logging.LogRecord]],
+) -> None:
+    _seed_streaming_config()
+    await _inject_streaming_backend()
+    await _stream_chat(client)
+    assert no_usage_log() == []
+
+
+async def test_short_stream_without_usage_not_logged(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    no_usage_log: Callable[[], list[logging.LogRecord]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inference, "NO_USAGE_LOG_BYTES", 1 << 20)
+    _seed_streaming_config()
+    await _inject_backend(backend.stream(_NO_USAGE_CHUNKS))
+    await _stream_chat(client)
+    assert no_usage_log() == []
+
+
+async def test_broken_stream_without_usage_logs_error(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    no_usage_log: Callable[[], list[logging.LogRecord]],
+) -> None:
+    _seed_streaming_config()
+    await _inject_backend(backend.stream(_SSE_CHUNKS, break_after=1))
+    with pytest.raises(Exception):
+        await _stream_chat(client)
+    await asyncio.sleep(0.05)
+
+    (record,) = no_usage_log()
+    assert record.levelno == logging.ERROR
+    assert "(broken: ClientPayloadError)" in record.message
+
+
+async def test_client_disconnect_without_usage_logs_warning(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    no_usage_log: Callable[[], list[logging.LogRecord]],
+) -> None:
+    """A client that hangs up mid-stream (Stop in a chat UI) is routine: a
+    warning, not an error. httpx's ASGITransport buffers whole responses, so
+    drive the app directly and send http.disconnect after the first chunk."""
+    _seed_streaming_config()
+    # aiohttp does not cancel a handler whose client left; release it at the end.
+    release_backend = asyncio.Event()
+
+    async def first_chunk_then_hang(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(_NO_USAGE_CHUNKS[0])
+        await release_backend.wait()  # the rest of a long generation
+        return response
+
+    await _inject_backend(first_chunk_then_hang)
+
+    transport = client._transport
+    assert isinstance(transport, httpx.ASGITransport)
+    body = json.dumps({**_CHAT, "stream": True}).encode()
+    first_chunk = asyncio.Event()
+    sent: list[MutableMapping[str, Any]] = []
+    body_sent = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        # Must block: Starlette polls receive() for a disconnect in a loop.
+        await first_chunk.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        sent.append(message)
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk.set()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/federated/v1/chat/completions",
+        "raw_path": b"/federated/v1/chat/completions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+            *[
+                (k.lower().encode(), v.encode())
+                for k, v in auth_header(USER_TOKEN).items()
+            ],
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+    try:
+        await asyncio.wait_for(transport.app(scope, receive, send), timeout=10)
+    finally:
+        release_backend.set()
+    await asyncio.sleep(0.05)
+
+    assert sent[0]["status"] == 200
+    (record,) = no_usage_log()
+    assert record.levelno == logging.WARNING
+    assert "(client disconnected)" in record.message

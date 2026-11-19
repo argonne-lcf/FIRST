@@ -70,7 +70,7 @@ def _mkdir_owner_only(directory: Path) -> None:
         directory.chmod(0o700)  # whatever the umask
 
 
-async def _write_body_file(path: Path, raw: bytes) -> None:
+async def _write_body_file(path: Path, raw: bytes | bytearray) -> None:
     """Write ``raw`` to ``path`` on a worker thread.  Creates the date-partition
     directory on first write.
     """
@@ -85,7 +85,7 @@ async def _write_body_file(path: Path, raw: bytes) -> None:
 
 
 def _store_body(
-    raw: bytes,
+    raw: bytes | bytearray,
     subdir: str,
     request_id: str,
     timestamp: datetime,
@@ -132,7 +132,7 @@ class _StructuredLog(BaseModel):
     body_stored: bool = False
 
     def emit(
-        self, raw_body: bytes | None = None, storage_dir: Path | None = None
+        self, raw_body: bytes | bytearray | None = None, storage_dir: Path | None = None
     ) -> None:
         """Emit the lean JSONL line; persist a large body to disk if needed.
 

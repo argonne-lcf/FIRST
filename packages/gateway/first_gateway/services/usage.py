@@ -30,14 +30,20 @@ Where usage lives, per dialect:
                     stream: input_tokens (+ cache reads/writes) arrive in the
                     FIRST event (message_start); the cumulative output_tokens
                     arrive in the LAST usage-bearing event (message_delta).
-                    NOTE: Anthropic's input_tokens EXCLUDES cached tokens.
+                    NOTE: Anthropic's input_tokens EXCLUDES cached tokens,
+                    and there is no total: :func:`_anthropic_total` adds it up.
 
-Streaming extraction avoids parsing every chunk: :class:`UsageTap` frames SSE
-events and retains only the first and most-recent event whose raw bytes contain
-``b'"usage"'`` -- a cheap containment test that covers all three dialects
-(message_start / message_delta / the chat usage chunk / the Responses terminal
-event all contain it; bulk token-delta events do not). The retained events are
-JSON-parsed once, at the end, by the adapter.
+Streaming extraction does no per-chunk work: the relay already keeps the whole
+stream for the InferenceLog, so :func:`usage_events` runs once when the stream
+ends. It cuts out the first and last SSE events whose raw bytes contain
+``b"usage"`` with a few C-level ``find``/``rfind`` calls. That one test covers
+all three dialects: message_start, message_delta, the chat usage chunk and the
+Responses terminal event all contain it, and bulk token-delta events contain at
+most ``"usage": null``. The adapter then JSON-parses just those two events.
+
+Model output can contain the word "usage" too, but never outside the real usage
+events: the first real one (Anthropic's message_start) comes before any content
+and the last comes after it.
 """
 
 import json
@@ -52,6 +58,8 @@ class TokenUsage:
     - ``input_tokens`` excludes cache reads for Anthropic (reported separately in
       ``cache_read_tokens``).
     - ``reasoning_tokens`` is a subset of ``output_tokens``.
+    - ``total_tokens`` counts every input token, cached or not, plus output, as
+      OpenAI's does. Anthropic reports no total, so it is computed there.
     - Any field may be ``None`` when the upstream dialect does not report it.
     """
 
@@ -68,20 +76,47 @@ class TokenUsage:
 # --------------------------------------------------------------------------
 
 
-def _next_event(buf: bytearray) -> bytes | None:
-    """Pop one complete SSE event off the front of ``buf``, handling both
-    ``\\n\\n`` and ``\\r\\n\\r\\n`` delimiters. Returns None if incomplete."""
-    i = buf.find(b"\n\n")
-    j = buf.find(b"\r\n\r\n")
-    if i == -1 and j == -1:
-        return None
-    if j != -1 and (i == -1 or j < i):
-        evt = bytes(buf[:j])
-        del buf[: j + 4]
-    else:
-        evt = bytes(buf[:i])
-        del buf[: i + 2]
-    return evt
+def usage_events(
+    buf: bytes | bytearray, *, first: bool = True
+) -> tuple[bytes | None, bytes | None]:
+    """Return the first and last SSE events in a whole stream that contain
+    ``b"usage"``, or ``(None, None)`` if none does.
+
+    The search starts from the end: the last usage event is at or near the end
+    of every dialect, so ``rfind`` reaches it at once. Searching forward for
+    the first one would scan the whole stream when only the final event
+    carries usage, as in a vLLM Chat Completions stream: about 0.4 ms per MB
+    with the event loop blocked. Pass ``first=False`` (an adapter whose
+    ``needs_first`` is False) to skip that search and get ``(None, last)``.
+
+    When both are the same event, the same object is returned twice, so
+    ``last is first`` holds. An unterminated final event, as in a stream cut
+    off mid-event, runs to the end of ``buf``.
+
+    The delimiter (``\\n\\n`` or ``\\r\\n\\r\\n``) is taken from the first line
+    ending. Backends do not mix line endings within a stream.
+    """
+    last = buf.rfind(b"usage")
+    if last == -1:
+        return None, None
+
+    nl = buf.find(b"\n")
+    delim = b"\r\n\r\n" if nl > 0 and buf[nl - 1] == 0x0D else b"\n\n"
+
+    def span(i: int) -> tuple[int, int]:
+        s = buf.rfind(delim, 0, i)
+        e = buf.find(delim, i)
+        return (0 if s == -1 else s + len(delim)), (len(buf) if e == -1 else e)
+
+    ls, le = span(last)
+    tail = bytes(buf[ls:le])
+    if not first:
+        return None, tail
+    head = buf.find(b"usage", 0, ls)
+    if head == -1:  # only one usage-bearing event
+        return tail, tail
+    fs, fe = span(head)
+    return bytes(buf[fs:fe]), tail
 
 
 def _data_payload(evt: bytes) -> bytes | None:
@@ -111,46 +146,15 @@ def _event_json(evt: bytes | None) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-class UsageTap:
-    """Frames a relayed SSE stream and retains the first and most-recent
-    usage-bearing events.
-
-    Feed each relayed chunk to :meth:`feed`; call :meth:`close` once the stream
-    ends to flush a trailing partial event. Then hand ``first`` / ``last`` to an
-    adapter's ``parse_stream``.
-    """
-
-    __slots__ = ("buf", "first", "last")
-
-    def __init__(self) -> None:
-        self.buf = bytearray()
-        self.first: bytes | None = None
-        self.last: bytes | None = None
-
-    def feed(self, chunk: bytes) -> None:
-        self.buf += chunk
-        while (evt := _next_event(self.buf)) is not None:
-            self._observe(evt)
-
-    def close(self) -> None:
-        """Flush a final event not terminated by a blank line."""
-        if self.buf:
-            self._observe(bytes(self.buf))
-            del self.buf[:]
-
-    def _observe(self, evt: bytes) -> None:
-        if b"usage" in evt:
-            if self.first is None:
-                self.first = evt
-            self.last = evt
-
-
 # --------------------------------------------------------------------------
 # Adapters
 # --------------------------------------------------------------------------
 
 
 class BaseAdapter:
+    # Whether parse_stream reads its ``first`` argument; see usage_events.
+    needs_first: bool = False
+
     def prepare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Mutate/augment the upstream request so usage will be reported."""
         return payload
@@ -244,7 +248,32 @@ class ResponsesAdapter(BaseAdapter):
         )
 
 
+def _anthropic_total(u: TokenUsage) -> int | None:
+    """OpenAI-equivalent total: Anthropic's ``input_tokens`` leaves out cache
+    reads and writes, so add them back. None unless input and output are both
+    known."""
+    if u.input_tokens is None or u.output_tokens is None:
+        return None
+    return (
+        u.input_tokens
+        + (u.cache_read_tokens or 0)
+        + (u.cache_write_tokens or 0)
+        + u.output_tokens
+    )
+
+
+# message_delta's usage keys -> TokenUsage fields. The counts are cumulative.
+_ANTHROPIC_DELTA_FIELDS = (
+    ("output_tokens", "output_tokens"),
+    ("input_tokens", "input_tokens"),
+    ("cache_read_input_tokens", "cache_read_tokens"),
+    ("cache_creation_input_tokens", "cache_write_tokens"),
+)
+
+
 class AnthropicMessagesAdapter(BaseAdapter):
+    needs_first = True  # input tokens arrive in message_start
+
     def parse_stream(self, first: bytes | None, last: bytes | None) -> TokenUsage:
         u = TokenUsage()
 
@@ -261,12 +290,15 @@ class AnthropicMessagesAdapter(BaseAdapter):
             lobj = _event_json(last)
             if isinstance(lobj, dict) and lobj.get("type") == "message_delta":
                 du = lobj.get("usage")
-                if isinstance(du, dict):
+                if isinstance(du, dict) and du.get("output_tokens") is not None:
                     # cumulative counts; last delta wins
-                    if (v := du.get("output_tokens")) is not None:
-                        u.output_tokens = v
-                    if (v := du.get("input_tokens")) is not None:
-                        u.input_tokens = v
+                    for key, field in _ANTHROPIC_DELTA_FIELDS:
+                        if (v := du.get(key)) is not None:
+                            setattr(u, field, v)
+                    # Only the final output count makes a total. A stream cut
+                    # off before message_delta keeps None, so the relay keeps
+                    # the estimate charged rather than charging input alone.
+                    u.total_tokens = _anthropic_total(u)
         return u
 
     def parse_unary(self, body: str | bytes | dict[str, Any]) -> TokenUsage:
@@ -288,6 +320,7 @@ class AnthropicMessagesAdapter(BaseAdapter):
             cache_read_tokens=mu.get("cache_read_input_tokens"),
             cache_write_tokens=mu.get("cache_creation_input_tokens"),
         )
+        u.total_tokens = _anthropic_total(u)
         return u
 
 

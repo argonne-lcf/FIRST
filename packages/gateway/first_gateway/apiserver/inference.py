@@ -38,7 +38,7 @@ from ..services.orchestration import (
     model_retired_error,
     replacement_alternatives,
 )
-from ..services.usage import USAGE_PARSERS, TokenUsage, UsageTap
+from ..services.usage import USAGE_PARSERS, TokenUsage, usage_events
 from .auth import enforce_permission
 from .backend_client_manager import (
     BACKEND_ERRORS,
@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3
 DEPLOYMENT_HEADER = "X-First-Deployment"
 _RETRYABLE_STATUS = (502, 503, 504)
+# A stream at least this long that yields no usage is logged as an error. It
+# was charged nothing (or kept its estimate, if broken), and finding no usage
+# took a full scan of the stream with the event loop blocked: ~0.4 ms per MB.
+NO_USAGE_LOG_BYTES = 1 << 20  # ~5k chat tokens
 
 UpstreamHandler = Callable[
     [BackendClient, BasePayload, ModelConfig, DeploymentConfig, BackendConfig],
@@ -348,7 +352,7 @@ class InferenceService:
         latency_sec: float,
         outcome: InferenceOutcome = "success",
         usage: TokenUsage | None = None,
-        raw_body: bytes | None = None,
+        raw_body: bytes | bytearray | None = None,
         error: str | None = None,
     ) -> None:
         """Emit one per-attempt InferenceLog. Success attempts pass ``usage`` and
@@ -513,17 +517,17 @@ class InferenceService:
                 )
 
         async def _relay() -> AsyncIterator[bytes]:
-            tap = UsageTap()
             content = bytearray()
             # Set when the backend breaks the stream after the 200 (too late to
             # fail over).  A client disconnect closes this generator instead.
             broken: str | None = None
+            ended = False
             try:
                 # Whatever each socket read returned: one or more SSE events.
                 async for chunk in response.content.iter_any():
-                    tap.feed(chunk)
                     content += chunk
                     yield chunk
+                ended = True
             except BACKEND_ERRORS as exc:
                 broken = type(exc).__name__
                 logger.warning(
@@ -536,12 +540,36 @@ class InferenceService:
                 # to the pool; one abandoned midway is closed here.
                 response.close()
                 with anyio.CancelScope(shield=True):
-                    tap.close()
-                    usage = (
-                        parser.parse_stream(tap.first, tap.last)
-                        if parser
-                        else TokenUsage()
-                    )
+                    # Whatever arrived, however the stream ended (completed,
+                    # broken by the backend, or closed by a client disconnect).
+                    usage = TokenUsage()
+                    if parser:
+                        t_scan = time.perf_counter()
+                        usage = parser.parse_stream(
+                            *usage_events(content, first=parser.needs_first)
+                        )
+                        if (
+                            usage.total_tokens is None
+                            and len(content) >= NO_USAGE_LOG_BYTES
+                        ):
+                            scan_ms = 1e3 * (time.perf_counter() - t_scan)
+                            ending = (
+                                "completed"
+                                if ended
+                                else f"broken: {broken}"
+                                if broken
+                                else "client disconnected"
+                            )
+                            # A backend that sent a long stream without usage
+                            # is an error; a client that hung up early (e.g.
+                            # Stop in a chat UI) only cut the stream short.
+                            logger.log(
+                                logging.ERROR if ended or broken else logging.WARNING,
+                                f"No token usage in a {len(content) / 2**20:.1f} "
+                                f"MB {payload.endpoint} stream from backend "
+                                f"{backend.id} for model {model.name} "
+                                f"({ending}); the usage scan took {scan_ms:.1f} ms.",
+                            )
                     if broken:
                         await self.admission_controller.record_error(
                             backend.id, deployment.router_params
@@ -566,7 +594,7 @@ class InferenceService:
                         outcome="upstream_error" if broken else "success",
                         usage=usage,
                         latency_sec=time.perf_counter() - t0,
-                        raw_body=bytes(content),
+                        raw_body=content,  # not copied
                         error=broken,
                     )
 
