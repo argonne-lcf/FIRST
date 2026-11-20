@@ -226,6 +226,9 @@ async def _insert_replica(
     deleted_at: datetime | None = None,
     stopped_at: datetime | None = None,
     reconcile_retry_at: datetime | None = None,
+    deletion_reason: str | None = None,
+    state_message: str = "Replica created.",
+    reconcile_last_error: str | None = None,
 ) -> int:
     r = PilotReplica(
         name=f"{deployment_name}/replica/{next(_replica_counter)}",
@@ -237,6 +240,9 @@ async def _insert_replica(
         deleted_at=deleted_at,
         stopped_at=stopped_at,
         reconcile_retry_at=reconcile_retry_at,
+        deletion_reason=deletion_reason,
+        state_message=state_message,
+        reconcile_last_error=reconcile_last_error,
     )
     sess.add(r)
     await sess.flush()
@@ -364,6 +370,47 @@ async def test_reconcile_stops_and_frees_non_ready_replica(
     ctrl.client_state.redis_repo.get_backend_runtime.assert_not_awaited()  # type: ignore[attr-defined]
 
 
+async def test_reconcile_records_drain_reason_in_state_message(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A successful stop after earlier failures reports only the reason."""
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        uid = await _insert_replica(
+            sess,
+            state=ReplicaState.launching,
+            deletion_reason="Scaled down: 2 live replicas exceeded desired_replicas=1.",
+            reconcile_last_error="transient pilot failure",
+        )
+
+    ctrl = _make_controller(db, _ok)
+    await ctrl.reconcile(uid)
+
+    replica = await _get_replica(db, uid)
+    assert replica.state_message == (
+        "Drained: Scaled down: 2 live replicas exceeded desired_replicas=1."
+    )
+
+
+async def test_reconcile_without_recorded_reason_says_so(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """Rows flagged before deletion_reason existed still finalize."""
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        await _insert_deployment(sess)
+        await _insert_job(sess)
+        uid = await _insert_replica(sess, state=ReplicaState.launching)
+
+    ctrl = _make_controller(db, _ok)
+    await ctrl.reconcile(uid)
+
+    replica = await _get_replica(db, uid)
+    assert replica.state_message == "Drained: no reason recorded."
+
+
 async def test_reconcile_missing_replica_is_noop(
     db: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -402,7 +449,12 @@ async def test_reconcile_preserves_error_state(
         await _seed_parents(sess)
         await _insert_deployment(sess)
         await _insert_job(sess)
-        uid = await _insert_replica(sess, state=ReplicaState.error)
+        uid = await _insert_replica(
+            sess,
+            state=ReplicaState.error,
+            state_message="process exited 1",
+            deletion_reason="Freeing resources of replica that ended in state error.",
+        )
 
     ctrl = _make_controller(db, _ok)
     await ctrl.reconcile(uid)
@@ -410,6 +462,7 @@ async def test_reconcile_preserves_error_state(
     replica = await _get_replica(db, uid)
     assert replica.state == ReplicaState.error.value
     assert replica.deleted_at is not None
+    assert replica.state_message == "process exited 1"
 
 
 async def test_reconcile_preserves_existing_stopped_at(
@@ -472,7 +525,12 @@ async def test_reconcile_skips_stop_when_parent_job_torn_down(
         await _insert_deployment(sess)
         await _insert_job(sess)
         await sess.execute(sa.update(PilotJob).values(scheduled_deletion_at=NOW))
-        uid = await _insert_replica(sess, state=ReplicaState.unhealthy)
+        uid = await _insert_replica(
+            sess,
+            state=ReplicaState.unhealthy,
+            deletion_reason="Parent PilotJob job-1 is being torn down: idle.",
+            reconcile_last_error="teardown incomplete",
+        )
 
     ctrl = _make_controller(db, _reject_any_call)
     await ctrl.reconcile(uid)
@@ -480,6 +538,10 @@ async def test_reconcile_skips_stop_when_parent_job_torn_down(
     replica = await _get_replica(db, uid)
     assert replica.state == ReplicaState.terminated.value
     assert replica.deleted_at is not None
+    assert replica.state_message == (
+        "Drained: Parent PilotJob job-1 is being torn down: idle. "
+        "Teardown on the pilot never completed; last error: teardown incomplete"
+    )
 
 
 async def test_reconcile_still_stops_on_unhealthy_job_not_torn_down(

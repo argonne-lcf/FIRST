@@ -82,6 +82,7 @@ class PilotJobController(Controller):
             )
             await self._mark_scheduled_deletion(
                 job,
+                f"Scheduler job is {job.scheduler_state}.",
                 PilotJob.scheduler_state.in_(list(_DYING_STATES | _GONE_STATES)),
             )
             return
@@ -97,7 +98,11 @@ class PilotJobController(Controller):
                     idle_min,
                     pilot_config.pilot_max_idle_time_min,
                 )
-                await self._mark_idle_deletion(job)
+                await self._mark_idle_deletion(
+                    job,
+                    f"Idle for {idle_min:.0f} min with no live replicas "
+                    f"(limit {pilot_config.pilot_max_idle_time_min} min).",
+                )
                 return
 
         if (
@@ -117,6 +122,9 @@ class PilotJobController(Controller):
                 )
                 await self._mark_scheduled_deletion(
                     job,
+                    f"Pilot manager unhealthy for {unhealthy_min:.0f} min "
+                    f"(limit {pilot_config.pilot_max_unhealthy_time_min} min)"
+                    + ("; cluster under maintenance." if maintenance_notice else "."),
                     PilotJob.manager_health == HealthCheckResult.unhealthy.value,
                 )
                 return
@@ -253,6 +261,7 @@ class PilotJobController(Controller):
     async def _mark_scheduled_deletion(
         self,
         job: PilotJob,
+        reason: str,
         *extra_premises: sa.ColumnElement[bool],
     ) -> None:
         async with self.client_state.db_sessionmaker.begin() as sess:
@@ -263,7 +272,7 @@ class PilotJobController(Controller):
                     PilotJob.scheduled_deletion_at.is_(None),
                     *extra_premises,
                 )
-                .values(scheduled_deletion_at=datetime.now(timezone.utc))
+                .values(**PilotJob.schedule_deletion_values(reason))
             )
             if result.rowcount == 0:  # type: ignore[attr-defined]
                 raise StaleReconcile(
@@ -295,7 +304,7 @@ class PilotJobController(Controller):
                 )
                 .values(
                     failure_reason=reason,
-                    scheduled_deletion_at=datetime.now(timezone.utc),
+                    **PilotJob.schedule_deletion_values(reason),
                 )
             )
             if result.rowcount == 0:  # type: ignore[attr-defined]
@@ -303,19 +312,29 @@ class PilotJobController(Controller):
 
     @staticmethod
     def _no_live_assigned_replicas() -> sa.ColumnElement[bool]:
-        """Return a correlated guard against deleting an assigned pilot."""
+        """Return a correlated guard against deleting an assigned pilot.
+
+        Replicas already scheduled for deletion do not count: a replica whose
+        teardown is stuck on the pilot (e.g. a failing post-stop verifier) would
+        otherwise hold the whole job forever. Reaping the job frees its
+        resources, and the drainer then finalizes the replica without a stop
+        call. scheduled_deletion_at is never cleared, so this cannot admit a
+        replica that will serve again.
+        """
         return ~sa.exists().where(
             PilotReplica.pilot_job_name == PilotJob.name,
             PilotReplica.deleted_at.is_(None),
+            PilotReplica.scheduled_deletion_at.is_(None),
         )
 
-    async def _mark_idle_deletion(self, job: PilotJob) -> None:
+    async def _mark_idle_deletion(self, job: PilotJob, reason: str) -> None:
         # Placement and idle deletion run in separate controllers. Keep the
         # assignment check in the UPDATE so a detached idle read cannot mark a
         # pilot after a replica has been assigned to it.
         assert job.idle_since is not None
         await self._mark_scheduled_deletion(
             job,
+            reason,
             PilotJob.idle_since == job.idle_since,
             self._no_live_assigned_replicas(),
         )

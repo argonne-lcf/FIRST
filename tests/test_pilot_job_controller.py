@@ -165,14 +165,21 @@ async def _insert_assigned_replica(
     *,
     name: str,
     deleted_at: datetime | None = None,
+    state: str = "placed",
+    scheduled_deletion_at: datetime | None = None,
+    deletion_reason: str | None = None,
+    reconcile_last_error: str | None = None,
 ) -> None:
     sess.add(
         PilotReplica(
             name=name,
             pilot_deployment_name="test-deployment",
             pilot_job_name=job_name,
-            state="placed",
+            state=state,
             deleted_at=deleted_at,
+            scheduled_deletion_at=scheduled_deletion_at,
+            deletion_reason=deletion_reason,
+            reconcile_last_error=reconcile_last_error,
         )
     )
     await sess.flush()
@@ -465,6 +472,8 @@ async def test_idle_past_threshold_marks_deletion(
 
     job = await _get_job(db, uid)
     assert job.scheduled_deletion is True
+    assert job.deletion_reason is not None
+    assert job.deletion_reason.startswith("Idle for 90 min")
 
 
 async def test_idle_within_threshold_no_action(
@@ -706,7 +715,7 @@ async def test_restarted_idle_period_prevents_stale_mark(
 
     controller = _make_controller(db)
     with pytest.raises(StaleReconcile):
-        await controller._mark_idle_deletion(job)
+        await controller._mark_idle_deletion(job, "idle")
 
     job = await _get_job(db, uid)
     assert job.scheduled_deletion is False
@@ -760,7 +769,7 @@ async def test_assignment_inserted_between_idle_read_and_update_blocks_delete(
 
     controller = _make_controller(db)
     with pytest.raises(StaleReconcile):
-        await controller._mark_idle_deletion(job)
+        await controller._mark_idle_deletion(job, "idle")
     assert not (await _get_job(db, uid)).scheduled_deletion
 
 
@@ -785,6 +794,106 @@ async def test_deleted_historical_assignment_does_not_block_idle_delete(
     controller = _make_controller(db)
     await controller.reconcile(uid)
     assert (await _get_job(db, uid)).scheduled_deletion
+
+
+_STUCK_TEARDOWN_ERROR = (
+    "Pilot manager could not stop replica test-deployment/replica/stuck: "
+    "Replica test-deployment/replica/stuck teardown incomplete; still present: "
+    "post-stop hook or verification (in ReplicaDrainer._stop_on_manager)"
+)
+
+
+async def test_idle_job_holding_only_stuck_draining_replica_is_reaped(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    """A replica whose teardown never completes must not hold its job forever.
+
+    The job is reaped by the idle timeout; the drainer then finalizes the
+    replica without calling the pilot, keeping the drain reason and the stuck
+    teardown error in its final state_message.
+    """
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_replica_parents(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "stuck",
+            idle_since=datetime.now(timezone.utc) - timedelta(hours=89),
+        )
+        await sess.execute(
+            sa.update(PilotJob).values(manager_url="https://10.0.0.1:8443/control")
+        )
+        await _insert_assigned_replica(
+            sess,
+            "stuck",
+            name="test-deployment/replica/stuck",
+            state=ReplicaState.terminating.value,
+            scheduled_deletion_at=datetime.now(timezone.utc) - timedelta(hours=89),
+            deletion_reason="Scaled down: 1 live replicas exceeded desired_replicas=0.",
+            reconcile_last_error=_STUCK_TEARDOWN_ERROR,
+        )
+
+    controller = _make_controller(db)
+    async with db() as sess:
+        assert uid in await controller.list_actionable(sess)
+    await controller.reconcile(uid)
+
+    job = await _get_job(db, uid)
+    assert job.scheduled_deletion
+    assert job.deletion_reason is not None
+    assert job.deletion_reason.startswith("Idle for ")
+
+    def no_calls(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected pilot call {request.url}")
+
+    drainer = ReplicaDrainer.__new__(ReplicaDrainer)
+    Worker.__init__(drainer, "drainer", _make_client_state(db), MagicMock())
+    client = PilotControlClient.__new__(PilotControlClient)
+    mock_http = httpx.AsyncClient(transport=httpx.MockTransport(no_calls))
+    client._client_for = lambda _cluster_name: mock_http  # type: ignore[method-assign]
+    drainer.client = client
+    async with db() as sess:
+        replica = await PilotReplica.get_by_name(sess, "test-deployment/replica/stuck")
+    await drainer.reconcile(replica.uid)
+
+    async with db() as sess:
+        replica = await PilotReplica.get_by_name(sess, "test-deployment/replica/stuck")
+    assert replica.deleted_at is not None
+    assert replica.state == ReplicaState.terminated.value
+    assert replica.state_message == (
+        "Drained: Scaled down: 1 live replicas exceeded desired_replicas=0. "
+        "Teardown on the pilot never completed; last error: " + _STUCK_TEARDOWN_ERROR
+    )
+
+
+async def test_stuck_draining_replica_with_live_sibling_still_blocks_idle_delete(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    async with db.begin() as sess:
+        await _seed_cluster(sess)
+        await _seed_replica_parents(sess)
+        uid = await _insert_pilot_job(
+            sess,
+            "mixed",
+            idle_since=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        await _insert_assigned_replica(
+            sess,
+            "mixed",
+            name="test-deployment/replica/stuck",
+            state=ReplicaState.terminating.value,
+            scheduled_deletion_at=datetime.now(timezone.utc),
+        )
+        await _insert_assigned_replica(
+            sess, "mixed", name="test-deployment/replica/live"
+        )
+
+    controller = _make_controller(db)
+    async with db() as sess:
+        assert uid not in await controller.list_actionable(sess)
+    with pytest.raises(StaleReconcile):
+        await controller.reconcile(uid)
+    assert not (await _get_job(db, uid)).scheduled_deletion
 
 
 async def test_unhealthy_premise_prevents_stale_mark(
@@ -820,6 +929,7 @@ async def test_unhealthy_premise_prevents_stale_mark(
     with pytest.raises(StaleReconcile):
         await controller._mark_scheduled_deletion(
             job,
+            "unhealthy",
             PilotJob.manager_health == HealthCheckResult.unhealthy.value,
         )
 

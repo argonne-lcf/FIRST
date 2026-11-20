@@ -12,6 +12,7 @@ from typing import Annotated, Iterable
 
 import httpx
 import typer
+from rich.markup import escape
 from rich.panel import Panel
 from rich.pretty import Pretty
 from rich.table import Table
@@ -307,6 +308,9 @@ def _print_pilot_deployment(d: PilotDeploymentDetail) -> None:
     table.add_column("Message")
     for r in d.replicas:
         gpus = ", ".join(f"{c.hostname}:{','.join(c.gpu_ids)}" for c in r.resources)
+        message = r.state_message
+        if r.deletion_reason and r.deleted_at is None:
+            message += f"\n[yellow]Draining: {escape(r.deletion_reason)}[/]"
         table.add_row(
             r.name,
             styled_state(r.state.value),
@@ -314,7 +318,7 @@ def _print_pilot_deployment(d: PilotDeploymentDetail) -> None:
             gpus or "—",
             str(r.runtime.inflight),
             fmt_age(r.started_at),
-            r.state_message,
+            message,
         )
     console.print(table)
 

@@ -13,6 +13,7 @@ import {
   HealthDescription,
   HealthIndicator,
 } from "@/components/ClusterStatus";
+import { DeletionReasonLine } from "@/components/DeletionReason";
 import { JsonBlock } from "@/components/JsonBlock";
 import { ResourceHeader } from "@/components/ResourceHeader";
 import { ResourceLink } from "@/components/ResourceLink";
@@ -202,8 +203,13 @@ function PilotJobsTableBody({
                   </div>
                 )}
               </TableCell>
-              <TableCell>
+              <TableCell className="max-w-96 space-y-1">
                 <JobStatus job={job} />
+                <DeletionReasonLine
+                  resource={job}
+                  drainingLabel="Tearing down"
+                  className="line-clamp-2"
+                />
               </TableCell>
               <TableCell className="text-xs text-muted-foreground">
                 {formatTimestamp(job.created_at)}

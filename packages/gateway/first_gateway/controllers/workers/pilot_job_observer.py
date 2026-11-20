@@ -281,7 +281,13 @@ class PilotJobObserver(Worker):
             current.time_started = new_started
             if status is None:
                 now = datetime.now(timezone.utc)
-                current.scheduled_deletion_at = now
+                if current.scheduled_deletion_at is None:
+                    current.scheduled_deletion_at = now
+                    current.deletion_reason = (
+                        f"Scheduler job {current.scheduler_job_id} disappeared "
+                        "from the scheduler"
+                        + ("; cluster under maintenance." if in_maintenance else ".")
+                    )
                 current.deleted_at = now
                 logger.log(
                     logging.INFO if in_maintenance else logging.WARNING,

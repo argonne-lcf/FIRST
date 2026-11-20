@@ -3,6 +3,7 @@
 - Verify changes with make mypy/format/lint/test
 - Prod is deployed: every schema change is a new Alembic revision. Never edit an existing revision (including the initial schema).
 - Change the models in `first_gateway/database/models.py`, then `make db-up` and `make migration m="short description"` to autogenerate a revision against a scratch database.
+- After changing admin API schemas (e.g. `first_common/schema/resources/read.py`), run `make admin-sdk` to regenerate the admin console's typed client. It exports the schema from the app directly; no running stack is needed. See `packages/admin-console/CLAUDE.md`.
 
 # Project layout
 - This is a uv workspace

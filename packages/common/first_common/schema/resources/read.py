@@ -158,6 +158,7 @@ class PilotReplica(ResourceMeta):
     started_at: datetime | None = None
     stopped_at: datetime | None = None
     deleted_at: datetime | None = None
+    deletion_reason: str | None = None
 
     runtime: BackendRuntime = BackendRuntime()
 
@@ -214,6 +215,7 @@ class PilotJob(ResourceMeta):
     num_nodes: int
     gpus_per_node: int
     deleted_at: datetime | None = None
+    deletion_reason: str | None = None
     failure_reason: str | None = None
 
     runtime: PilotJobRuntime | None = None

@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "gen-sdk": "openapi-ts && prettier --write ./src/lib/client/"
+    "gen-sdk": "uv run python ../../scripts/export_admin_openapi.py openapi.json && openapi-ts && prettier --write ./src/lib/client/"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

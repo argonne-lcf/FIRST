@@ -2,3 +2,4 @@ dist/
 node_modules/
 !dist/index.html
 .playwright-mcp/
+openapi.json

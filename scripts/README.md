@@ -9,6 +9,7 @@ against a live stack. Backup destinations are configurable via `BACKUP_DIR`
 | `pg-backup.sh` | `pg_dump` the database to a gzipped SQL file, keep last N | `make db-backup` |
 | `prom-snapshot.sh` | Snapshot the Prometheus TSDB to a tarball, keep last N | `make prom-snapshot` |
 | `verify-log-shipping.sh` | End-to-end check that logs and large bodies reach S3 and ClickHouse ([docs](../docs/deployment/log-shipping.md)) | — |
+| `export_admin_openapi.py` | Write the admin API OpenAPI schema from the app, no stack needed (feeds the admin console SDK) | `make admin-sdk` |
 | `dozzle.sh` | Throwaway browser log viewer for the dev stack (not in compose) | — |
 | `check-auth-parity.py` | Read-only comparison of V1 dotenv and rendered V2 Compose auth gates | — |
 | `sam3_create_webdataset.py` | Bundle images + prompts into WebDataset shards for `alcf-ai sam3 submit-batch` | — |

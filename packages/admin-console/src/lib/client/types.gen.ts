@@ -1539,6 +1539,10 @@ export type PilotJob = {
    */
   deleted_at?: string | null;
   /**
+   * Deletion Reason
+   */
+  deletion_reason?: string | null;
+  /**
    * Failure Reason
    */
   failure_reason?: string | null;
@@ -1672,6 +1676,10 @@ export type PilotReplica = {
    * Deleted At
    */
   deleted_at?: string | null;
+  /**
+   * Deletion Reason
+   */
+  deletion_reason?: string | null;
   runtime?: BackendRuntime;
   /**
    * Slug
@@ -1897,6 +1905,27 @@ export type RetiredDeployment = {
    * Cluster Name
    */
   cluster_name: string;
+  replacement?: RetirementReplacement | null;
+};
+
+/**
+ * RetirementReplacement
+ *
+ * Explicit client-side migration guidance, never a routing instruction.
+ */
+export type RetirementReplacement = {
+  /**
+   * Cluster Name
+   */
+  cluster_name: string;
+  /**
+   * Model Name
+   */
+  model_name: string;
+  /**
+   * Base Url
+   */
+  base_url: string;
 };
 
 /**
@@ -2978,6 +3007,10 @@ export type PilotJobWritable = {
    */
   deleted_at?: string | null;
   /**
+   * Deletion Reason
+   */
+  deletion_reason?: string | null;
+  /**
    * Failure Reason
    */
   failure_reason?: string | null;
@@ -3066,6 +3099,10 @@ export type PilotReplicaWritable = {
    * Deleted At
    */
   deleted_at?: string | null;
+  /**
+   * Deletion Reason
+   */
+  deletion_reason?: string | null;
   runtime?: BackendRuntime;
 };
 

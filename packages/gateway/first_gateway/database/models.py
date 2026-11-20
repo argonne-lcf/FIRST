@@ -1,6 +1,6 @@
 import secrets
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Self
 
@@ -513,6 +513,8 @@ class SoftDeletable:
 
     - Set scheduled_deletion_at to trigger controller cleanup. The moment of the
       flip is recorded so drain logic can reason about elapsed time.
+      Write it with `schedule_deletion_values()` so the reason for the deletion
+      is recorded alongside it in `deletion_reason`.
     - Controller sets `deleted_at` when the resource has cleaned up.
     - sweep_expired() hard-deletes rows where the retention_days has past.
     """
@@ -520,11 +522,24 @@ class SoftDeletable:
     scheduled_deletion_at: Mapped[DateTimeOrNone]
     deleted_at: Mapped[DateTimeOrNone]
     retention_days: Mapped[int] = mapped_column(default=7)
+    # Why the row was scheduled for deletion (human-readable; set once with
+    # scheduled_deletion_at). Kept after deletion for operational history.
+    deletion_reason: Mapped[str | None] = mapped_column(sa.Text(), default=None)
 
     @property
     def scheduled_deletion(self) -> bool:
         """scheduled_deletion_at is not None"""
         return self.scheduled_deletion_at is not None
+
+    @staticmethod
+    def schedule_deletion_values(
+        reason: str, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """UPDATE values that schedule a row for deletion and record why."""
+        return {
+            "scheduled_deletion_at": now or datetime.now(timezone.utc),
+            "deletion_reason": reason,
+        }
 
     @classmethod
     async def sweep_expired(cls, sess: AsyncSession) -> int:

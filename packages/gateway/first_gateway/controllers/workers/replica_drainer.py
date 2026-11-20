@@ -119,6 +119,7 @@ class ReplicaDrainer(Controller):
         # Stop the process on the pilot manager. The manager holds on-node
         # resources even for error/start_timeout replicas until told to stop:
         job = replica.pilot_job
+        stopped = False
         if job and job.scheduled_deletion:
             # Tearing down the pilot frees everything on it, and its manager
             # may be unreachable (the job may still read `running`).
@@ -132,8 +133,9 @@ class ReplicaDrainer(Controller):
             job and job.scheduler_state == SchedulerJobState.running and job.manager_url
         ):
             await self._stop_on_manager(job.manager_url, replica.name, job.cluster_name)
+            stopped = True
 
-        await self._finalize_deletion(replica)
+        await self._finalize_deletion(replica, stopped=stopped)
 
     async def _ready_eligible(self, replica: PilotReplica) -> bool:
         assert replica.scheduled_deletion_at
@@ -173,15 +175,38 @@ class ReplicaDrainer(Controller):
             )
         logger.info("Stopped replica %s", replica_name)
 
-    async def _finalize_deletion(self, replica: PilotReplica) -> None:
+    @staticmethod
+    def _final_message(replica: PilotReplica, *, stopped: bool) -> str:
+        """Describe why the replica stopped, for its final state_message.
+
+        A replica that already stopped on its own keeps the message explaining
+        that. Otherwise the message carries the drain reason. If the replica was
+        finalized without a successful stop after earlier stop attempts failed
+        (its parent job was reaped instead), the last failure is appended so a
+        stuck teardown stays visible.
+        """
+        if replica.state in _PRESERVE_STATES:
+            message = replica.state_message
+        else:
+            reason = replica.deletion_reason or "no reason recorded."
+            message = f"Drained: {reason}"
+        if not stopped and replica.reconcile_last_error:
+            message += (
+                " Teardown on the pilot never completed; last error: "
+                f"{replica.reconcile_last_error}"
+            )
+        return message
+
+    async def _finalize_deletion(
+        self, replica: PilotReplica, *, stopped: bool = False
+    ) -> None:
         now = datetime.now(timezone.utc)
 
         if replica.state in _PRESERVE_STATES:
             new_state = replica.state
-            new_msg = replica.state_message
         else:
             new_state = ReplicaState.terminated.value
-            new_msg = "Replica terminated by drainer."
+        new_msg = self._final_message(replica, stopped=stopped)
 
         async with self.client_state.db_sessionmaker.begin() as sess:
             if replica.pilot_job:

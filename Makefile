@@ -70,6 +70,9 @@ db-reset:
 compose-down:
 	docker compose down
 
+admin-sdk:  # regenerate the admin console's typed client; no stack needed
+	cd packages/admin-console && npm run gen-sdk
+
 compose-up:
 	docker compose up -d
 

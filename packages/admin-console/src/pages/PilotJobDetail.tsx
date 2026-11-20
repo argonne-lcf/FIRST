@@ -8,6 +8,7 @@ import {
 } from "@/lib/client";
 import { clusterQueries } from "@/queries/cluster";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { DeletionBanner } from "@/components/DeletionReason";
 import { FieldValueTable } from "@/components/FieldValueTable";
 import { GpuCell } from "@/components/GpuCell";
 import { ReconcileBanner } from "@/components/ReconcileBanner";
@@ -299,6 +300,11 @@ export function PilotJobDetail() {
           <CircleX className="mt-0.5 size-4 shrink-0" />
           <p>{job.failure_reason}</p>
         </div>
+      )}
+
+      {/* An oversized job's failure_reason already says why it was deleted. */}
+      {job.deletion_reason !== job.failure_reason && (
+        <DeletionBanner resource={job} drainingLabel="Tearing down" />
       )}
 
       <ReconcileBanner resource={job} />

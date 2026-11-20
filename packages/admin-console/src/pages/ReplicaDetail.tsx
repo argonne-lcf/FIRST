@@ -3,6 +3,7 @@ import { useParams } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
 import { deploymentQueries } from "@/queries/deployment";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { DeletionBanner } from "@/components/DeletionReason";
 import { FieldValueTable } from "@/components/FieldValueTable";
 import { ReconcileBanner } from "@/components/ReconcileBanner";
 import { ReplicaRuntime, ReplicaStateBadge } from "@/components/ReplicaStatus";
@@ -205,6 +206,8 @@ export function ReplicaDetail() {
       >
         <ReplicaStateBadge state={replica.state} />
       </ResourceHeader>
+
+      <DeletionBanner resource={replica} />
 
       <ReconcileBanner resource={replica} />
 

@@ -336,6 +336,9 @@ async def test_scale_down_drains_excess_replicas(
     # pending drains before ready
     drained = await _get_replica(db, r1)
     assert drained.scheduled_deletion_at is not None
+    assert drained.deletion_reason == (
+        "Scaled down: 2 live replicas exceeded desired_replicas=1."
+    )
 
     kept = await _get_replica(db, r2)
     assert kept.scheduled_deletion_at is None
@@ -398,6 +401,9 @@ async def test_drain_terminal_replica(
 
     drained = await _get_replica(db, r_error)
     assert drained.scheduled_deletion_at is not None
+    assert drained.deletion_reason == (
+        "Freeing resources of replica that ended in state error."
+    )
 
     kept = await _get_replica(db, r_ready)
     assert kept.scheduled_deletion_at is None
@@ -433,6 +439,9 @@ async def test_drain_replica_with_dying_parent_job(
 
     drained = await _get_replica(db, r_on_dying)
     assert drained.scheduled_deletion_at is not None
+    assert drained.deletion_reason == (
+        "Parent PilotJob job-dying scheduler job is exiting."
+    )
 
     kept = await _get_replica(db, r_on_healthy)
     assert kept.scheduled_deletion_at is None
@@ -445,6 +454,11 @@ async def test_drain_replica_with_scheduled_deletion_parent_job(
         await _seed_parents(sess)
         uid = await _insert_deployment(sess, "dep-deljob", desired_replicas=1)
         del_job = await _insert_pilot_job(sess, "job-deljob", scheduled_deletion_at=NOW)
+        await sess.execute(
+            sa.update(PilotJob)
+            .where(PilotJob.name == del_job)
+            .values(deletion_reason="Idle for 31 min with no live replicas.")
+        )
         r = await _insert_replica(
             sess,
             "dep-deljob",
@@ -458,6 +472,10 @@ async def test_drain_replica_with_scheduled_deletion_parent_job(
 
     drained = await _get_replica(db, r)
     assert drained.scheduled_deletion_at is not None
+    assert drained.deletion_reason == (
+        "Parent PilotJob job-deljob is being torn down: "
+        "Idle for 31 min with no live replicas."
+    )
 
 
 # ---------------------------------------------------------------------------

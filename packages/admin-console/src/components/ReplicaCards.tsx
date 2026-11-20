@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { type PilotReplica } from "@/lib/client";
+import { DeletionReasonLine } from "@/components/DeletionReason";
 import { ReplicaRuntime, ReplicaStateBadge } from "@/components/ReplicaStatus";
 import { ResourceLink } from "@/components/ResourceLink";
 import { Button } from "@/components/ui/button";
@@ -71,6 +72,8 @@ function ReplicaCard({
           </dd>
         </dl>
         <p className="text-muted-foreground">{replica.state_message}</p>
+        {/* Once deleted, state_message already carries the drain reason. */}
+        {!replica.deleted_at && <DeletionReasonLine resource={replica} />}
         <p className="text-xs text-muted-foreground">
           {status.verb} {formatAgo(status.at)}
         </p>

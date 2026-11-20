@@ -101,16 +101,13 @@ class ReplicaReconciler(Controller):
 
         # 1. Drain-by-predicate: terminal replicas and replicas whose parent job
         #    is going away. Only consider rows not already flagged or deleted.
-        drain_uids: set[int] = set()
+        drains: dict[int, str] = {}
         for r in replicas:
             if r.scheduled_deletion or r.deleted_at is not None:
                 continue
-            job = r.pilot_job
-            parent_dying = job is not None and (
-                job.scheduler_state in _TERMINAL_JOB_STATES or job.scheduled_deletion
-            )
-            if r.state in _TERMINAL_REPLICA_STATES or parent_dying:
-                drain_uids.add(r.uid)
+            reason = self._predicate_drain_reason(r)
+            if reason is not None:
+                drains[r.uid] = reason
 
         # 2. Count reconcile: replicas that count toward desired are live,
         #    not draining, not soft-deleted, and not already flagged above.
@@ -119,7 +116,7 @@ class ReplicaReconciler(Controller):
             for r in replicas
             if r.deleted_at is None
             and r.scheduled_deletion_at is None
-            and r.uid not in drain_uids
+            and r.uid not in drains
             and r.state in _LIVE_STATES
         ]
         live = len(counting)
@@ -130,9 +127,12 @@ class ReplicaReconciler(Controller):
         elif live > desired:
             counting.sort(key=self._drain_sort_key)
             for r in counting[: live - desired]:
-                drain_uids.add(r.uid)
+                drains[r.uid] = (
+                    f"Scaled down: {live} live replicas exceeded "
+                    f"desired_replicas={desired}."
+                )
 
-        await self._apply_drains(dep, drain_uids)
+        await self._apply_drains(dep, drains)
         if n_new and maintenance_notice:
             logger.debug(
                 "ReplicaReconciler: deployment %s not adding %d replica(s); "
@@ -143,6 +143,21 @@ class ReplicaReconciler(Controller):
             )
         elif n_new:
             await self._insert_replicas(dep, n_new)
+
+    @staticmethod
+    def _predicate_drain_reason(r: PilotReplica) -> str | None:
+        """Why `r` must drain regardless of desired count, or None."""
+        if r.state in _TERMINAL_REPLICA_STATES:
+            return f"Freeing resources of replica that ended in state {r.state}."
+        job = r.pilot_job
+        if job is None:
+            return None
+        if job.scheduled_deletion:
+            why = job.deletion_reason or "no reason recorded"
+            return f"Parent PilotJob {job.name} is being torn down: {why}"
+        if job.scheduler_state in _TERMINAL_JOB_STATES:
+            return f"Parent PilotJob {job.name} scheduler job is {job.scheduler_state}."
+        return None
 
     @staticmethod
     def _drain_sort_key(r: PilotReplica) -> tuple[int, datetime]:
@@ -167,21 +182,24 @@ class ReplicaReconciler(Controller):
             )
         )
 
-    async def _apply_drains(self, dep: PilotDeployment, drain_uids: set[int]) -> None:
-        if not drain_uids:
+    async def _apply_drains(self, dep: PilotDeployment, drains: dict[int, str]) -> None:
+        """Flag replicas for deletion, recording each one's drain reason."""
+        if not drains:
             return
         now = datetime.now(timezone.utc)
+        flagged = 0
         # Sort target ids to keep multi-row lock ordering consistent.
         async with self.client_state.db_sessionmaker.begin() as sess:
-            result = await sess.execute(
-                sa.update(PilotReplica)
-                .where(
-                    PilotReplica.uid.in_(sorted(drain_uids)),
-                    PilotReplica.scheduled_deletion_at.is_(None),
+            for uid in sorted(drains):
+                result = await sess.execute(
+                    sa.update(PilotReplica)
+                    .where(
+                        PilotReplica.uid == uid,
+                        PilotReplica.scheduled_deletion_at.is_(None),
+                    )
+                    .values(**PilotReplica.schedule_deletion_values(drains[uid], now))
                 )
-                .values(scheduled_deletion_at=now)
-            )
-        flagged = result.rowcount  # type: ignore[attr-defined]
+                flagged += result.rowcount  # type: ignore[attr-defined]
         logger.info(
             "ReplicaReconciler: deployment %s flagged %d replica(s) for drain",
             dep.name,

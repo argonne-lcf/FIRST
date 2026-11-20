@@ -34,11 +34,16 @@ before considering a task done.** If `check` fails after an SDK regen, fix
 compile errors in `src/queries/` first — that's the intended blast radius of a
 schema change. Never "fix" errors by editing generated files or loosening types.
 
-## Regenerating the SDK (`npm run gen-sdk`)
+## Regenerating the SDK (`npm run gen-sdk`, or `make admin-sdk` from the repo root)
 
-- Pulls from `http://localhost:9100/openapi.json`, the control server's admin
-  API schema — **the stack must be running** (`make compose-up` at the repo
-  root brings up controller-manager on :9100).
+- **No running stack needed.** `scripts/export_admin_openapi.py` imports the
+  control server's FastAPI app and writes its schema to `openapi.json`
+  (gitignored), which `openapi-ts` then reads. That is the same schema
+  controller-manager serves at `http://localhost:9100/openapi.json`, and the
+  import needs no database, Redis, env vars or `.env`.
+- Regenerate after any change to the admin API's Python schemas (e.g.
+  `first_common/schema/resources/read.py`), then fix `src/queries/` and the
+  pages that should show the new fields.
 - Output goes to `src/lib/client/` — see Generated / do not edit above.
 
 ## Auth wiring

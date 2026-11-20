@@ -159,6 +159,7 @@ export type {
   ResourceSpec,
   ResourceSpecWritable,
   RetiredDeployment,
+  RetirementReplacement,
   RouterConfig,
   RouterParams,
   SchedulerJobState,
