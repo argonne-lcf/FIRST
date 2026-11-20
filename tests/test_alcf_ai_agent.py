@@ -1,16 +1,21 @@
 """alcf-ai agent configuration: opencode, pi, codex."""
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import click
+import httpx
 import pytest
 import tomlkit
+import typer
 from typer.testing import CliRunner
 
 import alcf_ai.cli as cli_module
 from alcf_ai import InferenceClient
 from alcf_ai.agent import (
+    _AUTO_APPROVE_OVERWRITES,
     AGENT_ENDPOINTS,
     AgentModel,
     ConfigLoadError,
@@ -28,7 +33,8 @@ from alcf_ai.agent import (
 from alcf_ai.cli import cli
 from first_common.schema.resources.read import ModelPublic
 
-from .fixtures.alcf_ai import CATALOG_MODELS
+from .fixtures.alcf_ai import CATALOG_MODELS, FakeGateway
+from .fixtures.alcf_ai import model as catalog_model
 
 BASE_URL = "http://gateway.test/"
 
@@ -36,7 +42,18 @@ BASE_URL = "http://gateway.test/"
 @pytest.fixture(autouse=True)
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ALCF_AI_MODEL", raising=False)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def approve_direct_overwrites() -> Iterator[None]:
+    """Direct configurator tests exercise backups, not interactive prompts."""
+    approval = _AUTO_APPROVE_OVERWRITES.set(True)
+    try:
+        yield
+    finally:
+        _AUTO_APPROVE_OVERWRITES.reset(approval)
 
 
 @pytest.fixture(autouse=True)
@@ -165,6 +182,7 @@ def test_configure_codex_token_helper(
         models,
         token_helper=HELPER,
         version=version,
+        profile=None,
         fetch_catalog=_fake_catalog,
     )
     provider = tomlkit.parse(path.read_text())["model_providers"][
@@ -203,7 +221,12 @@ def test_configure_codex_splits_providers_by_wire_api(
     home: Path, models: list[AgentModel]
 ) -> None:
     path = configure_codex(
-        BASE_URL, "tok", models, version="0.90.0", fetch_catalog=_fake_catalog
+        BASE_URL,
+        "tok",
+        models,
+        version="0.90.0",
+        fetch_catalog=_fake_catalog,
+        profile=None,
     )
     config = tomlkit.parse(path.read_text())
     providers = config["model_providers"]
@@ -264,7 +287,12 @@ def test_configure_codex_new_versions_drop_chat_only_models(
     path.write_text('model = "my-model"\nmodel_provider = "mine"\n')
 
     configure_codex(
-        BASE_URL, "tok", models, version="0.100.0", fetch_catalog=_fake_catalog
+        BASE_URL,
+        "tok",
+        models,
+        version="0.100.0",
+        fetch_catalog=_fake_catalog,
+        profile=None,
     )
     config = tomlkit.parse(path.read_text())
     assert config["model"] == "my-model"  # user's choice preserved
@@ -279,7 +307,10 @@ def test_configure_claude(home: Path) -> None:
     path.parent.mkdir()
     path.write_text(json.dumps({"theme": "dark", "env": {"FOO": "1"}}))
 
-    assert configure_claude(BASE_URL, "tok", models, token_helper=HELPER) == path
+    assert (
+        configure_claude(BASE_URL, "tok", models, token_helper=HELPER, profile=None)
+        == path
+    )
     config = json.loads(path.read_text())
     assert config["theme"] == "dark"
     assert config["apiKeyHelper"] == "/opt/bin/alcf-tokens get-token inference"
@@ -294,7 +325,7 @@ def test_configure_claude(home: Path) -> None:
     }
 
     # Without a helper, the token is embedded and the stale helper removed.
-    configure_claude(BASE_URL, "tok", models)
+    configure_claude(BASE_URL, "tok", models, profile=None)
     config = json.loads(path.read_text())
     assert "apiKeyHelper" not in config
     assert config["env"]["ANTHROPIC_AUTH_TOKEN"] == "tok"
@@ -486,6 +517,337 @@ def test_configure_codex_refuses_unparseable_config(
     path.write_text("model = [")
     with pytest.raises(ConfigLoadError):
         configure_codex(
-            BASE_URL, "tok", models, version="0.120.0", fetch_catalog=_fake_catalog
+            BASE_URL,
+            "tok",
+            models,
+            version="0.120.0",
+            fetch_catalog=_fake_catalog,
+            profile=None,
         )
     assert path.read_text() == "model = ["
+
+
+def _plain_output(output: str) -> str:
+    """Normalize ANSI styling and Rich panel wrapping for CLI diagnostics."""
+    return " ".join(click.unstyle(output).replace("│", " ").split())
+
+
+def _prepare_agent_cli(
+    sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli_module, "InferenceClient", lambda *_: sdk_client)
+    monkeypatch.setattr(
+        "alcf_ai.commands.agent.get_access_token", lambda _service: "tok"
+    )
+    monkeypatch.setattr("alcf_ai.commands.agent.token_helper_command", lambda: HELPER)
+
+
+def _capture_exec(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    def fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        calls.append({"file": file, "args": args, "env": env})
+
+    monkeypatch.setattr("alcf_ai.commands.agent.os.execvpe", fake_execvpe)
+    return calls
+
+
+def test_configure_codex_default_profile_and_version_floor(
+    home: Path, models: list[AgentModel]
+) -> None:
+    path = configure_codex(
+        BASE_URL, "tok", models, version="0.134.0", fetch_catalog=_fake_catalog
+    )
+
+    assert path == home / ".codex" / "alcf.config.toml"
+    assert not (home / ".codex" / "config.toml").exists()
+    config = tomlkit.parse(path.read_text())
+    assert config["model"] == "openai/gpt-oss-120b"
+    assert config["model_provider"] == "alcf-inference-service"
+    assert config["model_catalog_json"].endswith("openai-gpt-oss-120b.json")
+
+    model_profile = tomlkit.parse(
+        (home / ".codex" / "alcf-openai-gpt-oss-120b.config.toml").read_text()
+    )
+    provider = model_profile["model_providers"]["alcf-inference-service"]
+    assert provider["base_url"] == "http://gateway.test/federated/v1"
+
+    with pytest.raises(typer.BadParameter, match="external profiles"):
+        configure_codex(
+            BASE_URL,
+            "tok",
+            models,
+            version="0.133.0",
+            fetch_catalog=_fake_catalog,
+        )
+
+
+def test_agent_configure_claude_profile_defaults_and_opt_out(
+    home: Path, sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["agent", "configure", "claude", "-m", "gpt-oss-120b"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert (home / ".claude" / "profiles" / "alcf.json").is_file()
+    assert not (home / ".claude" / "settings.json").exists()
+    assert "alcf-ai agent run claude --profile alcf" in result.output
+
+    result = runner.invoke(
+        cli,
+        ["agent", "configure", "claude", "--no-profile", "-m", "gpt-oss-120b"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert (home / ".claude" / "settings.json").is_file()
+
+    result = runner.invoke(
+        cli,
+        ["agent", "configure", "claude", "--profile", "other", "--no-profile"],
+    )
+    assert result.exit_code == 2
+    assert "--no-profile cannot be combined with --profile" in _plain_output(
+        result.output
+    )
+
+
+def test_agent_configure_prompts_before_overwrite_and_yes_bypasses(
+    home: Path, sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    path = home / ".config" / "opencode" / "opencode.jsonc"
+    path.parent.mkdir(parents=True)
+    original = json.dumps({"theme": "dark"})
+    path.write_text(original)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["agent", "configure", "opencode", "-m", "gpt-oss-120b"]
+    )
+    assert result.exit_code == 1
+    assert "Overwrite" in result.output
+    assert path.read_text() == original
+    assert not list(path.parent.glob("opencode.jsonc.bak.*"))
+
+    result = runner.invoke(
+        cli,
+        ["agent", "configure", "opencode", "-m", "gpt-oss-120b", "--yes"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert path.read_text() != original
+    backups = list(path.parent.glob("opencode.jsonc.bak.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == original
+
+
+def test_agent_run_opencode_uses_isolated_federated_config(
+    home: Path, sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    calls = _capture_exec(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli,
+        ["agent", "run", "opencode", "-m", "gpt-oss-120b", "--", "--help"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["file"] == "opencode"
+    assert calls[0]["args"] == ["opencode", "--help"]
+    config = json.loads(calls[0]["env"]["OPENCODE_CONFIG_CONTENT"])
+    assert config["model"] == ("alcf-inference-service-federated/openai/gpt-oss-120b")
+    provider = config["provider"]["alcf-inference-service-federated"]
+    assert provider["options"]["baseURL"] == "http://gateway.test/federated/v1"
+    assert calls[0]["env"]["ALCF_SESSION_ID"] == "default"
+    assert not (home / ".config" / "opencode" / "opencode.jsonc").exists()
+
+
+def test_agent_run_codex_one_shot_and_responses_requirement(
+    home: Path, sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    monkeypatch.setattr("alcf_ai.commands.agent.codex_version", lambda: "0.134.0")
+    calls = _capture_exec(monkeypatch)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["agent", "run", "codex", "-m", "gpt-oss-120b", "--", "--help"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["file"] == "codex"
+    assert calls[0]["args"][1:3] == ["--model", "openai/gpt-oss-120b"]
+    assert calls[0]["args"][-1] == "--help"
+    joined_args = "\n".join(calls[0]["args"])
+    assert 'model_provider="alcf-inference-service"' in joined_args
+    assert (
+        "model_providers.alcf-inference-service.base_url="
+        '"http://gateway.test/federated/v1"'
+    ) in joined_args
+    assert calls[0]["env"]["ALCF_API_KEY"] == "tok"
+    assert not (home / ".codex").exists()
+
+    result = runner.invoke(
+        cli, ["agent", "run", "codex", "-m", "google/gemma-4-31B-it"]
+    )
+    assert result.exit_code == 2
+    assert "does not support the Responses API" in _plain_output(result.output)
+    assert len(calls) == 1
+
+
+def test_agent_run_codex_profile_checks_version_and_forwards_no_model(
+    home: Path, sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    calls = _capture_exec(monkeypatch)
+    profile = home / ".codex" / "alcf.config.toml"
+    profile.parent.mkdir()
+    profile.write_text("")
+    runner = CliRunner()
+
+    monkeypatch.setattr("alcf_ai.commands.agent.codex_version", lambda: "0.133.0")
+    result = runner.invoke(cli, ["agent", "run", "codex", "--profile", "alcf"])
+    assert result.exit_code == 2
+    assert "does not support external profiles" in _plain_output(result.output)
+    assert not calls
+
+    monkeypatch.setattr("alcf_ai.commands.agent.codex_version", lambda: "0.134.0")
+    result = runner.invoke(
+        cli, ["agent", "run", "codex", "--profile", "alcf"], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[0]["args"] == ["codex", "--profile", "alcf"]
+
+
+def test_agent_run_claude_profile_and_model_conflict(
+    home: Path, sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    calls = _capture_exec(monkeypatch)
+    profile = home / ".claude" / "profiles" / "research.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("{}")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["agent", "run", "claude", "--profile", "research", "--", "--verbose"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[0]["args"] == [
+        "claude",
+        "--settings",
+        str(profile),
+        "--verbose",
+    ]
+
+    result = runner.invoke(
+        cli,
+        [
+            "agent",
+            "run",
+            "claude",
+            "--profile",
+            "research",
+            "-m",
+            "gpt-oss-120b",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "--profile cannot be combined with --default-model" in _plain_output(
+        result.output
+    )
+    assert len(calls) == 1
+
+
+def test_agent_run_aider_uses_federated_environment(
+    sdk_client: InferenceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    calls = _capture_exec(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli,
+        ["agent", "run", "aider", "-m", "gpt-oss-120b", "--", "--yes-always"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[0]["args"] == ["aider", "--yes-always"]
+    assert calls[0]["env"]["OPENAI_API_BASE"] == "http://gateway.test/federated/v1"
+    assert calls[0]["env"]["OPENAI_API_KEY"] == "tok"
+    assert calls[0]["env"]["AIDER_MODEL"] == "openai/openai/gpt-oss-120b"
+
+
+def _add_default_model(
+    gateway: FakeGateway, extra_models: list[dict[str, Any]] | None = None
+) -> None:
+    gateway.routes["GET /catalog/v1/models"] = httpx.Response(
+        200,
+        json=[
+            *CATALOG_MODELS,
+            catalog_model(
+                "mistral-large-4",
+                ["chat/completions", "responses", "messages"],
+                uid=4,
+            ),
+            *(extra_models or []),
+        ],
+    )
+
+
+def test_agent_default_model_precedence(
+    home: Path,
+    sdk_client: InferenceClient,
+    gateway: FakeGateway,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_default_model(gateway)
+    _prepare_agent_cli(sdk_client, monkeypatch)
+    calls = _capture_exec(monkeypatch)
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["agent", "run", "aider"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert calls[-1]["env"]["AIDER_MODEL"] == "openai/mistral-large-4"
+
+    monkeypatch.setenv("ALCF_AI_MODEL", "gpt-oss-120b")
+    result = runner.invoke(cli, ["agent", "run", "aider"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert calls[-1]["env"]["AIDER_MODEL"] == "openai/openai/gpt-oss-120b"
+
+    result = runner.invoke(
+        cli,
+        ["agent", "run", "aider", "-m", "google/gemma-4-31B-it"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[-1]["env"]["AIDER_MODEL"] == "openai/google/gemma-4-31B-it"
+
+
+def test_agent_configure_prioritizes_default_without_dropping_models(
+    home: Path,
+    sdk_client: InferenceClient,
+    gateway: FakeGateway,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_default_model(gateway, [catalog_model("alpha/messages", ["messages"], uid=5)])
+    _prepare_agent_cli(sdk_client, monkeypatch)
+
+    result = CliRunner().invoke(
+        cli, ["agent", "configure", "claude"], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    config = json.loads((home / ".claude" / "profiles" / "alcf.json").read_text())
+    assert config["env"]["ANTHROPIC_MODEL"] == "mistral-large-4"
+    assert "openai/gpt-oss-120b" in result.output
+    assert "mistral-large-4" in result.output

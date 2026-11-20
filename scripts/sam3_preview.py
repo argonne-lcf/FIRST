@@ -150,7 +150,11 @@ def preview_batch(args: argparse.Namespace) -> None:
             if not (member.isfile() and member.name.endswith(".json")):
                 continue
             assert (fp := tf.extractfile(member)) is not None
-            result = json.load(fp)
+            try:
+                result = json.load(fp)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+                print(f"Skipping {member.name}: invalid JSON ({err})")
+                continue
             if result["num_objects"] < 1:
                 print(f"Skipping {member.name}: no objects detected.")
                 continue

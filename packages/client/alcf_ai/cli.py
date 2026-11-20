@@ -49,7 +49,7 @@ cli.add_typer(
 cli.add_typer(
     agent_cli,
     name="agent",
-    help="Configure coding agents (opencode, codex, pi, claude)",
+    help="Configure and run coding agents (opencode, codex, pi, claude, aider)",
 )
 cli.command(name="whoami")(whoami)
 cli.command(name="chat")(chat)

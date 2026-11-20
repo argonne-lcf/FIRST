@@ -209,6 +209,7 @@ name = "alcf-ai"
 source = { editable = "packages/client" }
 dependencies = [
     { name = "alcf-tokens" },
+    { name = "click" },
     { name = "globus-sdk" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -230,6 +231,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alcf-tokens", specifier = ">=0.2" },
+    { name = "click", specifier = ">=8.0" },
     { name = "globus-sdk", specifier = ">=3.65" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -240,7 +242,7 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "rich" },
     { name = "tomlkit" },
-    { name = "typer" },
+    { name = "typer", specifier = ">=0.19" },
 ]
 
 [package.metadata.requires-dev]

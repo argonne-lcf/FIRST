@@ -97,9 +97,12 @@ cat notes.md | uvx alcf-ai chat -s "Fix the grammar" -d sophia/openai/gpt-oss-12
 uvx alcf-ai embed -m my/embedding-model "first text" "second text"
 ```
 
-Without `--model`, the `ALCF_AI_MODEL` environment variable or the first
-chat-capable model in the catalog is used.  Without `--api`, the first dialect
-the model supports is used (Chat Completions, then Responses, then Messages).
+Without `--model`, `ALCF_AI_MODEL` is used when set; otherwise the shared
+`mistral-large-4` default on Tara is selected through federation. If that
+built-in model is unavailable, the first chat-capable catalog model is used.
+Explicit `--model` takes precedence over both. Without `--api`, the first
+dialect the model supports is used (Chat Completions, then Responses, then
+Messages).
 
 ### Non-LLM task models
 
@@ -250,8 +253,8 @@ Inputs must be in your staging area, and results are written beside them.
 
 ### Coding agents
 
-Register the gateway as a model provider in opencode, pi, Codex, or Claude
-Code.  Model entries carry the context window and capabilities published by
+Register the gateway as a model provider in opencode, pi, Codex, Claude Code,
+or Aider. Model entries carry the context window and capabilities published by
 the catalog; the first `-m` model is the agent's default:
 
 ```bash
@@ -261,13 +264,41 @@ uvx alcf-ai agent configure pi
 uvx alcf-ai agent configure claude -m openai/gpt-oss-120b
 ```
 
+The coding-agent default is `mistral-large-4` on Tara, selected through the
+federated catalog. `$ALCF_AI_MODEL` overrides that shared default and an
+explicit `--model` takes precedence. Configuration without `--model` still
+includes every compatible model, with the shared default first.
+
+Codex and Claude Code create a reusable profile named `alcf` by default.
+Codex profiles live at `$CODEX_HOME/alcf.config.toml` (usually
+`~/.codex/alcf.config.toml`) and need Codex 0.134 or newer. Claude profiles
+live at `~/.claude/profiles/alcf.json`. Use `--profile NAME` to choose another
+name, or `--no-profile` to update the normal base settings instead. Existing
+configuration changes prompt for approval and are backed up first; pass
+`--yes` to approve all overwrites non-interactively.
+
+Launch an agent without editing its configuration files by passing environment
+and command-line overrides directly:
+
+```bash
+uvx alcf-ai agent run opencode -m openai/gpt-oss-120b
+uvx alcf-ai agent run aider -m openai/gpt-oss-120b
+uvx alcf-ai agent run codex --profile alcf
+uvx alcf-ai agent run claude --profile alcf
+```
+
+Use `--profile` only with Codex or Claude Code, and do not combine it with
+`--default-model`; repeat `agent configure --model ... --profile ...` to change
+a profile's model. Arguments after `--` are forwarded to the agent, for example
+`agent run aider -m openai/gpt-oss-120b -- --yes-always`.
+
 Agents refresh their access token by running `alcf-tokens get-token inference`
 (or `alcf-ai auth get-access-token`); run `alcf-tokens login` when the refresh
-token expires.  If neither command can be found, the current token is embedded
+token expires. If neither command can be found, the current token is embedded
 instead and you must re-run `agent configure` when it expires.
 
 Set `ALCF_SESSION_ID` to send an `X-ALCF-Session-ID` header, which lets
-backends reuse the prompt cache across a session's requests.  Claude Code
+backends reuse the prompt cache across a session's requests. Claude Code
 cannot read it from settings, so export
 `ANTHROPIC_CUSTOM_HEADERS="X-ALCF-Session-ID: $ALCF_SESSION_ID"` instead.
 

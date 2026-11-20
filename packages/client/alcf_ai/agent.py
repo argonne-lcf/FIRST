@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,12 +23,18 @@ from typing import Any, Callable, Literal, Protocol
 
 import httpx
 import tomlkit
+import typer
 from pydantic import BaseModel, ConfigDict
+from tomlkit.exceptions import TOMLKitError
 from tomlkit.items import InlineTable
 
 from first_common.schema.resources.read import ModelPublic
 
 logger = logging.getLogger(__name__)
+
+_AUTO_APPROVE_OVERWRITES: ContextVar[bool] = ContextVar(
+    "auto_approve_overwrites", default=False
+)
 
 Agent = Literal["opencode", "codex", "pi", "claude"]
 AGENTS: tuple[Agent, ...] = ("opencode", "codex", "pi", "claude")
@@ -42,11 +49,12 @@ SESSION_ENV = "ALCF_SESSION_ID"
 
 # Endpoints an agent can drive; a model qualifies if it serves any of them.
 _OPENAI_ENDPOINTS = frozenset({"chat/completions", "responses"})
-AGENT_ENDPOINTS: dict[Agent, frozenset[str]] = {
+AGENT_ENDPOINTS: dict[str, frozenset[str]] = {
     "opencode": _OPENAI_ENDPOINTS,
     "codex": _OPENAI_ENDPOINTS,
     "pi": _OPENAI_ENDPOINTS,
     "claude": frozenset({"messages"}),
+    "aider": _OPENAI_ENDPOINTS,
 }
 
 # Effort levels pi understands, in ascending order.
@@ -61,6 +69,8 @@ OPENCODE_PROVIDER_KEY = f"{PROVIDER_KEY}-federated"
 
 # Command-based provider auth (auto token refresh) requires codex >= 0.118.0.
 _CODEX_AUTH_COMMAND_VERSION = (0, 118, 0)
+
+_CODEX_EXTERNAL_PROFILE_VERSION = (0, 134, 0)
 
 
 # --- Capability metadata ------------------------------------------------------------
@@ -235,8 +245,17 @@ def _load_toml(path: Path) -> tomlkit.TOMLDocument:
             return tomlkit.load(f)
     except FileNotFoundError:
         return tomlkit.TOMLDocument()
-    except (OSError, UnicodeDecodeError, tomlkit.exceptions.TOMLKitError) as err:
+    except (OSError, UnicodeDecodeError, TOMLKitError) as err:
         raise ConfigLoadError(path, err) from err
+
+
+def _confirm_overwrite(path: Path) -> None:
+    if not _AUTO_APPROVE_OVERWRITES.get():
+        typer.confirm(
+            f"Overwrite {path}? A backup will be created first",
+            default=False,
+            abort=True,
+        )
 
 
 def _write_config_file(path: Path, content: str) -> None:
@@ -258,6 +277,7 @@ def _write_config_file(path: Path, content: str) -> None:
         return
     if existing is not None:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        _confirm_overwrite(path)
         backup = target.with_name(f"{target.name}.bak.{timestamp}")
         shutil.copy2(target, backup)
         logger.info(f"Backed up {path} to {backup}")
@@ -368,8 +388,12 @@ def _clear_opencode_plugin_cache() -> None:
         for path in (Path.home() / ".cache" / "opencode" / cache).glob(
             f"{OPENCODE_PLUGIN_PACKAGE}*"
         ):
-            shutil.rmtree(path, ignore_errors=True)
-            logger.info(f"Cleared the cached opencode plugin at {path}")
+            try:
+                shutil.rmtree(path)
+            except OSError as err:
+                logger.debug(f"Could not clear cached opencode plugin at {path}: {err}")
+            else:
+                logger.info(f"Cleared the cached opencode plugin at {path}")
 
 
 def _configure_opencode_v1(
@@ -450,6 +474,28 @@ def _configure_opencode_v2(
             del config["plugin"]
 
 
+def _update_opencode_config(
+    config: dict[str, Any],
+    base_url: str,
+    api_key: str,
+    models: list[AgentModel],
+    token_helper: list[str] | None,
+    version: str | None,
+) -> None:
+    if version is None:
+        try:
+            version = opencode_version()
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as err:
+            logger.warning(
+                f"Could not detect the installed opencode version ({err}); using "
+                "the V1 configuration schema, which opencode 2 also reads."
+            )
+    if version is not None and _version_tuple(version) >= (2,):
+        _configure_opencode_v2(config, base_url, api_key, models, token_helper)
+    else:
+        _configure_opencode_v1(config, base_url, api_key, models, token_helper)
+
+
 def configure_opencode(
     base_url: str,
     api_key: str,
@@ -464,23 +510,26 @@ def configure_opencode(
     """
     path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
     config = _load_json(path)
-
-    if version is None:
-        try:
-            version = opencode_version()
-        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as err:
-            logger.warning(
-                f"Could not detect the installed opencode version ({err}); writing "
-                "the V1 configuration schema, which opencode 2 also reads."
-            )
-    if version is not None and _version_tuple(version) >= (2,):
-        _configure_opencode_v2(config, base_url, api_key, models, token_helper)
-    else:
-        _configure_opencode_v1(config, base_url, api_key, models, token_helper)
+    _update_opencode_config(config, base_url, api_key, models, token_helper, version)
 
     _write_json(path, config)
     _clear_opencode_plugin_cache()
     return path
+
+
+def opencode_environment(
+    base_url: str,
+    api_key: str,
+    model: AgentModel,
+    *,
+    token_helper: list[str] | None = None,
+    version: str | None = None,
+) -> dict[str, str]:
+    """Build an isolated opencode configuration without editing config files."""
+    config: dict[str, Any] = {}
+    _update_opencode_config(config, base_url, api_key, [model], token_helper, version)
+    config["model"] = f"{OPENCODE_PROVIDER_KEY}/{model.id}"
+    return {"OPENCODE_CONFIG_CONTENT": json.dumps(config)}
 
 
 # --- pi ---------------------------------------------------------------------------
@@ -650,6 +699,29 @@ def _codex_session_headers() -> InlineTable:
     return headers
 
 
+def _codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+
+
+def _codex_profile_path(profile: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", profile):
+        raise typer.BadParameter(
+            "Codex profile names must start with a letter or number and contain "
+            "only letters, numbers, underscores, and hyphens",
+            param_hint="--profile",
+        )
+    return _codex_home() / f"{profile}.config.toml"
+
+
+def require_codex_profile_version(version: str) -> None:
+    if _version_tuple(version) < _CODEX_EXTERNAL_PROFILE_VERSION:
+        raise typer.BadParameter(
+            f"Codex {version} does not support external profiles; "
+            "upgrade to Codex >= 0.134.0",
+            param_hint="--profile",
+        )
+
+
 def configure_codex(
     base_url: str,
     api_key: str,
@@ -658,6 +730,7 @@ def configure_codex(
     token_helper: list[str] | None = None,
     version: str | None = None,
     fetch_catalog: CatalogFetcher = fetch_codex_catalog,
+    profile: str | None = "alcf",
 ) -> Path:
     """
     Register the gateway as Codex model providers and generate a version-matched
@@ -668,12 +741,19 @@ def configure_codex(
     ``alcf-inference-service-chat`` (Codex > 0.94 no longer supports chat).
 
     With a ``token_helper``, Codex >= 0.118.0 runs it to refresh the token;
-    older versions get ``api_key`` embedded instead.
+    older versions get ``api_key`` embedded instead. By default a reusable
+    ``alcf`` external profile is written; use ``profile=None`` for the base config.
     """
-    codex_home = Path.home() / ".codex"
-    path = codex_home / "config.toml"
-    config = _load_toml(path)
+    codex_home = _codex_home()
+    path = (
+        _codex_profile_path(profile)
+        if profile is not None
+        else codex_home / "config.toml"
+    )
     version = version or codex_version()
+    if profile is not None:
+        require_codex_profile_version(version)
+    config = _load_toml(path)
     responses_only = _version_tuple(version) > (0, 94, 0)
 
     auth: dict[str, Any]
@@ -722,29 +802,113 @@ def configure_codex(
     if assignments and "model" not in config:
         config["model"] = assignments[0][0].id
         config["model_provider"] = assignments[0][1]
-    _write_toml(path, config)
 
+    catalog_paths: dict[tuple[str, str], Path] = {}
     try:
         upstream, prompt_text = fetch_catalog(version)
     except (httpx.HTTPError, OSError, ValueError) as err:
         logger.warning(f"Skipping codex model catalog generation: {err}")
-        return path
+    else:
+        for model, provider in assignments:
+            slug = model.id.replace("/", "-")
+            catalog_path = codex_home / "catalogs" / f"{slug}.json"
+            _write_json(
+                catalog_path,
+                build_codex_catalog(upstream, prompt_text, model, version),
+            )
+            catalog_paths[(provider, model.id)] = catalog_path
 
-    for model, provider in assignments:
-        slug = model.id.replace("/", "-")
-        catalog_path = codex_home / "catalogs" / f"{slug}.json"
-        _write_json(
-            catalog_path, build_codex_catalog(upstream, prompt_text, model, version)
-        )
-        profile = tomlkit.TOMLDocument()
-        profile["model_provider"] = provider
-        profile["model"] = model.id
-        profile["model_catalog_json"] = str(catalog_path)
-        _write_toml(codex_home / f"alcf-{slug}.config.toml", profile)
+            model_profile = tomlkit.TOMLDocument()
+            model_profile["model_provider"] = provider
+            model_profile["model"] = model.id
+            model_profile["model_providers"] = {
+                provider: copy.deepcopy(providers[provider])
+            }
+            model_profile["model_catalog_json"] = str(catalog_path)
+            _write_toml(codex_home / f"alcf-{slug}.config.toml", model_profile)
+
+    default_provider = str(config.get("model_provider", ""))
+    default_model = str(config.get("model", ""))
+    if default_catalog_path := catalog_paths.get((default_provider, default_model)):
+        config["model_catalog_json"] = str(default_catalog_path)
+    _write_toml(path, config)
     return path
 
 
+def codex_launch(
+    base_url: str,
+    api_key: str,
+    model: AgentModel,
+    *,
+    version: str | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    """Build one-shot Codex settings, leaving existing config files untouched."""
+    version = version or codex_version()
+    if _version_tuple(version) > (0, 94, 0) and not model.supports_responses:
+        raise typer.BadParameter(
+            f"{model.id!r} does not support the Responses API required by "
+            "this Codex version",
+            param_hint="--default-model",
+        )
+    responses = model.supports_responses
+    provider = PROVIDER_KEY if responses else f"{PROVIDER_KEY}-chat"
+    wire_api = "responses" if responses else "chat"
+    provider_name = (
+        PROVIDER_NAME if responses else f"{PROVIDER_NAME} (Chat Completions)"
+    )
+    overrides = {
+        "model_provider": json.dumps(provider),
+        f"model_providers.{provider}.name": json.dumps(provider_name),
+        f"model_providers.{provider}.base_url": json.dumps(federated_url(base_url)),
+        f"model_providers.{provider}.wire_api": json.dumps(wire_api),
+        f"model_providers.{provider}.env_key": json.dumps("ALCF_API_KEY"),
+        f"model_providers.{provider}.env_http_headers": (
+            f'{{"{SESSION_HEADER}"="{SESSION_ENV}"}}'
+        ),
+    }
+    if model.context_window:
+        overrides["model_context_window"] = str(model.context_window)
+
+    args = ["--model", model.id]
+    for key, value in overrides.items():
+        args.extend(["--config", f"{key}={value}"])
+    env = {
+        "ALCF_API_KEY": api_key,
+        SESSION_ENV: os.environ.get(SESSION_ENV, "default"),
+    }
+    return env, args
+
+
 # --- claude -----------------------------------------------------------------------
+
+
+def claude_profile_path(profile: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile):
+        raise typer.BadParameter(
+            "Profile names must start with a letter or number and contain only "
+            "letters, numbers, dots, underscores, and hyphens",
+            param_hint="--profile",
+        )
+    return Path.home() / ".claude" / "profiles" / f"{profile}.json"
+
+
+def claude_environment(
+    base_url: str, api_key: str, default: AgentModel
+) -> dict[str, str]:
+    """Build isolated Claude Code environment overrides for one model."""
+    env = {
+        # Claude Code appends /v1/messages.
+        "ANTHROPIC_BASE_URL": f"{base_url.rstrip('/')}/federated",
+        "ANTHROPIC_AUTH_TOKEN": api_key,
+        "ANTHROPIC_MODEL": default.id,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": default.id,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": default.id,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": default.id,
+    }
+    # Claude Code assumes a 200k window for models it doesn't know.
+    if default.context_window:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(default.context_window)
+    return env
 
 
 def configure_claude(
@@ -753,44 +917,46 @@ def configure_claude(
     models: list[AgentModel],
     *,
     token_helper: list[str] | None = None,
+    profile: str | None = "alcf",
 ) -> Path:
     """
     Point Claude Code at the federated Anthropic Messages route, with the
     first of ``models`` as the default for every model tier.
 
-    Claude Code settings cannot expand env vars, so the session header is not
-    written here: export ``ANTHROPIC_CUSTOM_HEADERS="X-ALCF-Session-ID: ..."``
-    to send one.
+    By default a reusable ``alcf`` profile is written; use ``profile=None`` to
+    update the base settings. Claude Code settings cannot expand env vars, so
+    the session header is not written here: export
+    ``ANTHROPIC_CUSTOM_HEADERS="X-ALCF-Session-ID: ..."`` to send one.
     """
-    path = Path.home() / ".claude" / "settings.json"
+    path = (
+        claude_profile_path(profile)
+        if profile is not None
+        else Path.home() / ".claude" / "settings.json"
+    )
     config = _load_json(path)
     default = models[0]
 
     env = config.setdefault("env", {})
-    env.update(
-        {
-            # Claude Code appends /v1/messages.
-            "ANTHROPIC_BASE_URL": f"{base_url.rstrip('/')}/federated",
-            "ANTHROPIC_MODEL": default.id,
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": default.id,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": default.id,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": default.id,
-        }
-    )
-    # Claude Code assumes a 200k window for models it doesn't know.
-    if default.context_window:
-        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(default.context_window)
-    else:
+    env.update(claude_environment(base_url, api_key, default))
+    if not default.context_window:
         env.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
     if token_helper:
         env.pop("ANTHROPIC_AUTH_TOKEN", None)
         config["apiKeyHelper"] = shlex.join(token_helper)
     else:
-        env["ANTHROPIC_AUTH_TOKEN"] = api_key
         config.pop("apiKeyHelper", None)
 
     _write_json(path, config)
     return path
+
+
+def aider_environment(base_url: str, api_key: str, model: AgentModel) -> dict[str, str]:
+    """Build one-shot Aider environment overrides for the federated route."""
+    return {
+        "OPENAI_API_BASE": federated_url(base_url),
+        "OPENAI_API_KEY": api_key,
+        "AIDER_MODEL": f"openai/{model.id}",
+    }
 
 
 class Configurator(Protocol):
