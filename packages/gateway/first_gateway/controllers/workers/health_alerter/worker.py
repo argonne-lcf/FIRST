@@ -78,6 +78,7 @@ def advance(
             summary=o.summary,
             display_name=o.display_name,
             recovery_hint=o.recovery_hint,
+            detail=o.detail,
             group=o.group,
             owner=o.owner,
             debounce_s=o.debounce_s,
@@ -129,6 +130,7 @@ def advance(
             if committed is not None and key in observed_keys:
                 committed.summary = staged.summary
                 committed.recovery_hint = staged.recovery_hint
+                committed.detail = staged.detail
             del state.staging[key]
         elif (
             key not in observed_keys
@@ -352,6 +354,7 @@ class HealthAlerter(Worker):
                 summary=staged.summary,
                 display_name=staged.display_name,
                 recovery_hint=staged.recovery_hint,
+                detail=staged.detail,
                 group=staged.group,
                 owner=staged.owner,
                 debounce_s=staged.debounce_s,

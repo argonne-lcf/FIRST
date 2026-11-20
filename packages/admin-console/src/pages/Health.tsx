@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import {
   type ClusterHealth,
+  type CommittedAlert,
   type PilotJobFailure,
   type ResourceHealth,
 } from "@/lib/client";
@@ -507,6 +508,139 @@ function HealthCheckFailures({ failures }: { failures: HealthFailure[] }) {
   );
 }
 
+/** Health alerter severity → dashboard severity. */
+const ALERT_SEVERITY: Record<string, Severity> = {
+  crit: "critical",
+  warn: "warning",
+  info: "info",
+};
+
+const alertSeverity = (a: CommittedAlert): Severity =>
+  ALERT_SEVERITY[a.severity ?? "crit"] ?? "info";
+
+/**
+ * Alerts the health alerter has committed (posted to Slack, or digest-only for
+ * info), minus those the cards above already show, plus the checks that are
+ * failing to run. An alert whose check is failing may be stale: it is only
+ * updated by a successful run of that check.
+ */
+function OtherHealthAlerts({
+  alerts,
+  failedChecks,
+}: {
+  alerts: CommittedAlert[];
+  failedChecks: Record<string, string>;
+}) {
+  const failures = Object.entries(failedChecks).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  if (alerts.length === 0 && failures.length === 0) return null;
+
+  const overall = worst([
+    ...alerts.map(alertSeverity),
+    ...(failures.length > 0 ? (["critical"] as const) : []),
+  ]);
+  const Icon = SEVERITY_ICON[overall];
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Other health alerts</CardTitle>
+        <CardDescription>
+          Alerts published by the health alerter that aren't shown above, and
+          health checks that are failing to run. Updated every couple of
+          minutes, after debouncing.
+        </CardDescription>
+        <CardAction>
+          <Icon className={cn("size-6", SEVERITY_COLOR[overall])} />
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {failures.length > 0 && (
+          <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3">
+            <p className="flex items-center gap-2 text-sm font-medium text-destructive">
+              <CircleX className="size-4" />
+              {failures.length} health check{failures.length === 1 ? "" : "s"}{" "}
+              not running
+            </p>
+            <ul className="space-y-1">
+              {failures.map(([check, error]) => (
+                <li key={check} className="text-xs">
+                  <span className="font-mono font-medium">{check}</span>
+                  <p className="font-mono break-words whitespace-pre-wrap text-muted-foreground">
+                    {error}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {alerts.length > 0 && (
+          <Accordion type="multiple">
+            {alerts.map((a) => {
+              const severity = alertSeverity(a);
+              const SevIcon = SEVERITY_ICON[severity];
+              const stale = !!a.owner && a.owner in failedChecks;
+              return (
+                <AccordionItem key={a.key} value={a.key}>
+                  <AccordionTrigger className="min-w-0 gap-4 hover:no-underline">
+                    <div className="flex min-w-0 flex-1 items-start gap-2">
+                      <SevIcon
+                        className={cn(
+                          "mt-0.5 size-4 shrink-0",
+                          SEVERITY_COLOR[severity],
+                        )}
+                      />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline">{a.group ?? "Other"}</Badge>
+                          <span className="truncate">
+                            {a.display_name || a.key}
+                          </span>
+                        </div>
+                        {a.summary && (
+                          <p className="line-clamp-2 text-xs font-normal break-words text-muted-foreground group-aria-expanded/accordion-trigger:line-clamp-none">
+                            {a.summary}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <Badge variant={SEVERITY_BADGE[severity]}>
+                        {humanize(a.status)}
+                      </Badge>
+                      {stale && (
+                        <Badge
+                          variant="outline"
+                          title={`${a.owner} is failing to run, so this alert may be out of date`}
+                        >
+                          stale
+                        </Badge>
+                      )}
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-2">
+                    {a.detail && <TracebackBlock traceback={a.detail} />}
+                    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                      <dt>Key</dt>
+                      <dd className="font-mono break-all">{a.key}</dd>
+                      {a.owner && (
+                        <>
+                          <dt>Check</dt>
+                          <dd className="font-mono">{a.owner}</dd>
+                        </>
+                      )}
+                    </dl>
+                  </AccordionContent>
+                </AccordionItem>
+              );
+            })}
+          </Accordion>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** Failed pilot jobs listed per cluster before the rest are elided. */
 const MAX_FAILED_JOBS_SHOWN = 5;
 
@@ -659,7 +793,7 @@ export function Health() {
   }
 
   const failedJobs = data.failed_pilot_jobs ?? [];
-  const overall = worst([
+  const resourceOverall = worst([
     ...GROUPS.flatMap((g) =>
       data[g.key].map((r) => resourceSeverity(r, g.severityOf)),
     ),
@@ -692,6 +826,35 @@ export function Health() {
       .map((r) => ({ kind: g.kind, resource: r, link: g.linkFor(r) })),
   );
 
+  // Alerter keys (`{kind}/{uid}/{aspect}`) for what the cards above already
+  // show, so OtherHealthAlerts doesn't repeat them.
+  const shownKeys = new Set([
+    ...backoffs.map(
+      (b) => `${b.kind.toLowerCase()}/${b.resource.uid}/reconcile`,
+    ),
+    ...healthFailures.map(
+      (f) => `${f.kind.toLowerCase()}/${f.resource.uid}/health`,
+    ),
+    ...data.clusters
+      .filter((c) => pilotStartSeverity(c, 0) === "critical")
+      .map((c) => `cluster/${c.uid}/pilot_starts`),
+  ]);
+  const alerter = data.health_alerter;
+  const failedChecks = alerter?.reported_failures ?? {};
+  const otherAlerts = Object.values(alerter?.committed ?? {})
+    .filter((a) => !shownKeys.has(a.key))
+    .sort(
+      (a, b) =>
+        SEVERITY_RANK[alertSeverity(b)] - SEVERITY_RANK[alertSeverity(a)] ||
+        a.key.localeCompare(b.key, undefined, { numeric: true }),
+    );
+
+  const overall = worst([
+    resourceOverall,
+    ...otherAlerts.map(alertSeverity),
+    ...(Object.keys(failedChecks).length > 0 ? (["critical"] as const) : []),
+  ]);
+
   return (
     <div className="space-y-6">
       <OverallBanner overall={overall} />
@@ -708,6 +871,7 @@ export function Health() {
       </div>
       <HealthCheckFailures failures={healthFailures} />
       <ReconcileBackoff backoffs={backoffs} />
+      <OtherHealthAlerts alerts={otherAlerts} failedChecks={failedChecks} />
       <PilotStartFailures clusters={data.clusters} failedJobs={failedJobs} />
     </div>
   );

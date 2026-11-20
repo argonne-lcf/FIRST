@@ -137,11 +137,11 @@ _FAILED_PILOT_JOB_WINDOW = timedelta(days=1)
 
 
 @router.get("/system-health", response_model=SystemHealth)
-async def get_system_health(sess: DbSession) -> SystemHealth:
+async def get_system_health(sess: DbSession, repo: RedisRepo) -> SystemHealth:
     """
     One-glance operational snapshot: the health/state and any reconcile error
     of every operational resource, grouped by type, plus pilot jobs that died
-    before their manager came up.
+    before their manager came up and the health alerter's published state.
     """
 
     def health_cols(
@@ -212,6 +212,7 @@ async def get_system_health(sess: DbSession) -> SystemHealth:
             db.PilotReplica, db.PilotReplica.state, db.PilotReplica.deleted_at.is_(None)
         ),
         failed_pilot_jobs=await _failed_pilot_jobs(sess, clusters),
+        health_alerter=await repo.get_health_alert_state(),
     )
 
 

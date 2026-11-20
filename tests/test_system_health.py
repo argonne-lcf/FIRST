@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from first_common.schema.base_scheduler import SchedulerJobState
 from first_gateway.database.models import Cluster, PilotJob
+from first_gateway.database.redis.keys import Keys
 
 from .fixtures.auth import ADMIN_TOKEN, auth_header
 from .test_pilot_job_observer import _insert_pilot_job, _seed_cluster
@@ -81,3 +82,46 @@ async def test_system_health_reports_backoff_and_pilot_start_failures(
     assert failed[0]["cluster_name"] == "polaris"
     assert failed[0]["scheduler_state"] == "gone"
     assert failed[0]["failure_reason"].startswith("recent died")
+
+
+async def test_system_health_includes_health_alerter_state(
+    db: async_sessionmaker[AsyncSession], control_client: httpx.AsyncClient
+) -> None:
+    from first_common.schema.resources.runtime import (
+        CommittedAlert,
+        HealthAlertState,
+    )
+    from first_gateway.controllers.control_server import app as control_app
+
+    repo = control_app.state.client_state.redis_repo
+    await repo.set_health_alert_state(
+        HealthAlertState(
+            committed={
+                "disk:/dev/sda1": CommittedAlert(
+                    key="disk:/dev/sda1",
+                    status="low",
+                    severity="warn",
+                    summary="Disk /dev/sda1 is 91% full",
+                    detail="/var/lib/docker: 40G",
+                    group="Infrastructure",
+                    owner="check_disk",
+                )
+            },
+            reported_failures={"check_log_shipping": "connection refused"},
+        )
+    )
+    try:
+        alerter = (await _system_health(control_client))["health_alerter"]
+    finally:
+        await repo.client.delete(Keys.health_alert_state())
+
+    alert = alerter["committed"]["disk:/dev/sda1"]
+    assert (alert["severity"], alert["detail"]) == ("warn", "/var/lib/docker: 40G")
+    assert alerter["reported_failures"] == {"check_log_shipping": "connection refused"}
+
+
+async def test_system_health_without_health_alerter_state(
+    db: async_sessionmaker[AsyncSession], control_client: httpx.AsyncClient
+) -> None:
+    alerter = (await _system_health(control_client))["health_alerter"]
+    assert alerter["committed"] == {} and alerter["reported_failures"] == {}

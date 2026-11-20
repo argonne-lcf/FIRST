@@ -528,7 +528,7 @@ export const getClusterCatalogV1ClustersNameGet = <
  *
  * One-glance operational snapshot: the health/state and any reconcile error
  * of every operational resource, grouped by type, plus pilot jobs that died
- * before their manager came up.
+ * before their manager came up and the health alerter's published state.
  */
 export const getSystemHealthCatalogV1SystemHealthGet = <
   ThrowOnError extends boolean = false,

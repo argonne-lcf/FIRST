@@ -208,6 +208,33 @@ def test_advance_stable_status_no_realert_on_rising_count() -> None:
     assert state.committed[key].recovery_hint == "6 reconcile failures"
 
 
+def test_detail_committed_and_refreshed() -> None:
+    """An Observation's detail is committed and tracks the latest tick, so the
+    admin console can show it under the alert."""
+    t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    key = "cluster/1/quarantine/7.pbs"
+    state = HealthAlertState()
+
+    def _obs(detail: str) -> Observation:
+        return Observation(
+            key=key,
+            status="running",
+            summary="quarantine job 7.pbs is running",
+            severity="warn",
+            detail=detail,
+            owner="check_quarantined_nodes",
+        )
+
+    ran = {"check_quarantined_nodes"}
+    advance(state, [_obs("Evidence: a")], ran, t0, DEBOUNCE)
+    plan = advance(state, [_obs("Evidence: b")], ran, t0 + 2 * DEBOUNCE, DEBOUNCE)
+    HealthAlerter._commit(state, plan)
+    assert state.committed[key].detail == "Evidence: b"
+
+    advance(state, [_obs("Evidence: c")], ran, t0 + 3 * DEBOUNCE, DEBOUNCE)
+    assert state.committed[key].detail == "Evidence: c"
+
+
 def test_advance_per_key_debounce_override() -> None:
     """A transition with its own debounce_s uses it instead of the default."""
     t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)

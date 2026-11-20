@@ -659,7 +659,7 @@ export const getSystemHealthCatalogV1SystemHealthGetQueryKey = (
  *
  * One-glance operational snapshot: the health/state and any reconcile error
  * of every operational resource, grouped by type, plus pilot jobs that died
- * before their manager came up.
+ * before their manager came up and the health alerter's published state.
  */
 export const getSystemHealthCatalogV1SystemHealthGetOptions = (
   options?: Options<GetSystemHealthCatalogV1SystemHealthGetData>,

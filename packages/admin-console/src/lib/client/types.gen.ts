@@ -334,6 +334,60 @@ export type ClusterSummary = {
 };
 
 /**
+ * CommittedAlert
+ *
+ * A health status transition that has been flushed to Slack
+ */
+export type CommittedAlert = {
+  /**
+   * Key
+   */
+  key: string;
+  /**
+   * Status
+   */
+  status: string;
+  /**
+   * Severity
+   */
+  severity?: "info" | "warn" | "crit";
+  /**
+   * Summary
+   */
+  summary?: string;
+  /**
+   * Display Name
+   */
+  display_name?: string;
+  /**
+   * Recovery Hint
+   */
+  recovery_hint?: string;
+  /**
+   * Detail
+   */
+  detail?: string;
+  /**
+   * Group
+   */
+  group?:
+    | "Clusters"
+    | "Deployments"
+    | "Pilot Jobs"
+    | "Pilot Replicas"
+    | "Infrastructure"
+    | "Other";
+  /**
+   * Owner
+   */
+  owner?: string;
+  /**
+   * Debounce S
+   */
+  debounce_s?: number | null;
+};
+
+/**
  * ConfigVersion
  *
  * Audit history of applied configuration changes, with detailed diff.
@@ -610,6 +664,36 @@ export type HttpValidationError = {
    * Detail
    */
   detail?: Array<ValidationError>;
+};
+
+/**
+ * HealthAlertState
+ *
+ * Singleton Redis blob for the health alerter (one key, not per-resource).
+ */
+export type HealthAlertState = {
+  /**
+   * Committed
+   */
+  committed?: {
+    [key: string]: CommittedAlert;
+  };
+  /**
+   * Staging
+   */
+  staging?: {
+    [key: string]: StagedTransition;
+  };
+  /**
+   * Last Daily Report
+   */
+  last_daily_report?: string | null;
+  /**
+   * Reported Failures
+   */
+  reported_failures?: {
+    [key: string]: string;
+  };
 };
 
 /**
@@ -2044,6 +2128,64 @@ export type ScriptParameter = {
 };
 
 /**
+ * StagedTransition
+ *
+ * A health status transition pending flush to Slack
+ */
+export type StagedTransition = {
+  /**
+   * Key
+   */
+  key: string;
+  /**
+   * Status
+   */
+  status: string;
+  /**
+   * Severity
+   */
+  severity?: "info" | "warn" | "crit";
+  /**
+   * Summary
+   */
+  summary?: string;
+  /**
+   * Display Name
+   */
+  display_name?: string;
+  /**
+   * Recovery Hint
+   */
+  recovery_hint?: string;
+  /**
+   * Detail
+   */
+  detail?: string;
+  /**
+   * Group
+   */
+  group?:
+    | "Clusters"
+    | "Deployments"
+    | "Pilot Jobs"
+    | "Pilot Replicas"
+    | "Infrastructure"
+    | "Other";
+  /**
+   * Owner
+   */
+  owner?: string;
+  /**
+   * Debounce S
+   */
+  debounce_s?: number | null;
+  /**
+   * First Seen
+   */
+  first_seen: string;
+};
+
+/**
  * StaticDeploymentDetail
  *
  * Static Deployment with backend runtime information.
@@ -2224,6 +2366,9 @@ export type StaticDeploymentSummary = {
  * `failed_pilot_jobs` lists pilot jobs that died before their manager came up:
  * those ended in the last day, plus each cluster's current start failure
  * streak; newest first.
+ *
+ * `health_alerter` is the health alerter's published state (the alerts it has
+ * committed to Slack, and its checks that are failing to run).
  */
 export type SystemHealth = {
   /**
@@ -2250,6 +2395,7 @@ export type SystemHealth = {
    * Failed Pilot Jobs
    */
   failed_pilot_jobs?: Array<PilotJobFailure>;
+  health_alerter?: HealthAlertState;
 };
 
 /**

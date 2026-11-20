@@ -16,7 +16,7 @@ from ..types import (
     UsageLimits,
 )
 from . import spec
-from .runtime import BackendRuntime, ModelRuntime, PilotJobRuntime
+from .runtime import BackendRuntime, HealthAlertState, ModelRuntime, PilotJobRuntime
 
 
 class _Overlay:
@@ -369,6 +369,9 @@ class SystemHealth(BaseModel):
     `failed_pilot_jobs` lists pilot jobs that died before their manager came up:
     those ended in the last day, plus each cluster's current start failure
     streak; newest first.
+
+    `health_alerter` is the health alerter's published state (the alerts it has
+    committed to Slack, and its checks that are failing to run).
     """
 
     clusters: list[ClusterHealth]
@@ -377,3 +380,4 @@ class SystemHealth(BaseModel):
     pilot_jobs: list[ResourceHealth]
     pilot_replicas: list[ResourceHealth]
     failed_pilot_jobs: list[PilotJobFailure] = []
+    health_alerter: HealthAlertState = HealthAlertState()
