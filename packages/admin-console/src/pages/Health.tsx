@@ -414,14 +414,14 @@ function ReconcileBackoff({ backoffs }: { backoffs: Backoff[] }) {
         <Accordion type="multiple">
           {backoffs.map(({ kind, resource: r, link }) => (
             <AccordionItem key={`${kind}-${r.uid}`} value={`${kind}-${r.uid}`}>
-              <AccordionTrigger className="gap-4 hover:no-underline">
+              <AccordionTrigger className="min-w-0 gap-4 hover:no-underline">
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">{kind}</Badge>
                     <span className="truncate">{r.name}</span>
                   </div>
                   {r.reconcile_last_error && (
-                    <p className="truncate font-mono text-xs font-normal text-muted-foreground group-aria-expanded/accordion-trigger:break-words group-aria-expanded/accordion-trigger:whitespace-normal">
+                    <p className="line-clamp-2 font-mono text-xs font-normal break-words text-muted-foreground group-aria-expanded/accordion-trigger:line-clamp-none">
                       {r.reconcile_last_error}
                     </p>
                   )}
