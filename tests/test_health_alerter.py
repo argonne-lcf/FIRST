@@ -1229,6 +1229,52 @@ async def test_check_pilot_replica_bad_state(
     assert "CUDA OOM" in obs[0].summary
 
 
+async def test_check_pilot_replica_reconcile_names_replica_once(
+    db: async_sessionmaker[AsyncSession], redis: Redis
+) -> None:
+    """Wrapped errors that repeat the replica name are deduped in the summary."""
+    alerter = _make_alerter(db, redis)
+    async with db.begin() as sess:
+        await _seed_parents(sess)
+        sess.add(
+            PilotDeployment(
+                name="pd1",
+                cluster_name="cl",
+                model_name="mdl",
+                launch_template_name=LAUNCH_TEMPLATE_NAME,
+                router_params={},
+                scaling_strategy=None,
+                min_replicas=0,
+                max_replicas=2,
+                launch_spec={},
+                prometheus_scrape_interval_sec=30,
+            )
+        )
+        await sess.flush()
+        sess.add(
+            PilotReplica(
+                name="pd1/replica/abc",
+                pilot_deployment_name="pd1",
+                state=ReplicaState.terminating.value,
+                reconcile_failures=95,
+                reconcile_last_error=(
+                    "Pilot manager could not stop replica pd1/replica/abc: "
+                    "Replica pd1/replica/abc teardown incomplete; still present: "
+                    "post-stop hook or verification "
+                    "(in ReplicaDrainer._stop_on_manager)"
+                ),
+            )
+        )
+
+    obs = await check_pilot_replica(alerter.client_state)
+    assert [o.summary for o in obs] == [
+        "PilotReplica pd1/replica/abc: 95 reconcile failures — "
+        "Pilot manager could not stop replica: Replica teardown incomplete; "
+        "still present: post-stop hook or verification "
+        "(in ReplicaDrainer._stop_on_manager)"
+    ]
+
+
 async def test_check_pilot_job_manager_unhealthy(
     db: async_sessionmaker[AsyncSession], redis: Redis
 ) -> None:

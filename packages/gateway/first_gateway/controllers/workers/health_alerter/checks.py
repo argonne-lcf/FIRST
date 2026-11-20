@@ -52,6 +52,15 @@ def _error_tail(err: str | None, limit: int = 300) -> str:
     return tail[:limit]
 
 
+def _elide_subject(text: str, name: str) -> str:
+    """Drop repeats of ``name`` from an error that the alert already prefixes with it.
+
+    Each wrapping layer names its resource, so concatenated errors otherwise
+    repeat it ("could not stop replica X: Replica X teardown incomplete").
+    """
+    return text.replace(f" {name}", "")
+
+
 def _exc_summary(exc: Exception, limit: int = 300) -> str:
     """Last line of an exception, falling back to its type when message-less."""
     return _error_tail(str(exc), limit) or type(exc).__name__
@@ -423,7 +432,7 @@ async def check_pilot_job(client_state: ClientState) -> list[Observation]:
         # cluster is under maintenance; check_cluster_health reports it.
         expected_faults = j.cluster_name in maintenance
         if j.reconcile_failures > 0 and not expected_faults:
-            err = _error_tail(j.reconcile_last_error)
+            err = _elide_subject(_error_tail(j.reconcile_last_error), j.name)
             n = j.reconcile_failures
             summary = f"PilotJob {j.name}: {n} reconcile failures"
             if err:
@@ -500,7 +509,7 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
         if cluster_name in maintenance:
             continue
         if r.state in _BAD_REPLICA_STATES:
-            msg = r.state_message or ""
+            msg = _elide_subject(r.state_message or "", r.name)
             summary = f"PilotReplica {r.name}: {r.state}"
             if len(msg) > 300:
                 detail = msg
@@ -521,7 +530,7 @@ async def check_pilot_replica(client_state: ClientState) -> list[Observation]:
                 )
             )
         if r.reconcile_failures > 0:
-            err = _error_tail(r.reconcile_last_error)
+            err = _elide_subject(_error_tail(r.reconcile_last_error), r.name)
             n = r.reconcile_failures
             summary = f"PilotReplica {r.name}: {n} reconcile failures"
             if err:
