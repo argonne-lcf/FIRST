@@ -30,12 +30,17 @@ async def scheduler_rpc(
     awaitable: Awaitable[_T], timeout: float = SCHEDULER_RPC_TIMEOUT
 ) -> _T:
     """Await a scheduler RPC with a hard timeout that names the call."""
+    name = getattr(awaitable, "__qualname__", None) or repr(awaitable)
     try:
-        return await asyncio.wait_for(awaitable, timeout=timeout)
+        async with asyncio.timeout(timeout) as cm:
+            return await awaitable
     except TimeoutError as e:
-        # asyncio.wait_for raises a bare TimeoutError with an empty message;
+        if not cm.expired():
+            # The adapter raised its own (more specific) TimeoutError before
+            # our deadline; don't hide its message behind ours.
+            raise
+        # asyncio.timeout raises a bare TimeoutError with an empty message;
         # name the RPC so record_failure() stores something actionable.
-        name = getattr(awaitable, "__qualname__", None) or repr(awaitable)
         raise TimeoutError(f"Scheduler {name} RPC timed out after {timeout:g}s") from e
 
 
