@@ -8,9 +8,10 @@ readme = "README.md"
 dependencies = [
     "httpx",
     "pydantic",
+    "click>=8.0",
     "python-dotenv",
     "rich",
-    "typer",
+    "typer>=0.19",
     "globus-sdk>=3.65",
     "openai",
     "tomlkit",

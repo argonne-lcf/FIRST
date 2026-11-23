@@ -12,7 +12,6 @@ import typer
 from rich.markdown import Markdown
 
 from first_common.errors import NotFound
-from first_common.schema.resources.read import ModelPublic
 
 from ..client import InferenceClient
 from ..inference import (
@@ -23,7 +22,9 @@ from ..inference import (
     stream_delta,
 )
 from ._shared import (
+    DEFAULT_MODEL,
     console,
+    default_model_name,
     err_console,
     llm_endpoints,
     model_for,
@@ -55,23 +56,29 @@ def resolve_target(
     """
     Choose the (model, endpoint) for a chat request.
 
-    An explicit model + API needs no lookup.  Otherwise the catalog is consulted:
-    the model defaults to ``$ALCF_AI_MODEL`` or the first chat-capable Model,
-    and the API to the first dialect the Model supports.
+    An explicit model + API needs no lookup. Otherwise the catalog is consulted:
+    an explicit model or ``$ALCF_AI_MODEL`` wins, then the Tara-backed default,
+    then the first chat-capable Model. The API defaults to the first supported.
     """
     if model and api != Api.auto:
         return model, _API_ENDPOINT[api]
 
     models = client.catalog.models()
-    model = model or os.environ.get("ALCF_AI_MODEL") or None
-    chosen: ModelPublic | None
-    if model:
-        chosen = next(
-            (m for m in models if m.name == model or model in m.aliases), None
-        )
-        if chosen is None:
-            raise NotFound(f"Model {model!r} not found (or not visible to you).")
-    else:
+    configured_model = model or os.environ.get("ALCF_AI_MODEL") or None
+    requested_model = configured_model or default_model_name()
+    chosen = next(
+        (
+            m
+            for m in models
+            if m.name == requested_model or requested_model in m.aliases
+        ),
+        None,
+    )
+    if chosen is None:
+        if configured_model:
+            raise NotFound(
+                f"Model {configured_model!r} not found (or not visible to you)."
+            )
         chosen = next(
             (
                 m
@@ -82,6 +89,11 @@ def resolve_target(
         )
         if chosen is None:
             raise NotFound("No chat-capable Model is visible to you.")
+        err_console.print(
+            f"[dim]{DEFAULT_MODEL} is unavailable; using {chosen.name} "
+            "(choose another with --model)[/]"
+        )
+    else:
         err_console.print(
             f"[dim]Using model {chosen.name} (choose another with --model)[/]"
         )
@@ -210,7 +222,9 @@ def chat(
     model: Annotated[
         str | None,
         typer.Option(
-            "--model", "-m", help="Model name or alias (default: $ALCF_AI_MODEL)."
+            "--model",
+            "-m",
+            help="Model name or alias (default: $ALCF_AI_MODEL or mistral-large-4).",
         ),
     ] = None,
     api: Annotated[
