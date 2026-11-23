@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict
 from tomlkit.exceptions import TOMLKitError
 from tomlkit.items import InlineTable
 
+from first_common.schema.endpoints.base import SESSION_HEADER
 from first_common.schema.resources.read import ModelPublic
 
 logger = logging.getLogger(__name__)
@@ -42,9 +43,9 @@ AGENTS: tuple[Agent, ...] = ("opencode", "codex", "pi", "claude")
 PROVIDER_KEY = "alcf-inference-service"
 PROVIDER_NAME = "ALCF Inference Service"
 
-# Downstream backends (e.g. Minerva) route requests sharing this header to the
-# same replica for prompt-cache reuse; agents fill it from $ALCF_SESSION_ID.
-SESSION_HEADER = "X-ALCF-Session-ID"
+# The gateway routes requests sharing SESSION_HEADER to the same backend for
+# prompt-cache reuse (and forwards it to backends that route replicas
+# themselves); agents fill it from $ALCF_SESSION_ID.
 SESSION_ENV = "ALCF_SESSION_ID"
 
 # Endpoints an agent can drive; a model qualifies if it serves any of them.

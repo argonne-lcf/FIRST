@@ -8,6 +8,7 @@ import pytest
 from aiohttp import web
 from fastapi.responses import StreamingResponse
 
+from first_common.schema.endpoints.base import SESSION_HEADER
 from first_common.schema.endpoints.generic import (
     TASK_USER_ID_HEADER,
     GenericTaskPayload,
@@ -116,6 +117,8 @@ def _service(monkeypatch: pytest.MonkeyPatch) -> InferenceService:
     service.user = Mock(id="user-uuid")
     service.admission_controller = AsyncMock()
     service.estimate = TokenEstimate()
+    service.session_id = None
+    service.sticky = None
     monkeypatch.setattr(service, "_emit_inference_log", Mock())
     return service
 
@@ -177,6 +180,48 @@ async def test_task_sends_caller_identity(monkeypatch: pytest.MonkeyPatch) -> No
     ((user_id, body),) = seen
     assert user_id == "user-uuid"
     assert "endpoint" not in json.loads(body)
+
+
+async def test_session_header_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str | None, str | None]] = []
+
+    async def upstream(request: web.Request) -> web.StreamResponse:
+        seen.append(
+            (
+                request.headers.get(SESSION_HEADER),
+                request.headers.get(TASK_USER_ID_HEADER),
+            )
+        )
+        if (await request.json()).get("stream"):
+            resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await resp.prepare(request)
+            await resp.write(b"data: [DONE]\n\n")
+            return resp
+        return web.json_response({})
+
+    model = _config("https://backend.example/v1").models[0]
+    deployment = model.deployments[0]
+    backend = deployment.backends[0]
+    client = await fake.serve_backend(upstream)
+    service = _service(monkeypatch)
+    service.session_id = "sess-42"
+
+    unary = OpenAIChatCompletionsPayload(model="m", messages=[])
+    await service._handle_unary(client, unary, model, deployment, backend)
+    task = GenericTaskPayload(model="m", endpoint="segmentation", input_dir="/x")  # type: ignore[call-arg]
+    await service._handle_unary(client, task, model, deployment, backend)
+    stream = OpenAIChatCompletionsPayload(model="m", messages=[], stream=True)
+    response = await service._handle_streaming(
+        client, stream, model, deployment, backend
+    )
+    assert isinstance(response, StreamingResponse)
+    _ = [chunk async for chunk in response.body_iterator]
+
+    assert seen == [
+        ("sess-42", None),
+        ("sess-42", "user-uuid"),
+        ("sess-42", None),
+    ]
 
 
 async def test_timed_out_task_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:

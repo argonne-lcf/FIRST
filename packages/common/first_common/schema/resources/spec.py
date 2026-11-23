@@ -130,6 +130,13 @@ class ModelSpec(ResourceSpec):
     model listings, and requests for it get a 410 instead of a 404.
     `retired_deployments` records deployments removed from a model that is
     still served elsewhere.
+
+    `sticky_session_duration_min` > 0 enables best-effort session affinity for
+    backends with prefix caching (e.g. vLLM): requests sharing a (user, model or
+    pinned deployment, X-ALCF-Session-ID) prefer the backend that served the
+    session last.  Each admitted request renews the session for this many
+    minutes.  A sticky backend that is benched, gone, or full is skipped and the
+    session re-pins to wherever the request lands.  0 (default) disables it.
     """
 
     access_group_name: ResourceName
@@ -143,6 +150,7 @@ class ModelSpec(ResourceSpec):
     capabilities: dict[str, Any] = {}
     retired: bool = False
     retired_deployments: list[RetiredDeployment] = []
+    sticky_session_duration_min: int = Field(0, ge=0, le=24 * 60)
 
     @field_validator("supported_endpoints")
     @classmethod

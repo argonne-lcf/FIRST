@@ -1,3 +1,4 @@
+import hashlib
 import math
 import random
 from datetime import datetime, timezone
@@ -25,7 +26,32 @@ from ..database.redis.admission import (
     CapacityReason,
     QuotaReason,
 )
+from ..database.redis.keys import Keys
 from ..database.redis.router_config import DeploymentConfig, ModelConfig, RouterConfig
+
+# Session IDs longer than this are hashed before they go into a Redis key.
+MAX_SESSION_ID_LEN = 128
+
+
+def sticky_session_key(
+    model: ModelConfig,
+    user_id: str,
+    deployment_name: str | None,
+    session_id: str | None,
+) -> str | None:
+    """
+    Redis key pinning this (user, model or deployment, session) to a backend,
+    or None if the model does not use sticky sessions.
+
+    A missing session ID is one implicit session per user and model (or
+    deployment).
+    """
+    if model.sticky_session_duration_min <= 0:
+        return None
+    sid = session_id or ""
+    if len(sid) > MAX_SESSION_ID_LEN:
+        sid = hashlib.sha256(sid.encode()).hexdigest()
+    return Keys.sticky_session(model.name, deployment_name, user_id, sid)
 
 
 def get_shuffled_backends(
@@ -106,14 +132,18 @@ async def admit_request(
     estimated_tokens: int = 0,
     deployment_name: str | None = None,
     charge_request: bool = True,
-) -> str:
+    session_id: str | None = None,
+) -> AdmitResult:
     """
-    Find and return the backend ID that will serve the request.
-    This uses probabilities through the admission controler, which
+    Admit the request and return the result naming the backend that will
+    serve it.  This uses probabilities through the admission controler, which
     takes in to account weights and recent activities.
 
     Pass `charge_request=False` when retrying a request that was already
     admitted, so it only counts once against the user's RPM.
+
+    `session_id` (the X-ALCF-Session-ID header) keys the sticky session on
+    models that enable them.
     """
 
     usage_limits = model.usage_limits.get_limits(user)
@@ -142,12 +172,14 @@ async def admit_request(
         estimated_tokens=estimated_tokens,
         quota=usage_limits,
         charge_request=charge_request,
+        sticky_key=sticky_session_key(model, user.id, deployment_name, session_id),
+        sticky_ttl_sec=model.sticky_session_duration_min * 60,
     )
     if not admit_result.admitted:
         raise_admit_error(admit_result, usage_limits, model, deployment_name)
 
     if admit_result.backend_id:
-        return admit_result.backend_id
+        return admit_result
     else:
         raise NotFound(f"Backend not found for model {model.name}.")
 

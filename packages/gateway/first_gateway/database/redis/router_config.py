@@ -67,6 +67,7 @@ class ModelConfig(BaseModel):
     deployments: list[DeploymentConfig]
     retired: bool = False
     retired_deployments: list[RetiredDeployment] = []
+    sticky_session_duration_min: int = 0
 
     def retired_deployment(self, name: str) -> RetiredDeployment | None:
         return next((d for d in self.retired_deployments if d.name == name), None)

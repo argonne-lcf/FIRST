@@ -286,6 +286,9 @@ class Model(ResourceRow):
     retired_deployments: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, default=list, server_default=sa.text("'[]'::jsonb")
     )
+    sticky_session_duration_min: Mapped[int] = mapped_column(
+        default=0, server_default=sa.text("0")
+    )
 
     access_group: Mapped[AccessGroup] = relationship(lazy="raise")
     pilot_deployments: Mapped[list["PilotDeployment"]] = relationship(

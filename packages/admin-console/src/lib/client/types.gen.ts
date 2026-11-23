@@ -1018,6 +1018,10 @@ export type ModelConfig = {
    * Retired Deployments
    */
   retired_deployments?: Array<RetiredDeployment>;
+  /**
+   * Sticky Session Duration Min
+   */
+  sticky_session_duration_min?: number;
 };
 
 /**
@@ -1088,6 +1092,10 @@ export type ModelSummary = {
    * Retired Deployments
    */
   retired_deployments?: Array<RetiredDeployment>;
+  /**
+   * Sticky Session Duration Min
+   */
+  sticky_session_duration_min?: number;
   /**
    * Kind
    */
@@ -2858,6 +2866,10 @@ export type ModelSummaryWritable = {
    * Retired Deployments
    */
   retired_deployments?: Array<RetiredDeployment>;
+  /**
+   * Sticky Session Duration Min
+   */
+  sticky_session_duration_min?: number;
   /**
    * Kind
    */

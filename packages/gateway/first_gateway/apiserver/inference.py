@@ -14,7 +14,7 @@ from first_common.errors import (
     NotFound,
     ServiceUnavailable,
 )
-from first_common.schema.endpoints.base import BasePayload
+from first_common.schema.endpoints.base import SESSION_HEADER, BasePayload
 from first_common.schema.endpoints.generic import (
     TASK_USER_ID_HEADER,
     GenericTaskPayload,
@@ -23,7 +23,7 @@ from first_common.schema.endpoints.token_estimation import TokenEstimate
 from first_common.schema.structured_logs import InferenceLog, InferenceOutcome
 from first_common.schema.types import upstream_endpoint_path
 
-from ..database.redis.admission import AdmissionController
+from ..database.redis.admission import AdmissionController, StickyOutcome
 from ..database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
@@ -97,6 +97,8 @@ class InferenceService:
         self.request_id = get_request_id() or str(uuid.uuid4())
         self.attempt = 1
         self.estimate = TokenEstimate()
+        self.session_id = request.headers.get(SESSION_HEADER)
+        self.sticky: StickyOutcome | None = None
 
         state = request.app.state
         self.storage_dir = state.client_state.settings.prompt_storage_dir
@@ -173,8 +175,9 @@ class InferenceService:
         # Attempt at least once to make sure admit_request is called.
         for _ in range(max(1, min(MAX_ATTEMPTS, len(backend_candidates)))):
             t0 = time.perf_counter()
+            self.sticky = None
             try:
-                backend_id = await admit_request(
+                admitted = await admit_request(
                     self.user,
                     model,
                     self.admission_controller,
@@ -183,6 +186,7 @@ class InferenceService:
                     estimated_tokens=self.estimate.total_estimated_tokens,
                     deployment_name=deployment_name,
                     charge_request=attempted == 0,
+                    session_id=self.session_id,
                 )
             except FirstError as exc:
                 self.attempt = attempted + 1
@@ -195,6 +199,9 @@ class InferenceService:
                     error=exc.info.get("reject_reason") or exc.code,
                 )
                 raise
+            assert admitted.backend_id is not None
+            backend_id = admitted.backend_id
+            self.sticky = admitted.sticky
 
             client = self.backend_client_manager.get(backend_id)
             if client is None:
@@ -385,7 +392,16 @@ class InferenceService:
             est_output_tokens=self.estimate.est_output_tokens,
             input_chars=self.estimate.input_chars,
             input_images=self.estimate.input_images,
+            sticky=self.sticky.value if self.sticky else None,
         ).emit(raw_body=raw_body, storage_dir=self.storage_dir)
+
+    def _upstream_headers(self, is_task: bool = False) -> dict[str, str] | None:
+        headers: dict[str, str] = {}
+        if self.session_id:
+            headers[SESSION_HEADER] = self.session_id
+        if is_task:
+            headers[TASK_USER_ID_HEADER] = self.user.id
+        return headers or None
 
     def _raise_for_upstream_status(
         self, status_code: int, body: str, model_name: str
@@ -429,7 +445,7 @@ class InferenceService:
                 response = await client.post(
                     upstream_endpoint_path(payload.endpoint),
                     body,
-                    headers={TASK_USER_ID_HEADER: self.user.id} if is_task else None,
+                    headers=self._upstream_headers(is_task),
                 )
                 async with response:
                     status_code = response.status
@@ -499,7 +515,9 @@ class InferenceService:
         with upstream_timer():  # until the backend's response headers
             try:
                 response = await client.post(
-                    upstream_endpoint_path(payload.endpoint), body
+                    upstream_endpoint_path(payload.endpoint),
+                    body,
+                    headers=self._upstream_headers(),
                 )
                 if response.status != 200:
                     async with response:
