@@ -18,17 +18,21 @@ from first_gateway.database.redis.admission import (
     AdmitStatus,
     CapacityReason,
     QuotaReason,
+    StickyOutcome,
 )
+from first_gateway.database.redis.keys import Keys
 from first_gateway.database.redis.router_config import (
     BackendConfig,
     DeploymentConfig,
     ModelConfig,
 )
 from first_gateway.services.orchestration import (
+    MAX_SESSION_ID_LEN,
     admit_request,
     get_shuffled_backends,
     jittered_retry_after,
     raise_admit_error,
+    sticky_session_key,
 )
 
 
@@ -176,3 +180,52 @@ async def test_request_over_burst_tokens_fails_fast() -> None:
     assert exc.info["reject_reason"] == "request_too_large"
     assert "1,001" in str(exc) and "1,000" in str(exc)
     controller.admit.assert_not_called()
+
+
+def test_sticky_session_key_off_by_default() -> None:
+    model = _model(_dep("a", 1, 1))
+    assert sticky_session_key(model, "u", None, "s") is None
+
+
+def test_sticky_session_key_scopes() -> None:
+    model = _model(_dep("a", 1, 1))
+    model.sticky_session_duration_min = 10
+    fed = sticky_session_key(model, "u", None, "s")
+    dep = sticky_session_key(model, "u", "a", "s")
+    assert fed == Keys.sticky_session(model.name, None, "u", "s")
+    assert dep == Keys.sticky_session(model.name, "a", "u", "s")
+    assert fed != dep
+    # No header is one implicit session per user.
+    assert sticky_session_key(model, "u", None, None) == sticky_session_key(
+        model, "u", None, ""
+    )
+    assert sticky_session_key(model, "u", None, None) != sticky_session_key(
+        model, "v", None, None
+    )
+
+
+def test_sticky_session_key_hashes_long_ids() -> None:
+    model = _model(_dep("a", 1, 1))
+    model.sticky_session_duration_min = 10
+    key = sticky_session_key(model, "u", None, "x" * (MAX_SESSION_ID_LEN + 1))
+    assert key is not None
+    assert len(key) < 2 * MAX_SESSION_ID_LEN
+    assert key != sticky_session_key(model, "u", None, "x" * (MAX_SESSION_ID_LEN + 2))
+
+
+async def test_admit_request_passes_sticky_session() -> None:
+    model = _model(_dep("a", 1, 1))
+    model.sticky_session_duration_min = 10
+    controller = AsyncMock()
+    controller.admit.return_value = AdmitResult(
+        status=AdmitStatus.ADMITTED, backend_id="a-0", sticky=StickyOutcome.NEW
+    )
+    user = MagicMock(id="u", username="u", user_group_uuids=[])
+
+    result = await admit_request(
+        user, model, controller, [], "rid", deployment_name="a", session_id="s"
+    )
+    assert result.backend_id == "a-0"
+    kwargs = controller.admit.await_args.kwargs
+    assert kwargs["sticky_key"] == Keys.sticky_session(model.name, "a", "u", "s")
+    assert kwargs["sticky_ttl_sec"] == 600

@@ -242,3 +242,7 @@ class InferenceLog(_StructuredLog):
     est_output_tokens: float | None = None
     input_chars: int | None = None
     input_images: int | None = None
+
+    # Sticky-session outcome of this attempt's admission: off|new|hit|repinned.
+    # None on attempts that were not admitted.
+    sticky: str | None = None

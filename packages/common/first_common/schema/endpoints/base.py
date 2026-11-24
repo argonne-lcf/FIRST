@@ -8,6 +8,11 @@ from pydantic import (
 
 from .token_estimation import TokenEstimate
 
+# Client-chosen conversation/agent session ID.  The gateway keys sticky
+# sessions on it and forwards it upstream so backends with their own replica
+# routing can keep a session on one prompt cache.
+SESSION_HEADER = "X-ALCF-Session-ID"
+
 
 class BaseModelAllowExtra(BaseModel):
     model_config = ConfigDict(extra="allow")

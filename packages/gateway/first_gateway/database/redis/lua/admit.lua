@@ -8,7 +8,8 @@
 -- KEYS[5]    rt:model:{model}:rejects        HASH {capacity_rejects_total, last_reject_ts}
 -- KEYS[6]    rt:deadlines                    ZSET request_id -> deadline_ts
 -- KEYS[7]    rt:reserve:{request_id}         reservation blob
--- KEYS[8..N] pairs per candidate: errors key, backend_inflight ZSET
+-- KEYS[8]    rt:sticky:...                   session's last backend_id (TTL)
+-- KEYS[9..N] pairs per candidate: errors key, backend_inflight ZSET
 --
 -- ARGV[1]  request_id
 -- ARGV[2]  model_name
@@ -20,10 +21,16 @@
 -- ARGV[8]  requests_per_sec
 -- ARGV[9]  burst_requests
 -- ARGV[10] lease_sec
--- ARGV[11..] candidate triples: backend_id, max_backend_concurrency, cooldown_threshold
+-- ARGV[11] sticky_ttl_sec (0 disables sticky sessions; KEYS[8] is untouched)
+-- ARGV[12..] candidate triples: backend_id, max_backend_concurrency, cooldown_threshold
+--
+-- Sticky sessions are best effort: the session's backend is tried first if it
+-- is still a candidate, then the router order as usual.  Every admit points
+-- the session at the chosen backend and renews its TTL.
 --
 -- Returns:
---   {1, backend_id}                       ADMITTED
+--   {1, backend_id, sticky}               ADMITTED; sticky is one of
+--                                         off|new|hit|repinned
 --   {2, reason, tostring(retry_after)}    REJECT_QUOTA
 --   {3, reason}                           REJECT_CAPACITY
 
@@ -34,9 +41,10 @@ local model_inflight_key  = KEYS[4]
 local model_rejects_key   = KEYS[5]
 local deadlines_key       = KEYS[6]
 local reservation_key     = KEYS[7]
+local sticky_key          = KEYS[8]
 
-local NUM_FIXED_KEYS = 7
-local NUM_FIXED_ARGS = 10
+local NUM_FIXED_KEYS = 8
+local NUM_FIXED_ARGS = 11
 
 local request_id           = ARGV[1]
 local model_name           = ARGV[2]
@@ -48,6 +56,7 @@ local burst_tokens         = tonumber(ARGV[7])
 local requests_per_sec     = tonumber(ARGV[8])
 local burst_requests       = tonumber(ARGV[9])
 local lease_sec            = tonumber(ARGV[10])
+local sticky_ttl_sec       = tonumber(ARGV[11])
 
 local time = redis.call('TIME')
 local now = tonumber(time[1]) + tonumber(time[2]) / 1e6
@@ -85,10 +94,8 @@ if not ok_t then
   return {2, 'user_tpm', tostring(wait_t)}
 end
 
--- ---- capacity: walk candidates in router-chosen order ---------------------
+-- ---- capacity: sticky backend first, then router-chosen order ------------
 
-local chosen_backend_id = nil
-local chosen_inflight_key = nil
 local num_benched = 0
 local trailing = #KEYS - NUM_FIXED_KEYS
 if trailing % 2 ~= 0 then
@@ -96,31 +103,67 @@ if trailing % 2 ~= 0 then
 end
 local num_candidates = trailing / 2
 
-local argv_i = NUM_FIXED_ARGS + 1
-for ci = 1, num_candidates do
-  local error_key    = KEYS[NUM_FIXED_KEYS + 2*ci - 1]
-  local inflight_key = KEYS[NUM_FIXED_KEYS + 2*ci]
-  local backend_id = ARGV[argv_i]
-  local max_backend_concurrency = tonumber(ARGV[argv_i + 1])
+-- 1 = has capacity, 0 = full, -1 = benched
+local function probe(ci)
+  local argv_i = NUM_FIXED_ARGS + 3*ci - 2
   local cooldown_threshold = tonumber(ARGV[argv_i + 2])
-
-  local errs = tonumber(redis.call('GET', error_key) or '0')
-
-  if cooldown_threshold > 0 and errs >= cooldown_threshold then
-    num_benched = num_benched + 1
-  else
-    if redis.call('ZCARD', inflight_key) < max_backend_concurrency then
-      chosen_backend_id = backend_id
-      chosen_inflight_key = inflight_key
-      break
+  if cooldown_threshold > 0 then
+    local errs = tonumber(redis.call('GET', KEYS[NUM_FIXED_KEYS + 2*ci - 1]) or '0')
+    if errs >= cooldown_threshold then
+      return -1
     end
   end
-  argv_i = argv_i + 3
+  if redis.call('ZCARD', KEYS[NUM_FIXED_KEYS + 2*ci]) < tonumber(ARGV[argv_i + 1]) then
+    return 1
+  end
+  return 0
+end
+
+local chosen_ci = nil
+local sticky_ci = nil
+local sticky = 'off'
+
+if sticky_ttl_sec > 0 then
+  local sticky_backend_id = redis.call('GET', sticky_key)
+  if sticky_backend_id then
+    sticky = 'repinned'
+    for ci = 1, num_candidates do
+      if ARGV[NUM_FIXED_ARGS + 3*ci - 2] == sticky_backend_id then
+        sticky_ci = ci
+        break
+      end
+    end
+    if sticky_ci then
+      local p = probe(sticky_ci)
+      if p == 1 then
+        chosen_ci = sticky_ci
+        sticky = 'hit'
+      elseif p < 0 then
+        num_benched = 1
+      end
+    end
+  else
+    sticky = 'new'
+  end
+end
+
+if not chosen_ci then
+  for ci = 1, num_candidates do
+    if ci ~= sticky_ci then
+      local p = probe(ci)
+      if p == 1 then
+        chosen_ci = ci
+        break
+      elseif p < 0 then
+        num_benched = num_benched + 1
+      end
+    end
+  end
 end
 
 -- ---- capacity reject ------------------------------------------------------
 
-if not chosen_backend_id then
+if not chosen_ci then
   redis.call('HINCRBY', model_rejects_key, 'capacity_rejects_total', 1)
   redis.call('HSET', model_rejects_key, 'last_reject_ts', tostring(now))
 
@@ -135,6 +178,9 @@ if not chosen_backend_id then
 end
 
 -- ---- commit ---------------------------------------------------------------
+
+local chosen_backend_id = ARGV[NUM_FIXED_ARGS + 3*chosen_ci - 2]
+local chosen_inflight_key = KEYS[NUM_FIXED_KEYS + 2*chosen_ci]
 
 if tat_r then redis.call('SET', quota_rpm_key, tostring(tat_r), 'EX', ttl_r) end
 if tat_t then redis.call('SET', quota_tokens_key, tostring(tat_t), 'EX', ttl_t) end
@@ -155,4 +201,7 @@ local row = cjson.encode({
 })
 redis.call('SET', reservation_key, row)
 redis.call('ZADD', deadlines_key, now + lease_sec, request_id)
-return {1, chosen_backend_id}
+if sticky_ttl_sec > 0 then
+  redis.call('SET', sticky_key, chosen_backend_id, 'EX', sticky_ttl_sec)
+end
+return {1, chosen_backend_id, sticky}

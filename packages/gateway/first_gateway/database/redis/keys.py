@@ -40,6 +40,18 @@ class Keys:
         return f"rt:backend:{backend_id}:errors"
 
     @staticmethod
+    def sticky_session(
+        model: str, deployment: str | None, user_id: str, session_id: str
+    ) -> str:
+        """STRING backend_id with TTL: the backend a session was last admitted to.
+
+        Federated requests and requests pinned to a deployment are separate
+        sessions.  ``session_id`` is last since it is client-supplied.
+        """
+        scope = f"dep:{deployment}" if deployment else "fed"
+        return f"rt:sticky:{model}:{scope}:{user_id}:{session_id}"
+
+    @staticmethod
     def reservation(request_id: str) -> str:
         """JSON blob written by admit, read/deleted by settle."""
         return f"rt:reserve:{request_id}"

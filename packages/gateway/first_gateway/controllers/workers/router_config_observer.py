@@ -74,6 +74,7 @@ class RouterConfigObserver(Worker):
                     RetiredDeployment.model_validate(d)
                     for d in model.retired_deployments
                 ],
+                sticky_session_duration_min=model.sticky_session_duration_min,
             )
             for model in sorted(models, key=lambda m: m.uid)
         ]

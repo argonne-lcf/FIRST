@@ -61,11 +61,25 @@ class CapacityReason(str, Enum):
     NO_CANDIDATES = "no_candidates"  # no live backends (cold start)
 
 
+class StickyOutcome(str, Enum):
+    """How an admitted request related to its sticky session."""
+
+    OFF = "off"  # sticky sessions disabled for this model
+    NEW = "new"  # no live session: pinned to the chosen backend
+    HIT = "hit"  # admitted to the session's backend
+    REPINNED = "repinned"  # session's backend unavailable: re-pinned elsewhere
+
+
+# Placeholder KEYS[8] for admits with sticky sessions disabled; never accessed.
+_STICKY_OFF_KEY = "rt:sticky:off"
+
+
 class AdmitResult(BaseModel):
     """Decoded return of the admit.lua script."""
 
     status: AdmitStatus
     backend_id: str | None = None
+    sticky: StickyOutcome | None = None
     quota_reason: QuotaReason | None = None
     capacity_reason: CapacityReason | None = None
     retry_after_sec: float | None = None
@@ -78,7 +92,11 @@ class AdmitResult(BaseModel):
     def from_lua(cls, raw: Sequence[Any]) -> "AdmitResult":
         code = int(raw[0])
         if code == AdmitStatus.ADMITTED:
-            return cls(status=AdmitStatus.ADMITTED, backend_id=raw[1])
+            return cls(
+                status=AdmitStatus.ADMITTED,
+                backend_id=raw[1],
+                sticky=StickyOutcome(raw[2]),
+            )
         if code == AdmitStatus.REJECT_QUOTA:
             retry_after = float(raw[2])
             return cls(
@@ -158,6 +176,8 @@ class AdmissionController:
         estimated_tokens: int,
         quota: UsageLimits,
         charge_request: bool = True,
+        sticky_key: str | None = None,
+        sticky_ttl_sec: int = 0,
     ) -> AdmitResult:
         """
         Attempt to admit a request.  Performs one atomic round trip to Redis:
@@ -185,7 +205,12 @@ class AdmissionController:
            already charged (failover to another backend), so one user request
            consumes one unit of RPM.  Tokens need no such flag: settling the
            failed attempt with actual_tokens=0 refunds its estimate.
+        - `sticky_key`, `sticky_ttl_sec`: the session's Keys.sticky_session and
+           TTL.  If set, the session's last backend is tried before the
+           candidate order, and the session is (re)pinned to whichever backend
+           admits the request.  Best effort: never causes a reject.
         """
+        sticky = sticky_key is not None and sticky_ttl_sec > 0
         keys: list[str] = [
             Keys.user_rate_limit(model_name, user_id, "tokens"),
             Keys.user_rate_limit(model_name, user_id, "rpm"),
@@ -194,6 +219,7 @@ class AdmissionController:
             Keys.model_rejects(model_name),
             Keys.deadlines(),
             Keys.reservation(request_id),
+            sticky_key if sticky and sticky_key else _STICKY_OFF_KEY,
         ]
         for c in candidates:
             keys.append(Keys.backend_errors(c.uid))
@@ -211,6 +237,7 @@ class AdmissionController:
             quota.requests_per_sec if charge_request else 0,
             quota.burst_requests,
             self.lease_sec,
+            sticky_ttl_sec if sticky else 0,
         ]
         for c in candidates:
             args.extend([c.uid, c.max_backend_concurrency, c.cooldown_threshold])

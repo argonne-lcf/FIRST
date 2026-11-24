@@ -18,6 +18,7 @@ from first_gateway.database.redis.admission import (
     CandidateBackend,
     CapacityReason,
     QuotaReason,
+    StickyOutcome,
     TokenStats,
 )
 from first_gateway.database.redis.keys import Keys
@@ -658,6 +659,7 @@ class TestScriptGuards:
             Keys.model_rejects(MODEL),
             Keys.deadlines(),
             Keys.reservation("req-odd"),
+            "rt:sticky:off",
             Keys.backend_errors("r1"),
             # missing backend_inflight key — odd count
         ]
@@ -672,6 +674,7 @@ class TestScriptGuards:
             1.0,
             5,
             30.0,
+            0,
             "r1",
             10,
             3,
@@ -804,3 +807,114 @@ class TestTokenStats:
         a = USAGE_EWMA_ALPHA
         shared = pytest.approx(a * 300.0 + (1 - a) * 100.0)
         assert (await ac.get_token_stats(MODEL, USER)).output_tokens == shared
+
+
+# ---------------------------------------------------------------------------
+# Sticky sessions
+# ---------------------------------------------------------------------------
+
+STICKY_KEY = Keys.sticky_session(MODEL, None, USER, "sess-1")
+
+
+async def _sticky_admit(
+    ac: AdmissionController, request_id: str, *uids: str, **kw: object
+) -> AdmitResult:
+    kw.setdefault("candidates", _candidates(*(uids or ("r1", "r2"))))
+    return await _admit(ac, request_id, sticky_key=STICKY_KEY, sticky_ttl_sec=600, **kw)
+
+
+class TestStickySessions:
+    async def test_off_by_default(self, ac: AdmissionController, redis: Redis) -> None:
+        result = await _admit(ac, "req-1")
+        assert result.sticky is StickyOutcome.OFF
+        assert await redis.keys("rt:sticky:*") == []
+
+    async def test_zero_ttl_disables(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        result = await _admit(ac, "req-1", sticky_key=STICKY_KEY, sticky_ttl_sec=0)
+        assert result.sticky is StickyOutcome.OFF
+        assert await redis.get(STICKY_KEY) is None
+
+    async def test_new_session_pins_chosen_backend(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        result = await _sticky_admit(ac, "req-1", "r1", "r2")
+        assert result.sticky is StickyOutcome.NEW
+        assert result.backend_id == "r1"
+        assert await redis.get(STICKY_KEY) == "r1"
+        assert 590 < await redis.ttl(STICKY_KEY) <= 600
+
+    async def test_hit_overrides_router_order(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await redis.set(STICKY_KEY, "r2", ex=5)
+        result = await _sticky_admit(ac, "req-1", "r1", "r2")
+        assert result.sticky is StickyOutcome.HIT
+        assert result.backend_id == "r2"
+        # Each hit renews the session TTL.
+        assert await redis.ttl(STICKY_KEY) > 5
+
+    async def test_full_sticky_backend_spills_and_repins(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await redis.set(STICKY_KEY, "r2")
+        candidates = _candidates("r1", "r2", concurrency=1)
+        await _admit(ac, "other", candidates=_candidates("r2", concurrency=1))
+        result = await _sticky_admit(ac, "req-1", candidates=candidates)
+        assert result.sticky is StickyOutcome.REPINNED
+        assert result.backend_id == "r1"
+        assert await redis.get(STICKY_KEY) == "r1"
+
+    async def test_benched_sticky_backend_spills_and_repins(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await redis.set(STICKY_KEY, "r1")
+        await ac.record_error("r1", RouterParams(cooldown_threshold=1))
+        candidates = _candidates("r1", "r2", cooldown_threshold=1)
+        result = await _sticky_admit(ac, "req-1", candidates=candidates)
+        assert result.sticky is StickyOutcome.REPINNED
+        assert result.backend_id == "r2"
+        assert await redis.get(STICKY_KEY) == "r2"
+
+    async def test_gone_sticky_backend_repins(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await redis.set(STICKY_KEY, "r-retired")
+        result = await _sticky_admit(ac, "req-1", "r1", "r2")
+        assert result.sticky is StickyOutcome.REPINNED
+        assert result.backend_id == "r1"
+        assert await redis.get(STICKY_KEY) == "r1"
+
+    async def test_benched_sticky_counts_once_toward_all_benched(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await redis.set(STICKY_KEY, "r2")
+        for uid in ("r1", "r2"):
+            await ac.record_error(uid, RouterParams(cooldown_threshold=1))
+        candidates = _candidates("r1", "r2", cooldown_threshold=1)
+        result = await _sticky_admit(ac, "req-1", candidates=candidates)
+        assert result.capacity_reason is CapacityReason.ALL_BENCHED
+
+    async def test_capacity_reject_keeps_session(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await redis.set(STICKY_KEY, "r1")
+        await _admit(ac, "other", candidates=_candidates("r1", concurrency=1))
+        result = await _sticky_admit(
+            ac, "req-1", candidates=_candidates("r1", concurrency=1)
+        )
+        assert result.capacity_reason is CapacityReason.SATURATED
+        assert await redis.get(STICKY_KEY) == "r1"
+
+    async def test_sticky_admit_reserves_like_normal(
+        self, ac: AdmissionController, redis: Redis
+    ) -> None:
+        await redis.set(STICKY_KEY, "r2")
+        await _sticky_admit(ac, "req-1", "r1", "r2")
+        assert await redis.zcard(Keys.backend_inflight(MODEL, "r2")) == 1
+        assert await redis.zcard(Keys.backend_inflight(MODEL, "r1")) == 0
+        assert await ac.settle(
+            "req-1", 0, model_name=MODEL, user_id=USER, backend_id="r2"
+        )
+        assert await redis.zcard(Keys.backend_inflight(MODEL, "r2")) == 0
