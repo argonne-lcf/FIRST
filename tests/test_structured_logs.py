@@ -273,14 +273,16 @@ def _seed_streaming_config(
     usage_limits: dict[str, Any] | None = None,
     with_backend: bool = True,
     endpoints: tuple[str, ...] = ("chat/completions",),
+    backend_ids: tuple[str, ...] = ("static_deployment/dep-open",),
 ) -> None:
     backends = [
         BackendConfig(
-            id="static_deployment/dep-open",
+            id=backend_id,
             model_url="http://backend.invalid/v1",
             backend_model_name="upstream",
             api_key=None,
         )
+        for backend_id in backend_ids
     ]
     cfg = RouterConfig(
         version=1,
@@ -823,6 +825,245 @@ async def test_stream_broken_by_backend_logged_as_upstream_error(
     assert inf["total_tokens"] is None
     assert int(await redis.get(Keys.backend_errors(backend_id))) == 1
     await redis.delete(Keys.backend_errors(backend_id))
+
+
+# --------------------------------------------------------------------------
+# ResponseLog is the request's summary row
+# --------------------------------------------------------------------------
+
+_INFERENCE_SUMMARY_KEYS = (
+    "endpoint",
+    "model",
+    "deployment",
+    "cluster",
+    "outcome",
+    "attempt",
+    "latency_sec",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+)
+
+
+def _only(events: list[dict[str, Any]], stream: str) -> dict[str, Any]:
+    (row,) = [r for r in events if r["stream"] == stream]
+    return row
+
+
+def _assert_summarizes(response: dict[str, Any], inference: dict[str, Any]) -> None:
+    """The ResponseLog repeats the final InferenceLog's fields."""
+    for key in _INFERENCE_SUMMARY_KEYS:
+        assert response[key] == inference[key], key
+
+
+async def test_response_summary_without_auth(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    resp = await client.get("/no/such/route", headers={"X-Real-IP": "192.0.2.5"})
+    assert resp.status_code == 404
+    await asyncio.sleep(0.05)
+
+    row = _only(capture_events, "response")
+    assert row["method"] == "GET"
+    assert row["path"] == "/no/such/route"
+    assert row["origin_ip"] == "192.0.2.5"
+    assert row["auth_attempted"] is False
+    assert row["user_id"] is None
+    for key in _INFERENCE_SUMMARY_KEYS:
+        assert row[key] is None, key
+
+
+async def test_response_summary_non_inference(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    resp = await client.get("/whoami", headers=auth_header(USER_TOKEN))
+    assert resp.status_code == 200
+    await asyncio.sleep(0.05)
+
+    request, row = _only(capture_events, "request"), _only(capture_events, "response")
+    assert row["request_id"] == request["request_id"]
+    assert row["method"] == "GET"
+    assert row["path"] == "/whoami"
+    assert row["origin_ip"] == request["origin_ip"] == "127.0.0.1"
+    assert row["auth_attempted"] is True
+    assert row["user_id"] == request["user_id"]
+    assert row["user_id"]
+    for key in _INFERENCE_SUMMARY_KEYS:
+        assert row[key] is None, key
+
+
+async def test_response_summary_failed_auth(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    resp = await client.post(
+        "/federated/v1/chat/completions",
+        headers=auth_header(INVALID_TOKEN),
+        json=_CHAT,
+    )
+    assert resp.status_code == 401
+    await asyncio.sleep(0.05)
+
+    row = _only(capture_events, "response")
+    assert row["status_code"] == 401
+    assert row["method"] == "POST"
+    assert row["path"] == "/federated/v1/chat/completions"
+    assert row["auth_attempted"] is True
+    assert row["user_id"] is None
+    assert row["model"] is None and row["attempt"] is None
+
+
+async def test_response_summary_unary_success(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    _seed_streaming_config()
+    usage = {"prompt_tokens": 2, "completion_tokens": 7, "total_tokens": 9}
+    await _inject_backend(backend.respond(json={"choices": [], "usage": usage}))
+
+    resp, inference = await _post_and_get_log(client, capture_events, _CHAT)
+    assert resp.status_code == 200
+
+    row = _only(capture_events, "response")
+    assert row["request_id"] == inference["request_id"]
+    assert row["status_code"] == 200
+    assert row["streaming"] is False
+    assert row["auth_attempted"] is True
+    assert row["user_id"] == inference["user_id"]
+    _assert_summarizes(row, inference)
+    assert row["model"] == "open/model"
+    assert row["cluster"] == "test-cluster"
+    assert row["outcome"] == "success"
+    assert row["attempt"] == 1
+    assert (row["input_tokens"], row["output_tokens"], row["total_tokens"]) == (
+        2,
+        7,
+        9,
+    )
+
+
+async def test_response_summary_retried_request(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    """The first backend tried fails with a retryable 503 and the second
+    succeeds: the summary carries the final (second) attempt."""
+    backend_ids = ("static_deployment/dep-open", "static_deployment/dep-open-2")
+    _seed_streaming_config(backend_ids=backend_ids)
+    redis = app.state.admission_controller.client
+    calls = 0
+    usage = {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10}
+
+    async def first_fails(request: web.Request) -> web.StreamResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return web.Response(status=503, text="busy")
+        return web.json_response({"choices": [], "usage": usage})
+
+    for backend_id in backend_ids:
+        app.state.backend_client_manager._clients[
+            backend_id
+        ] = await backend.serve_backend(first_fails)
+
+    try:
+        capture_events.clear()
+        resp = await client.post(
+            "/federated/v1/chat/completions",
+            headers=auth_header(USER_TOKEN),
+            json=_CHAT,
+        )
+        assert resp.status_code == 200
+        await asyncio.sleep(0.05)
+    finally:
+        for backend_id in backend_ids:
+            await redis.delete(Keys.backend_errors(backend_id))
+
+    attempts = sorted(
+        (r for r in capture_events if r["stream"] == "inference"),
+        key=lambda r: r["attempt"],
+    )
+    assert [(a["attempt"], a["outcome"]) for a in attempts] == [
+        (1, "upstream_error"),
+        (2, "success"),
+    ]
+    row = _only(capture_events, "response")
+    _assert_summarizes(row, attempts[1])
+    assert row["attempt"] == 2
+    assert row["outcome"] == "success"
+    assert row["total_tokens"] == 10
+
+
+async def test_response_summary_admission_rejected(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    _seed_streaming_config(with_backend=False)
+    resp, inference = await _post_and_get_log(client, capture_events, _CHAT)
+    assert resp.status_code == 503
+
+    row = _only(capture_events, "response")
+    assert row["status_code"] == 503
+    _assert_summarizes(row, inference)
+    assert row["outcome"] == "admission_rejected"
+    assert row["model"] == "open/model"
+    assert row["cluster"] is None
+    assert row["attempt"] == 1
+
+
+async def test_response_summary_streaming_success(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    """The streaming attempt is logged when its relay ends, which is before
+    the middleware emits the ResponseLog."""
+    _seed_streaming_config()
+    await _inject_streaming_backend()
+
+    async with client.stream(
+        "POST",
+        "/federated/v1/chat/completions",
+        headers=auth_header(USER_TOKEN),
+        json={**_CHAT, "stream": True},
+    ) as resp:
+        assert resp.status_code == 200
+        await resp.aread()
+    await asyncio.sleep(0.05)
+
+    inference, row = (
+        _only(capture_events, "inference"),
+        _only(capture_events, "response"),
+    )
+    assert row["streaming"] is True
+    _assert_summarizes(row, inference)
+    assert row["outcome"] == "success"
+    assert row["total_tokens"] == 8
+
+
+async def test_response_summary_broken_stream(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    """A stream the backend cuts short still summarizes its failed attempt."""
+    _seed_streaming_config()
+    await _inject_backend(backend.stream(_SSE_CHUNKS, break_after=1))
+    redis = app.state.admission_controller.client
+
+    try:
+        with pytest.raises(Exception):
+            async with client.stream(
+                "POST",
+                "/federated/v1/chat/completions",
+                headers=auth_header(USER_TOKEN),
+                json={**_CHAT, "stream": True},
+            ) as resp:
+                async for _ in resp.aiter_raw():
+                    pass
+        await asyncio.sleep(0.05)
+    finally:
+        await redis.delete(Keys.backend_errors("static_deployment/dep-open"))
+
+    row = _only(capture_events, "response")
+    assert row["status_code"] == 200
+    assert row["outcome"] == "upstream_error"
+    assert row["model"] == "open/model"
 
 
 # --------------------------------------------------------------------------

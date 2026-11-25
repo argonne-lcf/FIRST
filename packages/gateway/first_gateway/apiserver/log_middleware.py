@@ -5,6 +5,13 @@ deps, the route, ``InferenceService``, and the logging ``RequestIdFilter``),
 observes the real ``http.response.start``/``http.response.body`` messages, and
 emits a :class:`ResponseLog` after the response is sent.
 
+The ResponseLog is the request's one-row summary. The middleware fills in the
+request line and client address from the ASGI scope, and puts a
+:class:`RequestSummary` in ``_request_summary_ctx`` that ``get_auth_user``
+(authenticated user) and ``InferenceService`` (each attempt; the last one wins)
+update in place. The response is sent before the ResponseLog is emitted, so a
+streaming attempt -- logged when its relay ends -- is already in the summary.
+
 It buffers a response body ONLY for error responses (``status_code >= 400``,
 which are small, and are inlined but never spilled to disk); success bodies —
 unary and streaming alike — are never buffered here, so a 2xx ResponseLog
@@ -36,7 +43,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from first_common.schema.structured_logs import ResponseLog
 
-from .context import RequestTiming, _request_id_ctx, _request_timing_ctx
+from .context import (
+    RequestSummary,
+    RequestTiming,
+    _request_id_ctx,
+    _request_summary_ctx,
+    _request_timing_ctx,
+    origin_ip_from_scope,
+)
 
 # Constant probe traffic; the only anonymous route worth suppressing.
 _SKIP_PATHS = {"/health"}
@@ -82,7 +96,22 @@ class ResponseLogMiddleware:
         token = _request_id_ctx.set(cid)
         timing = RequestTiming()
         timing_token = _request_timing_ctx.set(timing)
+        summary = RequestSummary()
+        summary_token = _request_summary_ctx.set(summary)
         t0 = time.perf_counter()
+
+        def emit(status: int, is_streaming: bool, raw_body: bytes | None) -> None:
+            # No storage_dir: error bodies are inlined when small, never spilled.
+            ResponseLog(
+                request_id=cid,
+                status_code=status,
+                duration_ms=(time.perf_counter() - t0) * 1000,
+                streaming=is_streaming,
+                method=scope.get("method"),
+                path=scope.get("path"),
+                origin_ip=origin_ip_from_scope(scope),
+                **summary.response_fields(),
+            ).emit(raw_body=raw_body)
 
         status_code = 500
         started = False
@@ -122,30 +151,15 @@ class ResponseLogMiddleware:
             # went out (a stream broken mid-body), that status is what the client
             # got, not a 500.
             if started:
-                self._emit(cid, status_code, t0, streaming, raw_body=None)
+                emit(status_code, streaming, raw_body=None)
             else:
-                self._emit(cid, 500, t0, streaming=False, raw_body=None)
+                emit(500, False, raw_body=None)
             raise
         else:
             if scope["path"] not in _SKIP_PATHS:
                 raw = bytes(error_body) if status_code >= 400 else None
-                self._emit(cid, status_code, t0, streaming, raw)
+                emit(status_code, streaming, raw)
         finally:
+            _request_summary_ctx.reset(summary_token)
             _request_timing_ctx.reset(timing_token)
             _request_id_ctx.reset(token)
-
-    @staticmethod
-    def _emit(
-        cid: str,
-        status_code: int,
-        t0: float,
-        streaming: bool,
-        raw_body: bytes | None,
-    ) -> None:
-        # No storage_dir: error bodies are inlined when small, never spilled.
-        ResponseLog(
-            request_id=cid,
-            status_code=status_code,
-            duration_ms=(time.perf_counter() - t0) * 1000,
-            streaming=streaming,
-        ).emit(raw_body=raw_body)

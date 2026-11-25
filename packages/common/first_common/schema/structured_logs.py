@@ -5,7 +5,10 @@ middleware and stored in a contextvar):
 
 * :class:`RequestLog`   — emitted in ``get_auth_user``; failed auth carries metadata only.
 * :class:`ResponseLog`  — emitted in the ASGI middleware after the response is sent.
-* :class:`InferenceLog` — emitted in ``InferenceService`` per completed inference.
+  It is the request's one-row summary: it repeats the request line, the client
+  address, the authenticated user and the final inference attempt, so analytics
+  can read one row per request without correlating the other two events.
+* :class:`InferenceLog` — emitted in ``InferenceService`` per inference attempt.
 
 Each event's ``emit()`` writes one lean JSONL line (non-blocking, via the
 QueueHandler). When a body is large (>= ``INLINE_BODY_LIMIT`` bytes) it is not
@@ -151,6 +154,14 @@ class _StructuredLog(BaseModel):
         logger.info(self.stream, extra=self.model_dump(mode="json"))
 
 
+InferenceOutcome = Literal[
+    "success",  # backend returned a usable response
+    "upstream_error",  # backend returned a retryable 5xx / connection failure
+    "upstream_rejected",  # backend returned a non-retryable 4xx
+    "admission_rejected",  # request never dispatched (admission control refused)
+]
+
+
 class RequestLog(_StructuredLog):
     """An HTTP auth attempt; rejected requests carry metadata only, never a body."""
 
@@ -176,7 +187,14 @@ class RequestLog(_StructuredLog):
 class ResponseLog(_StructuredLog):
     """An HTTP response was sent (emitted in the ASGI middleware). Carries only
     small error bodies; never spills to disk (inference content is carried by
-    :class:`InferenceLog`)."""
+    :class:`InferenceLog`).
+
+    Also the request's summary row: one per request, with the request line,
+    client address, authenticated user and -- when the request reached
+    ``InferenceService`` -- the fields of its *final* :class:`InferenceLog`
+    (same names, so they land in the same analytics columns). ``attempt`` is
+    then the number of attempts made. The inference fields are ``None`` for a
+    request that never attempted an inference."""
 
     stream: Literal["response"] = "response"
 
@@ -184,13 +202,30 @@ class ResponseLog(_StructuredLog):
     duration_ms: float
     streaming: bool
 
+    # The request line and client address (see ``origin_ip_from_scope``).
+    method: str | None = None
+    path: str | None = None
+    origin_ip: str | None = None
 
-InferenceOutcome = Literal[
-    "success",  # backend returned a usable response
-    "upstream_error",  # backend returned a retryable 5xx / connection failure
-    "upstream_rejected",  # backend returned a non-retryable 4xx
-    "admission_rejected",  # request never dispatched (admission control refused)
-]
+    # True once authentication ran (a RequestLog was emitted for this
+    # request_id), whether or not it succeeded; user_id is set on success.
+    auth_attempted: bool = False
+    user_id: str | None = None
+
+    # Copied from the request's last InferenceLog.
+    endpoint: str | None = None
+    model: str | None = None
+    deployment: str | None = None
+    cluster: str | None = None
+    outcome: InferenceOutcome | None = None
+    attempt: int | None = None
+    latency_sec: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
 
 class InferenceLog(_StructuredLog):

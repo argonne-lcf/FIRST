@@ -16,7 +16,7 @@ from ..database.redis.repo import RedisRepo as _RedisRepo
 from ..database.redis.router_config import RouterConfig as _RouterConfig
 from ..settings import ClientState
 from .auth import GlobusAuthService, enforce_permission
-from .context import get_request_id
+from .context import get_request_id, get_request_summary, origin_ip_from_scope
 from .router_config_manager import RouterConfigManager
 
 
@@ -84,13 +84,11 @@ async def get_auth_user(
         storage_dir = state.settings.prompt_storage_dir
     else:
         raw_body, storage_dir = None, None
-    # The fronting NGINX sets X-Real-IP to the client address it resolved from
-    # trusted proxies only. X-Forwarded-For is not read: clients can set its
-    # leading entries.
-    origin_ip = request.headers.get("X-Real-IP")
-    if not origin_ip and request.client is not None:
-        origin_ip = request.client.host
+    origin_ip = origin_ip_from_scope(request.scope)
     content_length = request.headers.get("Content-Length")
+    summary = get_request_summary()
+    if summary is not None:
+        summary.auth_attempted = True
 
     auth_svc = GlobusAuthService(state)
 
@@ -106,6 +104,8 @@ async def get_auth_user(
         ).emit()
         raise
 
+    if summary is not None:
+        summary.user_id = user.id
     RequestLog(
         request_id=get_request_id() or str(uuid.uuid4()),
         user_id=user.id,

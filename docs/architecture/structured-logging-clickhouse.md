@@ -214,7 +214,7 @@ Three lean events are emitted where each becomes known, correlated by a shared
 | Event | Emitted in | Carries |
 |---|---|---|
 | `RequestLog` | auth dependency, post-auth | user/auth context, method, path, origin IP |
-| `ResponseLog` | ASGI middleware, after send | status, duration, streaming flag |
+| `ResponseLog` | ASGI middleware, after send | status, duration, streaming flag; also the request's **summary**: method, path, origin IP, `auth_attempted`, `user_id`, and the final `InferenceLog`'s fields (`endpoint`, `model`, `deployment`, `cluster`, `outcome`, `attempt` = attempts made, `latency_sec`, token usage) |
 | `InferenceLog` | `InferenceService`, **once per backend attempt** | backend/deployment/cluster, `outcome`, `attempt`, token usage, `user_id` (denormalized) |
 
 We chose this over one combined end-of-request event because:
@@ -229,8 +229,13 @@ We chose this over one combined end-of-request event because:
    combined event leaves no trace. With three streams, a missing `InferenceLog`
    for a successful response is a countable, alarmable "dropped usage row."
 
-The denormalized single-row view is still produced — in ClickHouse, where it
-costs nothing on the hot path.
+The denormalized single-row view is still produced, at the source: the
+`ResponseLog` repeats the request line, client address, authenticated user and
+the final attempt's fields (same field names as `InferenceLog`, so they land in
+the same analytics columns). Analytics reads one `response` row per request
+without correlating streams; `RequestLog` and the per-attempt `InferenceLog`s
+remain the redundant record for when the `ResponseLog` is lost (a crashed
+worker) and the detail behind it (every attempt, request bodies).
 
 ### Two identities
 

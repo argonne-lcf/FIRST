@@ -46,7 +46,7 @@ from .backend_client_manager import (
     BackendClientManager,
     is_read_timeout,
 )
-from .context import get_request_id, upstream_timer
+from .context import get_request_id, get_request_summary, upstream_timer
 from .dependencies import AuthUser
 from .router_config_manager import RouterConfigManager
 
@@ -368,7 +368,7 @@ class InferenceService:
         rejections pass no ``deployment``/``backend`` (none was chosen), only
         the pinned ``deployment_name`` if any."""
         usage = usage or TokenUsage()
-        InferenceLog(
+        log = InferenceLog(
             request_id=self.request_id,
             user_id=self.user.id,
             endpoint=payload.endpoint,
@@ -393,7 +393,11 @@ class InferenceService:
             input_chars=self.estimate.input_chars,
             input_images=self.estimate.input_images,
             sticky=self.sticky.value if self.sticky else None,
-        ).emit(raw_body=raw_body, storage_dir=self.storage_dir)
+        )
+        log.emit(raw_body=raw_body, storage_dir=self.storage_dir)
+        # Last write wins: after the request, the summary holds its final attempt.
+        if (summary := get_request_summary()) is not None:
+            summary.last_inference = log
 
     def _upstream_headers(self, is_task: bool = False) -> dict[str, str] | None:
         headers: dict[str, str] = {}
