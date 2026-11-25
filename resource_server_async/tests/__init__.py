@@ -19,6 +19,7 @@ from resource_server_async.logging import (
     RequestContext,
     _request_context,
 )
+from resource_server_async.retirements import clear_cluster_snapshot
 
 # Create mock access tokens
 ACTIVE_TOKEN = mock_utils.get_mock_access_token(
@@ -305,6 +306,8 @@ class ResourceServerTestCase(TestCase):
         """
         super().setUp()
 
+        # Test DB rollbacks don't fire post_save, so drop the cached snapshot.
+        clear_cluster_snapshot()
         self.enterContext(mock_override())
         _request_context.set(
             RequestContext(mock_utils.mock_initialize_access_log_data(None, None))
