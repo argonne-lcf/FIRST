@@ -113,6 +113,7 @@ services:
         condition: service_started
     networks:
       - gateway
+      - metrics # the health alerter queries Prometheus
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", ".venv/bin/python -c \"import urllib.request; assert urllib.request.urlopen('http://localhost:9100/healthz').status == 200\"" ]
@@ -197,7 +198,14 @@ services:
     image: prom/prometheus:latest@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     # Finite footprint for a resource-constrained VM: retain ~2 weeks or 5GB,
     # whichever comes first. Admin API enabled so scripts/prom-snapshot.sh can
-    # take offline snapshots.
+    # take offline snapshots: so Prometheus is reachable only on loopback and
+    # the `metrics` network, never from the internet-facing gateway. Analytics
+    # Grafana reads through prometheus-analytics-proxy (compose.analytics.yaml),
+    # which serves the query API only.
+    #
+    # Query limits: Analytics Grafana users can run arbitrary PromQL, and
+    # Prometheus shares this VM with the gateway. A query that would exceed
+    # them fails instead of exhausting memory.
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --web.config.file=/etc/prometheus/web.yml
@@ -205,10 +213,18 @@ services:
       - --storage.tsdb.retention.time=15d
       - --storage.tsdb.retention.size=5GB
       - --web.enable-admin-api
+      - --query.timeout=2m
+      - --query.max-concurrency=8
+      - --query.max-samples=20000000
     ports:
       - "127.0.0.1:9090:9090"
     networks:
-      - gateway
+      - metrics
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-4g}
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus-web.yml:/etc/prometheus/web.yml:ro
@@ -251,8 +267,16 @@ services:
       # Docker's json-file logs. Read-only, and root in the container: the
       # files are root's. `docker info -f '{{.DockerRootDir}}'` gives the path.
       - ${DOCKER_ROOT_DIR:-/var/lib/docker}/containers:/var/lib/docker/containers:ro
+    # Egress only, plus Prometheus's scrape.
     networks:
-      - gateway
+      - metrics
+    # Root only to read root's 0640 log files, which needs no capability.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     cpus: 1.0 # shares the VM with the gateway
     healthcheck:
@@ -284,12 +308,20 @@ services:
       - log-shipping-status:/status
     networks:
       - gateway
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     cpus: 1.0 # shares the VM with the gateway
     logging: *logging
 
 networks:
   gateway:
+    driver: bridge
+  # Prometheus and what talks to it: the controller (health alerter), Vector
+  # (scraped), and the analytics proxy. The internet-facing gateway is not on
+  # it, so it cannot reach Prometheus's admin API.
+  metrics:
     driver: bridge
 
 volumes:

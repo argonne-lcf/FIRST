@@ -32,6 +32,7 @@ services:
     restart: "no" # auto-restart would hang waiting for OTP
     networks:
       - gateway
+      - metrics # Prometheus scrapes the HPC systems through it
 
   inference-gateway:
     environment:

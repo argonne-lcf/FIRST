@@ -19,7 +19,9 @@ the differences for each environment. The base file never runs alone.
 | `deploy/prometheus-web.yml` | TLS 1.3 configuration for Prometheus's HTTPS API/UI. |
 | `deploy/compose.v1-logs.yaml` | Opt-in overlay — ships the V1 gateway's logs until V1 retires. See [Log Shipping](log-shipping.md). |
 | `deploy/log-shipping/` | Vector config and the rclone script for the `vector` and `prompt-shipper` services (`log-shipping` profile). |
-| `deploy/compose.dev-analytics.yaml` | Opt-in dev-gateway overlay — exposes Prometheus privately to FIRST-analytics. |
+| `deploy/compose.analytics.yaml` | The `prometheus-analytics-proxy` service: Analytics Grafana's mTLS, read-only view of Prometheus. Layered by prod and by the dev-gateway analytics overlay. |
+| `deploy/prometheus-analytics-proxy.conf` | That proxy's nginx config: Grafana client certificate required, query API only. |
+| `deploy/compose.dev-analytics.yaml` | Opt-in dev-gateway overlay — publishes the analytics proxy on the dev VM's private address. |
 
 ## Architecture
 
@@ -35,13 +37,16 @@ flowchart TB
 
     subgraph host[Host]
       NX["nginx<br/>dev: container :8000<br/>prod: host :443"]:::proxy
-      subgraph net["Compose network (first_gateway)"]
+      subgraph net["Compose network: gateway"]
         API["inference-gateway<br/>apiserver :7000"]:::gw
         CM["controller-manager<br/>:9100"]:::gw
         PG[("postgres:18")]:::store
         RD[("redis:8")]:::store
-        PROM["prometheus :9090"]:::obs
         TUN["tunnel :1080<br/>(dev, opt-in)"]:::opt
+      end
+      subgraph mnet["Compose network: metrics"]
+        PROM["prometheus :9090<br/>(loopback-published)"]:::obs
+        APX["prometheus-analytics-proxy<br/>mTLS, read-only"]:::obs
       end
     end
     Pilot([HPC pilot backends])
@@ -52,7 +57,8 @@ flowchart TB
     PROM -->|scrape| CM
     PROM -->|http_sd + scrape| Pilot
     ANALYTICS["Analytics Grafana<br/>separate VM"]:::obs
-    ANALYTICS -->|HTTPS :9090| PROM
+    ANALYTICS -->|"HTTPS :9090<br/>client cert"| APX --> PROM
+    NX -->|"/dashboard/<br/>verified TLS"| ANALYTICS
     API -.egress via.-> TUN
     CM -.egress via.-> TUN
     TUN -.SSH -D.-> Pilot
@@ -87,12 +93,24 @@ flowchart TB
   but expendable and **not** backed up.
 - **prometheus** — scrapes the controller-manager and the pilot backends it
   discovers. Bounded footprint (retain ~15 days / 5 GB) with the admin API enabled
-  for snapshots. Published on `127.0.0.1:9090`. Managed gateway deployment paths
-  can additionally publish a private-VM listener for Analytics Grafana. Prometheus
-  requires TLS 1.3; keep the admin-capable endpoint firewalled to Analytics only.
+  for snapshots, so it is published on `127.0.0.1:9090` only and sits on its own
+  `metrics` network with the controller (the health alerter), Vector and the
+  analytics proxy: the internet-facing apiserver cannot reach it. Query limits
+  (`--query.timeout`, `--query.max-samples`, `--query.max-concurrency`) and a
+  memory limit (`PROMETHEUS_MEM_LIMIT`, default 4g) keep dashboard queries from
+  starving the gateway. Requires TLS 1.3.
+- **prometheus-analytics-proxy** (`compose.analytics.yaml`; prod and the dev
+  analytics overlay) — the only non-loopback way into Prometheus. nginx on the
+  gateway's private address `:9090`, presenting `first-prometheus`, requiring a
+  client certificate from the FIRST-analytics CA (`pki/analytics-ca.crt`) with
+  `CN=first-analytics-grafana`, and passing only the read-only query API
+  (`/api/v1/query*`, `series`, `labels`, `label/*/values`, `metadata`,
+  `status/buildinfo`). The admin API, `/-/reload`, `/federate` and the
+  config/targets pages answer 403.
 - **Analytics Grafana** — deployed separately in FIRST-analytics. It provisions
-  the control-plane and vLLM dashboards and queries gateway Prometheus over verified
-  HTTPS using that environment's public CA. No standalone Grafana runs here.
+  the control-plane and vLLM dashboards and queries the analytics proxy over
+  verified HTTPS (this environment's public CA) with its client certificate. No
+  standalone Grafana runs here.
 - **nginx** — reverse proxy + rate limiting + SSE-friendly buffering. A container
   in dev; the **host's** nginx in prod (see below).
 - **vector**, **prompt-shipper** *(`log-shipping` profile)* — move structured logs
@@ -255,24 +273,27 @@ On `inference-api-dev`, append the Analytics overlay to the existing selection
 in `.env`:
 
 ```ini
-COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml:deploy/compose.tunnel.yaml:deploy/compose.dev-analytics.yaml
+COMPOSE_FILE=deploy/compose.yaml:deploy/compose.dev.yaml:deploy/compose.tunnel.yaml:deploy/compose.analytics.yaml:deploy/compose.dev-analytics.yaml
 COMPOSE_PROJECT_NAME=first
 ```
 
-Then deploy with the existing target:
+Copy the FIRST-analytics CA's public certificate (`clickhouse/certs/ca.crt` on
+`inference-olap-01`) to `pki/analytics-ca.crt`, then deploy with the existing
+target:
 
 ```bash
 make compose-up
 ```
 
-The overlay preserves `127.0.0.1:9090` for local snapshot tooling and adds
-`140.221.33.155:9090` for consolidated Analytics Grafana. The conduit and host
-firewall must continue to allow that listener only from `inference-olap-01`.
-Issue the dev certificate with
+Prometheus stays on `127.0.0.1:9090` for local snapshot tooling; the analytics
+proxy listens on `140.221.33.155:9090`. Docker publishes ports ahead of the
+host firewall's INPUT rules, so the proxy's client-certificate check is the
+control; keep the conduit and host firewall restricting it to
+`inference-olap-01` as defense in depth. Issue the dev certificate with
 `make pki PROMETHEUS_DNS=inference-api-dev.cels.anl.gov` (or the equivalent
 offline `pilot-certmanager standard --prometheus-dns ...`) and stage that
 environment's public CA in FIRST-analytics. Ordinary local development does not
-select the VM-specific overlay and remains loopback-only.
+select the VM-specific overlays and remains loopback-only.
 ### Dozzle (browser log viewer)
 
 Dozzle is intentionally **not** in the Compose stack. Run it on demand:
@@ -342,11 +363,13 @@ make prod-migrate   # after deploying a new image
 make prod-down      # stop (never uses -v)
 ```
 
-The prod overlay preserves `127.0.0.1:9090` for local snapshots and additionally
-publishes `140.221.33.25:9090` for consolidated Analytics Grafana queries. Issue
-`first-prometheus` with `DNS:data-portal-dev-vmw-01.cels.anl.gov` and stage the
-public production CA in FIRST-analytics. Keep the listener restricted to
-`inference-olap-01`: it includes the enabled Prometheus admin API.
+Prod keeps Prometheus on `127.0.0.1:9090` for local snapshots and publishes the
+analytics proxy (`compose.analytics.yaml`) on `140.221.33.25:9090`. Issue
+`first-prometheus` with `DNS:data-portal-dev-vmw-01.cels.anl.gov`, stage the
+public production CA in FIRST-analytics, and copy the FIRST-analytics CA's
+public certificate to `pki/analytics-ca.crt`. The proxy admits only Grafana's
+client certificate and serves only the query API; keep the conduit and firewall
+restriction to `inference-olap-01` as defense in depth.
 
 ### V1-to-V2 auth cutover gate
 
@@ -438,6 +461,17 @@ FIRST-analytics hosts authenticated dashboards at
 <https://inference-api.alcf.anl.gov/dashboard/> and provisions the FIRST
 control-plane and vLLM sources. FIRST Compose no longer creates a Grafana
 service or its data volumes.
+
+The host nginx proxies `/dashboard/` to Grafana on `inference-olap-01:3000`
+(the `location /dashboard/` block in `deploy/nginx.prod.conf.example`):
+
+- **Verified upstream TLS.** nginx does not verify upstream certificates by
+  default; the block sets `proxy_ssl_verify on` against the FIRST-analytics CA
+  (`/etc/ssl/first/analytics-ca.crt`) and the name `inference-olap-01.cels.anl.gov`.
+- **No header authentication from the internet.** It clears `Authorization`, so
+  only Grafana's Globus OAuth session cookie authenticates. (Grafana's basic
+  auth is also off.)
+- Its own rate limit, and WebSocket upgrade for Grafana Live.
 
 Removing the Compose service does **not** stop an already-running container.
 After validating the unified deployment, explicitly stop and remove each legacy

@@ -1,7 +1,9 @@
-# Dev-gateway Analytics listener: select this overlay in .env, then compose-up.
-# The base keeps loopback access for local snapshots. The private listener is
-# direct HTTPS and must stay restricted to inference-olap-01 by the host firewall.
+# Dev-gateway Analytics listener: select this overlay, after
+# compose.analytics.yaml, in .env, then compose-up. Prometheus itself stays on
+# loopback (the base) for local snapshots; Analytics Grafana reads through the
+# mTLS, read-only prometheus-analytics-proxy. Keep the host firewall
+# restricting it to inference-olap-01 as defense in depth.
 services:
-  prometheus:
+  prometheus-analytics-proxy:
     ports:
       - "140.221.33.155:9090:9090"

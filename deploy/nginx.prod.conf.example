@@ -35,6 +35,18 @@ real_ip_header X-Forwarded-For;
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=50r/s;
 limit_req_status 429;
 
+# Analytics Grafana (/dashboard/). Logins and dashboard loads only: much lower
+# than the API, but a dashboard fires one request per panel.
+limit_req_zone $binary_remote_addr zone=dashboard_limit:10m rate=20r/s;
+
+# Analytics Grafana on inference-olap-01, over verified TLS. Its server
+# certificate is signed by the FIRST-analytics CA: copy that CA's public
+# certificate (clickhouse/certs/ca.crt on the analytics VM) to the path below.
+upstream analytics_grafana {
+    server inference-olap-01.cels.anl.gov:3000;
+    keepalive 16;
+}
+
 server {
     listen 443 ssl;
     http2 on;
@@ -46,6 +58,41 @@ server {
 
     # No admin routes here: the admin API and the admin console are served only
     # by controller-manager on 127.0.0.1:9100. Do not proxy to that port.
+
+    # Analytics Grafana. GF_SERVER_ROOT_URL is .../dashboard/, and the trailing
+    # slash on proxy_pass strips the prefix (Grafana does not serve from a sub
+    # path). Login is Globus OAuth with browser cookies only.
+    location /dashboard/ {
+        limit_req zone=dashboard_limit burst=100 nodelay;
+
+        proxy_pass https://analytics_grafana/;
+        proxy_http_version 1.1;
+        # Grafana Live (/api/live/ws) is a WebSocket.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # No header-based authentication from the internet: basic auth is off
+        # in Grafana, and service-account tokens are for on-host use only.
+        proxy_set_header Authorization "";
+        proxy_redirect off;
+
+        # Verify Grafana's certificate (nginx does not by default).
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 1;
+        proxy_ssl_trusted_certificate /etc/ssl/first/analytics-ca.crt;
+        proxy_ssl_name inference-olap-01.cels.anl.gov;
+        proxy_ssl_server_name on;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+        proxy_ssl_session_reuse on;
+
+        # Grafana sets X-Frame-Options and its other security headers itself.
+        add_header Strict-Transport-Security "max-age=31536000" always;
+
+        proxy_read_timeout 300s;
+    }
 
     location / {
         limit_req zone=api_limit burst=50 nodelay;

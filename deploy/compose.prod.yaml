@@ -43,12 +43,18 @@ services:
   prometheus:
     group_add:
       - "900"
-    # The base keeps loopback access for local snapshots. This listener serves
-    # Analytics Grafana over the Analytics-only conduit and host firewall.
-    ports:
-      - "140.221.33.25:9090:9090"
+    # Loopback only (the base), for local snapshots. Analytics Grafana reads
+    # through prometheus-analytics-proxy below.
     volumes:
       - prometheus_data_prod:/prometheus
+
+  # Analytics Grafana's read-only, mTLS view of Prometheus
+  # (deploy/compose.analytics.yaml). Docker publishes ports ahead of the host
+  # firewall's INPUT rules, so the proxy's client-certificate check is the
+  # control here; keep the conduit/firewall restriction as defense in depth.
+  prometheus-analytics-proxy:
+    ports:
+      - "140.221.33.25:9090:9090"
 
   vector:
     volumes:

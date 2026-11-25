@@ -1,0 +1,60 @@
+# Analytics Grafana's read-only view of this gateway's Prometheus: an mTLS,
+# path-allowlisted proxy (deploy/prometheus-analytics-proxy.conf). Layer it
+# with the environment overlay that publishes it on the gateway's private
+# address:
+#   prod : deploy/compose.yaml:deploy/compose.analytics.yaml:deploy/compose.prod.yaml
+#   dev  : ...:deploy/compose.analytics.yaml:deploy/compose.dev-analytics.yaml
+#
+# Needs pki/analytics-ca.crt: the FIRST-analytics CA, public certificate only
+# (clickhouse/certs/ca.crt on the analytics VM). It signs Grafana's client
+# certificate, and the proxy accepts only CN=first-analytics-grafana from it.
+# Grafana verifies this proxy with the gateway CA and the analytics FQDN in
+# pki/first-prometheus.crt (`make pki PROMETHEUS_DNS=...`).
+
+services:
+  prometheus-analytics-proxy:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    # nobody, like Prometheus: it serves Prometheus's own server identity, so
+    # it reads the same 0600 key owned by 65534 (docs/deployment/docker.md).
+    user: "65534:65534"
+    # Straight to nginx: the image's entrypoint scripts try to rewrite config,
+    # which the read-only root refuses.
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    depends_on:
+      - prometheus
+    volumes:
+      - ./prometheus-analytics-proxy.conf:/etc/nginx/nginx.conf:ro
+    secrets:
+      - source: prometheus_crt
+        target: prometheus_server.crt
+      - source: prometheus_key
+        target: prometheus_server.key
+      - source: pilot_ca
+        target: pilot_ca.crt
+      - source: analytics_ca
+        target: analytics_ca.crt
+    read_only: true
+    tmpfs:
+      - /tmp:uid=65534,gid=65534,mode=0700
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    networks:
+      - metrics
+    restart: unless-stopped
+    healthcheck:
+      # The listener is up. (Requests without Grafana's client cert are refused.)
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9090"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  analytics_ca:
+    file: ../pki/analytics-ca.crt

@@ -104,9 +104,10 @@ attach-tunnel:
 
 # --- Production ---------------------------------------------------------------
 
-# Log shipping is part of prod (docs/deployment/log-shipping.md).
+# Log shipping and the analytics Prometheus proxy are part of prod
+# (docs/deployment/log-shipping.md, docs/deployment/docker.md).
 # V1 retirement: drop deploy/compose.v1-logs.yaml from this line.
-PROD_COMPOSE=COMPOSE_PROFILES=log-shipping COMPOSE_FILE=deploy/compose.yaml:deploy/compose.prod.yaml:deploy/compose.v1-logs.yaml
+PROD_COMPOSE=COMPOSE_PROFILES=log-shipping COMPOSE_FILE=deploy/compose.yaml:deploy/compose.analytics.yaml:deploy/compose.prod.yaml:deploy/compose.v1-logs.yaml
 
 # One-time: create the external prod data volumes. `docker compose down -v`
 # refuses to delete external volumes, so prod data survives a full teardown.
