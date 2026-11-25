@@ -1,13 +1,97 @@
 """V2 catalog tombstones for V1 callers, not fake serving endpoints."""
 
+import asyncio
+import logging
+import threading
+import time
 from http import HTTPStatus
+from typing import Any
 from urllib.parse import urlsplit
+
+from django.db.models.signals import post_delete, post_save
+from django.dispatch import receiver
 
 from .auth import check_permission
 from .errors import BaseError, Unauthorized
 from .first_v2_bridge.router_config import ModelRetirementConfig, RetiredDeployment
 from .models import Cluster, Endpoint
 from .schemas.structured_logs import UserPydantic
+
+logger = logging.getLogger(__name__)
+
+# raise_if_retired runs on every inference request, so it must not query
+# Postgres each time. Keep a per-process snapshot of the (small) Cluster table
+_SNAPSHOT_TTL_SECONDS = 60.0
+# After a failed refresh, keep serving the last good snapshot and only retry
+# this often
+_SNAPSHOT_RETRY_SECONDS = 5.0
+
+_snapshot_lock = threading.Lock()
+# (expires_at, shared in-flight or completed load); one load per refresh.
+_snapshot: "tuple[float, asyncio.Future[dict[str, Cluster]]] | None" = None
+_last_good_snapshot: dict[str, Cluster] | None = None
+
+
+async def _load_clusters() -> dict[str, Cluster]:
+    return {c.cluster_name: c async for c in Cluster.objects.all()}
+
+
+async def _cached_clusters() -> dict[str, Cluster]:
+    """Cluster rows by name, from a per-process snapshot refreshed every TTL."""
+    global _snapshot, _last_good_snapshot
+    now = time.monotonic()
+    with _snapshot_lock:
+        if _snapshot is None or _snapshot[0] <= now:
+            _snapshot = (
+                now + _SNAPSHOT_TTL_SECONDS,
+                asyncio.ensure_future(_load_clusters()),
+            )
+        entry = _snapshot
+    try:
+        # shield: a cancelled (disconnected) request must not cancel the load
+        # that concurrent requests are also waiting on.
+        clusters = await asyncio.shield(entry[1])
+    except Exception:
+        with _snapshot_lock:
+            stale = _last_good_snapshot
+            if _snapshot is entry:
+                if stale is None:
+                    _snapshot = None
+                else:
+                    fallback = asyncio.get_running_loop().create_future()
+                    fallback.set_result(stale)
+                    _snapshot = (time.monotonic() + _SNAPSHOT_RETRY_SECONDS, fallback)
+        if stale is None:
+            raise
+        logger.warning(
+            "Cluster snapshot refresh failed; serving stale snapshot", exc_info=True
+        )
+        return stale
+    with _snapshot_lock:
+        if _snapshot is entry:
+            _last_good_snapshot = clusters
+    return clusters
+
+
+async def _cached_cluster(cluster_name: str) -> Cluster | None:
+    return (await _cached_clusters()).get(cluster_name)
+
+
+def clear_cluster_snapshot() -> None:
+    """Drop the cached snapshot so the next request reloads it."""
+    global _snapshot, _last_good_snapshot
+    with _snapshot_lock:
+        _snapshot = None
+        _last_good_snapshot = None
+
+
+@receiver(post_save, sender=Cluster)
+@receiver(post_delete, sender=Cluster)
+def _invalidate_cluster_snapshot(**kwargs: Any) -> None:
+    # Only affects this process (e.g. admin edits, tests); others rely on TTL.
+    global _snapshot
+    with _snapshot_lock:
+        _snapshot = None
 
 
 class ModelRetired(BaseError):
@@ -29,9 +113,7 @@ def _retired_on_cluster(retirement: ModelRetirementConfig, cluster: str) -> bool
 
 async def retired_model_names(cluster_name: str) -> set[str]:
     """Hide tombstones before adapter lookup, including during fixture rollout."""
-    try:
-        cluster = await Cluster.objects.aget(cluster_name=cluster_name)
-    except Cluster.DoesNotExist:
+    if (cluster := await _cached_cluster(cluster_name)) is None:
         return set()
     return {
         name
@@ -142,9 +224,7 @@ async def raise_if_retired(
     cluster_name: str, framework: str, model_name: str, user: UserPydantic
 ) -> None:
     """Authorize before 410; never resolve, dispatch, redirect or replay."""
-    try:
-        cluster = await Cluster.objects.aget(cluster_name=cluster_name)
-    except Cluster.DoesNotExist:
+    if (cluster := await _cached_cluster(cluster_name)) is None:
         return  # Keep the normal cluster-not-found path unchanged.
     for raw in cluster.model_retirements:
         retirement = ModelRetirementConfig.model_validate(raw)
