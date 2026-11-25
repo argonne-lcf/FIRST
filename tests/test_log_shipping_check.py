@@ -18,8 +18,10 @@ from first_gateway.controllers.workers.health_alerter.checks import CHECK_REGIST
 from first_gateway.controllers.workers.health_alerter.log_shipping import (
     _VECTOR_RULES,
     _VECTOR_UP,
-    _query,
     check_log_shipping,
+)
+from first_gateway.controllers.workers.health_alerter.prometheus import (
+    query as _query,
 )
 from first_gateway.settings import LogShippingSettings
 

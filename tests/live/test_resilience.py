@@ -31,7 +31,9 @@ from .harness import (
 
 pytestmark = LIVE
 
-UNEXPECTED_STATUSES = {500, 502, 504}
+# 502 is allowed: a request whose every attempt hit a dying replica is a 502
+# (backends tried and failed); it was reported as a 503 before the split.
+UNEXPECTED_STATUSES = {500, 504}
 
 
 def _replica_state(detail: dict[str, Any], name: str) -> str | None:
@@ -50,7 +52,7 @@ async def test_replica_process_dies_and_is_replaced(
 ) -> None:
     """When a replica's model server dies under load, the control plane
     notices, takes it out of service and starts a replacement.  Meanwhile
-    users only see answers or clean 503s (never 500/502/504), no reservations
+    users only see answers, clean 503s or 502s (never 500/504), no reservations
     leak, and nothing is logged as CRITICAL."""
     model = cfg.fleet_model
     await require_model(gw, model)
@@ -141,7 +143,7 @@ async def test_replica_process_dies_and_is_replaced(
     bad = {s: n for s, n in pump.statuses.items() if s in UNEXPECTED_STATUSES}
     run.check(
         not bad,
-        "Users only saw 200/429/503, never 500/502/504",
+        "Users only saw 200/429/502/503, never 500/504",
         f"statuses during the incident {dict(during)}; messages {dict(pump.messages)}",
     )
 
@@ -332,7 +334,7 @@ async def test_maintenance_notice_and_pilot_loss(
     bad = {s: n for s, n in pump.statuses.items() if s in UNEXPECTED_STATUSES}
     run.check(
         not bad,
-        "Users of the fleet model only saw 200/429/503",
+        "Users of the fleet model only saw 200/429/502/503",
         f"statuses {dict(pump.statuses)}; messages {dict(pump.messages)}",
     )
 

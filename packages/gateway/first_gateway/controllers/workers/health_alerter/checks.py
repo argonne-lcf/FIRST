@@ -20,6 +20,9 @@ from first_common.schema.types import (
     ResourceName,
 )
 from first_gateway.controllers.workers.health_alerter.disk import disk_observations
+from first_gateway.controllers.workers.health_alerter.gateway_errors import (
+    check_gateway_errors,
+)
 from first_gateway.controllers.workers.health_alerter.log_shipping import (
     check_log_shipping,
 )
@@ -693,4 +696,5 @@ CHECK_REGISTRY = [
     Check(check_host, "Infrastructure"),
     Check(check_pilot_client_cert, "Infrastructure"),
     Check(check_log_shipping, "Infrastructure"),
+    Check(check_gateway_errors, "Infrastructure"),
 ]

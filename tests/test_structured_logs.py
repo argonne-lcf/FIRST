@@ -8,11 +8,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterator, MutableMapping
 
+import aiohttp
 import httpx
 import pytest
 from aiohttp import web
 from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.routing import APIRoute
+from prometheus_client import REGISTRY
 
 from first_common.schema.structured_logs import (
     INLINE_BODY_LIMIT,
@@ -37,6 +39,7 @@ from first_gateway.database.redis.router_config import (
     RouterConfig,
 )
 from first_gateway.log_config import RequestIdFilter
+from first_gateway.services.usage import USAGE_PARSERS
 
 from .fixtures import backend
 from .fixtures.auth import INVALID_TOKEN, USER_TOKEN, auth_header
@@ -1049,3 +1052,132 @@ async def test_client_disconnect_without_usage_logs_warning(
     (record,) = no_usage_log()
     assert record.levelno == logging.WARNING
     assert "(client disconnected)" in record.message
+
+
+# --------------------------------------------------------------------------
+# 5xx semantics: 503 = not tried, 502/504 = upstream failed, 500 = gateway bug
+# --------------------------------------------------------------------------
+
+
+def _count(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(f"{name}_total", labels) or 0.0
+
+
+@pytest.fixture
+def backend_errors(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Backend ids counted toward cooldown by this test's requests."""
+    calls: list[str] = []
+    controller = app.state.admission_controller
+    record_error = controller.record_error
+
+    async def spy(backend_id: str, *args: Any, **kwargs: Any) -> Any:
+        calls.append(backend_id)
+        return await record_error(backend_id, *args, **kwargs)
+
+    monkeypatch.setattr(controller, "record_error", spy)
+    return calls
+
+
+async def _silent(request: web.Request) -> web.StreamResponse:
+    await asyncio.sleep(5)
+    return web.json_response({})
+
+
+@pytest.mark.parametrize(
+    "handler, status, code, error",
+    [
+        # Non-retryable upstream 5xx.
+        (backend.respond(500, text="boom"), 502, "bad_gateway", "HTTP 500"),
+        # Retryable 5xx on the only backend: every attempt failed.
+        (backend.respond(503, text="busy"), 502, "bad_gateway", "HTTP 503"),
+        # A 200 the gateway cannot parse is still the upstream's fault.
+        (
+            backend.respond(200, text="not json"),
+            502,
+            "bad_gateway",
+            "invalid JSON body",
+        ),
+    ],
+)
+async def test_failed_upstream_is_502_not_503(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    backend_errors: list[str],
+    handler: backend.Handler,
+    status: int,
+    code: str,
+    error: str,
+) -> None:
+    _seed_streaming_config()
+    await _inject_backend(handler)
+    before = _count("gateway_http_responses", code=str(status))
+    attempts_before = _count(
+        "gateway_inference_attempts", outcome="upstream_error", deployment="dep-open"
+    )
+
+    resp, log = await _post_and_get_log(client, capture_events, _CHAT)
+
+    assert resp.status_code == status, resp.text
+    assert resp.json()["error"]["code"] == code
+    assert "Retry-After" not in resp.headers
+    assert log["outcome"] == "upstream_error"
+    assert log["error"] == error
+    assert backend_errors == ["static_deployment/dep-open"]
+    assert _count("gateway_http_responses", code=str(status)) == before + 1
+    assert (
+        _count(
+            "gateway_inference_attempts",
+            outcome="upstream_error",
+            deployment="dep-open",
+        )
+        == attempts_before + 1
+    )
+
+
+async def test_timed_out_upstream_is_504(
+    client: httpx.AsyncClient, capture_events: list[dict[str, Any]]
+) -> None:
+    _seed_streaming_config()
+    app.state.backend_client_manager._clients[
+        "static_deployment/dep-open"
+    ] = await backend.serve_backend(
+        _silent, timeout=aiohttp.ClientTimeout(sock_read=0.2)
+    )
+
+    resp, log = await _post_and_get_log(client, capture_events, _CHAT)
+
+    assert resp.status_code == 504, resp.text
+    assert resp.json()["error"]["code"] == "gateway_timeout"
+    assert log["outcome"] == "upstream_error"
+
+
+async def test_gateway_bug_is_500_and_spares_the_backend(
+    client: httpx.AsyncClient,
+    capture_events: list[dict[str, Any]],
+    backend_errors: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure in the gateway's own handling is a 500 logged as
+    gateway_error, and is not counted against a healthy backend."""
+    _seed_streaming_config()
+    await _inject_backend(backend.respond(json={"choices": [], "usage": None}))
+
+    parser = USAGE_PARSERS["chat/completions"]
+
+    def broken(body: dict[str, Any]) -> Any:
+        raise KeyError("a gateway bug")
+
+    monkeypatch.setattr(parser, "parse_unary", broken)
+    # Deliver the 500 as a response, as a real server would, instead of
+    # re-raising the app's exception into the test.
+    monkeypatch.setattr(client._transport, "raise_app_exceptions", False)
+    before = _count("gateway_http_responses", code="500")
+
+    resp, log = await _post_and_get_log(client, capture_events, _CHAT)
+
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["error"]["code"] == "internal_error"
+    assert log["outcome"] == "gateway_error"
+    assert log["error"] == "KeyError"
+    assert backend_errors == []
+    assert _count("gateway_http_responses", code="500") == before + 1

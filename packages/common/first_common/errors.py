@@ -69,8 +69,25 @@ class TooManyRequests(FirstError):
 
 
 class ServiceUnavailable(FirstError):
+    """No backend was tried: none can take the request right now (cold start,
+    saturated, cooling down, maintenance). Usually carries Retry-After."""
+
     status_code = HTTPStatus.SERVICE_UNAVAILABLE
     code: str = "service_unavailable"
+
+
+class BadGateway(FirstError):
+    """A backend was tried and failed (5xx, connection error, invalid body)."""
+
+    status_code = HTTPStatus.BAD_GATEWAY
+    code: str = "bad_gateway"
+
+
+class GatewayTimeout(FirstError):
+    """A backend was tried and timed out."""
+
+    status_code = HTTPStatus.GATEWAY_TIMEOUT
+    code: str = "gateway_timeout"
 
 
 class RequestTooLarge(FirstError):

@@ -18,6 +18,10 @@ services:
         required: true
       - path: ../.env.secret.gateway # see .env.gateway.example
         required: true
+    environment:
+      # Prometheus /metrics (apiserver/metrics.py) on the compose network only:
+      # not published to the host and not proxied by nginx.
+      FIRST_APISERVER_METRICS_PORT: "9101"
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,6 +81,11 @@ services:
     command: [".venv/bin/python", "-m", "first_gateway.controllers.manager"]
     environment:
       FIRST_ADMIN_CONSOLE_DIR: /app/admin-console
+      # Health alerts on gateway 500s and unhealthy upstreams, judged from the
+      # gateway replicas' metrics in Prometheus. Defaults (thresholds included)
+      # are in GatewayErrorAlertSettings; tune one in the env file, e.g.
+      # FIRST_GATEWAY_ERROR_ALERTS__UPSTREAM_ERROR_RATIO=0.5.
+      FIRST_GATEWAY_ERROR_ALERTS: "{}"
     # The admin API and admin console: loopback only, never behind nginx.
     ports:
       - "127.0.0.1:9100:9100"

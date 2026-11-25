@@ -266,6 +266,23 @@ The AdmissionController `record_error()` creates a per-backend circuit breaker a
 
 **NGINX side:** `proxy_next_upstream off;`. Never let NGINX replay an inference POST.
 
+### What the client sees
+
+When a request fails, the status tells you whose fault it was. The comment at
+the top of `apiserver/inference.py` is the reference:
+
+| Status | Meaning | `InferenceLog.outcome` |
+|---|---|---|
+| 503 + `Retry-After` | No backend was tried: cold start, saturated, all cooling down, maintenance | `admission_rejected` |
+| 502 | A backend was tried and failed (5xx, dropped connection, invalid body), on every attempt | `upstream_error` |
+| 504 | As 502, but every attempt timed out | `upstream_error` |
+| 500 | A gateway bug (traceback in the gateway logs) | `gateway_error` |
+
+The apiserver counts responses by status and attempts by outcome and deployment
+in Prometheus (`apiserver/metrics.py`). The health alerter's
+`check_gateway_errors` posts to Slack on 500s and on deployments whose attempts
+keep failing. It never alerts on 503s.
+
 ## NGINX Configuration
 
 ```nginx

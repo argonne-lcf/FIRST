@@ -9,7 +9,9 @@ from fastapi import Depends, Request
 from fastapi.responses import Response, StreamingResponse
 
 from first_common.errors import (
+    BadGateway,
     FirstError,
+    GatewayTimeout,
     InvalidSpecError,
     NotFound,
     ServiceUnavailable,
@@ -48,9 +50,28 @@ from .backend_client_manager import (
 )
 from .context import get_request_id, upstream_timer
 from .dependencies import AuthUser
+from .metrics import INFERENCE_ATTEMPTS
 from .router_config_manager import RouterConfigManager
 
 logger = logging.getLogger(__name__)
+
+# What a 5xx from an inference route means (and who should look at it):
+#
+#   503 Service Unavailable  No backend was tried: admission refused the request
+#                            (cold start, saturated, every backend cooling down,
+#                            maintenance). Expected under load; carries
+#                            Retry-After. Not an incident by itself.
+#   502 Bad Gateway          A backend was tried and failed: it returned a 5xx,
+#                            dropped the connection, or sent an invalid body.
+#                            The upstream is unhealthy, not the gateway.
+#   504 Gateway Timeout      A backend was tried and timed out.
+#   500 Internal Error       The gateway itself failed (a bug): look for the
+#                            traceback in the gateway logs.
+#
+# A backend's own 4xx is passed through to the caller unchanged. The InferenceLog
+# outcome of each attempt matches: admission_rejected (503), upstream_error
+# (502/504), gateway_error (500).  The health alerter alerts on 500s and on a
+# deployment's upstream_error rate, never on 503s.
 
 MAX_ATTEMPTS = 3
 DEPLOYMENT_HEADER = "X-First-Deployment"
@@ -78,13 +99,32 @@ class _UpstreamFailure(Exception):
 
     `summary` is a short, user-safe description (e.g. "HTTP 503") suitable for
     aggregating into the final error message; `retryable` decides whether
-    another backend may be tried.
+    another backend may be tried; `timeout` marks a backend that went silent
+    (504 rather than 502 when it is the reason the request failed).
     """
 
-    def __init__(self, summary: str, *, retryable: bool) -> None:
+    def __init__(self, summary: str, *, retryable: bool, timeout: bool = False) -> None:
         super().__init__(summary)
         self.summary = summary
         self.retryable = retryable
+        self.timeout = timeout
+
+
+def _upstream_error(
+    message: str, timed_out: bool, info: dict[str, Any] | None = None
+) -> FirstError:
+    """The 502 or 504 for a request whose backend attempts failed."""
+    return (GatewayTimeout if timed_out else BadGateway)(message, info=info)
+
+
+def _transport_failure(exc: BaseException, *, retryable: bool) -> _UpstreamFailure:
+    """Classify a BACKEND_ERRORS exception from contacting a backend."""
+    return _UpstreamFailure(
+        type(exc).__name__,
+        retryable=retryable,
+        # asyncio.TimeoutError is TimeoutError, which aiohttp's timeouts subclass.
+        timeout=isinstance(exc, TimeoutError),
+    )
 
 
 class InferenceService:
@@ -171,6 +211,8 @@ class InferenceService:
 
         attempted = 0
         failures: list[str] = []
+        # Whether every backend attempt so far ended in a timeout (-> 504).
+        all_timed_out = True
 
         # Attempt at least once to make sure admit_request is called.
         for _ in range(max(1, min(MAX_ATTEMPTS, len(backend_candidates)))):
@@ -236,9 +278,10 @@ class InferenceService:
                     error=exc.summary,
                 )
                 if not exc.retryable:
-                    raise ServiceUnavailable(
-                        "Upstream model server returned an unexpected error."
+                    raise _upstream_error(
+                        f"Upstream model server failed ({exc.summary}).", exc.timeout
                     )
+                all_timed_out = all_timed_out and exc.timeout
                 failures.append(exc.summary)
                 backend_candidates = [
                     b for b in backend_candidates if b.uid != backend_id
@@ -261,30 +304,34 @@ class InferenceService:
                 )
                 raise
             except Exception as exc:
-                await self._release_failed_backend(model, backend_id, deployment)
+                # Not an upstream failure (those raise _UpstreamFailure or a
+                # FirstError): a gateway bug.  Release the reservation without
+                # counting it against the backend, and let it surface as a 500
+                # with its traceback (handle_uncaught_error).
+                await self._settle(model, backend_id, 0)
                 self._emit_inference_log(
                     payload,
                     model,
                     deployment,
                     backend,
-                    outcome="upstream_error",
+                    outcome="gateway_error",
                     latency_sec=time.perf_counter() - t0,
                     error=type(exc).__name__,
                 )
-                logger.error(
-                    f"Unexpected error from backend {backend_id}.", exc_info=True
-                )
-                raise ServiceUnavailable(
-                    "Upstream model server returned an unexpected error."
-                )
+                raise
 
-        # Error if none of the retryable attempts worked.
         notices = maintenance_notices(model.deployments)
-        raise ServiceUnavailable(
+        message = (
             f"All {attempted} backend(s) failed for model {model.name}. "
-            f"Encountered: {', '.join(failures)}." + maintenance_suffix(notices),
-            info={"maintenance_notices": notices},
+            f"Encountered: {', '.join(failures)}." + maintenance_suffix(notices)
         )
+        info = {"maintenance_notices": notices}
+        if attempted == 0:
+            # Every admitted backend vanished from the router before it could
+            # be tried: nothing failed, it is just unavailable right now.
+            raise ServiceUnavailable(message, info=info)
+        # Every retryable attempt failed.
+        raise _upstream_error(message, all_timed_out, info)
 
     async def _release_failed_backend(
         self, model: ModelConfig, backend_id: str, deployment: DeploymentConfig
@@ -368,12 +415,14 @@ class InferenceService:
         rejections pass no ``deployment``/``backend`` (none was chosen), only
         the pinned ``deployment_name`` if any."""
         usage = usage or TokenUsage()
+        deployment_label = deployment.name if deployment else deployment_name
+        INFERENCE_ATTEMPTS.labels(outcome, deployment_label or "").inc()
         InferenceLog(
             request_id=self.request_id,
             user_id=self.user.id,
             endpoint=payload.endpoint,
             model=model.name,
-            deployment=deployment.name if deployment else deployment_name,
+            deployment=deployment_label,
             cluster=deployment.cluster_name if deployment else None,
             backend_id=backend.id if backend else None,
             backend_model_url=backend.model_url if backend else None,
@@ -458,7 +507,7 @@ class InferenceService:
                 # A timed-out task may still be running: don't start it over
                 # elsewhere.
                 retryable = not (is_task and is_read_timeout(exc))
-                raise _UpstreamFailure(type(exc).__name__, retryable=retryable)
+                raise _transport_failure(exc, retryable=retryable)
 
             if status_code != 200:
                 self._raise_for_upstream_status(
@@ -466,8 +515,14 @@ class InferenceService:
                 )
 
         latency_sec = time.perf_counter() - t0
-        json_body: dict[str, Any] = json.loads(content)
-        assert isinstance(json_body, dict)
+        try:
+            json_body = json.loads(content)
+        except ValueError:
+            json_body = None
+        if not isinstance(json_body, dict):
+            # The backend did the work but sent junk: an upstream fault (502),
+            # not retried since the work would be repeated.
+            raise _UpstreamFailure("invalid JSON body", retryable=False)
         usage = parser.parse_unary(json_body) if parser else TokenUsage()
 
         await self._settle(model, backend.id, usage.total_tokens or 0, learn_from=usage)
@@ -527,7 +582,7 @@ class InferenceService:
                     f"Request error contacting backend for model {model.name}.",
                     exc_info=True,
                 )
-                raise _UpstreamFailure(type(exc).__name__, retryable=True)
+                raise _transport_failure(exc, retryable=True)
 
             if response.status != 200:
                 self._raise_for_upstream_status(

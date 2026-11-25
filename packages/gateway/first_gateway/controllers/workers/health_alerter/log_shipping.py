@@ -20,6 +20,9 @@ from typing import Any
 from httpx import AsyncClient
 
 from first_common.schema.resources.runtime import Severity
+from first_gateway.controllers.workers.health_alerter.prometheus import (
+    query as _query,
+)
 from first_gateway.controllers.workers.health_alerter.types import Observation
 from first_gateway.settings import ClientState
 
@@ -110,21 +113,6 @@ _VECTOR_RULES = [
         summary="Vector has read no V2 gateway log lines for 30m",
     ),
 ]
-
-
-async def _query(
-    http: AsyncClient, prometheus_url: str, promql: str
-) -> list[tuple[dict[str, str], float]]:
-    """Run an instant query; return (labels, value) per series."""
-    resp = await http.get(f"{prometheus_url}/api/v1/query", params={"query": promql})
-    resp.raise_for_status()
-    body = resp.json()
-    if body.get("status") != "success":
-        raise RuntimeError(f"Prometheus query failed: {body.get('error', body)}")
-    return [
-        (series["metric"], float(series["value"][1]))
-        for series in body["data"]["result"]
-    ]
 
 
 def _vector_observation(

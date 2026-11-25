@@ -13,6 +13,7 @@ from .backend_client_manager import BackendClientManager
 from .error_handlers import register_error_handlers
 from .log_middleware import ResponseLogMiddleware
 from .loop_watchdog import LoopWatchdog
+from .metrics import start_metrics_server
 from .router_config_manager import RouterConfigManager
 from .routes import routers
 
@@ -75,9 +76,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if settings.loop_watchdog_timeout > 0:
             watchdog = LoopWatchdog(timeout=settings.loop_watchdog_timeout)
             await watchdog.start()
+        metrics_server = None
+        if settings.apiserver_metrics_port is not None:
+            metrics_server, _ = start_metrics_server(settings.apiserver_metrics_port)
         try:
             yield
         finally:
+            if metrics_server is not None:
+                metrics_server.shutdown()
+                metrics_server.server_close()
             if watchdog is not None:
                 await watchdog.stop()
             await admission_controller.stop()

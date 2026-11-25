@@ -37,6 +37,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from first_common.schema.structured_logs import ResponseLog
 
 from .context import RequestTiming, _request_id_ctx, _request_timing_ctx
+from .metrics import HTTP_RESPONSES
 
 # Constant probe traffic; the only anonymous route worth suppressing.
 _SKIP_PATHS = {"/health"}
@@ -142,6 +143,7 @@ class ResponseLogMiddleware:
         streaming: bool,
         raw_body: bytes | None,
     ) -> None:
+        HTTP_RESPONSES.labels(str(status_code)).inc()
         # No storage_dir: error bodies are inlined when small, never spilled.
         ResponseLog(
             request_id=cid,

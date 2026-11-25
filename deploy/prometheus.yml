@@ -6,6 +6,16 @@ scrape_configs:
     static_configs:
       - targets: ["controller-manager:9100"]
 
+  # Every apiserver replica (one uvicorn process each): the service name
+  # resolves to all of them, so each is its own target and its own series.
+  # The health alerter's check_gateway_errors queries these.
+  - job_name: inference-gateway
+    dns_sd_configs:
+      - names: ["inference-gateway"]
+        type: A
+        port: 9101
+        refresh_interval: 30s
+
   # The log shipper (log-shipping profile). The health alerter's
   # check_log_shipping queries these metrics; `up` is 0 where it is not deployed.
   - job_name: vector

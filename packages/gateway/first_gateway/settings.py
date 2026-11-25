@@ -128,6 +128,25 @@ class LogShippingSettings(BaseModel):
     prompt_shippers: list[str] = ["v2"]
 
 
+class GatewayErrorAlertSettings(BaseModel):
+    """
+    The health alerter's gateway-errors check: alert on the apiserver's own
+    Prometheus counters (apiserver/metrics.py). Thresholds are first guesses,
+    meant to be tuned.
+    """
+
+    prometheus_url: str = "https://prometheus:9090"
+    prometheus_ca_crt_file: Path | None = Path("/run/secrets/pilot_ca.crt")
+    # PromQL range every rule looks back over.
+    window: str = "10m"
+    # Gateway bugs: this many HTTP 500s in the window.
+    min_500s: int = 5
+    # An unhealthy deployment: at least this many failed attempts in the window,
+    # making up at least this fraction of the attempts actually dispatched to it.
+    upstream_min_errors: int = 20
+    upstream_error_ratio: float = 0.25
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Auto-detect and layer variables for local development (outside of containers)
@@ -180,6 +199,10 @@ class Settings(BaseSettings):
     health_slack_channel: str | None = None
     gateway_health_url: str = "http://127.0.0.1/health"
     log_shipping: LogShippingSettings | None = None
+    # Unset: no gateway-errors alerts (Compose sets it for controller-manager).
+    gateway_error_alerts: GatewayErrorAlertSettings | None = None
+    # The apiserver's Prometheus /metrics port (internal only). Unset: off.
+    apiserver_metrics_port: int | None = None
 
     keycloak_clients: dict[str, KeycloakSettings] = {}
 

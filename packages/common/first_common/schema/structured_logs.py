@@ -187,9 +187,10 @@ class ResponseLog(_StructuredLog):
 
 InferenceOutcome = Literal[
     "success",  # backend returned a usable response
-    "upstream_error",  # backend returned a retryable 5xx / connection failure
+    "upstream_error",  # backend failed: 5xx, connection failure, timeout, bad body
     "upstream_rejected",  # backend returned a non-retryable 4xx
     "admission_rejected",  # request never dispatched (admission control refused)
+    "gateway_error",  # the gateway itself failed while handling the attempt (a bug)
 ]
 
 

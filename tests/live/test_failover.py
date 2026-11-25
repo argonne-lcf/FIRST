@@ -195,7 +195,7 @@ async def test_failover_gives_up_after_three_attempts(
     me: UserAuthEvent,
 ) -> None:
     """The gateway makes at most three attempts.  With three failing backends
-    drawn first, it returns a 503 naming every failure and never tries the
+    drawn first, it returns a 502 naming every failure and never tries the
     healthy fourth, and the user is charged one request and no tokens."""
     await chaos.reset_all(redis, me.id)
     for b in ("a", "c", "d"):
@@ -214,8 +214,8 @@ async def test_failover_gives_up_after_three_attempts(
         "Encountered: HTTP 503, HTTP 503, HTTP 503."
     )
     run.check(
-        reply.status == 503 and want in reply.message,
-        "The user got a 503 naming all three failures",
+        reply.status == 502 and want in reply.message,
+        "The user got a 502 (backends tried and failed) naming all three failures",
         reply.summary(),
     )
     run.check(
