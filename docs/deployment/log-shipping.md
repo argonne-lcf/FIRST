@@ -50,6 +50,11 @@ a laptop stack does not start them.
   `InferenceLog`. Access lines, application logs and tracebacks stay in the
   archive. From V1 every line is inserted, as before; one that is not JSON is
   flagged `unparsed`.
+- Request and response content stays out of ClickHouse: the mapping drops
+  `body` (V2) and `prompt` / `result` (V1) and re-encodes `raw` / `message`
+  without them. Only the S3 archive and the prompt store hold content. A V1
+  line that is not JSON is inserted as-is (`unparsed`), since there is nothing
+  to strip it by; V2 inserts structured events only.
 - Each sink has a 1 GB disk buffer and retries forever. A line is marked read
   only after both sinks have it, so a crash re-sends lines and never skips them.
   A re-sent line is an identical row, which `gateway_logs` collapses; the

@@ -5,16 +5,27 @@
 # the twin of FIRST-analytics scripts/backfill-gateway-logs.sql: keep them in
 # step.
 #
-# .message is the app's JSONL line on input. `raw` and `message` keep it whole;
-# the parsed fields are merged on top and the line's own `message` becomes
-# `log_message`.
+# .message is the app's JSONL line on input. The parsed fields are merged on
+# top and the line's own `message` becomes `log_message`.
+#
+# Request and response content never reaches ClickHouse: `body` (V2) and
+# `prompt` / `result` (V1) are dropped, and `raw` / `message` hold the line
+# re-encoded without them. The S3 archive is fed before this mapping and keeps
+# every line byte for byte. `body_stored` stays: it says a body was spilled to
+# the prompt store, not what it said. Re-encoding is deterministic (keys are
+# sorted), so a redelivered line still yields an identical row for
+# gateway_logs to collapse.
 
 .raw = .message
 
 parsed, err = parse_json(.message)
 if err == null && is_object(parsed) {
-  . = merge(., object!(parsed))
-  .log_message = .message
+  line = remove!(remove!(remove!(object!(parsed), ["body"]), ["prompt"]), ["result"])
+  . = merge(., line)
+  # The line's own message only: a line without one (V1 request_log and
+  # friends) once copied the whole input line here, content and all.
+  .log_message = string(line.message) ?? ""
+  .raw = encode_json(line)
   .message = .raw
 } else {
   .unparsed = true
